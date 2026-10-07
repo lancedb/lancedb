@@ -4253,6 +4253,43 @@ def test_restore_consistency(tmp_path):
 
 
 # Schema evolution
+def _add_columns_input(kind):
+    values = pa.table({"score": [10, None, 30]})
+    if kind == "pandas":
+        pd = pytest.importorskip("pandas")
+        return pd.DataFrame(
+            {"score": pd.array([10, None, 30], dtype="Int64")},
+            index=pd.Index([9, 7, 5], name="source_index"),
+        )
+    if kind == "polars":
+        return pl.from_arrow(values)
+    if kind == "batch":
+        return values.to_batches()[0]
+    if kind == "reader":
+        return values.to_reader(max_chunksize=1)
+    return values
+
+
+@pytest.mark.parametrize("kind", ["pandas", "polars", "table", "batch", "reader"])
+def test_add_columns_data(mem_db, kind):
+    table = mem_db.create_table("columns_data", pa.table({"id": [2, 0, 1]}))
+    result = table.add_columns(_add_columns_input(kind))
+    assert result.version == 2
+    assert table.to_arrow().to_pydict() == {"id": [2, 0, 1], "score": [10, None, 30]}
+    assert table.schema.field("score").type == pa.int64()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["pandas", "polars", "table", "batch", "reader"])
+async def test_add_columns_data_async(mem_db_async, kind):
+    table = await mem_db_async.create_table("columns_data", pa.table({"id": [2, 0, 1]}))
+    result = await table.add_columns(_add_columns_input(kind))
+    assert result.version == 2
+    data = await table.to_arrow()
+    assert data.to_pydict() == {"id": [2, 0, 1], "score": [10, None, 30]}
+    assert data.schema.field("score").type == pa.int64()
+
+
 def test_add_columns(mem_db: DBConnection):
     data = pa.table({"id": [0, 1]})
     table = LanceTable.create(mem_db, "my_table", data=data)
@@ -4869,3 +4906,95 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert result.published_version == 4
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+def test_add_columns_reader_deleted_rows_and_fragments(mem_db):
+    table = mem_db.create_table("column_fragments", pa.table({"id": [9, 3]}))
+    table.add(pa.table({"id": [7, 1, 5]}))
+    table.delete("id = 3")
+    before = table.to_arrow()
+    values = pa.table({"score": [90, 70, 10, 50]})
+    reader = values.to_reader(max_chunksize=3)
+    version = table.version
+    result = table.add_columns(reader)
+    assert result.version == version + 1
+    assert table.to_arrow().to_pydict() == {
+        "id": before["id"].to_pylist(),
+        "score": [90, 70, 10, 50],
+    }
+    assert before["id"].to_pylist() == [9, 7, 1, 5]
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_add_columns_reader_wrong_count_is_atomic(mem_db, count):
+    table = mem_db.create_table("column_counts", pa.table({"id": [0, 1]}))
+    before, version = table.to_arrow(), table.version
+    reader = pa.table({"score": pa.array(range(count), type=pa.int64())}).to_reader()
+    with pytest.raises(ValueError, match="Stream"):
+        table.add_columns(reader)
+    assert table.version == version
+    assert table.to_arrow().equals(before)
+
+
+def test_add_columns_reader_empty_table(mem_db):
+    table = mem_db.create_table("empty_columns", schema=pa.schema([("id", pa.int64())]))
+    schema = pa.schema([("score", pa.float32())])
+    result = table.add_columns(pa.RecordBatchReader.from_batches(schema, []))
+    assert result.version == 2
+    assert table.schema.names == ["id", "score"]
+    assert table.schema.field("score").type == pa.float32()
+    assert table.count_rows() == 0
+
+
+def test_add_columns_reader_error_is_atomic(mem_db):
+    table = mem_db.create_table("column_error", pa.table({"id": [0, 1]}))
+    before, version = table.to_arrow(), table.version
+
+    def batches():
+        yield pa.record_batch({"score": [10]})
+        raise RuntimeError("reader failed deliberately")
+
+    reader = pa.RecordBatchReader.from_batches(
+        pa.schema([("score", pa.int64())]), batches()
+    )
+    with pytest.raises((RuntimeError, OSError), match="reader failed deliberately"):
+        table.add_columns(reader)
+    assert table.version == version
+    assert table.to_arrow().equals(before)
+
+
+def test_add_columns_reader_collision_is_atomic(mem_db):
+    table = mem_db.create_table("column_collision", pa.table({"id": [0, 1]}))
+    before, version = table.to_arrow(), table.version
+    with pytest.raises(ValueError, match="id"):
+        table.add_columns(pa.table({"id": [4, 5]}).to_reader())
+    assert table.version == version
+    assert table.to_arrow().equals(before)
+
+
+def test_add_columns_preserves_arrow_types(mem_db):
+    table = mem_db.create_table("column_types", pa.table({"id": [0, 1]}))
+    vectors = pa.array([[1.0, 2.0], [3.0, 4.0]], type=pa.list_(pa.float64(), 2))
+    values = pa.table({"vector": vectors, "score": pa.array([None, 2.5], pa.float32())})
+    table.add_columns(values)
+    assert table.schema.field("vector").type == pa.list_(pa.float64(), 2)
+    assert table.schema.field("score").type == pa.float32()
+    assert table.to_arrow().select(values.column_names).equals(values)
+
+
+def test_add_columns_dataframe_computed_conflict(mem_db):
+    table = mem_db.create_table("column_conflict", pa.table({"id": [0, 1, 2]}))
+    before, version = table.to_arrow(), table.version
+    with pytest.raises(ValueError, match="cannot take both transforms and computed"):
+        table.add_columns(_add_columns_input("pandas"), computed={"x": "id + 1"})
+    assert table.version == version
+    assert table.to_arrow().equals(before)
+
+
+@pytest.mark.parametrize("transforms", [{}, pa.schema([])])
+def test_add_columns_computed_with_empty_transforms(mem_db, transforms):
+    table = mem_db.create_table("empty_transforms", pa.table({"id": [0, 1]}))
+    result = table.add_columns(transforms, computed={"x": "id + 1"})
+    assert result.version == 2
+    table.refresh_column("x")
+    assert table.to_arrow()["x"].to_pylist() == [1, 2]

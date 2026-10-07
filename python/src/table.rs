@@ -1802,6 +1802,23 @@ impl Table {
         })
     }
 
+    pub fn add_columns_from_reader<'a>(
+        self_: PyRef<'a, Self>,
+        data: Bound<'a, PyAny>,
+    ) -> PyResult<Bound<'a, PyAny>> {
+        let reader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let result = inner
+                .add_columns()
+                .transform(NewColumnTransform::Reader(Box::new(reader)))
+                .execute()
+                .await
+                .infer_error()?;
+            Ok(AddColumnsResult::from(result))
+        })
+    }
+
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
         columns: Vec<(String, String)>,
