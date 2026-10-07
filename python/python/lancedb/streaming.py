@@ -13,7 +13,7 @@ Provides StreamingDataset, a PyTorch IterableDataset that guarantees:
   distributed topology changes between runs.
 
 Transform failures on bad rows (e.g. nulls or NaNs from incomplete data) can
-be tolerated with ``on_transform_error="skip"``; see the parameter
+be tolerated with ``on_transform_error="skip"`` or ``"fill"``; see the parameter
 documentation on StreamingDataset for how this interacts with the guarantees
 above.
 """
@@ -29,7 +29,7 @@ import warnings
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from multiprocessing import RawArray
+from multiprocessing import RawArray, get_context
 from typing import Any, Callable, cast, Iterator, Literal, NamedTuple, Optional, Union
 
 import pyarrow as pa
@@ -55,6 +55,7 @@ _EPOCH_PRIME = 100003
 
 DEFAULT_READ_BATCH_SIZE = 64
 DEFAULT_PREFETCH_BATCHES = 4
+_UNSET = object()
 
 
 class _WorkerSample(NamedTuple):
@@ -329,6 +330,10 @@ class StreamingDataset(IterableDataset):
         - ``"skip"``: the failing rows are dropped and iteration continues.
         - ``"warn"``: like ``"skip"``, but a warning is logged for each
           failing batch.
+        - ``"fill"``: replace each failing row with ``fill_value`` or the
+          result of ``repair(exc, row_batch)``.  Exactly one of these must be
+          provided.  Filled rows retain their original positions, so split
+          lengths, elastic determinism, and checkpoint offsets are preserved.
         - a callable ``handler(exc) -> bool``: called with the exception;
           return ``True`` to skip the failing rows or ``False`` to re-raise.
           Useful to skip only expected error types (compatible with
@@ -336,9 +341,9 @@ class StreamingDataset(IterableDataset):
 
         When a batch fails, the transform is re-invoked on each single-row
         slice of the batch so that only the rows that actually fail are
-        dropped.  Transforms should therefore be deterministic and accept
-        batches of any size (including one row).  Skipped rows are counted in
-        ``rows_skipped``.
+        skipped or filled.  Transforms should therefore be deterministic and
+        accept batches of any size (including one row).  Skipped and filled
+        rows are counted in ``rows_skipped`` and ``rows_filled`` respectively.
 
         Skipping weakens the elastic-determinism guarantee at the end of the
         epoch: splits that lose more rows than others run dry earlier, and
@@ -351,8 +356,9 @@ class StreamingDataset(IterableDataset):
         but synchronous distributed training (e.g. ranks that call
         ``all_reduce`` every step) can hang or deadlock if one rank's
         iterator is exhausted while others are still stepping; callers doing
-        synchronous multi-rank training with ``on_transform_error != "raise"``
-        are responsible for their own cross-rank stopping mechanism (e.g.
+        synchronous multi-rank training with ``on_transform_error="skip"`` or
+        ``"warn"`` (or a skipping callable) are responsible for their own
+        cross-rank stopping mechanism (e.g.
         broadcasting a stop signal on ``StopIteration``).  The final few
         global steps can also differ across topologies (bounded by the skew
         in bad-row counts across splits).  The sequence of samples yielded
@@ -364,6 +370,18 @@ class StreamingDataset(IterableDataset):
         Prefer the ``filter`` parameter when bad rows can be expressed as a
         SQL predicate (e.g. ``"col IS NOT NULL"``) — filtering happens before
         splits are built, so every guarantee is fully preserved.
+    fill_value:
+        Constant output row used with ``on_transform_error="fill"``.  A copy
+        is made for each failed row so mutable placeholders are independent.
+        For example, ``fill_value={"vector": [0.0, 0.0]}``.  Pass exactly one
+        of ``fill_value`` or ``repair`` in fill mode.
+    repair:
+        Optional function ``repair(exc, row_batch) -> row`` used with
+        ``on_transform_error="fill"``.  ``row_batch`` is a one-row
+        ``pyarrow.RecordBatch``.  The returned value replaces that row's
+        transformed output.  Replacements should have the same structure as
+        successful transform outputs.  The repair must be deterministic for
+        reproducible checkpoints and elastic steps.
     transform_queue_depth:
         Number of transform-result batches to buffer per split in the
         post-transform queue before backpressure is applied to the transform
@@ -404,6 +422,8 @@ class StreamingDataset(IterableDataset):
         pad_id: Optional[int] = None,
         blocks_per_epoch: Optional[Union[int, Literal["auto"]]] = None,
         on_transform_error: Union[str, Callable[[Exception], bool]] = "raise",
+        fill_value: Any = _UNSET,
+        repair: Optional[Callable[[Exception, pa.RecordBatch], Any]] = None,
         transform_queue_depth: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
         worker_info_override=None,
@@ -479,13 +499,20 @@ class StreamingDataset(IterableDataset):
                 )
         elif blocks_per_epoch is not None:
             raise ValueError("blocks_per_epoch requires pack_sequences")
-        if on_transform_error not in ("raise", "skip", "warn") and not callable(
+        if on_transform_error not in ("raise", "skip", "warn", "fill") and not callable(
             on_transform_error
         ):
             raise ValueError(
-                "on_transform_error must be 'raise', 'skip', 'warn', or a "
+                "on_transform_error must be 'raise', 'skip', 'warn', 'fill', or a "
                 f"callable, got {on_transform_error!r}"
             )
+        if on_transform_error == "fill":
+            if (fill_value is _UNSET) == (repair is None):
+                raise ValueError(
+                    "fill mode requires exactly one of fill_value or repair"
+                )
+        elif fill_value is not _UNSET or repair is not None:
+            raise ValueError("fill_value and repair require on_transform_error='fill'")
         if transform_queue_depth is not None and transform_queue_depth <= 0:
             raise ValueError("transform_queue_depth must be greater than 0")
 
@@ -508,6 +535,8 @@ class StreamingDataset(IterableDataset):
         self._pad_id = pad_id
         self._blocks_per_epoch = blocks_per_epoch
         self._on_transform_error = on_transform_error
+        self._fill_value = None if fill_value is _UNSET else fill_value
+        self._repair = repair
         self._transform_queue_depth = transform_queue_depth
         self._connection_factory = connection_factory
         self._worker_info_override = worker_info_override
@@ -534,6 +563,9 @@ class StreamingDataset(IterableDataset):
         #          bytes_loaded, fetch_time_us, transform_time_us,
         #          rows_skipped]
         self._worker_stats: RawArray = RawArray(ctypes.c_int64, 8)
+        # A locked shared counter keeps fills from separate DataLoader workers
+        # from overwriting one another's totals.
+        self._filled_count = get_context("spawn").Value(ctypes.c_int64, 0)
 
         # A standard multi-process DataLoader cannot report which prefetched
         # batches were actually returned to its consumer.  Workers set this
@@ -851,12 +883,12 @@ class StreamingDataset(IterableDataset):
 
         on_error = self._on_transform_error
 
-        def _should_skip(exc: Exception) -> bool:
+        def _should_continue(exc: Exception) -> bool:
             if on_error == "raise":
                 return False
             if callable(on_error):
                 return bool(on_error(exc))
-            return True  # "skip" or "warn"
+            return True  # "skip", "warn", or "fill"
 
         def _check_row_count(rows: list, num_rows: int) -> None:
             if len(rows) != num_rows:
@@ -868,16 +900,27 @@ class StreamingDataset(IterableDataset):
                 )
 
         def _transform_isolated(abs_start, batch, batch_exc):
-            """Re-run the transform on single-row slices, dropping failures."""
+            """Re-run the transform on single-row slices to isolate failures."""
             out = []
             skipped = 0
+            filled = 0
             first_exc = None
             for j in range(batch.num_rows):
+                row_batch = batch.slice(j, 1)
                 try:
-                    rows = list(final_transform(batch.slice(j, 1)))
+                    rows = list(final_transform(row_batch))
                 except Exception as exc:
-                    if not _should_skip(exc):
+                    if not _should_continue(exc):
                         raise
+                    if on_error == "fill":
+                        row = (
+                            self._repair(exc, row_batch)
+                            if self._repair is not None
+                            else deepcopy(self._fill_value)
+                        )
+                        out.append((abs_start + j, row))
+                        filled += 1
+                        continue
                     skipped += 1
                     if first_exc is None:
                         first_exc = exc
@@ -885,6 +928,9 @@ class StreamingDataset(IterableDataset):
                 _check_row_count(rows, 1)
                 out.append((abs_start + j, rows[0]))
             self._rows_skipped += skipped
+            if filled:
+                with self._filled_count.get_lock():
+                    self._filled_count.value += filled
             if skipped and on_error == "warn":
                 logger.warning(
                     "Skipped %d of %d rows whose transform failed (first error: %r)",
@@ -899,7 +945,7 @@ class StreamingDataset(IterableDataset):
             try:
                 rows = list(final_transform(batch))
             except Exception as exc:
-                if not _should_skip(exc):
+                if not _should_continue(exc):
                     raise
                 return _transform_isolated(abs_start, batch, exc)
             _check_row_count(rows, batch.num_rows)
@@ -1269,6 +1315,15 @@ class StreamingDataset(IterableDataset):
         if self._raw_batches_ref is not None:
             return self._rows_skipped
         return int(self._worker_stats[7])
+
+    @property
+    def rows_filled(self) -> int:
+        """Number of failed transform rows replaced by fill mode.
+
+        Accumulates across iterations of the same dataset instance and is
+        never reset automatically.
+        """
+        return int(self._filled_count.value)
 
     @property
     def consumed_rows(self) -> int:

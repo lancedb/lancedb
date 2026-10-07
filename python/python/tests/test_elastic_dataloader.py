@@ -2251,6 +2251,13 @@ def _failing_transform(bad_ids: set):
     return transform
 
 
+def _fill_workers_transform(batch: pa.RecordBatch) -> list[dict]:
+    ids = batch.column("id").to_pylist()
+    if 0 in ids or 60 in ids:
+        raise BadRowError("bad row")
+    return [{"id": row_id} for row_id in ids]
+
+
 def _sequential_split_members(table) -> list[list[int]]:
     """Return each split's ids in yield order for shuffle=False.
 
@@ -2279,6 +2286,115 @@ def test_on_transform_error_default_raises(lance_table):
 def test_on_transform_error_invalid_value(lance_table):
     with pytest.raises(ValueError, match="on_transform_error"):
         StreamingDataset(lance_table, num_splits=NUM_SPLITS, on_transform_error="bogus")
+
+
+def test_on_transform_error_fill_requires_one_replacement(lance_table):
+    kwargs = dict(num_splits=NUM_SPLITS, on_transform_error="fill")
+    with pytest.raises(ValueError, match="exactly one"):
+        StreamingDataset(lance_table, **kwargs)
+    with pytest.raises(ValueError, match="exactly one"):
+        StreamingDataset(
+            lance_table, **kwargs, fill_value={"id": -1}, repair=lambda exc, row: row
+        )
+    with pytest.raises(ValueError, match="require on_transform_error='fill'"):
+        StreamingDataset(lance_table, num_splits=NUM_SPLITS, fill_value=None)
+    StreamingDataset(lance_table, **kwargs, fill_value=None)
+
+
+def test_on_transform_error_fill_preserves_rows_and_positions(lance_table):
+    """Uneven failures are replaced in place, including an entirely bad split."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0]) | {members[5][7]}
+    clean = [
+        row["id"]
+        for row in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        fill_value={"id": -1, "vector": [0.0, 0.0]},
+    )
+    assert ds.rows_filled == 0
+    rows = list(ds)
+    assert [row["id"] for row in rows] == [
+        -1 if row_id in bad_ids else row_id for row_id in clean
+    ]
+    assert len(rows) == NUM_ROWS
+    assert ds.rows_filled == len(bad_ids)
+    assert ds.rows_skipped == 0
+
+    placeholders = [row for row in rows if row["id"] == -1]
+    placeholders[0]["vector"][0] = 1.0
+    assert all(row["vector"] == [0.0, 0.0] for row in placeholders[1:])
+
+
+def test_on_transform_error_fill_repair_receives_failed_row(lance_table):
+    bad_ids = {5, 17, 46}
+    repaired = []
+
+    def repair(exc: Exception, row_batch: pa.RecordBatch) -> dict:
+        assert isinstance(exc, BadRowError)
+        assert row_batch.num_rows == 1
+        row_id = row_batch.column("id")[0].as_py()
+        repaired.append(row_id)
+        return {"id": row_id, "repaired": True}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        repair=repair,
+    )
+    rows = list(ds)
+    assert sorted(row["id"] for row in rows) == list(range(NUM_ROWS))
+    assert set(repaired) == bad_ids
+    assert {row["id"] for row in rows if row.get("repaired")} == bad_ids
+    assert ds.rows_filled == len(bad_ids)
+
+
+def test_on_transform_error_fill_repair_error_propagates(lance_table):
+    def broken_repair(exc: Exception, row_batch: pa.RecordBatch):
+        raise RuntimeError("repair failed")
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        transform=_failing_transform({5}),
+        on_transform_error="fill",
+        repair=broken_repair,
+    )
+    with pytest.raises(RuntimeError, match="repair failed"):
+        list(ds)
+
+
+def test_on_transform_error_fill_counts_across_workers(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_fill_workers_transform,
+        on_transform_error="fill",
+        fill_value={"id": -1},
+    )
+    loader = StreamingDataLoader(
+        ds,
+        batch_size=6,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        ids = [row_id for batch in iterator for row_id in batch["id"].tolist()]
+    finally:
+        iterator._shutdown_workers()
+    assert len(ids) == NUM_ROWS
+    assert ids.count(-1) == 2
+    assert ds.rows_filled == 2
 
 
 def test_on_transform_error_skip_drops_bad_rows(lance_table):
@@ -2385,9 +2501,10 @@ def test_on_transform_error_callable_selective(lance_table):
         list(ds2)
 
 
-def test_transform_wrong_row_count_raises(lance_table):
+@pytest.mark.parametrize("on_error", ["skip", "fill"])
+def test_transform_wrong_row_count_raises(lance_table, on_error):
     """A transform that returns the wrong number of rows is an error even with
-    on_transform_error='skip' — silent shrinkage would corrupt accounting."""
+    error recovery enabled — silent shrinkage would corrupt accounting."""
 
     def drops_rows(batch: pa.RecordBatch) -> list:
         return batch.column("id").to_pylist()[:-1]
@@ -2397,7 +2514,8 @@ def test_transform_wrong_row_count_raises(lance_table):
         num_splits=NUM_SPLITS,
         shuffle_seed=SHUFFLE_SEED,
         transform=drops_rows,
-        on_transform_error="skip",
+        on_transform_error=on_error,
+        **({"fill_value": {"id": -1}} if on_error == "fill" else {}),
     )
     with pytest.raises(ValueError, match="one output row per input row"):
         list(ds)
@@ -2473,6 +2591,61 @@ def test_skip_elastic_det_across_world_sizes(lance_table):
     assert len(reference) == NUM_ROWS // NUM_SPLITS - 1
     for ws in (2, 3, 4):
         assert collect(ws) == reference, f"world_size={ws} diverged"
+
+
+def test_fill_elastic_determinism_and_checkpoint(lance_table):
+    """Uneven fills keep every global step and resume across world sizes."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[0][0], members[0][2], members[6][1]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="fill",
+        fill_value={"id": -1},
+    )
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+    ref_steps = [
+        sorted(reference[start : start + GLOBAL_BATCH_SIZE])
+        for start in range(0, len(reference), GLOBAL_BATCH_SIZE)
+    ]
+    assert len(ref_steps) == STEPS_PER_EPOCH
+
+    for world_size in (1, 2, 3, 4):
+        micro = GLOBAL_BATCH_SIZE // world_size
+        datasets = [
+            StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+            for rank in range(world_size)
+        ]
+        iters = [iter(ds) for ds in datasets]
+        steps = [
+            sorted(next(it)["id"] for it in iters for _ in range(micro))
+            for _ in range(STEPS_PER_EPOCH)
+        ]
+        assert steps == ref_steps
+        assert all(next(it, None) is None for it in iters)
+
+    world_size = 2
+    micro = GLOBAL_BATCH_SIZE // world_size
+    datasets = [
+        StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+    for _ in range(3):
+        for it in iters:
+            for _ in range(micro):
+                next(it)
+    states = [ds.state_dict() for ds in datasets]
+    for it in iters:
+        it.close()
+    merged = StreamingDataset.merge_state_dicts(states)
+    assert merged["positions_consumed_per_split"] == [3] * NUM_SPLITS
+    assert merged["samples_consumed_per_split"] == [3] * NUM_SPLITS
+
+    resumed = StreamingDataset(lance_table, **kwargs)
+    resumed.load_state_dict(merged)
+    assert [row["id"] for row in resumed] == reference[3 * NUM_SPLITS :]
 
 
 def test_resumability_with_skips_same_topology(lance_table):
