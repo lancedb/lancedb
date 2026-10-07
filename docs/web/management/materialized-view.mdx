@@ -77,7 +77,7 @@ rows. Both are properties; on an async view, the definition is read with
 <Badge color="red">Enterprise</Badge> `create_materialized_view` works on a
 `db://` connection as well as a local one. There the SDK creates and refreshes
 the view through SQL, and the work runs on the cluster rather than in your
-process. Materialized views are experimental on a deployment and have to be
+process. Materialized views are off by default on a deployment and have to be
 enabled there; see
 [Against a deployment](/feature-engineering/materialized-views#availability).
 

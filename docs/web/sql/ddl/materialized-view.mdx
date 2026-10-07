@@ -12,9 +12,9 @@ A materialized view stores a query's result as rows, kept current by a refresh
 -- the counterpart to a [view](/sql/ddl/view), which stores only the query.
 
 <Note>
-Materialized views are experimental on a deployment, which has to have them
-enabled. Which statements and query shapes a deployment accepts, and how its
-refresh works, depend on its LanceDB Enterprise version and configuration.
+Materialized views are off by default on a deployment and have to be enabled
+there. Which statements and query shapes a deployment accepts, and how it
+refreshes a view, depend on its LanceDB Enterprise version and configuration.
 </Note>
 
 ## CREATE MATERIALIZED VIEW {#create}

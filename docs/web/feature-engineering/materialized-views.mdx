@@ -79,9 +79,9 @@ and `REFRESH MATERIALIZED VIEW` -- and the work runs on the cluster rather than
 in your process. `source_version` is for local views only; the SDK refuses it
 on a remote refresh.
 
-Materialized views are experimental on a deployment, which has to have them
-enabled. How its refresh works -- rebuilding the whole view, as above, or
-reconciling what changed in the source -- depends on its LanceDB Enterprise
+Materialized views are off by default on a deployment and have to be enabled
+there. How a deployment refreshes a view -- rebuilding the whole view, as above,
+or reconciling what changed in the source -- depends on its LanceDB Enterprise
 version and configuration, and so do the options
 [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view)
 accepts.
