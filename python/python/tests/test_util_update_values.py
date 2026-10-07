@@ -180,3 +180,36 @@ async def test_update_numpy_date_column_async(tmp_path, unit):
     assert (await table.to_arrow())["day"].to_pylist() == [
         value.astype("datetime64[D]").item()
     ]
+
+
+@pytest.mark.parametrize("timezone", [None, "UTC", "America/New_York", "Asia/Tokyo"])
+@pytest.mark.parametrize(
+    "value",
+    [np.datetime64("2025-01-02T03:04:05.123456789", "ns"), np.datetime64("NaT", "ns")],
+)
+def test_update_numpy_timestamp_matches_arrow_ingestion(tmp_path, timezone, value):
+    dtype = pa.timestamp("ns", tz=timezone)
+    ingested = pa.array(np.array([value]), type=dtype)
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("timestamps", pa.table({"time": ingested}))
+    expected = table.to_arrow()["time"].cast(pa.int64()).to_pylist()
+    table.update(values={"time": value})
+    assert table.to_arrow()["time"].cast(pa.int64()).to_pylist() == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timezone", [None, "UTC", "America/New_York", "Asia/Tokyo"])
+@pytest.mark.parametrize(
+    "value",
+    [np.datetime64("2025-01-02T03:04:05.123456789", "ns"), np.datetime64("NaT", "ns")],
+)
+async def test_update_numpy_timestamp_matches_arrow_ingestion_async(
+    tmp_path, timezone, value
+):
+    dtype = pa.timestamp("ns", tz=timezone)
+    ingested = pa.array(np.array([value]), type=dtype)
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("timestamps", pa.table({"time": ingested}))
+    expected = (await table.to_arrow())["time"].cast(pa.int64()).to_pylist()
+    await table.update({"time": value})
+    assert (await table.to_arrow())["time"].cast(pa.int64()).to_pylist() == expected

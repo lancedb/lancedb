@@ -446,7 +446,7 @@ def _(value: np.datetime64):
         return value_to_sql(None)
     if np.datetime_data(value.dtype)[0] in ("ps", "fs", "as"):
         raise ValueError("SQL timestamps cannot preserve sub-nanosecond precision")
-    return value_to_sql(str(np.datetime_as_string(value, unit="ns")))
+    return value_to_sql(str(np.datetime_as_string(value, unit="ns", timezone="UTC")))
 
 
 def deprecated(func):
