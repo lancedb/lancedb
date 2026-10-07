@@ -419,6 +419,15 @@ def _(value: pa.Scalar):
     return value_to_sql(value.as_py())
 
 
+@value_to_sql.register(pa.MapScalar)
+def _(value: pa.MapScalar):
+    if not value.is_valid:
+        return value_to_sql(None)
+    keys = value_to_sql(list(value.values.field(0)))
+    values = value_to_sql(list(value.values.field(1)))
+    return f"map({keys}, {values})"
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
