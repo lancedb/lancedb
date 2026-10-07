@@ -1955,11 +1955,14 @@ class Table(ABC):
         ----------
         offsets: list[int]
             The offsets to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
+        LanceTakeQueryBuilder
+            A query builder that can be executed to get the rows at the given
+            offsets.
         """
 
     def __getitems__(self, offsets: list[int]) -> pa.RecordBatch:
@@ -2040,11 +2043,13 @@ class Table(ABC):
         ----------
         row_ids: list[int]
             The row ids to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        AsyncTakeQuery
-            A query object that can be executed to get the rows.
+        LanceTakeQueryBuilder
+            A query builder that can be executed to get the rows.
         """
 
     @abstractmethod
@@ -2998,11 +3003,21 @@ class LanceTable(Table):
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
@@ -6996,7 +7011,9 @@ class AsyncTable:
         """
         await self._inner.restore(version)
 
-    def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> AsyncTakeQuery:
         """
         Take a list of offsets from the table.
 
@@ -7014,15 +7031,23 @@ class AsyncTable:
         ----------
         offsets: list[int]
             The offsets to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
+        AsyncTakeQuery
+            A query object that can be executed to get the rows at the given
+            offsets.
         """
-        return AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        query = AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        if with_row_id:
+            query.with_row_id()
+        return query
 
-    def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> AsyncTakeQuery:
         """
         Take a list of row ids from the table.
 
@@ -7043,13 +7068,18 @@ class AsyncTable:
         ----------
         row_ids: list[int]
             The row ids to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
         AsyncTakeQuery
             A query object that can be executed to get the rows.
         """
-        return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+        query = AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+        if with_row_id:
+            query.with_row_id()
+        return query
 
     async def blob_columns(self) -> list[str]:
         return await self._inner.blob_columns()
