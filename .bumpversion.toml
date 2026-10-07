@@ -29,10 +29,7 @@ allow_shell_hooks = true
 # Java maven files
 pre_commit_hooks = [
   """
-    NEW_VERSION="${BVHOOK_NEW_MAJOR}.${BVHOOK_NEW_MINOR}.${BVHOOK_NEW_PATCH}"
-    if [ ! -z "$BVHOOK_NEW_PRE_L" ] && [ ! -z "$BVHOOK_NEW_PRE_N" ]; then
-        NEW_VERSION="${NEW_VERSION}-${BVHOOK_NEW_PRE_L}.${BVHOOK_NEW_PRE_N}"
-    fi
+    NEW_VERSION="$BVHOOK_NEW_VERSION"
     echo "Constructed new version: $NEW_VERSION"
     cd java && mvn versions:set -DnewVersion=$NEW_VERSION && mvn versions:commit
 
