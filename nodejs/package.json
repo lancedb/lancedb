@@ -86,7 +86,7 @@
     "postdocs": "node typedoc_post_process.js",
     "lint": "biome check . && biome format .",
     "lint-fix": "biome check --write . && biome format --write .",
-    "prepublishOnly": "napi prepublish -t npm",
+    "prepublishOnly": "napi prepublish -t npm --no-gh-release",
     "test": "jest --verbose",
     "integration": "S3_TEST=1 pnpm test",
     "universal": "napi universalize",

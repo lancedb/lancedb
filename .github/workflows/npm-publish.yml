@@ -447,6 +447,13 @@ jobs:
             ARGS="$ARGS --tag preview"
           fi
           npm publish $ARGS
+      - name: Upload release binaries
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # napi prepublish logs upload failures without failing the job.
+        # Keep this separate so a missing release asset fails publication.
+        run: gh release upload "$GITHUB_REF_NAME" nodejs-artifacts/*.node
   report-failure:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
