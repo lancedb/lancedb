@@ -40,18 +40,24 @@ code speaks, the other is available too.
 | Create and manage catalog objects | yes | partly |
 | Insert, merge, update, delete | yes | yes |
 | Filter, project, aggregate, join | yes | yes |
-| Vector search | yes | -- |
+| Vector search | yes | version-dependent |
 | Full-text search | yes | yes |
 | Feature engineering, jobs | yes | yes |
 | Runs against a local database | yes | **no** |
 
-## Vector search has no SQL form {#no-vector-sql}
+## Vector search depends on the deployment {#no-vector-sql}
 
-The clearest exception to that parity. Similarity search is a query-builder
-operation. A query that needs both vector similarity and SQL analytics runs
-the search in an SDK and the analytics over its result. Full-text search *is*
-available in SQL, as the [`fts()`](/sql/functions#fts) table function and the
-[`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate.
+The SDK query builder provides vector search across embedded and deployed
+databases. SQL support depends on the deployment version and supported query
+shape. Some versions recognize `ORDER BY distance(vector, query_vector) LIMIT k`
+over a table scan and plan vector search, including indexed and flat search.
+Confirm support on your deployment and use SQL
+[`EXPLAIN`](/sql/dql/explain) to check the chosen plan; this is not a guarantee
+that every deployed release supports that form.
+
+Full-text search is available through the [`fts()`](/sql/functions#fts) table
+function and the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+predicate.
 
 The reverse gap also exists: a [view](/management/view) is a saved SQL query,
 so SQL is the only way to create one -- there's nothing for an SDK method to

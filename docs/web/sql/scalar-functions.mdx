@@ -9,8 +9,9 @@ keywords: ["scalar functions", "string functions", "math functions", "regex", "a
 <Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
 
 Functions that take a value and return a value, one row at a time. The set is
-DataFusion 54's default registration plus what Lance adds — the names below are
-what is actually registered, not the union of everything DataFusion documents.
+based on DataFusion's registration plus Lance and deployment-specific
+functions. The names below are selected examples, not an exhaustive catalog
+for every deployment. Availability depends on the deployed version and build.
 
 For per-group functions see [Aggregation](/sql/dql/aggregation); for per-window,
 [Window functions](/sql/dql/window).
@@ -83,14 +84,18 @@ map  map_keys  map_values  map_entries  map_extract
 Distance functions over arrays:
 
 ```text
-cosine_distance  distance  inner_product
+cosine_distance  distance  exact_distance  inner_product
 ```
 
 <Warning>
-These operate on ordinary arrays. They are **not** how you run
-[vector search](/search/vector-search) — a search uses the vector index, while
-these compute per row over whatever the query already produced. Use them to
-score a small candidate set, not to retrieve one.
+Distance functions can evaluate arrays per row. Some deployment versions also
+recognize `ORDER BY distance(vector, query_vector) LIMIT k` over a table scan
+and plan it as vector search, with indexed or flat search as appropriate.
+Where available, `exact_distance` evaluates distance without that rewrite.
+Confirm the
+functions supported by your deployment and inspect SQL
+[`EXPLAIN`](/sql/dql/explain); the function name alone does not guarantee an
+index-backed plan. See [SQL vector search](/basics/sql#no-vector-sql).
 </Warning>
 
 ## Structs and fields {#structs}

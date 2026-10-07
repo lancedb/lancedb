@@ -30,13 +30,15 @@ including that you can travel back to before the column existed.
 
 `add_columns` takes either, and the difference matters:
 
-- **`transforms`** evaluates the expression *now*, for every row, as part of the
-  call. Good for a small table, or a column you want populated immediately.
+- **SQL expressions in `transforms`** are evaluated *now*, for every row, as
+  part of the call. Good for a small table, or a column you want populated
+  immediately. A `FunctionApplication` passed through `transforms` instead
+  declares empty Function-bound columns; a refresh fills them.
 - **`computed`** stores the expression and evaluates nothing. The column is
   committed empty and filled later by
   [`refresh_column`](/feature-engineering/refresh-column).
 
-They cannot be combined in one call. Reach for `computed` when the table is
+`computed` and `transforms` cannot be combined in one call. Reach for `computed` when the table is
 large enough that you would rather control when the work happens.
 
 ## The expression {#expressions}

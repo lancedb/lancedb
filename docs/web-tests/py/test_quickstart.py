@@ -150,6 +150,38 @@ def test_quickstart(db_path_factory):
     # --8<-- [end:quickstart_vector_search_2]
     assert results.head(1)["name"][0] == "Morgana"
 
+    # --8<-- [start:quickstart_computed_feature]
+    table.add_columns(computed={"combat_score": "(stats.magic + stats.strength) / 2.0"})
+    table.refresh_column("combat_score")
+    # --8<-- [end:quickstart_computed_feature]
+    scores = (
+        table.search().select(["combat_score"]).to_arrow()["combat_score"].to_pylist()
+    )
+    assert scores == [2.5, 3.5, 3.0, 3.5]
+
+    # --8<-- [start:quickstart_training]
+    import torch
+    from lancedb.permutation import Permutation
+
+    dataset = Permutation.identity(table).select_columns(
+        ["power_score", "combat_score"]
+    )
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, shuffle=True)
+    # --8<-- [end:quickstart_training]
+    batches = list(dataloader)
+    assert len(batches) == 1
+    assert set(batches[0]) == {"power_score", "combat_score"}
+    assert all(isinstance(value, torch.Tensor) for value in batches[0].values())
+    assert sorted(batches[0]["combat_score"].tolist()) == sorted(scores)
+
+    # --8<-- [start:quickstart_training_projection]
+    dataset = Permutation.identity(table).select_columns(["power_score"])
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024)
+    # --8<-- [end:quickstart_training_projection]
+    batch = next(iter(dataloader))
+    assert set(batch) == {"power_score"}
+    assert batch["power_score"].tolist() == [3.5, 4.0, 3.0, 3.75]
+
 
 @pytest.mark.asyncio
 async def test_quickstart_async_api(db_path_factory):

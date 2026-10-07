@@ -4,6 +4,8 @@ export const PyQuickstartAddData = "more_data = [\n    {\n        \"id\": \"4\",
 
 export const PyQuickstartAddFeature = "table.add_columns(\n    {\n        \"power_score\": \"cast(((stats.strength + stats.magic + stats.leadership + stats.wisdom) / 4.0) as float)\"\n    }\n)\n";
 
+export const PyQuickstartComputedFeature = "table.add_columns(computed={\"combat_score\": \"(stats.magic + stats.strength) / 2.0\"})\ntable.refresh_column(\"combat_score\")\n";
+
 export const PyQuickstartCreateTable = "table = db.create_table(\"characters\", data=data, mode=\"overwrite\")\n";
 
 export const PyQuickstartCreateTableAsync = "async_table = await async_db.create_table(\n    \"characters\",\n    data=data,\n    mode=\"overwrite\",\n)\n";
@@ -23,6 +25,10 @@ export const PyQuickstartOpenTable = "table = db.open_table(\"characters\")\n";
 export const PyQuickstartOutputPandas = "# Ensure you run `pip install pandas` beforehand\nresult = table.search(query_vector).limit(2).to_pandas()\nprint(result)\n";
 
 export const PyQuickstartQueryFeature = "features = table.search().select([\"name\", \"role\", \"power_score\"]).to_polars()\nprint(features)\n";
+
+export const PyQuickstartTraining = "import torch\nfrom lancedb.permutation import Permutation\n\ndataset = Permutation.identity(table).select_columns(\n    [\"power_score\", \"combat_score\"]\n)\ndataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, shuffle=True)\n";
+
+export const PyQuickstartTrainingProjection = "dataset = Permutation.identity(table).select_columns([\"power_score\"])\ndataloader = torch.utils.data.DataLoader(dataset, batch_size=1024)\n";
 
 export const PyQuickstartVectorSearch1 = "# Search for examples similar to a \"wise magical advisor\"\nquery_vector = [0.2, 0.8, 0.4, 0.9]\n\n# Ensure you run `pip install polars` beforehand\nresult = (\n    table.search(query_vector)\n    .select([\"name\", \"role\", \"description\", \"_distance\"])\n    .limit(2)\n    .to_polars()\n)\nprint(result)\n";
 

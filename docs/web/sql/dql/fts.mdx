@@ -16,16 +16,19 @@ classes used from the SDK and serialized with `.to_json()`.
 
 ## Setup {#setup}
 
+Run these statements in order, sending one statement per SQL request.
+Semicolons separate the statements for clients that execute a script.
+
 ```sql
-CREATE TABLE my_docs (id INT, text STRING, category STRING, author STRING)
+CREATE TABLE my_docs (id INT, text STRING, category STRING, author STRING);
 
 INSERT INTO my_docs VALUES
     (1, 'The happy puppy runs merrily in the park', 'animals', 'Alice'),
     (2, 'A curious kitten jumps quickly over the fence', 'animals', 'Bob'),
     (3, 'The puppy catches a ball with great enthusiasm', 'sports', 'Alice'),
-    (5, 'Puppy training requires patience and dedication', 'training', 'Alice')
+    (5, 'Puppy training requires patience and dedication', 'training', 'Alice');
 
-CREATE INDEX ON my_docs USING fts (text)
+CREATE INDEX ON my_docs USING fts (text);
 ```
 
 <Warning>
@@ -37,6 +40,10 @@ add `WITH (with_position = true)` to `CREATE INDEX`. Without it,
 
 ## Basic search {#basic}
 
+The query builder produces the JSON string used as the second SQL argument.
+The SQL examples below spell out the equivalent match object so they can be
+run directly after the setup above.
+
 ```python
 from lancedb.query import MatchQuery
 
@@ -45,7 +52,8 @@ json_query = query.to_json()
 ```
 
 ```sql
-SELECT id, text, category FROM fts('my_docs', '<json_query>')
+SELECT id, text, category
+FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 LIMIT 5
 ```
 
@@ -53,7 +61,8 @@ By default the top 5 matches come back in **arbitrary order** -- select
 `_score` and order by it for relevance ranking:
 
 ```sql
-SELECT id, text, _score FROM fts('my_docs', '<json_query>')
+SELECT id, text, _score
+FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 ORDER BY _score DESC
 LIMIT 5
 ```
@@ -75,6 +84,8 @@ MatchQuery("pupy", "text", fuzziness=2)
 Exact phrase, or with `slop` to allow words between terms:
 
 ```python
+from lancedb.query import PhraseQuery
+
 PhraseQuery("happy puppy", "text")
 PhraseQuery("puppy park", "text", slop=2)   # up to 2 words between them
 ```
@@ -119,7 +130,8 @@ MultiMatchQuery("puppy", ["text", "category"], boosts=[2.0, 1.0])  # text weight
 filter, join, or aggregate over it same as any table:
 
 ```sql
-SELECT id, text, category FROM fts('my_docs', '<json_query>')
+SELECT id, text, category
+FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 WHERE category = 'animals'
 LIMIT 5
 ```

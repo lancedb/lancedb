@@ -34,26 +34,30 @@ it return columns a scalar function has nowhere to put.
 ### `fts(table, query)` {#fts}
 
 Full-text search is a table function rather than a predicate, because it
-produces relevance alongside the matching rows:
+produces relevance alongside the matching rows. The following query assumes
+`my_docs` has `id` and `text` columns and a full-text index on `text`; see the
+[setup example](/sql/dql/fts#setup):
 
 ```sql
 SELECT id, text, _score
-FROM fts('my_docs', 'puppy')
+FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 ORDER BY _score DESC
 LIMIT 5
 ```
 
-The second argument is a bare query string, or a JSON query object for the
-fuzzy, phrase, boolean, boost and multi-match forms.
+The second argument is a string literal containing a JSON query object. A bare
+query string such as `'puppy'` is rejected. Match, fuzzy, phrase, boolean, boost
+and multi-match queries use this JSON encoding.
 
-Its schema is the dataset's, so every column of the table is available in the
-result and projections push into the scan rather than being applied afterwards.
+Its schema contains the dataset's columns plus `_score`, so every stored
+column is available in the result. Projections push into the scan.
 Being a relation is also what makes it compose — join it, filter it, aggregate
-over it:
+over it. This join additionally requires `my_docs.category_id` and a
+`categories` table with `id` and `name` columns:
 
 ```sql
 SELECT c.name, count(*) AS hits
-FROM fts('my_docs', 'puppy') AS m
+FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}') AS m
 JOIN categories AS c ON c.id = m.category_id
 GROUP BY c.name
 ORDER BY hits DESC

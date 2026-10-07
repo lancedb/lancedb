@@ -87,17 +87,18 @@ automatically parallelizes large writes — no configuration needed. Auto-parall
 targets approximately 1M rows or 2GB per write partition.
 
 For streaming sources (iterators, `RecordBatchReader`), LanceDB cannot determine
-total size upfront. A `parallelism` parameter to control this manually is planned
-but not yet exposed in Python or TypeScript
-([tracking issue](https://github.com/lancedb/lancedb/issues/3173)).
+total size upfront. Python exposes `write_parallelism` on both synchronous and
+asynchronous `table.add()` calls; see the [iterator example](#iterator-ingestion-for-data-you-transform-on-the-fly).
+TypeScript does not expose a manual write-parallelism option.
 </Note>
 
 ### Tracking ingestion progress {#tracking-ingestion-progress}
-<Badge color="green">TypeScript Only</Badge>
+<Badge color="green">TypeScript example</Badge>
 
-For long-running writes, pass a `progress` callback to `table.add()` to surface
-per-batch progress in your UI, logs, or metrics pipeline. The callback fires
-once per batch written and once more with `done: true` when the write completes.
+In TypeScript, for long-running writes, pass a `progress` callback to `table.add()` to surface
+per-batch progress in your UI, logs, or metrics pipeline. Progress updates are dispatched
+asynchronously to the JavaScript event loop, including a final `done: true`
+update when an active write finishes.
 
 Each invocation receives a `WriteProgress` object:
 
@@ -119,7 +120,8 @@ Each invocation receives a `WriteProgress` object:
 
 A few things to know before you wire this up:
 
-- Back-pressures the writer: callback invocations are serialized and run inline with each batch, so a slow callback will slow the write rather than drop updates. Every batch update is delivered, and the final `done: true` callback always fires (even on error or cancellation). Keep the callback cheap — offload heavy work to a queue you drain elsewhere.
+- Asynchronous delivery: slow callbacks queue updates without back-pressuring the writer. Keep the callback cheap to avoid accumulating queued updates.
+- Completion: an active write emits a final `done: true` update when it finishes, including execution errors or cancellation. Errors before writing starts, such as invalid input, may produce no progress callbacks. Use the `table.add()` promise to determine whether the write succeeded; it does not wait for JavaScript to process every queued callback.
 - Errors swallowed: anything your callback throws is logged with `console.warn` and won't abort the write, so keep the callback side-effect-only and don't rely on it for control flow.
 - Row totals: `totalRows` is only populated when the input source can report it up front (for example, a materialized `arrow.Table`). For streaming sources it stays `undefined` until the final callback, where it falls back to the actual rows written.
 

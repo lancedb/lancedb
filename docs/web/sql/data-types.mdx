@@ -65,17 +65,20 @@ Three column kinds you will meet that no SQL type name covers.
 
 ### Vectors {#vectors}
 
-A vector column is `FixedSizeList<Float32, dim>`. It is selectable, testable for
-nullness, and joinable like any other column:
+A dense vector column has a fixed dimension, commonly represented as
+`FixedSizeList<Float32, dim>`. Other supported vector element types are
+possible; inspect the column with [`arrow_typeof`](/sql/scalar-functions#type) rather than assuming Float32.
+It is selectable and testable for nullness:
 
 ```sql
 SELECT id FROM documents WHERE vector IS NOT NULL
 ```
 
 <Warning>
-Arithmetic over it is **list** arithmetic. There is no SQL similarity operator
-and no SQL form for vector search — run the search in an SDK and use SQL over
-its result. See [SQL](/basics/sql#no-vector-sql).
+A list representation does not imply that ordinary arithmetic operators
+perform vector arithmetic. Use supported distance functions for similarity
+calculations. SQL vector search depends on the deployment version and query
+plan; see [SQL](/basics/sql#no-vector-sql).
 </Warning>
 
 ### JSON {#json}
@@ -124,18 +127,21 @@ columns if you need spatial predicates today.
 
 ## Pseudo-columns {#pseudo-columns}
 
-Row metadata, available only when named — so it stays out of `SELECT *`:
+Availability depends on the SQL table provider. The ordinary table provider
+exposes the stored dataset schema; naming a Lance scan metadata field does
+not make it available as a SQL column. The `fts()` provider adds `_score` to
+its schema, so `_score` is included in `SELECT * FROM fts(...)`.
 
 | Column | Type | |
 | --- | --- | --- |
-| `_rowid` | `UInt64` | stable row identifier |
+| `_rowid` | `UInt64` | Lance scan row identifier; stability requires stable row ids |
 | `_rowaddr` | `UInt64` | physical row address |
 | `_rowoffset` | `UInt64` | offset within the fragment |
 | `_score` | `Float32` | relevance, from [`fts()`](/sql/functions#fts) |
 
-`_rowid` and `_rowaddr` are declared nullable, but not because a row lacks one —
-their validity bitmap is reused internally as a selection vector. Do not read a
-null there as meaningful.
+`_rowid`, `_rowaddr`, and `_rowoffset` describe Lance scan metadata, not
+columns automatically registered on an ordinary SQL table. Select `_score`
+from an `fts()` relation explicitly when you want a projection containing it.
 
 ## Casting {#casting}
 

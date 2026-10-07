@@ -5,6 +5,8 @@ description: "Merge small files, prune old versions, and fold new rows into exis
 icon: broom
 ---
 
+import { PyStorageRebuildVectorIndex } from '/snippets/doc_storage_examples.mdx';
+
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
 since an index was built. `optimize()` addresses all three.
@@ -38,17 +40,23 @@ even though `optimize()` bundles both in one OSS call.
 
 ## Retraining indexes {#retrain}
 
-```python
-table.optimize(retrain=True)
-```
-
 Folding new rows into an index preserves the structure the index was trained on.
-When the data has shifted enough that the structure itself is a poor fit — a
-vector index whose clusters no longer reflect the distribution — `retrain=True`
-rebuilds it rather than extending it.
+When the data distribution has shifted enough that the index's clusters are a
+poor fit, recreate the index with `replace=True` to train it on the current data.
+The deprecated `retrain` argument to `optimize()` does not rebuild indexes.
 
-More expensive than a normal optimize, and worth it after a large ingest that
-changed the shape of the data rather than just its volume.
+This example assumes a populated table whose `vector` column has an IVF_FLAT
+index configured for L2 distance and four partitions:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageRebuildVectorIndex}
+    </CodeBlock>
+</CodeGroup>
+
+Use your index's column, type, distance metric, and training settings when
+rebuilding it. Recreating an index is more expensive than a normal optimize,
+and can help after a large ingest that changed the data distribution.
 
 ## When to run it {#when}
 

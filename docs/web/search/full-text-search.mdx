@@ -10,6 +10,7 @@ import {
     PyFtsPostfiltering,
     PyFtsIncrementalIndex,
 } from '/snippets/search.mdx'
+import { PyFtsBooleanQueries } from '/snippets/doc_function_examples.mdx'
 
 LanceDB provides support for Full-Text Search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
@@ -727,7 +728,11 @@ LanceDB supports boolean logic in full-text search, allowing you to combine mult
 
 #### Combining Two Match Queries {#combining-two-match-queries}
 
-In Python, you can combine two MatchQuery objects using either the `and` function or the `&` operator (e.g., `MatchQuery("puppy", "text") and MatchQuery("merrily", "text")`); both methods are supported and yield the same result. Similarly, you can use either the `or` function or the `|` operator to perform an or query. 
+In Python, combine two `MatchQuery` objects with `&` for intersection or `|` for union. Python's `and` and `or` operators return one operand and do not construct a boolean query.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{PyFtsBooleanQueries}
+</CodeBlock>
 
 In TypeScript, boolean queries are constructed using the `BooleanQuery` class with a list of [Occur, subquery] pairs. For example, to perform an AND query:
 

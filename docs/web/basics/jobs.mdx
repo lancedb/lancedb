@@ -42,7 +42,9 @@ run several at once, or survive the client going away.
 
 <CodeGroup>
 ```python Python icon="python"
-job = table.create_index_async("vector")
+from lancedb.index import IvfPq
+
+job = table.create_index_async("vector", config=IvfPq())
 
 print(job.id)          # the server's id for this operation
 print(job.status())    # "running" | "finished" | "failed" | "cancelled"
