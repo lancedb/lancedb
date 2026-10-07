@@ -70,10 +70,15 @@ code:
 {FunctionConnect}
 </CodeBlock>
 
-A column binds to a parameter only when their Arrow types and nullability
-match. `value: float` is non-nullable, so the table declares `value`
-non-nullable; annotate the parameter `Optional[float]` to bind a nullable
-column instead.
+For an ordinary stored input column, the Arrow type must match the parameter.
+A nullable column requires a nullable parameter, such as `Optional[float]`;
+a non-nullable column can bind to either. This example uses `value: float`,
+so the table declares `value` non-nullable.
+
+Computed-column inputs depend on the deployment version. Where supported,
+they bind to non-nullable parameters even though the physical column is
+nullable: refresh skips rows whose computed input is still null. Check your
+deployment's support before using another computed column as an input.
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {FunctionCreateTable}
