@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use super::super::indices::deserialize_created_at;
 use super::*;
 
 #[tokio::test]

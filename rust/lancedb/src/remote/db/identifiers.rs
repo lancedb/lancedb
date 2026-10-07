@@ -19,7 +19,11 @@ pub(super) fn quote_sql_identifier(identifier: &str) -> String {
 /// `/` that [`RemoteCatalog`] allows.
 ///
 /// [`RemoteCatalog`]: super::catalog::RemoteCatalog
-pub(super) fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
+pub(super) fn build_object_identifier(
+    what: &str,
+    name: &str,
+    namespace: &[String],
+) -> Result<String> {
     for segment in namespace {
         reject_unaddressable_component("namespace segment", segment)?;
     }

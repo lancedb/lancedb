@@ -200,7 +200,10 @@ pub(super) fn client_with_headers(
     Ok(client)
 }
 
-pub(super) fn merge_headers(destination: &mut HeaderMap, source: &HashMap<String, String>) -> Result<()> {
+pub(super) fn merge_headers(
+    destination: &mut HeaderMap,
+    source: &HashMap<String, String>,
+) -> Result<()> {
     for (key, value) in source {
         insert_header(destination, key, value)?;
     }

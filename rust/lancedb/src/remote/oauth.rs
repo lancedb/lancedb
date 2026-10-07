@@ -41,9 +41,9 @@ use crate::error::{Error, Result};
 use crate::remote::client::HeaderProvider;
 
 mod azure;
-use azure::*;
-
 mod interactive;
+
+use azure::*;
 use interactive::*;
 
 const DEFAULT_REFRESH_BUFFER_SECS: u64 = 300;
@@ -968,7 +968,6 @@ impl TokenSource for ClientCredentialsSource {
             .map_err(|e| map_token_error(e, &format!("Token request to {endpoint}")))
     }
 }
-
 
 /// Build the token source for a configuration.
 ///

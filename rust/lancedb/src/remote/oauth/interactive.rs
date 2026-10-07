@@ -317,7 +317,9 @@ impl DeviceCodeSource {
         })
     }
 
-    pub(super) async fn request_device_authorization(&self) -> Result<StandardDeviceAuthorizationResponse> {
+    pub(super) async fn request_device_authorization(
+        &self,
+    ) -> Result<StandardDeviceAuthorizationResponse> {
         let endpoint = self
             .oidc
             .get_discovery()

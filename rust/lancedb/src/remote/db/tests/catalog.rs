@@ -348,8 +348,9 @@ async fn test_create_function_async_sends_canonical_request_and_decodes_typed_jo
     const REQUEST: &str = include_str!(
         "../../../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
     );
-    const FUNCTION_JOB: &str =
-        include_str!("../../../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
+    const FUNCTION_JOB: &str = include_str!(
+        "../../../../tests/fixtures/first_class_functions/v1/remote_function_job.json"
+    );
     let mut expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
     expected.as_object_mut().unwrap().remove("name");
     let conn = Connection::new_with_handler(move |request| match request.url().path() {

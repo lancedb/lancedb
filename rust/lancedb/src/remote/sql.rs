@@ -1216,7 +1216,6 @@ fn query_expiration(poll_info: &PollInfo) -> Result<Option<chrono::DateTime<chro
         .transpose()
 }
 
-
 #[cfg(test)]
 #[path = "sql_test.rs"]
 mod tests;

@@ -48,22 +48,18 @@ use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
 mod identifiers;
-use identifiers::*;
-
-
+mod namespace_headers;
+mod options;
 mod wire;
-use wire::*;
 
+use identifiers::*;
+use namespace_headers::*;
+pub use options::*;
+use wire::*;
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
 // and add a feature flag as method of `ServerVersion` here.
-mod options;
-pub use options::*;
-
-mod namespace_headers;
-use namespace_headers::*;
-
 pub const DEFAULT_SERVER_VERSION: semver::Version = semver::Version::new(0, 1, 0);
 #[derive(Debug, Clone)]
 pub struct ServerVersion(pub semver::Version);
@@ -105,7 +101,6 @@ impl ServerVersion {
     }
 }
 
-
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
     client: RestfulLanceDbClient<S>,
@@ -119,7 +114,6 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     tls_config: Option<super::client::TlsConfig>,
     sql_client: Option<SqlClient>,
 }
-
 
 pub struct RemoteHostOverrides {
     pub rest: Option<String>,
@@ -414,8 +408,6 @@ impl From<&CreateTableMode> for &'static str {
         }
     }
 }
-
-
 
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
@@ -1452,7 +1444,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(("rest".to_string(), properties))
     }
 }
-
 
 #[cfg(test)]
 mod tests;
