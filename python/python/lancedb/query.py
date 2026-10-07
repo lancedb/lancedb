@@ -2330,10 +2330,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         with_row_ids: bool,
         offset: Optional[int] = None,
     ) -> pa.Table:
-        if norm == "rank":
-            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
-            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
-
         # If both result sets are empty (e.g. after hard filtering),
         # return early to avoid errors in reranking or score restoration.
         if vector_results.num_rows == 0 and fts_results.num_rows == 0:
@@ -2360,15 +2356,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         original_score_row_ids = None
         # normalize the scores to be between 0 and 1, 0 being most relevant
         # We check whether the results (vector and FTS) are empty, because when
-        # they are, they often are missing the _rowid column, which causes an error
+        # they are, they often are missing the _rowid column, which causes an error.
+        # The original values are captured before any rank conversion so that
+        # they can be restored after reranking.
         if vector_results.num_rows > 0:
             distance_i = vector_results.column_names.index("_distance")
             original_distances = vector_results.column(distance_i)
             original_distance_row_ids = vector_results.column("_rowid")
+            if norm == "rank":
+                vector_results = LanceHybridQueryBuilder._rank(
+                    vector_results, "_distance"
+                )
             vector_results = vector_results.set_column(
                 distance_i,
                 vector_results.field(distance_i),
-                LanceHybridQueryBuilder._normalize_scores(original_distances),
+                LanceHybridQueryBuilder._normalize_scores(
+                    vector_results.column(distance_i)
+                ),
             )
 
         # In fts higher scores represent relevance. Not inverting them here as
@@ -2377,10 +2381,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = fts_results.column_names.index("_score")
             original_scores = fts_results.column(score_i)
             original_score_row_ids = fts_results.column("_rowid")
+            if norm == "rank":
+                fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
             fts_results = fts_results.set_column(
                 score_i,
                 fts_results.field(score_i),
-                LanceHybridQueryBuilder._normalize_scores(original_scores),
+                LanceHybridQueryBuilder._normalize_scores(fts_results.column(score_i)),
             )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
