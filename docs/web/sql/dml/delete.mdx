@@ -1,0 +1,27 @@
+---
+title: "Delete"
+sidebarTitle: "Delete"
+description: "DELETE FROM ... WHERE — rows are marked, not erased."
+icon: trash
+keywords: ["delete", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+DELETE FROM documents WHERE created_at < '2025-01-01'
+```
+
+Deletion marks rows rather than erasing them, so the data remains recoverable
+for as long as the version holding it survives
+[retention](/maintenance/cleanup).
+
+Commits a new table version, so [versioning](/management/table#versioning) and
+the [write guarantees](/basics/guarantees#writes) apply -- including that the
+version advances even when the statement affects zero rows.
+
+## What to read next {#next}
+
+<Card title="Delete" icon="trash" href="/ingestion/delete">
+  The SDK equivalent.
+</Card>
