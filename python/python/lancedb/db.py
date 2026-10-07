@@ -1220,6 +1220,10 @@ class LanceDBConnection(DBConnection):
         self.storage_options = storage_options
         self._manifest_enabled = manifest_enabled
         self._namespace_client_properties = namespace_client_properties
+        # The native connection does not expose the Python Session wrapper.
+        # Keep the object supplied by the caller so this property stays
+        # synchronous for debugger inspection.
+        self._session = session
         if _inner is not None:
             self._conn = _inner
             # Native-derived wrappers resolve this in their async reconstruction
@@ -1286,7 +1290,12 @@ class LanceDBConnection(DBConnection):
 
     @property
     def session(self) -> Optional[Session]:
-        return self._conn.session
+        """Return the session supplied when this connection was opened.
+
+        None when the caller did not pass a session, including connections
+        reconstructed with :meth:`from_inner`.
+        """
+        return self._session
 
     @property
     def uri(self) -> str:

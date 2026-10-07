@@ -86,6 +86,7 @@ def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeyp
 
     assert members["uri"] == str(tmp_path)
     assert members["read_consistency_interval"] is None
+    assert members["session"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
@@ -105,6 +106,8 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     assert db.read_consistency_interval == consistency_interval
     assert db_from_inner.read_consistency_interval == consistency_interval
+    assert db.session is None
+    assert db_from_inner.session is None
 
 
 def test_ingest_pd(tmp_path):
