@@ -106,10 +106,11 @@ const db = await lancedb.connect("s3://bucket/path", {
 </CodeGroup>
 
 <Warning>
-`new_table_enable_stable_row_ids` is worth setting deliberately: stable row ids
-cannot be enabled after a table exists, and a deployment may require them on a
-[materialized view](/feature-engineering/materialized-views#availability)'s
-source.
+`new_table_enable_stable_row_ids` is worth setting deliberately: it gives stable
+row ids to the tables this connection creates, and no SDK call adds them to an
+existing table. A `db://` connection does not send it; a deployment decides
+stable row ids itself (see
+[Against a deployment](/feature-engineering/materialized-views#availability)).
 </Warning>
 
 See [Storage](/deployment/storage) for the full set, including per-cloud credentials.

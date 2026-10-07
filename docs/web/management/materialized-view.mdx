@@ -40,10 +40,10 @@ const view = await db.createMaterializedView("recent_docs", "documents", {
 ```
 </CodeGroup>
 
-`source` names the table it derives from. Locally any table can be one, with no
-special storage option; a deployment may require it to have stable row ids (see
-[Against a deployment](#deployment)). `select`, `where` and `limit` record the
-query -- there is no separate definition step.
+`source` names the table it derives from. A local source does not need stable
+row ids or any other storage option; a deployment may require stable row ids
+(see [Against a deployment](#deployment)). `select`, `where` and `limit` record
+the query -- there is no separate definition step.
 
 ## Opening, listing and dropping {#manage}
 

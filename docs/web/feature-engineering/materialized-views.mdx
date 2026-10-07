@@ -49,14 +49,17 @@ matching row, two in this example.
 Omitting it selects every source column, expanded against the schema as it was
 at creation time. `where` filters source rows; `limit` caps the view.
 
-## Any local table can be the source {#stable-row-ids}
+## Local sources no longer need stable row ids {#stable-row-ids}
 
-Locally, the source needs no special storage option. A local refresh does not
-track which source rows the view came from, so stable row ids
-(`new_table_enable_stable_row_ids`) are not required: the example above creates
-its source with the defaults. Earlier development builds and the published
-0.39.0 required them, and a deployment may still require them; see
-[Against a deployment](#availability).
+A local refresh does not track which source rows the view came from, so a local
+view's source does not need stable row ids (`new_table_enable_stable_row_ids`):
+the example above creates its source with the defaults. Earlier development
+builds and the published 0.39.0 required them, and a deployment may still
+require them; see [Against a deployment](#availability).
+
+The source is still checked, when the view is created and on every refresh: one
+with an LSM write spec, or with retained write-ahead-log rows not yet compacted,
+is refused.
 
 ## Every local refresh rebuilds the view {#incremental}
 
@@ -85,8 +88,15 @@ there. How a deployment refreshes a view -- rebuilding the whole view, as above,
 or reconciling what changed in the source -- depends on its LanceDB Enterprise
 version and configuration, and so do the options
 [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view)
-accepts and whether the source table needs stable row ids. Where a deployment
-requires them, create the source with `new_table_enable_stable_row_ids`.
+accepts and whether the source table needs stable row ids.
+
+Stable row ids are set up on the deployment, not by the SDK: a `db://`
+connection does not send `new_table_enable_stable_row_ids`, and no SDK call adds
+them to an existing table. Depending on its version and configuration, a
+deployment may give new tables stable row ids, may refuse a view created through
+SQL -- as the SDK creates one -- over a source without them, or may convert an
+existing source when a view is created through its REST API. Check with the
+deployment's administrator what it requires before relying on a source.
 
 `SHOW MATERIALIZED VIEWS` lists them, which is cheaper than
 `list_materialized_views` -- that method finds views by reading every table's

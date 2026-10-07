@@ -156,9 +156,9 @@ frame, or Pydantic models. [Ingesting data](/ingestion) covers each, plus
 `exist_ok` and `mode="overwrite"` for re-runnable scripts.
 
 <Warning>
-An explicit schema is where nullability is decided, and where you opt into
-**stable row ids** -- which cannot be enabled later, and which a deployment may
-require on a [materialized view](/management/materialized-view) source. See
+An explicit schema is where nullability is decided. Creation is also the only
+point at which the SDK can give a table **stable row ids**, which a deployment
+may require on a [materialized view](/management/materialized-view) source. See
 [Limits](/basics/limits#schema).
 </Warning>
 

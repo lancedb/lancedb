@@ -128,8 +128,9 @@ Because the storage layer is identical, moving is a connection-string change
 plus a data migration, not a rewrite.
 
 <Note>
-The one thing to decide early is **stable row ids**, which cannot be enabled
-after a table exists and which a deployment may require on a
+The one thing to decide early is **stable row ids**: the SDK can give them to a
+table only when it creates one on a local path or an object store, and a
+deployment may require them on a
 [materialized view](/management/materialized-view) source. See
 [Limits](/basics/limits#schema).
 </Note>
