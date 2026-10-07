@@ -47,25 +47,23 @@ use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
-fn quote_sql_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
+mod identifiers;
+use identifiers::*;
 
-// Request structure for the remote clone table API
-#[derive(serde::Serialize)]
-struct RemoteCloneTableRequest {
-    source_location: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_version: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_tag: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    is_shallow: Option<bool>,
-}
+
+mod wire;
+use wire::*;
+
 
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
 // and add a feature flag as method of `ServerVersion` here.
+mod options;
+pub use options::*;
+
+mod namespace_headers;
+use namespace_headers::*;
+
 pub const DEFAULT_SERVER_VERSION: semver::Version = semver::Version::new(0, 1, 0);
 #[derive(Debug, Clone)]
 pub struct ServerVersion(pub semver::Version);
@@ -107,115 +105,6 @@ impl ServerVersion {
     }
 }
 
-pub const OPT_REMOTE_PREFIX: &str = "remote_database_";
-pub const OPT_REMOTE_API_KEY: &str = "remote_database_api_key";
-pub const OPT_REMOTE_REGION: &str = "remote_database_region";
-pub const OPT_REMOTE_HOST_OVERRIDE: &str = "remote_database_host_override";
-pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_override";
-// TODO: add support for configuring client config via key/value options
-
-#[derive(Clone, Debug, Default)]
-pub struct RemoteDatabaseOptions {
-    /// The LanceDB Cloud API key
-    pub api_key: Option<String>,
-    /// The LanceDB Cloud region
-    pub region: Option<String>,
-    /// The LanceDB Enterprise host override
-    ///
-    /// This is required when connecting to LanceDB Enterprise and should be
-    /// provided if using an on-premises LanceDB Enterprise instance.
-    pub host_override: Option<String>,
-    /// Storage options configure the storage layer (e.g. S3, GCS, Azure, etc.)
-    ///
-    /// See available options at <https://docs.lancedb.com/storage/>
-    ///
-    /// These options are only used for LanceDB Enterprise and only a subset of options
-    /// are supported.
-    pub storage_options: HashMap<String, String>,
-}
-
-impl RemoteDatabaseOptions {
-    pub fn builder() -> RemoteDatabaseOptionsBuilder {
-        RemoteDatabaseOptionsBuilder::new()
-    }
-
-    pub(crate) fn parse_from_map(map: &HashMap<String, String>) -> Result<Self> {
-        let api_key = map.get(OPT_REMOTE_API_KEY).cloned();
-        let region = map.get(OPT_REMOTE_REGION).cloned();
-        let host_override = map.get(OPT_REMOTE_HOST_OVERRIDE).cloned();
-        let storage_options = map
-            .iter()
-            .filter(|(key, _)| !key.starts_with(OPT_REMOTE_PREFIX))
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect();
-        Ok(Self {
-            api_key,
-            region,
-            host_override,
-            storage_options,
-        })
-    }
-}
-
-impl DatabaseOptions for RemoteDatabaseOptions {
-    fn serialize_into_map(&self, map: &mut HashMap<String, String>) {
-        for (key, value) in &self.storage_options {
-            map.insert(key.clone(), value.clone());
-        }
-        if let Some(api_key) = &self.api_key {
-            map.insert(OPT_REMOTE_API_KEY.to_string(), api_key.clone());
-        }
-        if let Some(region) = &self.region {
-            map.insert(OPT_REMOTE_REGION.to_string(), region.clone());
-        }
-        if let Some(host_override) = &self.host_override {
-            map.insert(OPT_REMOTE_HOST_OVERRIDE.to_string(), host_override.clone());
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct RemoteDatabaseOptionsBuilder {
-    options: RemoteDatabaseOptions,
-}
-
-impl RemoteDatabaseOptionsBuilder {
-    pub fn new() -> Self {
-        Self {
-            options: RemoteDatabaseOptions::default(),
-        }
-    }
-
-    /// Set the LanceDB Cloud API key
-    ///
-    /// # Arguments
-    ///
-    /// * `api_key` - The LanceDB Cloud API key
-    pub fn api_key(mut self, api_key: String) -> Self {
-        self.options.api_key = Some(api_key);
-        self
-    }
-
-    /// Set the LanceDB Cloud region
-    ///
-    /// # Arguments
-    ///
-    /// * `region` - The LanceDB Cloud region
-    pub fn region(mut self, region: String) -> Self {
-        self.options.region = Some(region);
-        self
-    }
-
-    /// Set the LanceDB Enterprise host override
-    ///
-    /// # Arguments
-    ///
-    /// * `host_override` - The LanceDB Enterprise host override
-    pub fn host_override(mut self, host_override: String) -> Self {
-        self.options.host_override = Some(host_override);
-        self
-    }
-}
 
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
@@ -231,60 +120,6 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     sql_client: Option<SqlClient>,
 }
 
-#[derive(Clone)]
-struct NamespaceHeaderProviderContext {
-    header_provider: Arc<dyn HeaderProvider>,
-}
-
-impl std::fmt::Debug for NamespaceHeaderProviderContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NamespaceHeaderProviderContext")
-            .field("header_provider", &"Some(...)")
-            .finish()
-    }
-}
-
-impl DynamicContextProvider for NamespaceHeaderProviderContext {
-    fn provide_context(&self, _info: &OperationInfo) -> HashMap<String, String> {
-        let header_provider = Arc::clone(&self.header_provider);
-        let handle = match std::thread::Builder::new()
-            .name("lancedb-namespace-headers".to_string())
-            .spawn(move || {
-                tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| Error::Runtime {
-                        message: format!(
-                            "Failed to create runtime for namespace header provider: {e}"
-                        ),
-                    })?
-                    .block_on(header_provider.get_headers())
-            }) {
-            Ok(handle) => handle,
-            Err(err) => {
-                log::warn!("Failed to spawn dynamic namespace header provider thread: {err}");
-                return HashMap::new();
-            }
-        };
-
-        let headers = handle.join();
-
-        match headers {
-            Ok(Ok(headers)) => headers
-                .into_iter()
-                .map(|(key, value)| (format!("headers.{key}"), value))
-                .collect(),
-            Ok(Err(err)) => {
-                log::warn!("Failed to get dynamic namespace headers: {err}");
-                HashMap::new()
-            }
-            Err(_) => {
-                log::warn!("Dynamic namespace header provider panicked");
-                HashMap::new()
-            }
-        }
-    }
-}
 
 pub struct RemoteHostOverrides {
     pub rest: Option<String>,
@@ -580,268 +415,7 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
-/// The path segment addressing one object: its namespace path and its name.
-///
-/// One builder for tables, Secrets, Functions and materialized views: the
-/// identifier grammar belongs to the namespace spec, not to an object type. An
-/// empty path addresses an object with no namespace.
-///
-/// Components are checked for addressability, not a character set. The name's
-/// grammar is the caller's, so a table reports [`Error::InvalidTableName`], a
-/// Function admits names a table may not, and a catalog database carries the
-/// `/` that [`RemoteCatalog`] allows.
-///
-/// [`RemoteCatalog`]: super::catalog::RemoteCatalog
-fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
-    for segment in namespace {
-        reject_unaddressable_component("namespace segment", segment)?;
-    }
-    reject_unaddressable_component(what, name)?;
-    Ok(join_identifier(
-        namespace.iter().map(String::as_str).chain([name]),
-    ))
-}
 
-/// What a component may not be if the join is to survive being split back
-/// apart: empty, a segment URL parsing resolves away, or the delimiter itself.
-///
-/// Each erases a boundary no encoding of the joined form recovers. `["prod",
-/// ""]` joins to `prod$`, which reads back as `["prod"]`, so a drop reaches the
-/// parent of the namespace the caller named.
-///
-/// Not a character set: per-component percent-encoding makes the wider set
-/// safe, since a `/` in a name reaches the service as `%2F`, still one
-/// segment.
-fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "{what} must not be empty: the identifier would carry two delimiters in a row, \
-                 and splitting it back apart would name a different object"
-            ),
-        });
-    }
-    reject_relative_segment(what, value)?;
-    if value.contains(ID_DELIMITER) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "{what} '{value}' contains the identifier delimiter '{ID_DELIMITER}', so the \
-                 namespace path and the name it joins could not be told apart"
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// The path segment addressing one table. A wrapper for the error type:
-/// callers match on [`Error::InvalidTableName`].
-fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
-    validate_table_name(name)?;
-    build_object_identifier("table name", name, namespace)
-}
-
-/// Join components into the `{id}` a route addresses: each percent-encoded,
-/// then joined by the delimiter.
-///
-/// Per component rather than over the joined string, so the delimiter stays a
-/// delimiter and nothing inside a component can end the path segment.
-///
-/// A second line, not the first: a component from the object charset is all
-/// unreserved and encodes to itself, so the route reads as the caller wrote it.
-/// It does not cover `.` and `..`, which are unreserved too and resolve away
-/// after decoding -- [`build_object_identifier`] refuses those.
-fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
-    components
-        .map(|component| urlencoding::encode(component).into_owned())
-        .collect::<Vec<_>>()
-        .join(ID_DELIMITER)
-}
-
-/// The path segment addressing one namespace.
-fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
-    for segment in namespace {
-        reject_unaddressable_component("namespace segment", segment)?;
-    }
-    if namespace.is_empty() {
-        // According to the namespace spec, use delimiter to represent root namespace
-        return Ok(ID_DELIMITER.to_string());
-    }
-    Ok(join_identifier(namespace.iter().map(String::as_str)))
-}
-
-/// Build a secure cache key using length prefixes.
-/// This format is completely unambiguous regardless of delimiter or content.
-/// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
-/// Returns a hex-encoded string for use as a cache key.
-fn build_cache_key(name: &str, namespace: &[String]) -> String {
-    let mut key = Vec::new();
-
-    // Add each namespace component with length prefix
-    for ns in namespace {
-        let bytes = ns.as_bytes();
-        key.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
-        key.extend_from_slice(bytes);
-    }
-
-    // Add table name with length prefix
-    let name_bytes = name.as_bytes();
-    key.extend_from_slice(&(name_bytes.len() as u32).to_le_bytes());
-    key.extend_from_slice(name_bytes);
-
-    // Convert to hex string for use as a cache key
-    key.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListJobRow {
-    job_id: String,
-    #[serde(default)]
-    table: String,
-    #[serde(default)]
-    job_type: String,
-    #[serde(default)]
-    state: String,
-    #[serde(default)]
-    created_at_millis: i64,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListJobsResponse {
-    #[serde(default)]
-    jobs: Vec<RemoteListJobRow>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListedFunctionVersion {
-    definition: FunctionVersion,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListFunctionsResponse {
-    #[serde(default)]
-    functions: Vec<RemoteListedFunctionVersion>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDropFunctionResponse {
-    dropped: bool,
-}
-
-/// The create body: every field of [`FunctionRegistrationRequest`] except the
-/// name, which is the path identifier.
-///
-/// A struct rather than a literal listing the fields, so that the compiler
-/// decides what reaches the service. A field the registration request grows is
-/// a build error here until it is handled; a literal would simply not send it.
-#[derive(serde::Serialize)]
-struct RemoteCreateFunctionRequest<'a> {
-    artifact: &'a FunctionArtifactRequest,
-    signature: &'a FunctionSignature,
-    runtime: &'a PythonRuntimeSpec,
-    /// Absent when the Function binds nothing, so such a client sends what a
-    /// client without bindings sends.
-    ///
-    /// A service that does not know the field ignores it: registration
-    /// succeeds, the returned version carries no bindings, and the Function
-    /// fails at execution with the variable unset. [`ServerVersion`] is how
-    /// this codebase refuses a feature the service is too old for; it is held
-    /// per table, so gating a database-level call is follow-up work.
-    ///
-    /// [`ServerVersion`]: super::db::ServerVersion
-    #[serde(skip_serializing_if = "<[SecretBinding]>::is_empty")]
-    secret_bindings: &'a [SecretBinding],
-}
-
-/// Create a Secret under a name the database does not yet hold.
-///
-/// Declared separately from the alter request although the two are identical
-/// today: they are different operations to the service -- one refuses an
-/// existing name, the other requires it -- and either may grow a field the
-/// other has no meaning for.
-///
-/// The name and its namespace are the path identifier, so neither appears here.
-#[derive(serde::Serialize)]
-struct RemoteCreateSecretRequest<'a> {
-    value: &'a str,
-}
-
-/// Replace the credential behind a Secret the database already holds.
-#[derive(serde::Serialize)]
-struct RemoteAlterSecretRequest<'a> {
-    value: &'a str,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListSecretsResponse {
-    #[serde(default)]
-    secrets: Vec<RemoteListedSecret>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-/// An object rather than a bare name so a later listing can carry a Secret's
-/// type or last-updated time without breaking this one.
-#[derive(serde::Deserialize)]
-struct RemoteListedSecret {
-    name: String,
-}
-
-/// Define a view from a query. The name and its namespace are the path
-/// identifier, so neither appears here.
-#[derive(serde::Serialize)]
-struct RemoteCreateViewRequest<'a> {
-    query: &'a str,
-}
-
-/// What the service reports about one view. The schema arrives as the
-/// namespace spec's JSON encoding, which is what `describe_table` uses too.
-#[derive(serde::Deserialize)]
-struct RemoteViewDescription {
-    name: String,
-    #[serde(default)]
-    namespace: Vec<String>,
-    query: String,
-    default_database: String,
-    /// A path, like `namespace`: the root is the absent field rather than a
-    /// spelling of its own.
-    #[serde(default)]
-    default_namespace: Vec<String>,
-    schema: JsonArrowSchema,
-}
-
-impl RemoteViewDescription {
-    fn into_description(self, request_id: String) -> Result<ViewDescription> {
-        let schema =
-            lance_namespace::schema::convert_json_arrow_schema(&self.schema).map_err(|source| {
-                Error::Http {
-                    source: format!("View '{}' has an undecodable schema: {source}", self.name)
-                        .into(),
-                    request_id,
-                    status_code: None,
-                }
-            })?;
-        Ok(ViewDescription {
-            name: self.name,
-            namespace_path: self.namespace,
-            query: self.query,
-            default_database: self.default_database,
-            default_namespace_path: self.default_namespace,
-            schema: Arc::new(schema),
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListViewsResponse {
-    #[serde(default)]
-    views: Vec<String>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
 
 /// Bound on `list_jobs` page walking; a warning is logged when the listing
 /// is truncated at this many pages.
@@ -1879,28 +1453,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 }
 
-/// RemoteOptions contains a subset of StorageOptions that are compatible with Remote LanceDB connections
-#[derive(Clone, Debug, Default)]
-pub struct RemoteOptions(pub HashMap<String, String>);
-
-impl RemoteOptions {
-    pub fn new(options: HashMap<String, String>) -> Self {
-        Self(options)
-    }
-}
-
-impl From<StorageOptions> for RemoteOptions {
-    fn from(options: StorageOptions) -> Self {
-        let supported_opts = vec!["account_name", "azure_storage_account_name"];
-        let mut filtered = HashMap::new();
-        for opt in supported_opts {
-            if let Some(v) = options.0.get(opt) {
-                filtered.insert(opt.to_string(), v.clone());
-            }
-        }
-        Self::new(filtered)
-    }
-}
 
 #[cfg(test)]
 mod tests;
