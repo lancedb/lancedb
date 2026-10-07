@@ -148,6 +148,15 @@ impl Connection {
         self.get_inner().map(|inner| inner.uri().to_string())
     }
 
+    #[getter]
+    pub fn session(&self) -> PyResult<Option<crate::session::Session>> {
+        Ok(self
+            .get_inner()?
+            .database()
+            .session()
+            .map(|inner| crate::session::Session { inner }))
+    }
+
     #[pyo3(signature = (query, *, default_namespace_path=None))]
     pub fn execute_query_async<'a>(
         self_: PyRef<'a, Self>,

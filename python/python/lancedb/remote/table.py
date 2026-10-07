@@ -169,6 +169,18 @@ class RemoteTable(Table):
         """The name of the table"""
         return self._name
 
+    @property
+    def namespace(self) -> List[str]:
+        return self._namespace_path
+
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
+    def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
+        LOOP.run(self._table.replace_field_metadata(field_name, new_metadata))
+
     def __repr__(self) -> str:
         return f"RemoteTable({self.db_name}.{self.name})"
 

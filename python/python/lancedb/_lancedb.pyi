@@ -112,6 +112,7 @@ class Session:
 
 class Connection(object):
     uri: str
+    session: Optional[Session]
     async def is_open(self): ...
     async def close(self): ...
     async def list_namespaces(

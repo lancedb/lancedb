@@ -246,6 +246,10 @@ impl std::fmt::Display for LanceNamespaceDatabase {
 
 #[async_trait]
 impl Database for LanceNamespaceDatabase {
+    fn session(&self) -> Option<Arc<lance::session::Session>> {
+        self.session.clone()
+    }
+
     fn uri(&self) -> &str {
         &self.uri
     }

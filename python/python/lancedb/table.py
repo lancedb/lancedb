@@ -1226,6 +1226,17 @@ class Table(ABC):
 
     @property
     @abstractmethod
+    def namespace(self) -> List[str]:
+        """Return the namespace path of the table (empty for the root namespace)."""
+        raise NotImplementedError
+
+    @property
+    def id(self) -> str:
+        """Return the full identifier of the table (namespace$name)."""
+        return "$".join(self.namespace + [self.name])
+
+    @property
+    @abstractmethod
     def version(self) -> int:
         """The version of this Table"""
         raise NotImplementedError
@@ -2663,6 +2674,28 @@ class Table(ABC):
             version: the new table version after the update.
         """
 
+    @deprecation.deprecated(
+        deprecated_in="0.33.1",
+        current_version=__version__,
+        details="Use update_field_metadata() instead.",
+    )
+    @abstractmethod
+    def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
+        """Replace all metadata of a field in the schema.
+
+        .. deprecated:: 0.33.1
+            Use [update_field_metadata][lancedb.table.Table.update_field_metadata]
+            with ``replace=True`` instead.
+
+        Parameters
+        ----------
+        field_name: str
+            The name of the field whose metadata is replaced.
+        new_metadata: dict
+            The new metadata, replacing all existing keys.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
         """
@@ -2869,13 +2902,6 @@ class LanceTable(Table):
     def namespace(self) -> List[str]:
         """Return the namespace path of the table."""
         return self._namespace_path
-
-    @property
-    def id(self) -> str:
-        """Return the full identifier of the table (namespace$name)."""
-        if self._namespace_path:
-            return "$".join(self._namespace_path + [self.name])
-        return self.name
 
     @classmethod
     async def from_inner(cls, tbl: LanceDBTable):

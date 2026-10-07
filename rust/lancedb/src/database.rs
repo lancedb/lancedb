@@ -590,6 +590,11 @@ pub trait Database:
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
 
+    /// Return the cache and object-store session used by this database, if any.
+    fn session(&self) -> Option<Arc<lance::session::Session>> {
+        None
+    }
+
     /// Get the equivalent namespace client of this database
     /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
     /// For ListingDatabase, it is the equivalent DirectoryNamespace.
