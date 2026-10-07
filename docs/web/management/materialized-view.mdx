@@ -49,7 +49,7 @@ separate definition step.
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
-| create | `create_materialized_view` | `createMaterializedView` | -- |
+| create | `create_materialized_view` | `createMaterializedView` | `CREATE MATERIALIZED VIEW` |
 | open | `open_materialized_view` | `openMaterializedView` | -- |
 | list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
 | refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
@@ -76,8 +76,11 @@ rows. Both are properties; on an async view, the definition is read with
 ## Against a deployment {#deployment}
 
 <Badge color="red">Enterprise</Badge> `create_materialized_view` works on a
-`db://` connection as well as a local one. What changes is that a refresh runs
-across the cluster rather than in your process, and SQL can drive it.
+`db://` connection as well as a local one. There the SDK creates and refreshes
+the view through SQL, and the work runs on the cluster rather than in your
+process. Materialized views are experimental on a deployment and have to be
+enabled there; see
+[Against a deployment](/feature-engineering/materialized-views#availability).
 
 ## What to read next {#next}
 

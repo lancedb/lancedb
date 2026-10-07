@@ -73,23 +73,22 @@ argument; every refresh is a full one.
 
 <Badge color="red">Enterprise</Badge>
 
-`create_materialized_view` works on a `db://` connection as well as a local one.
-What changes is where the refresh runs -- across the cluster rather than in your
-process -- and that SQL can drive it:
+`create_materialized_view` and `refresh` also work on a `db://` connection.
+There the SDK sends them to the deployment as SQL -- `CREATE MATERIALIZED VIEW`
+and `REFRESH MATERIALIZED VIEW` -- and the work runs on the cluster rather than
+in your process. `source_version` is for local views only; the SDK refuses it
+on a remote refresh.
 
-```sql
-REFRESH MATERIALIZED VIEW chunks
-```
+Materialized views are experimental on a deployment, which has to have them
+enabled. How its refresh works -- rebuilding the whole view, as above, or
+reconciling what changed in the source -- depends on its LanceDB Enterprise
+version and configuration, and so do the options
+[`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view)
+accepts.
 
-`WITH (full = true)` recomputes every row instead of reconciling what changed
-in the source since the last refresh. `SHOW MATERIALIZED VIEWS` lists them, which is
-cheaper than `list_materialized_views` -- that method finds views by reading
-every table's schema, so it costs one open per table.
-
-<Note>
-`CASCADE` is accepted by the parser but not yet implemented. A view built on
-another view is refreshed by refreshing each in dependency order.
-</Note>
+`SHOW MATERIALIZED VIEWS` lists them, which is cheaper than
+`list_materialized_views` -- that method finds views by reading every table's
+schema, so it costs one open per table.
 
 ## Working with the view {#working-with-the-view}
 

@@ -1,9 +1,9 @@
 ---
 title: "Materialized View"
 sidebarTitle: "Materialized View"
-description: "SHOW MATERIALIZED VIEWS — creation and refresh are SDK and REFRESH statements, not CREATE."
+description: "CREATE MATERIALIZED VIEW and SHOW MATERIALIZED VIEWS; refreshing is a REFRESH statement."
 icon: table
-keywords: ["materialized view", "show materialized views", "sql"]
+keywords: ["materialized view", "create materialized view", "show materialized views", "sql"]
 ---
 
 <Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
@@ -12,12 +12,21 @@ A materialized view stores a query's result as rows, kept current by a refresh
 -- the counterpart to a [view](/sql/ddl/view), which stores only the query.
 
 <Note>
-There is no `CREATE MATERIALIZED VIEW` statement. Creation is
-[`create_materialized_view`](/management/materialized-view#create) in the SDK,
-since it needs SDK-level source-table validation (stable row ids) that a bare
-SQL statement has nowhere to check. Once created, it is entirely a SQL object:
-queried like a table, refreshed with SQL, listed with SQL.
+Materialized views are experimental on a deployment, which has to have them
+enabled. Which statements and query shapes a deployment accepts, and how its
+refresh works, depend on its LanceDB Enterprise version and configuration.
 </Note>
+
+## CREATE MATERIALIZED VIEW {#create}
+
+```sql
+CREATE MATERIALIZED VIEW <name> AS SELECT ...
+```
+
+On a `db://` connection, the SDK's
+[`create_materialized_view`](/management/materialized-view#create) sends this
+statement. Once created, a view is queried like a table, refreshed with SQL and
+listed with SQL.
 
 ## SHOW MATERIALIZED VIEWS {#show}
 
@@ -37,7 +46,7 @@ REFRESH MATERIALIZED VIEW chunks
 ```
 
 See [REFRESH](/sql/dml/refresh#refresh-materialized-view) for the full syntax,
-including `full = true` and what `CASCADE` does not yet do.
+including `CASCADE` and `full = true`.
 
 ## Dropping one {#drop}
 
@@ -46,17 +55,18 @@ A materialized view **is** a table, so it is dropped with
 stored rows, unlike dropping a [view](/sql/ddl/view#drop).
 
 <Note>
-**Enterprise job type:** `mat_view_refresh` for the refresh; `drop_table` for
-dropping it, same as any table.
+**Enterprise job type:** `mat_view_refresh` for a refresh, or `sql` on a
+deployment that rebuilds views through SQL; `drop_table` for dropping one, same
+as any table.
 </Note>
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Materialized View" icon="table" href="/management/materialized-view">
-    Creating one from the SDK, and the stable-row-ids requirement.
+    Creating one from the SDK.
   </Card>
   <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    Incremental refreshes, and what they cost.
+    What a refresh recomputes, locally and on a deployment.
   </Card>
 </CardGroup>

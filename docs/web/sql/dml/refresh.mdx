@@ -61,7 +61,7 @@ memory and GPU options there.
 ## REFRESH MATERIALIZED VIEW {#refresh-materialized-view}
 
 ```sql
-REFRESH MATERIALIZED VIEW <name> [WITH (<option> = <value>)]
+REFRESH MATERIALIZED VIEW <name> [CASCADE] [WITH (<option> = <value>)]
 ```
 
 ```sql
@@ -69,13 +69,15 @@ REFRESH MATERIALIZED VIEW chunks
 REFRESH MATERIALIZED VIEW chunks WITH (full = true)
 ```
 
-By default a refresh is **incremental** -- it processes what the source has
-added since the last one. `full = true` recomputes every row, which is what you
-want after changing something the view's rows depend on.
+`full = true` asks for every row to be recomputed. Without it, whether a
+refresh rebuilds the whole view -- as every local SDK refresh does -- or
+reconciles only what changed in the source depends on the deployment's LanceDB
+Enterprise version and configuration.
 
 <Warning>
-`CASCADE` parses but is **not implemented**. A view built on another view is
-refreshed by refreshing each in dependency order yourself.
+`CASCADE` asks for the views this one is built on to be refreshed first, in
+dependency order. Whether a deployment carries it out depends on its version;
+where it does not, refresh each view yourself, its sources first.
 </Warning>
 
 ## Watching a refresh {#watching}
