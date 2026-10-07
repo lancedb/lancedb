@@ -20,7 +20,7 @@
     "@huggingface/transformers": "^3.0.2",
     "@lancedb/lancedb": "^0.31.0",
     "openai": "^4.29.2",
-    "sharp": "^0.33.5"
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.7.3",
@@ -29,5 +29,8 @@
     "jest-environment-node-single-context": "^29.4.0",
     "ts-jest": "^29.2.5",
     "typescript": "^5.5.4"
+  },
+  "overrides": {
+    "sharp": "$sharp"
   }
 }
