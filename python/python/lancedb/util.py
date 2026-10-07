@@ -394,7 +394,8 @@ def _(value: date):
 
 
 @value_to_sql.register(list)
-def _(value: list):
+@value_to_sql.register(tuple)
+def _(value: Union[list, tuple]):
     return "[" + ", ".join(map(value_to_sql, value)) + "]"
 
 
@@ -437,6 +438,15 @@ def _(value: np.integer):
 @value_to_sql.register(np.floating)
 def _(value: np.floating):
     return value_to_sql(float(value))
+
+
+@value_to_sql.register(np.datetime64)
+def _(value: np.datetime64):
+    if np.isnat(value):
+        return value_to_sql(None)
+    if np.datetime_data(value.dtype)[0] in ("ps", "fs", "as"):
+        raise ValueError("SQL timestamps cannot preserve sub-nanosecond precision")
+    return value_to_sql(str(np.datetime_as_string(value, unit="ns")))
 
 
 def deprecated(func):
