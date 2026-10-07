@@ -116,6 +116,20 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  it("should keep the existing table when mode is exist_ok", async () => {
+    const created = await db.createTable("test", [{ id: 1 }, { id: 2 }], {
+      mode: "exist_ok",
+    });
+    await expect(created.countRows()).resolves.toBe(2);
+
+    const reopened = await db.createTable("test", [{ id: 9 }], {
+      mode: "exist_ok",
+    });
+    await expect(reopened.countRows()).resolves.toBe(2);
+    const rows = (await reopened.query().toArray()) as { id: number }[];
+    expect(rows.map((row) => row.id).sort()).toEqual([1, 2]);
+  });
+
   it("should respect limit and page token when listing tables", async () => {
     const db = await connect(tmpDir.name);
 
