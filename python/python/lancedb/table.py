@@ -28,7 +28,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import _register_optional_converters, to_scannable
+from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
 from ._blob import (
@@ -364,7 +364,7 @@ def _into_pyarrow_reader(
     if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
-            return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
+            return pa.RecordBatchReader.from_batches(schema, _hf_batches(data))
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
             schema = _schema_from_hf(data, None)
             if "split" not in schema.names:
@@ -1070,7 +1070,7 @@ def _to_batches_with_split(data):
     with an extra `split` column
     """
     for key, dataset in data.items():
-        for batch in dataset.data.to_batches():
+        for batch in _hf_batches(dataset):
             table = pa.Table.from_batches([batch])
             if "split" not in table.column_names:
                 table = table.append_column(
