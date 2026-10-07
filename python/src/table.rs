@@ -18,7 +18,7 @@ use crate::{
     table::scannable::PyScannable,
 };
 use arrow::{
-    array::{Array, LargeBinaryArray},
+    array::{Array, LargeBinaryArray, RecordBatchIterator, RecordBatchReader},
     datatypes::{DataType, Schema},
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
@@ -1807,6 +1807,12 @@ impl Table {
         data: Bound<'a, PyAny>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let reader = ArrowArrayStreamReader::from_pyarrow_bound(&data)?;
+        let schema = reader.schema();
+        // Lance's surplus-row check treats trailing empty batches as extra data.
+        let reader = RecordBatchIterator::new(
+            reader.filter(|batch| !batch.as_ref().is_ok_and(|batch| batch.num_rows() == 0)),
+            schema,
+        );
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let result = inner

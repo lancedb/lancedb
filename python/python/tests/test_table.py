@@ -4998,3 +4998,41 @@ def test_add_columns_computed_with_empty_transforms(mem_db, transforms):
     assert result.version == 2
     table.refresh_column("x")
     assert table.to_arrow()["x"].to_pylist() == [1, 2]
+
+
+@pytest.mark.parametrize("kind", ["batch", "reader", "leading_and_trailing"])
+def test_add_columns_empty_batches(mem_db, kind):
+    ids = [0] if kind == "leading_and_trailing" else []
+    table = mem_db.create_table(
+        "empty_batches", pa.table({"id": pa.array(ids, pa.int64())})
+    )
+    schema = pa.schema([("score", pa.int64())])
+    empty = pa.RecordBatch.from_arrays([pa.array([], pa.int64())], schema=schema)
+    if kind == "batch":
+        data = empty
+    elif kind == "reader":
+        data = pa.RecordBatchReader.from_batches(schema, [empty])
+    else:
+        values = pa.RecordBatch.from_arrays([pa.array([10])], schema=schema)
+        data = pa.RecordBatchReader.from_batches(schema, [empty, values, empty])
+    result = table.add_columns(data)
+    assert result.version == 2
+    assert table.to_arrow().to_pydict() == {"id": ids, "score": [10] if ids else []}
+
+
+@pytest.mark.parametrize("kind", ["table", "reader"])
+def test_add_columns_data_rejects_computed_metadata(mem_db, kind):
+    table = mem_db.create_table("foreign_metadata", pa.table({"id": [0]}))
+    before, version = table.to_arrow(), table.version
+    schema = pa.schema(
+        [pa.field("score", pa.int64(), metadata={b"computed_column": b"true"})]
+    )
+    data = pa.Table.from_arrays([pa.array([10])], schema=schema)
+    if kind == "reader":
+        data = data.to_reader()
+    with pytest.raises(ValueError, match="computed"):
+        table.add_columns(data)
+    assert table.version == version
+    assert table.to_arrow().equals(before)
+    table.add(pa.table({"id": [1]}))
+    assert table.count_rows() == 2
