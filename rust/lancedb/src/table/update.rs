@@ -13,7 +13,7 @@ use crate::Result;
 /// The result of an update operation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
-    #[serde(default)]
+    #[serde(default, alias = "updated_rows")]
     pub rows_updated: u64,
     /// The commit version associated with the operation.
     #[serde(default)]

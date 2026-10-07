@@ -64,6 +64,7 @@ from lancedb.table import _normalize_progress
 from ..query import (
     AnalyzePlanDistributedMetrics,
     DocumentGranularity,
+    FullTextQuery,
     LanceQueryBuilder,
     LanceTakeQueryBuilder,
     LanceVectorQueryBuilder,
@@ -78,6 +79,7 @@ from ..table import (
     Tags,
 )
 from ..types import BaseTokenizerType
+from ..util import infer_vector_column_name
 
 
 class RemoteTable(Table):
@@ -731,6 +733,12 @@ class RemoteTable(Table):
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
 
+        query_type: str, default "auto"
+            The type of search: "auto", "vector", "fts", or "hybrid".
+            With "auto", a string query uses the embedding function for the
+            inferred or specified vector column if available, otherwise it uses
+            full-text search.
+
         fast_search: bool, optional
             Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
@@ -750,6 +758,21 @@ class RemoteTable(Table):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
+        if isinstance(query, FullTextQuery):
+            query_type = "fts"
+        elif (
+            query_type == "auto"
+            and isinstance(query, str)
+            and not self.embedding_functions
+        ):
+            query_type = "fts"
+        vector_column_name = infer_vector_column_name(
+            schema=self.schema,
+            query_type=query_type,
+            query=query,
+            vector_column_name=vector_column_name,
+        )
+
         return LanceQueryBuilder.create(
             self,
             query,

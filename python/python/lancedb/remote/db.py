@@ -608,6 +608,9 @@ class RemoteDBConnection(DBConnection):
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: list of EmbeddingFunctionConfig, optional
+            The embedding functions to store in the table schema and use to
+            generate vectors when creating the table or adding data.
 
         Returns
         -------

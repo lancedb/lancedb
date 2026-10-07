@@ -57,7 +57,6 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewSource,
-    VectorDedupSource,
     SelectArg,
     normalize_select,
 )
@@ -613,21 +612,12 @@ class DBConnection(EnforceOverrides):
         table. The view is a normal table: it can be queried, indexed and
         searched, and it appears in ``table_names``.
 
-        Ordinary source tables must have stable row ids (create them with the
-        ``new_table_enable_stable_row_ids`` storage option): they keep the
-        view's provenance valid across source compactions, and cannot be
-        enabled after a table exists. Native dedup sources also support physical
-        row IDs interpreted against their pinned snapshot.
-
         Parameters
         ----------
         name: str
             The name of the view.
-        source: str or VectorDedupSource
-            The name of the source table, or an indexed dedup source declared
-            with [vector_dedup][lancedb.vector_dedup]. Dedup sources capture a
-            fixed snapshot and preserve the source table. They accept no
-            additional select, where or limit options.
+        source: str
+            The name of the source table.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -1654,10 +1644,7 @@ class LanceDBConnection(DBConnection):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect(
-        ...     "./.lancedb",
-        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
-        ... )
+        >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
         >>> view = db.create_materialized_view(
@@ -2625,19 +2612,7 @@ class AsyncConnection(object):
         where: Optional[str],
         limit: Optional[int],
     ) -> Tuple[str, Dict[str, str]]:
-        if not isinstance(source, VectorDedupSource):
-            return source, {}
-        if select is not None or where is not None or limit is not None:
-            raise ValueError(
-                "vector_dedup cannot be combined with select, where or limit"
-            )
-        version = source.dataset_version
-        if version is None:
-            table = await self.open_table(source.source)
-            version = await table.version()
-        return source.source, {
-            "vector_source_json": source._native_source_json(version)
-        }
+        return source, {}
 
     async def create_materialized_view(
         self,
