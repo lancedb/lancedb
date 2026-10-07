@@ -33,8 +33,7 @@ view = db.create_materialized_view(
 ```
 
 ```typescript TypeScript icon="square-js"
-const view = await db.createMaterializedView("recent_docs", {
-  source: "documents",
+const view = await db.createMaterializedView("recent_docs", "documents", {
   select: ["id", "title", "embedding"],
   where: "created_at > '2026-01-01'",
 });
