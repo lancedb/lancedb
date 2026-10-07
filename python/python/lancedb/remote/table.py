@@ -736,6 +736,12 @@ class RemoteTable(Table):
             - If the table has multiple vector columns then the *vector_column_name*
             needs to be specified. Otherwise, an error is raised.
 
+        query_type: str, default "auto"
+            The type of search: "auto", "vector", "fts", or "hybrid".
+            With "auto", a string query uses the embedding function for the
+            inferred or specified vector column if available, otherwise it uses
+            full-text search.
+
         fast_search: bool, optional
             Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
