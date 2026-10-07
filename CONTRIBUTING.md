@@ -107,7 +107,9 @@ uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py -s docs/web-tests
 Review the diff before committing: a few modules currently regenerate with
 unrelated changes, so commit only the snippets for the examples you changed.
 
-An example that stops compiling fails the pull request that broke it.
+Run the examples locally before submitting the change; see `docs/web-tests/README.md`
+for the Python, TypeScript and Rust commands. These examples are not yet wired
+into pull-request CI; that integration remains follow-up work.
 
 **Every heading carries an explicit `{#anchor}`.** Those anchors are how the
 Enterprise pages attach their additions to the right section, so they are
