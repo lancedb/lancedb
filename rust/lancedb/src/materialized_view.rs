@@ -7,7 +7,8 @@
 //! one source table and maintained by refresh rather than by writes. Creation
 //! commits an empty table carrying the defining query in schema metadata; a
 //! query this version cannot maintain reads back as unrefreshable, not as a
-//! plain table. Queries, indexes and search work on the view unchanged.
+//! plain table. Queries, indexes and search work on the view unchanged;
+//! writes to its rows or stored columns are refused.
 
 mod grouped;
 pub use grouped::IVF_PARTITION;
@@ -449,6 +450,24 @@ pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<Stor
         group_by: Vec::new(),
         limit: legacy.limit,
     })))
+}
+
+/// Refuse a user write to `name` when it is a materialized view, whose rows
+/// only refresh writes. Any stored definition counts, even one this version
+/// cannot read.
+pub(crate) fn ensure_not_a_view(
+    name: &str,
+    metadata: &HashMap<String, String>,
+    operation: &str,
+) -> Result<()> {
+    if metadata.contains_key(DEFINITION_META_KEY) {
+        return Err(Error::NotSupported {
+            message: format!(
+                "cannot {operation} '{name}': it is a materialized view, which only refresh writes"
+            ),
+        });
+    }
+    Ok(())
 }
 
 pub(crate) fn materialized_view_info_from_metadata(
@@ -1678,7 +1697,8 @@ impl MaterializedView {
         })
     }
 
-    /// The view, as the table it is. Queries, indexes and search all apply.
+    /// The view, as the table it is. Queries, indexes and search all apply;
+    /// writes such as `add`, `update`, `delete` and `merge_insert` do not.
     pub fn table(&self) -> &Table {
         &self.table
     }
@@ -1875,7 +1895,7 @@ impl Connection {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::record_batch;
+    use arrow_array::{RecordBatch, record_batch};
 
     use super::*;
     use crate::connect;
@@ -1958,5 +1978,249 @@ mod tests {
         assert_eq!(emptied.mode, RefreshMode::Rebuild);
         assert_eq!(emptied.rows_written, 0);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
+    }
+
+    fn reader(batch: RecordBatch) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+        let schema = batch.schema();
+        Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema,
+        ))
+    }
+
+    fn assert_refused<T: std::fmt::Debug>(result: Result<T>, operation: &str) {
+        match result {
+            Err(Error::NotSupported { message }) => assert!(
+                message.contains("is a materialized view, which only refresh writes"),
+                "{operation}: {message}"
+            ),
+            other => panic!("{operation} on a view was not refused: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_writes_to_a_view_are_refused() {
+        use arrow_schema::Schema;
+        use datafusion::prelude::SessionContext;
+        use lance::dataset::{ColumnAlteration, NewColumnTransform};
+
+        use crate::table::AddDataMode;
+        use crate::table::datafusion::BaseTableAdapter;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        let downstream = conn
+            .create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        let table = view.table();
+        let row = || record_batch!(("x", Int32, [99])).unwrap();
+
+        assert_refused(table.add(row()).execute().await, "add");
+        assert_refused(
+            table
+                .add(row())
+                .mode(AddDataMode::Overwrite)
+                .execute()
+                .await,
+            "overwrite",
+        );
+        assert_refused(
+            table.update().column("x", "x + 1").execute().await,
+            "update",
+        );
+        assert_refused(table.delete("x = 1").await, "delete");
+        let mut merge = table.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        assert_refused(merge.execute(reader(row())).await, "merge_insert");
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    "y".into(),
+                    "x * 2".into(),
+                )]))
+                .execute()
+                .await,
+            "add_columns",
+        );
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::AllNulls(Arc::new(Schema::new(vec![
+                    ArrowField::new("y", DataType::Int32, true),
+                ]))))
+                .execute()
+                .await,
+            "add_columns (nulls)",
+        );
+        assert_refused(
+            table
+                .alter_columns(&[ColumnAlteration::new("x".into()).rename("z".into())])
+                .await,
+            "alter_columns",
+        );
+        assert_refused(table.drop_columns(&["x"]).await, "drop_columns");
+        assert_refused(
+            downstream.table().add(row()).execute().await,
+            "add to a chained view",
+        );
+
+        let ctx = SessionContext::new();
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap();
+        ctx.register_table("m", Arc::new(adapter)).unwrap();
+        let insert = match ctx.sql("INSERT INTO m VALUES (99)").await {
+            Ok(frame) => frame.collect().await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        let message = insert.unwrap_err().to_string();
+        assert!(message.contains("is a materialized view"), "{message}");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+
+        // Refresh, chained, is the writer.
+        source.add(row()).execute().await.unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            downstream.refresh().execute().await.unwrap().rows_written,
+            3
+        );
+        assert_eq!(
+            downstream
+                .table()
+                .count_rows(Some("x = 99".into()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        // The source is a plain table and still takes every write.
+        source
+            .update()
+            .column("x", "x + 1")
+            .execute()
+            .await
+            .unwrap();
+        source.delete("x = 2").await.unwrap();
+        let mut merge = source.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        merge
+            .execute(reader(record_batch!(("x", Int32, [7])).unwrap()))
+            .await
+            .unwrap();
+        source
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "y".into(),
+                "x * 2".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+        source.drop_columns(&["y"]).await.unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+    }
+
+    #[tokio::test]
+    async fn indexes_and_optimize_still_apply_to_a_view() {
+        use crate::index::Index;
+        use crate::table::{CompactionOptions, OptimizeAction};
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2, 3])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        view.table()
+            .create_index(&["x"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.table().list_indices().await.unwrap().len(), 1);
+        view.table()
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+
+        source
+            .add(record_batch!(("x", Int32, [4])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 4);
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+        assert_eq!(
+            view.table().count_rows(Some("x > 2".into())).await.unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn computed_columns_of_a_view_are_still_filled_and_dropped() {
+        use crate::table::computed_columns::{
+            COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+        };
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let prepared = prepare_declaration(&source, Some(&[("x".into(), "x".into())]), None, None)
+            .await
+            .unwrap();
+        let doubled =
+            ArrowField::new("doubled", DataType::Int32, true).with_metadata(HashMap::from([
+                (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+                (KIND_META_KEY.into(), SQL_KIND.into()),
+                (EXPRESSION_META_KEY.into(), "x * 2".into()),
+                (INPUTS_META_KEY.into(), "[\"x\"]".into()),
+            ]));
+        let view = prepared
+            .with_computed_columns(vec![(1, doubled)], &[])
+            .unwrap()
+            .create("m")
+            .await
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        view.table().refresh_column("doubled").await.unwrap();
+        assert_eq!(
+            view.table()
+                .count_rows(Some("doubled = x * 2".into()))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_refused(
+            view.table().drop_columns(&["x", "doubled"]).await,
+            "drop_columns of a stored and a computed column",
+        );
+        view.table().drop_columns(&["doubled"]).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
     }
 }

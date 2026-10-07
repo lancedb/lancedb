@@ -246,6 +246,31 @@ def test_legacy_storage_source_update_rebuilds(tmp_path):
     assert sorted(row["age"] for row in rows) == [8, 36]
 
 
+def test_direct_writes_to_a_view_are_refused(tmp_path):
+    db = make_db(tmp_path)
+    view = db.create_materialized_view("copy", "people")
+    table = view.table
+    row = [{"name": "eve", "age": 1}]
+    refused = pytest.raises(NotImplementedError, match="is a materialized view")
+
+    with refused:
+        table.add(row)
+    with refused:
+        table.update(where="name = 'kid'", values={"age": 8})
+    with refused:
+        table.delete("age < 18")
+    with refused:
+        table.merge_insert("name").when_not_matched_insert_all().execute(row)
+    with refused:
+        table.add_columns({"older": "age + 1"})
+    with refused:
+        table.drop_columns(["age"])
+    assert table.count_rows() == 3
+
+    db.open_table("people").add(row)
+    assert view.refresh().rows_written == 4
+
+
 def test_list_and_not_a_view(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")
