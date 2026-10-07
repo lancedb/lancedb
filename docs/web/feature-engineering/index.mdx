@@ -54,8 +54,8 @@ idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
 expression, filled by [a refresh](/feature-engineering/refresh-column).
 
 **Materialized views** derive a whole table -- a filtered, projected, or
-aggregated view of a source -- and compute it again on each refresh. The result
-is an ordinary table: queryable, indexable, searchable.
+aggregated view of a source -- and bring it up to date on each refresh. The
+result is an ordinary table: queryable, indexable, searchable.
 
 **Functions** run Python where the data is, for work SQL cannot express:
 embedding a column, calling a model, decoding an image. Registered once,

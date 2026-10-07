@@ -13,8 +13,9 @@ A materialized view stores a query's result as rows, kept current by a refresh
 
 <Note>
 Materialized views are off by default on a deployment and have to be enabled
-there. Which statements and query shapes a deployment accepts, and how it
-refreshes a view, depend on its LanceDB Enterprise version and configuration.
+there. Which statements and query shapes a deployment accepts, whether it needs
+the source table to have stable row ids, and how it refreshes a view depend on
+its LanceDB Enterprise version and configuration.
 </Note>
 
 ## CREATE MATERIALIZED VIEW {#create}
@@ -67,6 +68,6 @@ as any table.
     Creating one from the SDK.
   </Card>
   <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    What a refresh recomputes, locally and on a deployment.
+    How a refresh works, locally and on a deployment.
   </Card>
 </CardGroup>

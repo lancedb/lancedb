@@ -8,7 +8,7 @@ keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
 
 A materialized view is a table whose contents are defined by a query over
 another table. The query is recorded in the view's schema, and a refresh
-computes its stored rows again from the source.
+brings its stored rows up to date with the source.
 
 The result is an ordinary table -- queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.
@@ -40,9 +40,10 @@ const view = await db.createMaterializedView("recent_docs", "documents", {
 ```
 </CodeGroup>
 
-`source` names the table it derives from; any table can be one, with no special
-storage option. `select`, `where` and `limit` record the query -- there is no
-separate definition step.
+`source` names the table it derives from. Locally any table can be one, with no
+special storage option; a deployment may require it to have stable row ids (see
+[Against a deployment](#deployment)). `select`, `where` and `limit` record the
+query -- there is no separate definition step.
 
 ## Opening, listing and dropping {#manage}
 
@@ -78,14 +79,15 @@ rows. Both are properties; on an async view, the definition is read with
 `db://` connection as well as a local one. There the SDK creates and refreshes
 the view through SQL, and the work runs on the cluster rather than in your
 process. Materialized views are off by default on a deployment and have to be
-enabled there; see
+enabled there, and a deployment may require a view's source to have stable row
+ids; see
 [Against a deployment](/feature-engineering/materialized-views#availability).
 
 ## What to read next {#next}
 
 <CardGroup cols={2}>
   <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    What a refresh recomputes, and what it writes.
+    How a refresh works, and what it writes.
   </Card>
   <Card title="Views" icon="eye" href="/management/view">
     The non-materialized counterpart, defined in SQL.
