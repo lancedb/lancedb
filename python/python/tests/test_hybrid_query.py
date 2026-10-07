@@ -319,9 +319,14 @@ def test_hybrid_query_default_limit(sync_table: Table):
     # The vector and FTS legs match disjoint rows, so fusing their results
     # yields more rows than the default limit.
     new_rows = []
+    # Distinct distances and document lengths avoid ties in either leg,
+    # so comparing offset windows does not depend on tie ordering.
     for i in range(20):
-        new_rows.append({"text": "close_vec", "vector": [0.1, 0.1]})
-        new_rows.append({"text": "dog", "vector": [50.0 + i, 50.0 + i]})
+        coordinate = 0.11 + i * 0.001
+        new_rows.append({"text": "close_vec", "vector": [coordinate, coordinate]})
+        new_rows.append(
+            {"text": "dog " + "padding " * (i + 1), "vector": [50.0 + i, 50.0 + i]}
+        )
     sync_table.add(new_rows)
 
     def query():

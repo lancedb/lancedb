@@ -13,20 +13,20 @@ categories = ["database-implementations"]
 rust-version = "1.91.0"
 
 [workspace.dependencies]
-lance = { "version" = "=13.0.0-beta.18", default-features = false, "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=13.0.0-beta.18", default-features = false, "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=13.0.0-beta.18", default-features = false, "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=13.0.0-beta.18", "tag" = "v13.0.0-beta.18", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=13.0.0", default-features = false }
+lance-core = "=13.0.0"
+lance-datagen = "=13.0.0"
+lance-file = "=13.0.0"
+lance-io = { "version" = "=13.0.0", default-features = false }
+lance-index = "=13.0.0"
+lance-linalg = "=13.0.0"
+lance-namespace = "=13.0.0"
+lance-namespace-impls = { "version" = "=13.0.0", default-features = false }
+lance-table = "=13.0.0"
+lance-testing = "=13.0.0"
+lance-datafusion = "=13.0.0"
+lance-encoding = "=13.0.0"
+lance-arrow = "=13.0.0"
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
