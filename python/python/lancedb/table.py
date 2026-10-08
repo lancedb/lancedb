@@ -46,7 +46,7 @@ from ._blob import (
     validate_blob_mode,
 )
 from .types import BlobMode
-from lancedb.arrow import AsyncRecordBatchReader, peek_reader
+from lancedb.arrow import AsyncRecordBatchReader, peek_reader, to_arrow
 from lancedb.sql import QueryParameters, to_parameter_batch
 from lancedb.background_loop import LOOP, embedding_executor
 from lancedb.prewarm import PrewarmDataPlan, PrewarmDataResult
@@ -504,7 +504,7 @@ def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.
             return None
         values = {name: [row.get(name) for row in data] for name in names}
         rows = [{**row, **{name: None for name in names}} for row in data]
-        table = pa.Table.from_pylist(rows)
+        table = to_arrow(rows)
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         names = {
             field.name
@@ -603,9 +603,7 @@ def _into_pyarrow_reader(
         else:
             data = _serialize_json_values(data, schema)
             table = _blob_input_to_arrow(data, schema)
-            return (
-                table if table is not None else pa.Table.from_pylist(data)
-            ).to_reader()
+            return (table if table is not None else to_arrow(data)).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
         table = _blob_input_to_arrow(data, schema)
         if table is None:
