@@ -6,6 +6,7 @@
 import tempfile
 import shutil
 import importlib
+import warnings
 import pytest
 import pyarrow as pa
 import lancedb
@@ -18,6 +19,125 @@ from lancedb.table import AsyncTable, LanceTable
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+class TestNamespaceCreateTableOptions:
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_storage_version(self, tmp_path, version, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "namespace")})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        assert (
+            table.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_storage_version_async(self, tmp_path, version, empty):
+        root = str(tmp_path / "namespace")
+        db = lancedb.connect_namespace_async("dir", {"root": root})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        reopened = lancedb.connect_namespace("dir", {"root": root}).open_table("test")
+        assert (
+            reopened.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_manifest_paths(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert table.uses_v2_manifest_paths() == enabled
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert db.open_table("test").uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_manifest_paths_async(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert await table.uses_v2_manifest_paths() == enabled
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        reopened = await db.open_table("test")
+        assert await reopened.uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
 
 
 def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
