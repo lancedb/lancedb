@@ -166,6 +166,7 @@ pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
     fts_query: Option<FullTextSearchQuery>,
+    use_lsm: Option<bool>,
 }
 
 impl BaseTableAdapter {
@@ -181,7 +182,14 @@ impl BaseTableAdapter {
             table,
             schema: Arc::new(schema),
             fts_query: None,
+            use_lsm: None,
         })
+    }
+
+    /// Set the MemWAL read routing of every scan; see [`QueryRequest::use_lsm`].
+    pub fn with_use_lsm(mut self, use_lsm: Option<bool>) -> Self {
+        self.use_lsm = use_lsm;
+        self
     }
 
     /// Create a new adapter with an FTS query applied.
@@ -196,6 +204,7 @@ impl BaseTableAdapter {
             table: self.table.clone(),
             schema,
             fts_query: Some(fts_query),
+            use_lsm: self.use_lsm,
         }
     }
 }
@@ -223,6 +232,7 @@ impl TableProvider for BaseTableAdapter {
         let mut query = QueryRequest {
             full_text_search: self.fts_query.clone(),
             disable_scoring_autoprojection: disable_scoring,
+            use_lsm: self.use_lsm,
             ..Default::default()
         };
 

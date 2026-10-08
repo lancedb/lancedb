@@ -1335,6 +1335,41 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn base_table_adapter_use_lsm_false_scans_the_base_only() {
+        use crate::table::datafusion::BaseTableAdapter;
+        use datafusion::prelude::SessionContext;
+
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // base: ids 1,2,3
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+        // Ids 4,5 land in the active memtable, not the base table.
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_use_lsm(Some(false));
+        let ctx = SessionContext::new();
+        ctx.register_table("base_only", Arc::new(adapter)).unwrap();
+        let batches = ctx
+            .sql("SELECT id FROM base_only")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut ids: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| b.column(0).as_primitive::<Int64Type>().values().to_vec())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
     async fn query_snapshot_preserves_lsm_read_semantics() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
