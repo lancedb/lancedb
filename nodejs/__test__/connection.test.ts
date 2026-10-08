@@ -116,6 +116,67 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  describe.each([undefined, []])("root namespace %p", (namespacePath) => {
+    it("should preserve createTable options after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+
+      const table = await db.createTable("test", [{ id: 3 }], namespacePath, {
+        mode: "overwrite",
+      });
+
+      const rows = await table.query().toArray();
+      expect(rows.map((row) => row.id)).toEqual([3]);
+    });
+
+    it("should preserve createEmptyTable overwrite after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }]);
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      const table = await db.createEmptyTable("test", schema, namespacePath, {
+        mode: "overwrite",
+      });
+
+      await expect(table.countRows()).resolves.toBe(0);
+    });
+
+    it("should preserve createEmptyTable existOk after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }]);
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      const table = await db.createEmptyTable("test", schema, namespacePath, {
+        existOk: true,
+      });
+
+      await expect(table.countRows()).resolves.toBe(1);
+    });
+
+    it("should preserve tableNames options after the namespace", async () => {
+      for (const name of ["a", "b", "c"]) {
+        await db.createTable(name, [{ id: 1 }]);
+      }
+
+      await expect(
+        db.tableNames(namespacePath, { limit: 1, startAfter: "a" }),
+      ).resolves.toEqual(["b"]);
+    });
+
+    it("should preserve listTables options after the namespace", async () => {
+      for (const name of ["a", "b", "c"]) {
+        await db.createTable(name, [{ id: 1 }]);
+      }
+
+      const first = await db.listTables(namespacePath, { limit: 1 });
+      expect(first.tables).toEqual(["a"]);
+      expect(first.pageToken).toBeDefined();
+
+      const second = await db.listTables(namespacePath, {
+        limit: 1,
+        pageToken: first.pageToken,
+      });
+      expect(second.tables).toEqual(["b"]);
+    });
+  });
+
   it("should respect limit and page token when listing tables", async () => {
     const db = await connect(tmpDir.name);
 

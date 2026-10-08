@@ -716,7 +716,7 @@ export class LocalConnection extends Connection {
     } else {
       // First argument is options object (backwards compatibility)
       namespacePath = undefined;
-      tableNamesOptions = namespacePathOrOptions;
+      tableNamesOptions = namespacePathOrOptions ?? options;
     }
 
     return this.inner.tableNames(
@@ -827,7 +827,7 @@ export class LocalConnection extends Connection {
       : undefined;
     const listTablesOptions = Array.isArray(namespacePathOrOptions)
       ? options
-      : namespacePathOrOptions;
+      : (namespacePathOrOptions ?? options);
 
     return this.inner.listTables(
       namespacePath ?? [],
@@ -938,7 +938,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     return this._createTableImpl(name, data, namespacePath, createOptions);
@@ -985,7 +985,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     let mode: string = createOptions?.mode ?? "create";
