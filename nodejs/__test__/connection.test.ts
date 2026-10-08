@@ -35,6 +35,87 @@ describe("when connecting", () => {
   });
 });
 
+describe.each([
+  [
+    "URI overload",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connect(uri, options),
+  ],
+  [
+    "object overload",
+    async (
+      uri: string,
+      options: { storageOptions?: Record<string, string> },
+    ) => {
+      const input = { uri, ...options };
+      if (Object.isFrozen(options)) {
+        Object.freeze(input);
+      }
+      const db = await connect(input);
+      expect(input).toEqual({ uri, ...options });
+      expect(input.storageOptions).toBe(options.storageOptions);
+      return db;
+    },
+  ],
+  [
+    "namespace",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connectNamespace("dir", { root: uri }, options),
+  ],
+])("%s connection options", (_name, open) => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should accept frozen options without storage options", async () => {
+    const options = Object.freeze({});
+    const db = await open(tmpDir.name, options);
+    try {
+      await db.createTable("frozen", [{ id: 1 }]);
+      await expect(db.tableNames()).resolves.toContain("frozen");
+      expect(options).toEqual({});
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should accept frozen options with storage options", async () => {
+    const storageOptions = Object.freeze({
+      newTableDataStorageVersion: "stable",
+    });
+    const options = Object.freeze({ storageOptions });
+    const db = await open(tmpDir.name, options);
+    try {
+      const table = await db.createTable("frozen", [{ id: 1 }]);
+      await expect(table.countRows()).resolves.toBe(1);
+      expect(options.storageOptions).toBe(storageOptions);
+      expect(storageOptions).toEqual({ newTableDataStorageVersion: "stable" });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should preserve reused options and their storage options", async () => {
+    const storageOptions = { newTableDataStorageVersion: "stable" };
+    const options = { storageOptions };
+    for (let i = 0; i < 2; i++) {
+      const db = await open(tmpDir.name, options);
+      try {
+        const table = await db.createTable(`reused_${i}`, [{ id: i }]);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "stable",
+        });
+      } finally {
+        await db.close();
+      }
+    }
+  });
+});
+
 describe("given a connection", () => {
   let tmpDir: tmp.DirResult;
   let db: Connection;
