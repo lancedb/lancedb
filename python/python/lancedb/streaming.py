@@ -451,7 +451,7 @@ class StreamingDataset(IterableDataset):
       default, the number of workers is determined by ``os.cpu_count()``.
 
     The main thread round-robins over the cooked queues, yielding one row per
-    split per cycle.
+    split per cycle. 
 
     Parameters
     ----------
