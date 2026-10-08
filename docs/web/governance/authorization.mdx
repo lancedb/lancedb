@@ -4,14 +4,14 @@ sidebarTitle: "Authorization"
 description: "Who may do what: privileges granted on catalog objects to principals, groups, roles, and API keys."
 icon: shield-halved
 keywords: ["authorization", "authz", "privileges", "rbac", "access control"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    A deployment checks privileges on its databases, namespaces and tables only
+    when its administrator has configured it to. Embedded LanceDB has no such
+    layer: access is whatever the object store allows.
 ---
-
-<Badge color="red">Enterprise</Badge>
-
-This page describes a LanceDB Enterprise capability. Embedded LanceDB has no
-such layer -- access is whatever the object store enforces on the bucket or
-directory, which is coarser and has no concept of a table. See
-[Architecture](/architecture) for what differs between the two.
 
 [Authentication](/enterprise/authentication) establishes who is calling.
 Authorization decides what they may do.

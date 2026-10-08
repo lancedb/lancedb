@@ -4,6 +4,13 @@ sidebarTitle: "Materialized View Refresh"
 description: "A lakehouse object: a table defined by a query over another table, brought up to date by each refresh."
 icon: table
 keywords: ["materialized view", "create_materialized_view", "refresh", "full refresh"]
+availability:
+  oss: available
+  enterprise: varies
+  summary: >-
+    The SDK creates and refreshes a local view in your process. On a deployment,
+    views are off by default, and how they work depends on its version and
+    configuration; see [Against a deployment](#availability).
 ---
 
 import {
@@ -80,8 +87,8 @@ argument; every local refresh is a full one.
 `create_materialized_view` and `refresh` also work on a `db://` connection.
 There the SDK sends them to the deployment as SQL -- `CREATE MATERIALIZED VIEW`
 and `REFRESH MATERIALIZED VIEW` -- and the work runs on the cluster rather than
-in your process. `source_version` is for local views only; the SDK refuses it
-on a remote refresh.
+in your process. `with_no_data` and `source_version` are for local views only;
+the SDK refuses them on a `db://` connection.
 
 Materialized views are off by default on a deployment and have to be enabled
 there. How a deployment refreshes a view -- rebuilding the whole view, as above,
