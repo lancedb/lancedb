@@ -186,7 +186,7 @@ describe("Query empty results", () => {
     {
       name: "fast search without an index",
       query: (table: Table) => table.search([0.5, 0.5]).fastSearch(),
-      fields: ["id", "text", "vector", "_rowid", "_distance"],
+      fields: ["id", "text", "vector", "_distance"],
     },
     {
       name: "take with no offsets",

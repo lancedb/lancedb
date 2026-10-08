@@ -1267,7 +1267,10 @@ def test_fts_query_to_json():
     json_str = multi_match.to_json()
     expected = (
         '{"multi_match":{"query":"python","columns":["tags","title"],'
-        '"boost":[1.0,1.0]}}'
+        '"boost":[1.0,1.0],"match_queries":[{"column":"tags","terms":"python",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0},{"column":"title","terms":"python","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}]}}'
     )
     assert json_str == expected
 
