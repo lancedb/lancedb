@@ -164,10 +164,6 @@
       "destination": "/deployment/monitoring"
     },
     {
-      "source": "/enterprise/deployment",
-      "destination": "/enterprise/deployment/index"
-    },
-    {
       "source": "/search/sql",
       "destination": "/sql"
     },
