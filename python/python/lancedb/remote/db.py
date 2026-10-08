@@ -5,7 +5,6 @@
 from dataclasses import replace
 from datetime import timedelta
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
 from typing import (
@@ -481,18 +480,14 @@ class RemoteDBConnection(DBConnection):
 
         if namespace_path is None:
             namespace_path = []
-        if storage_options is not None:
-            logging.info(
-                "storage_options is ignored in LanceDb Cloud"
-                " (storage is managed; set storage_options on connect() instead)"
+        table = LOOP.run(
+            self._conn.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
             )
-        if index_cache_size is not None:
-            logging.info(
-                "index_cache_size is ignored in LanceDb Cloud"
-                " (there is no local cache to configure)"
-            )
-
-        table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
+        )
         tbl = RemoteTable(
             table,
             self.db_name,
@@ -565,13 +560,16 @@ class RemoteDBConnection(DBConnection):
         name: str,
         data: DATA = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
+        mode: str = "create",
+        exist_ok: bool = False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
-        mode: Optional[str] = None,
-        exist_ok: bool = False,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace_path: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -611,6 +609,12 @@ class RemoteDBConnection(DBConnection):
         embedding_functions: list of EmbeddingFunctionConfig, optional
             The embedding functions to store in the table schema and use to
             generate vectors when creating the table or adding data.
+        storage_options: dict, optional
+            Not supported for remote table creation. Raises NotImplementedError.
+        data_storage_version: str, optional
+            Not supported for remote table creation. Raises NotImplementedError.
+        enable_v2_manifest_paths: bool, optional
+            Not supported for remote table creation. Raises NotImplementedError.
 
         Returns
         -------
@@ -677,6 +681,14 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        for option, value in (
+            ("data_storage_version", data_storage_version),
+            ("enable_v2_manifest_paths", enable_v2_manifest_paths),
+        ):
+            if value is not None:
+                raise NotImplementedError(
+                    f"{option} is not supported for remote table creation"
+                )
         if exist_ok:
             if mode == "create":
                 mode = "exist_ok"
@@ -698,6 +710,7 @@ class RemoteDBConnection(DBConnection):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
+                storage_options=storage_options,
             )
         )
         return RemoteTable(

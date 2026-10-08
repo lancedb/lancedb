@@ -1475,6 +1475,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // The remote create endpoint does not transmit Lance write parameters.
+        // Reject them before consuming data or issuing a request, especially
+        // for overwrite: silently using the server's format can lose intent.
+        for (option, provided) in [
+            (
+                "write_options (including storage_options)",
+                request.write_options.lance_write_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!("{option} is not supported for remote table creation"),
+                });
+            }
+        }
         let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
@@ -1599,6 +1616,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Validate before looking in the cache as well as before sending HTTP.
+        for (option, provided) in [
+            ("index_cache_size", request.index_cache_size.is_some()),
+            (
+                "lance_read_params (including storage_options)",
+                request.lance_read_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+            ("managed_versioning", request.managed_versioning.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!("{option} is not supported for remote table access"),
+                });
+            }
+        }
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
@@ -2320,14 +2354,15 @@ mod tests {
         let table = conn.open_table("table1").execute().await.unwrap();
         assert_eq!(table.name(), "table1");
 
-        // Storage options should be ignored.
-        let table = conn
+        // Per-table storage options must not be silently ignored, even when
+        // the table is already cached.
+        let result = conn
             .open_table("table1")
             .storage_option("key", "value")
             .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.name(), "table1");
+            .await;
+        assert!(matches!(result, Err(Error::NotSupported { message })
+            if message.contains("storage_options")));
     }
 
     #[tokio::test]
@@ -2518,6 +2553,113 @@ mod tests {
         assert!(
             matches!(result, Err(crate::Error::TableAlreadyExists { name }) if name == "table1")
         );
+    }
+
+    #[rstest]
+    #[case("new_table_data_storage_version", "2.0")]
+    #[case("new_table_enable_v2_manifest_paths", "false")]
+    #[case("bogus_option_xyz", "1")]
+    #[tokio::test]
+    async fn test_create_rejects_local_storage_options(#[case] key: &str, #[case] value: &str) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data),
+            conn.create_empty_table("table1", schema),
+        ] {
+            let result = builder
+                .mode(CreateTableMode::Overwrite)
+                .storage_option(key, value)
+                .execute()
+                .await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains("write_options") && message.contains("remote")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_local_write_params_and_location() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::empty());
+        for builder in [
+            conn.create_empty_table("table1", schema.clone())
+                .write_options(crate::table::WriteOptions {
+                    lance_write_params: Some(lance::dataset::WriteParams::default()),
+                }),
+            conn.create_empty_table("table1", schema)
+                .location("/tmp/elsewhere"),
+        ] {
+            assert!(matches!(
+                builder.execute().await,
+                Err(Error::NotSupported { .. })
+            ));
+        }
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_open_rejects_local_options_even_when_cached(#[values(false, true)] cached: bool) {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        if cached {
+            conn.create_empty_table("table1", Arc::new(Schema::empty()))
+                .execute()
+                .await
+                .unwrap();
+        }
+        for (option, builder) in [
+            (
+                "index_cache_size",
+                conn.open_table("table1").index_cache_size(10),
+            ),
+            (
+                "storage_options",
+                conn.open_table("table1").storage_option("x", "y"),
+            ),
+            ("location", conn.open_table("table1").location("/tmp/zzz")),
+            (
+                "managed_versioning",
+                conn.open_table("table1").managed_versioning(false),
+            ),
+            (
+                "lance_read_params",
+                conn.open_table("table1")
+                    .lance_read_params(Default::default()),
+            ),
+        ] {
+            let result = builder.execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("remote")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_local_options() {
+        for (option, builder) in [
+            (
+                "manifest_enabled",
+                ConnectBuilder::new("db://dev").manifest_enabled(true),
+            ),
+            (
+                "namespace_client_properties",
+                ConnectBuilder::new("db://dev").namespace_client_properties([("root", "/tmp/db")]),
+            ),
+        ] {
+            let result = builder.api_key("fake").region("us-east-1").execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("remote")));
+        }
     }
 
     #[rstest]

@@ -93,6 +93,55 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it.each([
+    { dataStorageVersion: "2.0" },
+    { enableV2ManifestPaths: false },
+    { storageOptions: { bogusOptionXyz: "1" } },
+  ])("rejects local create options %j before sending data", async (options) => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        res.writeHead(200).end();
+      },
+      async (db) => {
+        await expect(
+          db.createTable("test", [{ value: 1 }], {
+            ...options,
+            mode: "overwrite",
+          }),
+        ).rejects.toThrow(/write_options.*remote/);
+        await expect(
+          db.createEmptyTable(
+            "test",
+            new Schema([new Field("value", new Int64(), true)]),
+            options,
+          ),
+        ).rejects.toThrow(/write_options.*remote/);
+      },
+    );
+    expect(requests).toEqual([]);
+  });
+
+  it.each([{ indexCacheSize: 5 }, { storageOptions: { x: "y" } }])(
+    "rejects local open options %j before sending a request",
+    async (options) => {
+      const requests: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          requests.push(req.url ?? "");
+          res.writeHead(200).end();
+        },
+        async (db) => {
+          await expect(
+            db.openTable("test", undefined, options),
+          ).rejects.toThrow(/not supported for remote/);
+        },
+      );
+      expect(requests).toEqual([]);
+    },
+  );
+
   it("rejects nprobes(0) before sending a query", async () => {
     const requests: string[] = [];
     await withMockDatabase(

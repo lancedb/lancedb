@@ -280,6 +280,21 @@ def connect(
             "uri is required when not connecting through a namespace client"
         )
     if isinstance(uri, str) and uri.startswith("db://"):
+        # Preserve the deprecated remote timeout options, but validate all other
+        # unknown keywords just as the local connection does.
+        unknown_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in ("connection_timeout", "read_timeout")
+        }
+        if unknown_kwargs:
+            raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
+        if session is not None:
+            raise NotImplementedError("session is not supported for remote connections")
+        if manifest_enabled:
+            raise NotImplementedError(
+                "manifest_enabled is not supported for remote connections"
+            )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
