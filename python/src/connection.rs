@@ -48,6 +48,18 @@ impl Connection {
     }
 }
 
+fn parse_read_consistency_interval(interval: Option<f64>) -> PyResult<Option<Duration>> {
+    interval
+        .map(|seconds| {
+            Duration::try_from_secs_f64(seconds).map_err(|_| {
+                PyValueError::new_err(
+                    "read_consistency_interval must be finite, non-negative, and within the supported range",
+                )
+            })
+        })
+        .transpose()
+}
+
 fn parse_namespace_client_pushdown_operations(
     operations: Option<Vec<String>>,
 ) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
@@ -1054,6 +1066,7 @@ pub fn connect(
     namespace_client_properties: Option<HashMap<String, String>>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
         if let Some(api_key) = api_key {
@@ -1072,7 +1085,6 @@ pub fn connect(
         #[cfg(not(feature = "remote"))]
         let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
-            let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);
         }
         if let Some(storage_options) = storage_options {
@@ -1121,7 +1133,7 @@ pub fn connect_namespace_client(
     namespace_client_impl: Option<String>,
     namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
     let ns_properties = namespace_client_properties.unwrap_or_default();
@@ -1178,7 +1190,7 @@ pub fn connect_namespace(
     session: Option<crate::session::Session>,
     namespace_client_pushdown_operations: Option<Vec<String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
 
