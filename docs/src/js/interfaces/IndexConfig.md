@@ -100,7 +100,7 @@ optional numIndexedRows: number;
 
 The number of rows indexed, across all segments.
 
-`undefined` for remote tables.
+May be `undefined` for remote tables if the server does not report it.
 
 ***
 
@@ -124,7 +124,7 @@ optional numUnindexedRows: number;
 
 The number of rows not yet covered by this index.
 
-`undefined` for remote tables.
+May be `undefined` for remote tables if the server does not report it.
 
 ***
 
