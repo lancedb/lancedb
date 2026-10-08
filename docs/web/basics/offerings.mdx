@@ -1,0 +1,36 @@
+---
+title: "OSS and Enterprise"
+sidebarTitle: "OSS and Enterprise"
+description: "LanceDB OSS and LanceDB Enterprise: what each one is, and which features each one has."
+icon: compass
+keywords: ["oss", "enterprise", "embedded", "deployment", "availability", "comparison"]
+---
+
+LanceDB comes in two forms. Both use the same SDKs and the same
+[Lance](/basics/lance) tables, and this documentation covers both.
+
+- **LanceDB OSS** is a library. It runs inside your process and works on tables
+  in a local directory or in object storage, with nothing else running on your
+  behalf.
+- **LanceDB Enterprise** is a database service. A `db://` connection sends each
+  operation to a deployment, which runs it.
+
+[Connect to LanceDB](/basics/connect) shows how to start with either.
+
+## How a page says where it applies {#labels}
+
+A page that declares its availability opens with a label.
+<Badge color="green">OSS</Badge> and <Badge color="red">Enterprise</Badge> name
+the offerings it applies to, and **varies** marks one where it depends on the
+version or configuration; the sentence after the label says how. A page that
+applies to one offering only also shows that offering's tag in the sidebar.
+Every page stays in the same navigation, whichever offering you use.
+
+## Feature availability {#availability}
+
+These are the pages that declare where they apply.
+
+{/* availability-comparison */}
+
+[LanceDB Enterprise](/enterprise) describes what a deployment adds and how the
+two differ in operation, such as scale, caching and maintenance.

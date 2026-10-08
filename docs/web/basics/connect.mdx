@@ -1,0 +1,101 @@
+---
+title: "Connect to LanceDB"
+sidebarTitle: "Connect"
+description: "Connect to an embedded database in a local directory or in object storage, or to a LanceDB Enterprise deployment."
+icon: plug
+keywords: ["connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
+---
+
+import {
+    PyConnect,
+    PyConnectAsync,
+    PyConnectEnterpriseQuickstart,
+    PyConnectObjectStorage,
+    PyConnectObjectStorageAsync,
+    RsConnect,
+    TsConnect,
+    TsConnectEnterpriseQuickstart,
+    TsConnectObjectStorage,
+} from '/snippets/connection.mdx';
+
+The URI you pass to `connect` decides where the work runs. The same Python,
+TypeScript and Rust SDKs open all three kinds;
+[OSS and Enterprise](/basics/offerings) describes how the two offerings differ.
+
+| URI | Where queries run |
+| --- | --- |
+| A local path, such as `./data` | OSS: in your process |
+| `s3://`, `gs://` or `az://` | OSS: in your process, reading object storage |
+| `db://` | Enterprise: on the deployment |
+
+## A local directory {#local}
+
+Embedded in your application, LanceDB reads and writes the tables in a
+directory on disk.
+
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n" }
+    { "\n" }
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+## Object storage {#object-storage}
+
+With an object storage URI the library is still embedded: your process runs
+every query and reads and writes the bucket directly, with the credentials from
+its environment or its storage options. [Configuring storage](/deployment/storage)
+covers credentials, endpoints and provider options.
+
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnectObjectStorage}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectObjectStorageAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnectObjectStorage}
+    </CodeBlock>
+</CodeGroup>
+
+In Rust, pass the same URI to `connect`.
+
+## LanceDB Enterprise {#enterprise}
+
+A `db://` URI connects to a deployment, which runs each operation for you. Get
+the database URI, API key, region and endpoint from the deployment's
+administrator, and pass the endpoint as `host_override`. Keep the API key in a
+secret manager or the environment rather than in source.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    { "import lancedb\n\n" }
+    {PyConnectEnterpriseQuickstart}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterpriseQuickstart}
+    </CodeBlock>
+</CodeGroup>
+
+In Rust, the connection builder takes the same settings through `api_key`,
+`region` and `host_override`. To use OAuth instead of an API key, see
+[Authentication](/enterprise/authentication); for every connection option, see
+[Database](/management/database#deployment).

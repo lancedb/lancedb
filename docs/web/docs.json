@@ -253,6 +253,8 @@
             "group": "Getting Started",
             "pages": [
               "index",
+              "basics/offerings",
+              "basics/connect",
               "quickstart",
               "architecture",
               "basics/sdk",
