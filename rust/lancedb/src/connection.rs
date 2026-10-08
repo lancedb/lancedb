@@ -375,7 +375,10 @@ impl ExecuteQueryAsyncBuilder {
     ///
     /// A parameterized statement runs on the call that returns its rows rather
     /// than detached from it: cancelling the query, or dropping its handle
-    /// before reading it, stops the statement on the server.
+    /// before reading it, stops the statement on the server. Its status follows
+    /// that stream too -- it reports `Running` until the reader has received
+    /// every row -- so open the reader directly rather than waiting for
+    /// `Finished`.
     ///
     /// # Example
     ///

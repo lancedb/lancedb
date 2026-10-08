@@ -1219,7 +1219,9 @@ class DBConnection(EnforceOverrides):
         Parameters are supported in queries, not in DDL or DML. A
         parameterized query runs on the call that returns its rows:
         cancelling it, or dropping its handle before reading, stops it on the
-        server.
+        server. Its status follows that stream as well: ``describe()``
+        reports ``running`` until the reader has received every row, so open
+        ``reader()`` directly rather than waiting for ``finished``.
 
         Local connections do not support SQL.
         """
