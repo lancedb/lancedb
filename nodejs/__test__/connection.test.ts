@@ -266,6 +266,69 @@ describe("given a connection", () => {
       });
   });
 
+  describe.each(["createTable", "createEmptyTable"] as const)(
+    "%s storage options",
+    (method) => {
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      it("should accept frozen creation options without storage options", async () => {
+        const options = Object.freeze({
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_options", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_options", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options).not.toHaveProperty("storageOptions");
+      });
+
+      it("should accept frozen storage options and preserve override precedence", async () => {
+        const storageOptions = Object.freeze({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+        const options = Object.freeze({
+          storageOptions,
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_storage", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_storage", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+
+      it("should not retain a previous override when reusing storage options", async () => {
+        const storageOptions = { newTableEnableV2ManifestPaths: "false" };
+        const create = async (name: string, enableV2ManifestPaths?: boolean) =>
+          method === "createTable"
+            ? db.createTable(name, [{ id: 1 }], {
+                storageOptions,
+                enableV2ManifestPaths,
+              })
+            : db.createEmptyTable(name, schema, {
+                storageOptions,
+                enableV2ManifestPaths,
+              });
+        const first = await create("override", true);
+        expect(await (first as LocalTable).usesV2ManifestPaths()).toBe(true);
+        const second = await create("without_override");
+        expect(await (second as LocalTable).usesV2ManifestPaths()).toBe(false);
+        expect(storageOptions).toEqual({
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+    },
+  );
+
   it("should be able to migrate tables to the V2 manifest paths", async () => {
     const db = await connect(tmpDir.name);
     const table = (await db.createEmptyTable(
