@@ -2590,6 +2590,9 @@ pub struct NativeTable {
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Read-freshness baseline; `Some` only for namespace-backed tables.
     freshness: Option<TableFreshness>,
+    // Memtable index kinds this handle's LSM writes maintain, shared with its
+    // clones and branch handles.
+    mem_index_registry: Arc<std::sync::RwLock<lance::dataset::mem_wal::MemIndexRegistry>>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -2756,7 +2759,29 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Maintain the memtable index kinds in `registry` when this table writes
+    /// through its LSM spec, and accept them when a spec names one.
+    ///
+    /// The registry belongs to this handle, its clones and its branch handles,
+    /// and is not stored with the table: a handle opened separately starts from
+    /// Lance's built-ins. Set it before the handle's first LSM write; writers
+    /// already open keep the registry they were opened with.
+    pub fn set_mem_index_registry(&self, registry: lance::dataset::mem_wal::MemIndexRegistry) {
+        *self
+            .mem_index_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = registry;
+    }
+
+    pub(crate) fn mem_index_registry(&self) -> lance::dataset::mem_wal::MemIndexRegistry {
+        self.mem_index_registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Set the namespace client for server-side query execution.
@@ -2786,6 +2811,7 @@ impl NativeTable {
             namespace_client: self.namespace_client.clone(),
             pushdown_operations: self.pushdown_operations.clone(),
             freshness: self.freshness.clone(),
+            mem_index_registry: self.mem_index_registry.clone(),
         }
     }
 
@@ -2893,6 +2919,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -2984,6 +3011,7 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -3117,6 +3145,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
