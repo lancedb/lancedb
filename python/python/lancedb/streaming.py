@@ -1056,14 +1056,41 @@ class StreamingDataset(IterableDataset):
         pinned.checkout(self._pinned_version)
         return pinned
 
+    def _pinned_lance_dataset(self, pinned_table):
+        """Native pylance handle for ``pinned_table``, if it's a local table.
+
+        ``to_lance()`` only works against a local table (it raises
+        ``NotImplementedError`` on ``RemoteTable``); cached per dataset
+        instance (keyed by nothing -- there's only ever one pin per
+        instance) so the conversion runs at most once rather than once per
+        block read. ``None`` means ``pinned_table`` is remote and callers
+        must use the backend-agnostic query builder instead.
+        """
+        if not hasattr(self, "_pinned_lance_ds_cache"):
+            try:
+                self._pinned_lance_ds_cache = pinned_table.to_lance()
+            except NotImplementedError:
+                self._pinned_lance_ds_cache = None
+        return self._pinned_lance_ds_cache
+
     def _read_block(
         self, pinned_table, block_id: int, columns: Optional[list[str]]
     ) -> pa.Table:
         """Read one 2-phase block's live rows, in natural (ascending) order."""
+        lance_ds = self._pinned_lance_dataset(pinned_table)
         if self._filter is None:
             # offset/limit is a positional, sequential read, so its output
             # order is exactly storage order -- no restoration needed.
             row_start, row_end = self._block_ranges[block_id]
+            if lance_ds is not None:
+                # Local table: pylance's native scanner is a direct,
+                # purpose-built positional range read -- substantially
+                # faster than routing the same offset/limit request through
+                # the generic, backend-agnostic query builder below, which
+                # exists so this also works against a remote (Cloud) table.
+                return lance_ds.scanner(
+                    offset=row_start, limit=row_end - row_start, columns=columns
+                ).to_table()
             q = pinned_table.search().offset(row_start).limit(row_end - row_start)
             if columns is not None:
                 q = q.select(columns)
@@ -1071,12 +1098,18 @@ class StreamingDataset(IterableDataset):
 
         # Filtered: this block's exact live-row dataset offsets were
         # already computed once, up front (from the "_rowoffset" system
-        # column -- see __init__), so take_offsets fetches just the live
-        # rows themselves, skipping any dead-row gaps entirely.  Unlike
-        # offset/limit, take_offsets makes no ordering guarantee for an
+        # column -- see __init__), so a sparse take fetches just the live
+        # rows themselves, skipping any dead-row gaps entirely.
+        offsets = self._block_live_offsets[block_id]
+        if lance_ds is not None:
+            # Local table: pylance's native take() preserves the requested
+            # offset order already, unlike the generic take_offsets() path
+            # below, so no extra sort-and-rebuild pass is needed here.
+            return lance_ds.take(offsets.tolist(), columns=columns)
+
+        # Remote table: take_offsets makes no ordering guarantee for an
         # arbitrary index list, so "_rowoffset" is always also selected
         # and used to restore the request's ascending order locally.
-        offsets = self._block_live_offsets[block_id]
         select_cols = (columns if columns is not None else self._all_columns) + [
             "_rowoffset"
         ]
@@ -1914,6 +1947,11 @@ class StreamingDataset(IterableDataset):
         ):
             state[key] = None
         state["_consumer_iterator_lock"] = None
+        # Non-picklable Rust-backed handle (see _pinned_lance_dataset);
+        # dropped rather than set to None so the worker's first _read_block
+        # call recomputes it fresh against its own reconnected table instead
+        # of permanently misreading an absent cache as "confirmed remote".
+        state.pop("_pinned_lance_ds_cache", None)
         return state
 
     def __setstate__(self, state):
