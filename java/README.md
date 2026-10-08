@@ -73,6 +73,11 @@ reader usually expects:
 
 ## Development
 
+The parent POM includes `https://maven.lance.org` to resolve Lance beta and RC
+dependencies. Use an explicit `lance-core.version`; numbered beta and RC versions
+are Maven releases, not snapshots. Maven Central remains available for stable
+and historical versions, as well as other dependencies.
+
 Build:
 
 ```shell
