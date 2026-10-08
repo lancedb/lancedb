@@ -38,10 +38,7 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference,
-    validate_view_reference,
-};
+use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -761,9 +758,7 @@ impl Connection {
             let database = database.clone();
             let namespace_path = namespace_path.clone();
             async move {
-                for segment in &namespace_path {
-                    validate_secret_component("Secret namespace path segment", segment)?;
-                }
+                validate_namespace(&namespace_path)?;
                 database.list_secrets(&namespace_path, options).await
             }
         })
