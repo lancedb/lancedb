@@ -29,7 +29,7 @@ use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use lance::Dataset;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
-    validate_maintained_indexes,
+    validate_maintained_indexes_with,
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
@@ -103,7 +103,8 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
                 }
             }
             let dataset = table.dataset.get().await?;
-            validate_maintained_indexes(&dataset, requested).await?;
+            validate_maintained_indexes_with(&dataset, requested, &table.mem_index_registry())
+                .await?;
             Some(requested.to_vec())
         }
         None => None,
@@ -126,7 +127,9 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
                 .into(),
         });
     }
-    let mut builder = dataset.initialize_mem_wal();
+    let mut builder = dataset
+        .initialize_mem_wal()
+        .mem_index_registry(table.mem_index_registry());
     let writer_config_defaults = match spec {
         LsmWriteSpec::Bucket {
             column,
@@ -725,7 +728,8 @@ pub(crate) async fn execute_lsm_merge_insert(
         return Ok(lsm_merge_result(0));
     };
 
-    let config = shard_writer_config_from_defaults(&plan.writer_config_defaults);
+    let mut config = shard_writer_config_from_defaults(&plan.writer_config_defaults);
+    config.mem_index_registry = table.mem_index_registry();
     let writer = table
         .dataset
         .shard_writer()
