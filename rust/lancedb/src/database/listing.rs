@@ -884,6 +884,10 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
+    fn session(&self) -> Option<Arc<lance::session::Session>> {
+        Some(self.session.clone())
+    }
+
     async fn list_namespaces(
         &self,
         request: ListNamespacesRequest,
