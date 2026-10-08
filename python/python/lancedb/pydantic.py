@@ -260,7 +260,9 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
 
 def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
     return [
-        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+        _pydantic_to_field(name, field)
+        for name, field in model.model_fields.items()
+        if field.exclude is not True
     ]
 
 
@@ -493,6 +495,9 @@ class LanceModel(pydantic.BaseModel):
 
         vec_and_function = []
         for name, field_info in cls.safe_get_fields().items():
+            if field_info.exclude is True:
+                continue
+
             func = get_extras(field_info, "vector_column_for")
             if func is not None:
                 vec_and_function.append([name, func])
@@ -500,6 +505,8 @@ class LanceModel(pydantic.BaseModel):
         configs = []
         for vec, func in vec_and_function:
             for source, field_info in cls.safe_get_fields().items():
+                if field_info.exclude is True:
+                    continue
                 src_func = get_extras(field_info, "source_column_for")
                 if src_func is func:
                     # note we can't use == here since the function is a pydantic
