@@ -153,15 +153,6 @@ class _TwoPhaseSplitReader:
         self._pending: dict[int, Future] = {}
         self._prefetch_depth = max(1, prefetch_depth)
         self._executor = ThreadPoolExecutor(max_workers=self._prefetch_depth)
-        # How far ahead in the plan to look for new blocks to prefetch.
-        # _build_bounded_permutation shuffles within fixed, non-overlapping
-        # chunks of max_shuffle_distance dense ranks, so scanning two such
-        # chunks ahead is always enough to find prefetch_depth distinct new
-        # blocks (barring an unusually large prefetch_depth relative to
-        # block_size); it's just a search bound, not a correctness
-        # requirement, so an occasional miss just skips prefetching that
-        # block this round.
-        self._prefetch_scan_cap = max(1, 2 * max_shuffle_distance)
 
         counts = np.asarray(block_live_counts, dtype=np.int64)
         total_rows = int(counts.sum())
@@ -200,6 +191,16 @@ class _TwoPhaseSplitReader:
         self._block_last_pos: dict[int, int] = {}
         for pos, bp in enumerate(self._plan_block_pos.tolist()):
             self._block_last_pos[bp] = pos
+
+        # Distinct blocks in the order the plan first needs them. Prefetch
+        # walks this (one entry per block) instead of rescanning raw plan
+        # positions, which costs one Python step per *row* scanned and
+        # dominates read time once max_shuffle_distance is large.
+        if len(self._plan_block_pos):
+            _, first_pos = np.unique(self._plan_block_pos, return_index=True)
+            self._block_visit_order = self._plan_block_pos[np.sort(first_pos)].tolist()
+        else:
+            self._block_visit_order = []
 
     def __getitems__(self, indices) -> pa.RecordBatch:
         # Fancy-indexed (not sliced) so this also supports non-contiguous
@@ -259,18 +260,18 @@ class _TwoPhaseSplitReader:
             # the (by then finished) result above instead of blocking.
             room = self._prefetch_depth - len(self._pending)
             if room > 0:
-                scan_pos = watermark + 1
-                scan_end = min(
-                    scan_pos + self._prefetch_scan_cap, len(self._plan_block_pos)
-                )
-                while scan_pos < scan_end and room > 0:
-                    bp = int(self._plan_block_pos[scan_pos])
-                    if bp not in self._loaded and bp not in self._pending:
-                        self._pending[bp] = self._executor.submit(
-                            self._read_block_fn, self._block_ids[bp]
-                        )
-                        room -= 1
-                    scan_pos += 1
+                for bp in self._block_visit_order:
+                    if room == 0:
+                        break
+                    if bp in self._loaded or bp in self._pending:
+                        continue
+                    if self._block_last_pos.get(bp, -1) <= watermark:
+                        # Already read past: never needed again.
+                        continue
+                    self._pending[bp] = self._executor.submit(
+                        self._read_block_fn, self._block_ids[bp]
+                    )
+                    room -= 1
 
         if self._columns is not None:
             result = result.select(self._columns)
