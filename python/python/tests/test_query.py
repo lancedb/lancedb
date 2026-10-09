@@ -995,12 +995,22 @@ def test_invalid_nprobes_sync(table):
         ValueError,
         match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        LanceVectorQueryBuilder(table, [0, 0], "vector").maximum_nprobes(5).to_list()
+        (
+            LanceVectorQueryBuilder(table, [0, 0], "vector")
+            .minimum_nprobes(10)
+            .maximum_nprobes(5)
+            .to_list()
+        )
     with pytest.raises(
         ValueError,
-        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(100).to_list()
+        (
+            LanceVectorQueryBuilder(table, [0, 0], "vector")
+            .maximum_nprobes(5)
+            .minimum_nprobes(100)
+            .to_list()
+        )
 
 
 def test_nprobes_works_sync(table):
@@ -1039,12 +1049,22 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
         ValueError,
         match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        await table_async.vector_search([0, 0]).maximum_nprobes(5).to_list()
+        await (
+            table_async.vector_search([0, 0])
+            .minimum_nprobes(10)
+            .maximum_nprobes(5)
+            .to_list()
+        )
     with pytest.raises(
         ValueError,
         match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
-        await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
+        await (
+            table_async.vector_search([0, 0])
+            .maximum_nprobes(5)
+            .minimum_nprobes(100)
+            .to_list()
+        )
 
 
 def test_query_builder_with_prefilter(table):
@@ -1635,8 +1655,9 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=10,
-        maximum_nprobes=10,
+        nprobes=10,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         refine_factor=5,
     )
 
@@ -1654,8 +1675,19 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=50,
-        maximum_nprobes=50,
+        nprobes=50,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
+    )
+
+    q = table.search([5.0, 6.0]).minimum_nprobes(5).nprobes(50).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        nprobes=50,
+        minimum_nprobes=5,
+        maximum_nprobes=None,
     )
 
     q = table.search([5.0, 6.0]).maximum_nprobes(10).to_query_object()
@@ -1665,6 +1697,15 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         vector=[5.0, 6.0],
         maximum_nprobes=10,
         minimum_nprobes=None,
+    )
+
+    q = table.search([5.0, 6.0]).nprobes(5).maximum_nprobes(0).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        nprobes=5,
+        maximum_nprobes=0,
     )
 
     q = table.search([5.0, 6.0]).distance_range(0.0, 1.0).to_query_object()
@@ -1716,8 +1757,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         limit=10,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -1727,8 +1768,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1739,8 +1780,9 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=50,
-        maximum_nprobes=50,
+        nprobes=50,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1759,8 +1801,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         filter="id = 1",
         postfilter=True,
         vector=sample_vector,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -1774,8 +1816,9 @@ async def test_query_serialization_async(table_async: AsyncTable):
     check_set_props(
         q,
         vector=sample_vector,
-        minimum_nprobes=10,
-        maximum_nprobes=10,
+        nprobes=10,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         refine_factor=5,
         postfilter=False,
         with_row_id=False,
@@ -1788,7 +1831,24 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         minimum_nprobes=5,
-        maximum_nprobes=20,
+        maximum_nprobes=None,
+        postfilter=False,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
+    q = (
+        (await table_async.search([5.0, 6.0]))
+        .nprobes(5)
+        .maximum_nprobes(0)
+        .to_query_object()
+    )
+    check_set_props(
+        q,
+        vector=sample_vector,
+        nprobes=5,
+        maximum_nprobes=0,
         postfilter=False,
         with_row_id=False,
         bypass_vector_index=False,
@@ -1806,8 +1866,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         lower_bound=0.0,
         upper_bound=1.0,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1819,8 +1879,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         distance_type="cosine",
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1832,8 +1892,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         ef=7,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1845,8 +1905,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         bypass_vector_index=True,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         limit=10,
     )

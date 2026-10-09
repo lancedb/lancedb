@@ -460,17 +460,16 @@ exhaustiely searched to find matches.  This parameter controls how many
 partitions should be searched.
 
 Increasing this value will increase the recall of your query but will
-also increase the latency of your query.  The default value is 20.  This
-default is good for many cases but the best value to use will depend on
-your data and the recall that you need to achieve.
+also increase the latency of your query. If this method is not called,
+Lance's adaptive probe defaults are used.
 
 For best results we recommend tuning this parameter with a benchmark against
 your actual data to find the smallest possible value that will still give
 you the desired recall.
 
-For more fine grained control over behavior when you have a very narrow filter
-you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-the minimum and maximum to the same value.
+The value is retained as `nprobes` through client and server request
+construction. Lance sets both probe bounds to this value. Explicit minimum
+or maximum settings can override their respective bounds.
 
 #### Parameters
 

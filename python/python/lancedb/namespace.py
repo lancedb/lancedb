@@ -190,8 +190,12 @@ def _query_to_namespace_request(
         kwargs["with_row_id"] = query.with_row_id
     if query.ef is not None:
         kwargs["ef"] = query.ef
+    if query.nprobes is not None:
+        kwargs["nprobes"] = query.nprobes
     if query.minimum_nprobes is not None:
-        kwargs["nprobes"] = query.minimum_nprobes
+        kwargs["minimum_nprobes"] = query.minimum_nprobes
+    if query.maximum_nprobes is not None:
+        kwargs["maximum_nprobes"] = query.maximum_nprobes
     if query.refine_factor is not None:
         kwargs["refine_factor"] = query.refine_factor
     if query.lower_bound is not None:
@@ -205,6 +209,13 @@ def _query_to_namespace_request(
     if query.distance_type is not None:
         kwargs["distance_type"] = query.distance_type
 
+    if kwargs.get("maximum_nprobes") == 0:
+        # The generated 0.13 model rejects LanceDB's unbounded sentinel;
+        # model_copy preserves direct wire pass-through to the Lance receiver.
+        maximum_nprobes = kwargs.pop("maximum_nprobes")
+        return QueryTableRequest(**kwargs).model_copy(
+            update={"maximum_nprobes": maximum_nprobes}
+        )
     return QueryTableRequest(**kwargs)
 
 

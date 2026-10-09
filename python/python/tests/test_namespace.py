@@ -15,7 +15,8 @@ import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.listing import AsyncListing, Listing
-from lancedb.namespace import _MAX_QUERY_K
+from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -1110,6 +1111,29 @@ class TestPushdownOperations:
             _MAX_QUERY_K,
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    def test_probe_fields_pass_through_independently(self):
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(
+                vector=[1.0, 2.0],
+                nprobes=20,
+                minimum_nprobes=3,
+                maximum_nprobes=10,
+            ),
+        )
+
+        assert request.nprobes == 20
+        assert request.minimum_nprobes == 3
+        assert request.maximum_nprobes == 10
+
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(vector=[1.0, 2.0], nprobes=5, maximum_nprobes=0),
+        )
+        assert request.nprobes == 5
+        assert request.maximum_nprobes == 0
+        assert request.to_dict()["maximum_nprobes"] == 0
 
 
 @pytest.mark.asyncio
