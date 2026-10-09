@@ -19,6 +19,7 @@ lance-datagen = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git
 lance-file = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-io = { "version" = "=14.0.0-beta.10", default-features = false, "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-index = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-jsonb = { version = "=14.0.0-beta.10", tag = "v14.0.0-beta.10", git = "https://github.com/lance-format/lance.git" }
 lance-linalg = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace-impls = { "version" = "=14.0.0-beta.10", default-features = false, "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
@@ -26,7 +27,7 @@ lance-table = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" 
 lance-testing = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-datafusion = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
 lance-encoding = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=14.0.0-beta.10", "tag" = "v14.0.0-beta.10", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { version = "=14.0.0-beta.10", path = "python/vendor/lance-arrow" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
@@ -78,6 +79,10 @@ tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
 tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
 uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[patch."https://github.com/lance-format/lance.git"]
+# Carry the offset-safe validity fix until it is available in a Lance release.
+lance-arrow = { path = "python/vendor/lance-arrow" }
 
 [profile.ci]
 debug = "line-tables-only"
