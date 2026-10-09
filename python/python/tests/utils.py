@@ -36,6 +36,15 @@ def is_row_id_take(body) -> bool:
     return "_rowid" in (body.get("filter") or "")
 
 
+def is_row_offset_take(body) -> bool:
+    """True when a query body fetches specific rows by ``_rowoffset``.
+
+    This is the request shape ``Table.take_offsets`` sends on the remote
+    backend, distinct from ``is_row_id_take``'s ``_rowid IN (...)``.
+    """
+    return "_rowoffset" in (body.get("filter") or "")
+
+
 def arrow_file_bytes(table: pa.Table) -> bytes:
     """Serialize to the Arrow IPC *file* framing the /query/ route answers with."""
     sink = pa.BufferOutputStream()
@@ -147,6 +156,49 @@ class MockPermutationServer:
             return self._arrow(
                 request,
                 pa.table({"_rowid": pa.array(row_ids, pa.uint64())}),
+            )
+
+        if is_row_offset_take(body):
+            # A _rowoffset take (2-phase's filtered block reads): this
+            # table's rows are never deleted/reordered, so id == _rowoffset
+            # for every row, same invariant as id == _rowid above.
+            row_offsets = sorted(parse_in_list(body["filter"]))
+            columns = body.get("columns") or ["id", "_rowoffset"]
+            values = {"id": row_offsets, "_rowoffset": row_offsets}
+            return self._arrow(
+                request,
+                pa.table(
+                    {
+                        col: pa.array(
+                            values[col],
+                            pa.uint64() if col == "_rowoffset" else pa.int64(),
+                        )
+                        for col in columns
+                    }
+                ),
+            )
+
+        if body.get("columns") == ["_rowoffset"] and "IN" in (body.get("filter") or ""):
+            # 2-phase's live-offset precompute scan: a user filter over
+            # "_rowoffset" alone.  This mock only understands `<col> IN
+            # (...)` filters (not arbitrary SQL), and since id == _rowoffset
+            # for every row here, reuses parse_in_list regardless of which
+            # column the filter actually names.
+            row_offsets = sorted(parse_in_list(body["filter"]))
+            return self._arrow(
+                request, pa.table({"_rowoffset": pa.array(row_offsets, pa.uint64())})
+            )
+
+        if "offset" in body and not body.get("filter"):
+            # A plain offset/limit scan (2-phase's unfiltered contiguous
+            # block reads): a positional, sequential slice of storage order.
+            start = body["offset"]
+            end = start + body["k"]
+            row_ids = list(range(self.num_rows))[start:end]
+            columns = body.get("columns") or ["id"]
+            return self._arrow(
+                request,
+                pa.table({col: pa.array(row_ids, pa.int64()) for col in columns}),
             )
 
         # The schema probe: filtered to nothing, so it carries schema and no rows.
