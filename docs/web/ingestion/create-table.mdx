@@ -73,6 +73,9 @@ support lists/arrays of dictionaries, while the Rust SDK supports lists of struc
 In Python, pass a list or other batch-like object; a single bare `dict` or single
 `LanceModel` is rejected.
 
+For a Python list of dictionaries, columns are inferred from the top-level keys
+present in any row. A row that omits one of those keys has a null in that column.
+
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {CreateTableFromDicts}

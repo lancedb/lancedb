@@ -428,6 +428,57 @@ def test_create_table(mem_db: DBConnection):
         assert expected == tbl
 
 
+@pytest.mark.parametrize("operation", ["create", "create_with_schema", "add", "merge"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_dictionary_fields_missing_from_first_row(mem_db, operation, reverse):
+    rows = [{"id": 1}, {"id": 2, "note": "keep me"}]
+    if reverse:
+        rows.reverse()
+    original = [row.copy() for row in rows]
+    schema = pa.schema({"id": pa.int64(), "note": pa.string()})
+
+    if operation == "create":
+        table = mem_db.create_table("test", data=rows)
+    elif operation == "create_with_schema":
+        table = mem_db.create_table("test", data=rows, schema=schema)
+    else:
+        table = mem_db.create_table("test", schema=schema)
+        if operation == "add":
+            table.add(rows)
+        else:
+            table.merge_insert("id").when_not_matched_insert_all().execute(rows)
+
+    assert table.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+    assert table.schema.names == ["id", "note"]
+    assert rows == original
+
+
+def test_add_blob_with_dictionary_fields_missing_from_first_row(mem_db):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("note", pa.string()),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = mem_db.create_table("test", schema=schema)
+    rows = [
+        {"id": 1, "blob": b"first"},
+        {"id": 2, "note": "keep me", "blob": b"second"},
+    ]
+    table.add(rows)
+
+    assert table.search().select(["id", "note"]).to_arrow().sort_by(
+        "id"
+    ).to_pylist() == [
+        {"id": 1, "note": None},
+        {"id": 2, "note": "keep me"},
+    ]
+
+
 def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
     data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
     with pytest.raises(ValueError) as excep_info:
@@ -2963,6 +3014,26 @@ def test_merge_insert_subschema(mem_db: DBConnection, data_format):
         {"id": [0, 1, 2, 3], "a": [1.0, 2.0, 3.0, None], "c": ["x", "x", "y", "y"]}
     )
     assert table.to_arrow().sort_by("id") == expected
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_merge_insert_dictionary_fields_missing_from_first_row(mem_db, reverse):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"id": 1, "note": "old", "untouched": "first"},
+            {"id": 2, "note": "old", "untouched": "second"},
+        ],
+    )
+    rows = [{"id": 1}, {"id": 2, "note": "new"}]
+    if reverse:
+        rows.reverse()
+    table.merge_insert("id").when_matched_update_all().execute(rows)
+
+    assert table.to_arrow().sort_by("id").to_pylist() == [
+        {"id": 1, "note": None, "untouched": "first"},
+        {"id": 2, "note": "new", "untouched": "second"},
+    ]
 
 
 def test_repeated_partial_merge_insert_with_scalar_index(mem_db: DBConnection):
