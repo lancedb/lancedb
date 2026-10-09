@@ -106,10 +106,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, use_lsm, or
-    // separate IVF probe bounds yet, so pushing them down would silently change the
-    // query. For use_lsm that is worse than a tuning miss: MemWAL read routing lives
-    // only in `create_plan`, so a pushed-down query would return stale base-only data.
+    // The namespace QueryTable request cannot represent approx_mode or use_lsm.
+    // For use_lsm that is worse than a tuning miss: MemWAL read routing lives only
+    // in `create_plan`, so a pushed-down query would return stale base-only data.
     if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
@@ -117,8 +116,6 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
         query,
         AnyQuery::VectorQuery(vector_query)
             if vector_query.approx_mode.is_some()
-                || vector_query.minimum_nprobes.is_some()
-                || vector_query.maximum_nprobes.is_some()
     )
 }
 
@@ -636,6 +633,8 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 offset: vq.base.offset.map(|o| o as i32),
                 distance_type: vq.distance_type.map(|dt| dt.to_string()),
                 nprobes: vq.nprobes.map(|nprobes| nprobes as i32),
+                minimum_nprobes: vq.minimum_nprobes.map(|nprobes| nprobes as i32),
+                maximum_nprobes: vq.maximum_nprobes.map(|nprobes| nprobes as i32),
                 ef: vq.ef.map(|e| e as i32),
                 refine_factor: vq.refine_factor.map(|r| r as i32),
                 lower_bound: vq.lower_bound,
@@ -971,23 +970,37 @@ mod tests {
         );
 
         let minimum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             minimum_nprobes: Some(5),
             ..Default::default()
         });
-        assert!(requires_local_namespace_execution(&minimum_query));
+        assert!(!requires_local_namespace_execution(&minimum_query));
+        let request = convert_to_namespace_query(&minimum_query).unwrap();
+        assert_eq!(request.minimum_nprobes, Some(5));
+        assert_eq!(request.maximum_nprobes, None);
 
         let maximum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
             maximum_nprobes: Some(10),
             ..Default::default()
         });
-        assert!(requires_local_namespace_execution(&maximum_query));
+        assert!(!requires_local_namespace_execution(&maximum_query));
+        let request = convert_to_namespace_query(&maximum_query).unwrap();
+        assert_eq!(request.minimum_nprobes, None);
+        assert_eq!(request.maximum_nprobes, Some(10));
 
         let exact_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            nprobes: Some(8),
             minimum_nprobes: Some(20),
             maximum_nprobes: Some(20),
             ..Default::default()
         });
-        assert!(requires_local_namespace_execution(&exact_query));
+        assert!(!requires_local_namespace_execution(&exact_query));
+        let request = convert_to_namespace_query(&exact_query).unwrap();
+        assert_eq!(request.nprobes, Some(8));
+        assert_eq!(request.minimum_nprobes, Some(20));
+        assert_eq!(request.maximum_nprobes, Some(20));
     }
 
     #[test]

@@ -1296,6 +1296,21 @@ mod lsm_tests {
         rows
     }
 
+    async fn collect_ids(stream: SendableRecordBatchStream) -> Vec<i64> {
+        let batches: Vec<_> = stream.try_collect().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_primitive::<Int64Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect()
+    }
+
     /// Upsert `ids` (value = 0..n) through the LSM `merge_insert` path.
     async fn lsm_upsert(table: &Table, ids: Vec<i64>) {
         let mut builder = table.merge_insert(&[]);
@@ -1817,7 +1832,7 @@ mod lsm_tests {
                 &["vec"],
                 Index::IvfPq(
                     IvfPqIndexBuilder::default()
-                        .num_partitions(1)
+                        .num_partitions(8)
                         .num_sub_vectors(2),
                 ),
             )
@@ -1851,21 +1866,27 @@ mod lsm_tests {
             .execute()
             .await
             .unwrap();
-        let batches: Vec<_> = stream.try_collect().await.unwrap();
-        let ids: Vec<i64> = batches
-            .iter()
-            .flat_map(|b| {
-                b.column_by_name("id")
-                    .unwrap()
-                    .as_primitive::<Int64Type>()
-                    .values()
-                    .to_vec()
-            })
-            .collect();
+        let ids = collect_ids(stream).await;
         assert_eq!(
             ids,
             vec![9999],
             "LSM vector search must rank the memtable row first"
         );
+
+        let base_query = table
+            .query()
+            .nearest_to(&[0.0_f32; 8])
+            .unwrap()
+            .only_if("id = 255")
+            .limit(1);
+        for query in [
+            base_query.clone(),
+            base_query.clone().nprobes(8).unwrap(),
+            base_query.clone().minimum_nprobes(8).unwrap(),
+            base_query.maximum_nprobes(Some(8)).unwrap(),
+        ] {
+            let ids = collect_ids(query.execute().await.unwrap()).await;
+            assert_eq!(ids, vec![255]);
+        }
     }
 }

@@ -170,8 +170,8 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // Vector-only knobs the LSM scanner cannot honor. Both change results rather
     // than just recall, so error instead of silently ignoring them: distance_range
     // would return rows outside the bound, and use_index(false) asks for a
-    // brute-force search the index-only base arm can't do. (ef / approx_mode /
-    // maximum_nprobes are recall/speed knobs and are left to no-op.)
+    // brute-force search the index-only base arm can't do. (ef / approx_mode are
+    // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
@@ -742,8 +742,12 @@ async fn vector_plan(
         .distance_metric(distance_type.into());
     if let Some(nprobes) = query.nprobes {
         scanner = scanner.nprobes(nprobes);
-    } else if let Some(minimum_nprobes) = query.minimum_nprobes {
-        scanner = scanner.nprobes(minimum_nprobes);
+    }
+    if let Some(minimum_nprobes) = query.minimum_nprobes {
+        scanner = scanner.minimum_nprobes(minimum_nprobes);
+    }
+    if let Some(maximum_nprobes) = query.maximum_nprobes {
+        scanner = scanner.maximum_nprobes(maximum_nprobes);
     }
     if let Some(refine_factor) = query.refine_factor {
         scanner = scanner.refine(refine_factor);
