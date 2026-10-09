@@ -1272,7 +1272,7 @@ def test_remote_job_wait_raises_on_failure():
             job.wait()
 
 
-def test_remote_create_index_new_api():
+def test_remote_create_index_new_api(caplog):
     received_requests = []
 
     def handler(request):
@@ -1333,7 +1333,8 @@ def test_remote_create_index_new_api():
     from lancedb.index import BTree, FTS, IvfPq, IvfRq
 
     with mock_lancedb_connection(handler) as db:
-        table = db.create_table("test", [{"id": 1}])
+        table = db.create_table("test", [{"id": 1}], embedding_functions=[])
+        assert "embedding_functions is not yet supported" not in caplog.text
 
         # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
         import warnings as _warnings
@@ -1355,6 +1356,8 @@ def test_remote_create_index_new_api():
                 vector_column_name="vector",
                 index_type="IVF_RQ",
                 num_partitions=8,
+                replace=False,
+                accelerator="cuda",
             )
 
         assert len(received_requests) == 6
@@ -1368,6 +1371,160 @@ def test_remote_create_index_new_api():
         ]
         assert received_requests[2]["block_size"] == 256
         assert received_requests[4]["replace"] is False
+        assert received_requests[5]["replace"] is False
+        assert "replace is not supported" not in caplog.text
+        assert caplog.messages == [
+            "GPU accelerator is not supported for remote tables and will be ignored."
+        ]
+
+
+def remote_unsupported_handler(request):
+    assert request.path == "/v1/table/test/describe/"
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(
+        json.dumps(
+            dict(
+                version=1,
+                schema=dict(
+                    fields=[
+                        dict(name="id", type={"type": "int64"}, nullable=False),
+                        dict(
+                            name="vector",
+                            type={
+                                "type": "fixed_size_list",
+                                "fields": [
+                                    dict(
+                                        name="item",
+                                        type={"type": "float"},
+                                        nullable=True,
+                                    )
+                                ],
+                                "length": 2,
+                            },
+                            nullable=False,
+                        ),
+                    ]
+                ),
+            )
+        ).encode()
+    )
+
+
+def remote_unsupported_operations():
+    from lancedb.index import HnswPq
+
+    return [
+        ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
+        ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
+        ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
+        ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
+        ("optimize", (), {}, "optimize"),
+        ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
+def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(NotImplementedError) as error:
+            getattr(table, method)(*args, **kwargs)
+        expected = f"LanceDBError: not supported: {operation} is not supported "
+        expected += "for remote tables."
+        if operation == "IVF_HNSW_PQ":
+            expected += " Please use IVF_HNSW_SQ instead."
+        assert str(error.value) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
+async def test_remote_unsupported_operations_async(method, args, kwargs, operation):
+    async with mock_lancedb_connection_async(remote_unsupported_handler) as db:
+        table = await db.open_table("test")
+        if method == "migrate_v2_manifest_paths":
+            method = "migrate_manifest_paths_v2"
+        with pytest.raises(NotImplementedError) as error:
+            await getattr(table, method)(*args, **kwargs)
+        expected = f"LanceDBError: not supported: {operation} is not supported "
+        expected += "for remote tables."
+        if operation == "IVF_HNSW_PQ":
+            expected += " Please use IVF_HNSW_SQ instead."
+        assert str(error.value) == expected
+
+
+def test_remote_unsupported_legacy_hnsw_pq():
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        table = db.open_table("test")
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            with pytest.raises(
+                NotImplementedError,
+                match="IVF_HNSW_PQ is not supported for remote tables. "
+                "Please use IVF_HNSW_SQ instead.",
+            ):
+                table.create_index(
+                    vector_column_name="vector", index_type="IVF_HNSW_PQ"
+                )
+
+
+def test_remote_python_only_messages(caplog):
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        with caplog.at_level("INFO"):
+            table = db.open_table("test", storage_options={}, index_cache_size=1)
+        assert "storage_options is ignored for remote tables" in caplog.text
+        assert "index_cache_size is ignored for remote tables" in caplog.text
+        for method in ["to_arrow", "to_pandas"]:
+            with pytest.raises(NotImplementedError) as error:
+                getattr(table, method)()
+            assert str(error.value) == f"{method}() is not supported for remote tables."
+        for method in ["compact_files", "cleanup_old_versions"]:
+            with pytest.warns(UserWarning) as warning:
+                getattr(table, method)()
+            assert (
+                str(warning[0].message) == f"{method}() is a no-op for remote tables."
+            )
+
+
+def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
+    received_tables = []
+
+    def handler(request):
+        assert request.path == "/v1/table/test/create/?mode=create"
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            body = bytearray()
+            while size := int(request.rfile.readline().split(b";")[0], 16):
+                body.extend(request.rfile.read(size))
+                assert request.rfile.read(2) == b"\r\n"
+            assert request.rfile.read(2) == b"\r\n"
+        else:
+            body = request.rfile.read(int(request.headers["Content-Length"]))
+        received_tables.append(pa.ipc.open_stream(body).read_all())
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockNonNormTextEmbeddingFunction.create(),
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    with mock_lancedb_connection(handler) as db:
+        db.create_table("test", schema=schema, embedding_functions=[config])
+    assert caplog.messages == []
+    assert len(received_tables) == 1
+    metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata([config])
+    assert (
+        received_tables[0].schema.metadata == pa.schema([], metadata=metadata).metadata
+    )
 
 
 def test_table_wait_for_index_timeout():
@@ -2995,9 +3152,15 @@ def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
 def test_remote_blob_byte_apis_not_supported_on_old_server():
     with blob_remote_table(server_version=Version("0.1.0")) as table:
         assert table.blob_columns() == ["image"]
-        with pytest.raises(NotImplementedError, match="not supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="fetch_blobs is not supported by this LanceDB server",
+        ):
             table.fetch_blobs("image", [1])
-        with pytest.raises(NotImplementedError, match="not supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="fetch_blob_files requires LanceDB server 0.5.0 or newer",
+        ):
             table.fetch_blob_files("image", [1])
 
 
