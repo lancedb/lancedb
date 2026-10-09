@@ -80,7 +80,7 @@ See [Data types](/sql/data-types).
 | `TABLESAMPLE (n ROWS)` | whole numbers only |
 | `TABLESAMPLE BUCKET` | not supported |
 | `TABLESAMPLE` on a WAL-backed table | not supported |
-| `CREATE INDEX` | one column, server-chosen name |
+| `CREATE INDEX` | one column; `USING` names the algorithm |
 | `REFRESH MATERIALIZED VIEW ... CASCADE` | depends on the deployment's version; see [REFRESH](/sql/dml/refresh#refresh-materialized-view) |
 
 A sampling percentage over 100 is an error rather than a full scan, because a

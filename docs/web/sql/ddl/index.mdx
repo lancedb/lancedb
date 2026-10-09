@@ -1,7 +1,7 @@
 ---
 title: "Index"
 sidebarTitle: "Index"
-description: "CREATE INDEX and DROP INDEX — one column, server-chosen name."
+description: "CREATE INDEX and DROP INDEX — one column, with the algorithm chosen by USING."
 icon: bolt
 keywords: ["create index", "drop index", "sql"]
 ---
@@ -11,14 +11,20 @@ keywords: ["create index", "drop index", "sql"]
 ## CREATE INDEX {#create}
 
 ```sql
-CREATE INDEX ON documents (title)
+CREATE INDEX ON documents USING btree (title)
+CREATE INDEX text_search ON documents USING fts (text)
 ```
 
+`USING` is required: it names the algorithm. The scalar algorithms are `btree`,
+`bitmap` and `label_list`; `fts` builds a full-text index; and the vector
+algorithms are `ivf_pq`, `ivf_rq`, `ivf_flat`, `ivf_hnsw_sq` and `ivf_hnsw_pq`,
+where the deployment supports them. Index options go in a `WITH (...)` clause.
+
 <Note>
-SQL `CREATE INDEX` covers **one column** and takes **no user-chosen name** --
-the server names it. For a multi-column or explicitly-named index, or to
-choose the algorithm, use the SDK's
-[`create_index`](/indexing).
+On a deployment, SQL `CREATE INDEX` covers **one column**. A name between
+`INDEX` and `ON` names the index, where the deployment's configuration allows
+it; without one, the server names it after the column, as in `title_idx`. For a
+multi-column index, use the SDK's [`create_index`](/indexing).
 </Note>
 
 <Note>

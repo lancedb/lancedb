@@ -64,7 +64,7 @@ It attaches to a table in `FROM`, including inside a subquery, a CTE, or either
 side of a join:
 
 ```sql
-SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 
 SELECT * FROM a TABLESAMPLE (5 ROWS) JOIN b ON a.id = b.id
 
@@ -86,6 +86,7 @@ be honoured exactly is an error:
 | `TABLESAMPLE (101)` | a percentage outside `0..=100` is refused, not clamped |
 | `TABLESAMPLE (1.5 ROWS)` | a row count must be whole |
 | `TABLESAMPLE (BUCKET 1 OUT OF 4)` | bucket sampling is not supported |
+| `(SELECT ...) d TABLESAMPLE (10)` | a subquery's result cannot be sampled; sample the table inside it |
 | the `SAMPLE` spelling | use `TABLESAMPLE` |
 | the `OFFSET` modifier | not supported |
 

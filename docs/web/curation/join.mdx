@@ -58,11 +58,14 @@ just which rows:
 
 ```sql
 SELECT c.name, count(*) AS hits
-FROM fts('documents', 'puppy') AS m
+FROM fts('documents', '{"match":{"column":"text","terms":"puppy"}}') AS m
 JOIN categories AS c ON c.id = m.category_id
 GROUP BY c.name
 ORDER BY hits DESC
 ```
+
+`fts` takes the query as JSON, as in [Full-text search](/sql/dql/fts); a bare
+string such as `'puppy'` is refused.
 
 <Note>
 Whether SQL can express vector search

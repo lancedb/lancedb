@@ -19,11 +19,11 @@ SELECT * FROM (
 WHERE n > 100
 ```
 
-A derived table needs an alias. It can be [sampled](/sql/dql/sampling) like a base
-table:
+A derived table needs an alias. Its result cannot be
+[sampled](/sql/dql/sampling); sample the table inside it instead:
 
 ```sql
-SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 ```
 
 ## As a scalar {#scalar}

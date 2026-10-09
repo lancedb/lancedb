@@ -66,10 +66,13 @@ or a name with mixed case: `SELECT "order" FROM "MyTable"`.
 ## Casting {#casting}
 
 ```sql
-SELECT CAST(identifier AS VARCHAR), identifier::VARCHAR FROM documents
+SELECT CAST(identifier AS VARCHAR) AS with_cast, identifier::VARCHAR AS with_colons
+FROM documents
 ```
 
-Both forms work. `TRY_CAST` returns null instead of erroring on a value that
+Both forms work. Give each its own alias when one projection uses both: they
+produce the same expression name, and a projection refuses two columns with
+one name. `TRY_CAST` returns null instead of erroring on a value that
 will not convert, which is the one to use over a column you do not control.
 
 ## Precedence {#precedence}
