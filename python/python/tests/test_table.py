@@ -1940,6 +1940,71 @@ def test_add_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize("input_type", ["pandas", "rows", "arrow"])
+@pytest.mark.parametrize("on_bad_vectors", [None, "error", "drop", "fill", "null"])
+def test_write_vectors_with_null_elements(
+    mem_db: DBConnection, operation, input_type, on_bad_vectors
+):
+    schema = pa.schema({"vector": pa.list_(pa.float32(), 2), "id": pa.int64()})
+    vectors = [[3.0, 4.0], [np.nan, 1.0], [np.nan, np.nan]]
+    if input_type == "pandas":
+        import pandas as pd
+
+        data = pd.DataFrame(
+            {
+                "vector": [np.array(v, dtype=np.float32) for v in vectors],
+                "id": [0, 1, 2],
+            }
+        )
+    else:
+        # Pandas turns the NaNs above into null child elements. Explicit nulls
+        # in other input formats must follow the same bad-vector policy.
+        data = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [None, 1.0], "id": 1},
+            {"vector": [None, None], "id": 2},
+        ]
+        if input_type == "arrow":
+            data = pa.Table.from_pylist(data, schema=schema)
+
+    options = {} if on_bad_vectors is None else {"on_bad_vectors": on_bad_vectors}
+    if on_bad_vectors == "fill":
+        options["fill_value"] = 42.0
+
+    table = None
+    if operation != "create":
+        table = mem_db.create_table("test", schema=schema)
+
+    def write():
+        if operation == "create":
+            return mem_db.create_table("test", data=data, schema=schema, **options)
+        table.add(data, mode=operation, **options)
+        return table
+
+    if on_bad_vectors in (None, "error"):
+        # Create/overwrite can wrap errors from lazy Arrow readers in RuntimeError.
+        expected_error = (
+            ValueError if operation == "append" else (ValueError, RuntimeError)
+        )
+        with pytest.raises(expected_error, match="NaN|null"):
+            write()
+        if table is not None:
+            assert table.count_rows() == 0
+        return
+
+    table = write()
+    if on_bad_vectors == "drop":
+        expected = [{"vector": [3.0, 4.0], "id": 0}]
+    else:
+        expected = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [42.0, 1.0] if on_bad_vectors == "fill" else None, "id": 1},
+            {"vector": [42.0, 42.0] if on_bad_vectors == "fill" else None, "id": 2},
+        ]
+    assert table.to_arrow().to_pylist() == expected
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
