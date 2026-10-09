@@ -7,10 +7,10 @@
 
 use std::sync::Arc;
 
-use arrow_array::types::Float32Type;
-use arrow_array::{FixedSizeListArray, Int32Array, RecordBatch};
-use arrow_schema::{DataType, Field, Schema};
 use futures::TryStreamExt;
+use lancedb::arrow::arrow_array::types::Float32Type;
+use lancedb::arrow::arrow_array::{FixedSizeListArray, Int32Array, RecordBatch};
+use lancedb::arrow::arrow_schema::{DataType, Field, Schema};
 use lancedb::connection::Connection;
 use lancedb::index::Index;
 use lancedb::query::{ExecutableQuery, QueryBase};
