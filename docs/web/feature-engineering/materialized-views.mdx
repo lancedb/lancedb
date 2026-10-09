@@ -110,9 +110,10 @@ when a view is created through its REST API, which recent versions no longer
 have. Check with the deployment's administrator which version it runs before
 relying on a source.
 
-`SHOW MATERIALIZED VIEWS` lists them, which is cheaper than
-`list_materialized_views` -- that method finds views by reading every table's
-schema, so it costs one open per table.
+`list_materialized_views` asks the deployment for its views, as
+[`SHOW MATERIALIZED VIEWS`](/sql/ddl/materialized-view#show) does. On a local
+database the same method opens each table to read its schema, so it costs one
+open per table.
 
 ## Working with the view {#working-with-the-view}
 

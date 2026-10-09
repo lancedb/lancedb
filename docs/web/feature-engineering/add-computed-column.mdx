@@ -69,6 +69,16 @@ declared earlier in the same mapping, but not one declared after it.
 The functions available are the ones the
 [SQL dialect](/sql/functions) documents.
 
+A literal in the expression has to fit the column it meets: `x / 2.0` is
+refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
+
+<Warning>
+On a deployment, keep the expression to top-level columns. A deployment's
+refresh can fail on an expression that reads a field inside a struct, such as
+`stats.magic + stats.strength`, which the embedded library computes. Try a new
+expression on a small table first.
+</Warning>
+
 ## Its inputs become load-bearing {#input-constraints}
 
 <Warning>

@@ -36,8 +36,8 @@ SHOW MATERIALIZED VIEWS
 ```
 
 <Note>
-Cheaper than the SDK equivalent. `list_materialized_views` finds views by
-reading every table's schema, costing one open per table; this asks the server.
+This asks the server for its views, as the SDK's `list_materialized_views` does
+on a `db://` connection.
 </Note>
 
 ## Refreshing one {#refresh}
