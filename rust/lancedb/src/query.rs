@@ -2469,7 +2469,8 @@ mod tests {
             .unwrap()
             .minimum_nprobes(5)
             .unwrap()
-            .nprobes(20);
+            .nprobes(20)
+            .unwrap();
         assert_eq!(bounded_query.request.nprobes, Some(20));
         assert_eq!(bounded_query.request.minimum_nprobes, Some(5));
         assert_eq!(bounded_query.request.maximum_nprobes, None);
@@ -2525,13 +2526,13 @@ mod tests {
             Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
         ));
 
-        // Fixed probe counts replace both bounds, even when moving below or
-        // above the previous range.
+        // Legacy probe counts remain independent until Lance resolves them.
         let mut query = query;
         for nprobes in [30, 1, 50] {
             query = query.nprobes(nprobes).unwrap();
-            assert_eq!(query.request.minimum_nprobes, nprobes);
-            assert_eq!(query.request.maximum_nprobes, Some(nprobes));
+            assert_eq!(query.request.nprobes, Some(nprobes));
+            assert_eq!(query.request.minimum_nprobes, None);
+            assert_eq!(query.request.maximum_nprobes, None);
         }
     }
 
