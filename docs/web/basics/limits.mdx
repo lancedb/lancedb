@@ -97,7 +97,7 @@ not another.
 | SQL on a local database | unavailable; `execute_query` raises |
 | SQL on a deployment | needs its Flight SQL endpoint enabled and reachable |
 | SQL methods in the TypeScript SDK | none; use a Flight SQL client |
-| Function methods in the TypeScript SDK | none; use Python or SQL |
+| Function methods in the TypeScript SDK {/* if functions launched */} | none; use Python or SQL |
 | Vector search in SQL | [depends on the deployment](/basics/sql#no-vector-sql); the query builder always has it |
 | Geospatial `st_*` functions | behind a build feature LanceDB does not ship |
 | `tableExists` / `namespaceExists` in TypeScript | not present |

@@ -54,10 +54,10 @@ operation, not a separate service holding a second copy of your embeddings. See
 ### Compute {#compute}
 
 Deriving new columns and tables from what is already stored:
-[computed columns](/feature-engineering/add-computed-column),
-[functions](/management/function) that run Python where the data is, and
+[computed columns](/feature-engineering/add-computed-column) and
 [materialized views](/management/materialized-view) that persist a query's
 result.
+[Functions](/management/function) run Python where the data is. {/* if functions launched */}
 
 The reason this belongs in the lakehouse rather than in a pipeline outside it is
 the format. Adding a derived column writes only that column -- the images and

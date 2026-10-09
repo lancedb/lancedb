@@ -94,7 +94,7 @@ what the capability is, and what the embedded form does instead. A separate
 private repository supplies the fuller version of each, which replaces the page
 at the same path when the published site is assembled.
 
-Three things to know before editing:
+Four things to know before editing:
 
 **Code examples are not written into the pages.** They live in real tests under
 `docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
@@ -136,6 +136,24 @@ the comparison on [OSS and Enterprise](docs/web/basics/offerings.mdx). Do not
 also open the page with a badge of its own, and keep a qualification that only
 one section needs in that section's text. A `mint dev` preview of `docs/web`
 alone renders neither the labels nor the comparison.
+
+**A feature can be documented before it launches.** Functions are documented
+ahead of their launch. A page that documents only them says so in its
+frontmatter:
+
+```yaml
+launch: functions
+```
+
+Another page marks what it says about them. A section between
+`{/* if functions launched */}` and `{/* end if */}`, each on a line of its own,
+is published only once Functions launch; `{/* if functions not launched */}`
+marks one published only until then. Put the marker at the end of a table row or
+list item to gate that line alone. Until the launch, the assembled site leaves
+out those pages, their examples, and every marked section, navigation entry and
+redirect, and stops the build if anything still published links to them. A
+`mint dev` preview of `docs/web` alone shows both sides of every marker. The
+documentation repository's README shows how to assemble either site.
 
 ## Release process
 

@@ -44,6 +44,17 @@ not a narrower one.
 
 Objects are addressed by kind and path:
 
+{/* if functions not launched */}
+```
+system
+database:db
+namespace:db:ns
+table:db:ns$table
+view:db:ns$view
+secret:db:ns$secret
+```
+{/* end if */}
+{/* if functions launched */}
 ```
 system
 database:db
@@ -53,6 +64,7 @@ view:db:ns$view
 function:db:ns$function
 secret:db:ns$secret
 ```
+{/* end if */}
 
 A nested namespace joins its path with `$`, as in `namespace:db:parent$child`
 or `table:db:parent$child$table`.
@@ -69,7 +81,7 @@ table alone is not enough to traverse to it.
 | `USAGE` | system | listing jobs and their events, and looking up other identities |
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
-| `USAGE` | function | binding it to a column, and refreshing a column it computes |
+| `USAGE` {/* if functions launched */} | function | binding it to a column, and refreshing a column it computes |
 | `USAGE` | secret | binding and resolving it |
 | `SELECT` | table, view | reading rows |
 | `INSERT` | table | appending rows |
@@ -81,7 +93,7 @@ table alone is not enough to traverse to it.
 | `CREATE_TABLE` | namespace | creating a table in it |
 | `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
 | `CREATE_VIEW` | namespace | creating a non-materialized view in it |
-| `CREATE_FUNCTION` | namespace | registering a function in it |
+| `CREATE_FUNCTION` {/* if functions launched */} | namespace | registering a function in it |
 | `CREATE_SECRET` | namespace | creating a secret in it |
 | `OPERATE` | system | describing and controlling jobs, managing caches, and reading server configuration |
 

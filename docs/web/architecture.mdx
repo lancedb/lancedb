@@ -90,7 +90,8 @@ path.
 scales for interactive traffic without also scaling indexing capacity, and heavy
 background work does not steal resources from user queries. Because a server
 exists, so do the things that need one: [SQL](/sql),
-[functions](/management/function), server-side jobs, and
+[functions](/management/function), {/* if functions launched */}
+server-side jobs, and
 [authorization](/governance/authorization) per object rather than per bucket.
 
 **What it is good at.** Many concurrent queries, continuous ingestion and
@@ -108,7 +109,7 @@ terabytes.
 | Indexing and compaction | when you call it | dedicated indexers |
 | [Jobs](/basics/jobs) | run in-process, no server record | real jobs: id, status, events, cancel |
 | [SQL](/sql) | unavailable | Flight SQL endpoint |
-| [Functions](/management/function) | unavailable | run on workers |
+| [Functions](/management/function) {/* if functions launched */} | unavailable | run on workers |
 | Access control | object-store permissions | [per-object grants](/governance/authorization) |
 | Scale bound | your process | the cluster |
 | What you operate | nothing | a deployment |

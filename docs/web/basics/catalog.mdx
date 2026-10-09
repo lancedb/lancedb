@@ -3,7 +3,7 @@ title: "Lance Catalog"
 sidebarTitle: "Lance Catalog"
 description: "The naming layer: what objects exist, how they nest, and who may reach them."
 icon: sitemap
-keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view", "function"]
+keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view"]
 ---
 
 A catalog answers one question: **what exists, and what is it called.** It holds
@@ -25,12 +25,23 @@ resolves the same names to the same tables.
 | [Table](/management/table) | Rows and columns, versioned. What most operations act on. |
 | [Materialized view](/management/materialized-view) | A table whose contents come from a query, computed and stored. |
 | [View](/management/view) | A saved query. Computed when read, not stored. |
-| [Function](/management/function) | Registered code, applied to produce column values. |
+| [Function](/management/function) {/* if functions launched */} | Registered code, applied to produce column values. |
 
-Views and functions exist only on an Enterprise deployment that enables them.
+Views exist only on an Enterprise deployment that enables them.
+So do functions. {/* if functions launched */}
 Materialized views also exist in the embedded library, and a deployment has to
 enable them too.
 
+{/* if functions not launched */}
+```
+database
+└── namespace
+    ├── table
+    ├── materialized view      (a table, defined by a query)
+    └── view                   (a query, not stored)
+```
+{/* end if */}
+{/* if functions launched */}
 ```
 database
 └── namespace
@@ -39,6 +50,7 @@ database
     ├── view                   (a query, not stored)
     └── function
 ```
+{/* end if */}
 
 A namespace can contain further namespaces, so the hierarchy goes as deep as
 your organisation needs. A table is reached by its path through it:

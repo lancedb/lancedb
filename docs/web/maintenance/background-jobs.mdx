@@ -64,8 +64,10 @@ export, its events also survive in the exported table.
 
 | Job type | What it does |
 | --- | --- |
-| `drop_object` | Deletes a dropped catalog object's content, then clears it from the database's cleanup backlog. Covers namespaces, views, and functions -- everything [`drop_table`](/management/table#drop) does not, since that one fences a directory with its own marker instead. |
+| `drop_object` | Deletes a dropped catalog object's content, then clears it from the database's cleanup backlog. Covers namespaces, views and other catalog objects -- everything [`drop_table`](/management/table#drop) does not, since that one fences a directory with its own marker instead. |
 
 You trigger this indirectly, by dropping a [namespace](/management/namespace),
-[view](/sql/ddl/view#drop), or [function](/management/function#drop) -- the teardown
-itself runs as this job rather than inline with the call.
+a [view](/sql/ddl/view#drop),
+or a [function](/management/function#drop), {/* if functions launched */}
+for example -- the teardown itself runs as this job rather than inline with the
+call.

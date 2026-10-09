@@ -108,10 +108,17 @@ exist when that does not fit:
 - A [computed column](/feature-engineering/add-computed-column) declares the
   expression and leaves the column empty, so you choose when the work happens.
   That is the right default on a large table.
+{/* if functions launched */}
 - A [function](/management/function) fills a column with Python, for values SQL
   cannot express -- an embedding, a model call, an image decode.
+{/* end if */}
+{/* if functions not launched */}
+- On LanceDB Enterprise, [Geneva](/geneva) fills a column with Python, for
+  values SQL cannot express -- an embedding, a model call, an image decode.
+{/* end if */}
 
-On a deployment, both have to be enabled there.
+A deployment has to enable computed columns before you use them.
+Functions need enabling there too. {/* if functions launched */}
 
 ## What to read next {#next}
 

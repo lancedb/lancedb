@@ -14,8 +14,8 @@ availability:
 ---
 
 Some operations take longer than a request should. Building an index over a
-large table, refreshing a computed column, registering a function -- these run
-on the server after the call that started them has returned.
+large table or refreshing a computed column, for example, runs on the server
+after the call that started it has returned.
 
 Each is submitted the same way and returns the same handle.
 
@@ -36,7 +36,7 @@ a **job** immediately.
 | --- | --- | --- |
 | `create_index` | `create_index_async` | `CREATE INDEX` |
 | `refresh_column` | `refresh_column_async` | `REFRESH COLUMN` |
-| `create_function` | `create_function_async` | `CREATE FUNCTION` |
+| `create_function` {/* if functions launched */} | `create_function_async` | `CREATE FUNCTION` |
 | `drop_table` | `drop_table_async` | `DROP TABLE` |
 
 <Note>
@@ -76,8 +76,8 @@ returns the failed state rather than raising, which is what you want in a
 polling loop.
 
 In Python `wait` takes an optional timeout and returns the operation's typed
-result -- a `RefreshColumnJobResult`, a `FunctionVersion`, or `None` for an
-operation that has no result:
+result -- a `RefreshColumnJobResult`, for example, or `None` for an operation
+that has no result:
 
 ```python
 from datetime import timedelta
