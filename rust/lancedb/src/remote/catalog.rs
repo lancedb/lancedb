@@ -656,6 +656,8 @@ mod tests {
             RemoteCatalog::try_new("http://127.0.0.1:1", RemoteCatalogOptions::default()).unwrap();
         for name in [
             "",
+            "/",
+            "//",
             "a$b",
             "\r\ninjected",
             "..",
