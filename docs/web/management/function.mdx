@@ -39,6 +39,10 @@ column locally, declare a
 In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
 </Note>
 
+Functions are the way to fill columns with Python on a deployment. If you
+already use [Geneva](/geneva), it remains available; see
+[Geneva and Functions](/geneva#functions) for how its concepts map onto these.
+
 The steps below take a column of numbers to a filled column of their doubles.
 
 ## Define a function {#define}
