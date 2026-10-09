@@ -2815,6 +2815,18 @@ describe("when dealing with blob columns", () => {
     expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
   });
 
+  it("rejects a whole blob read batch when one row ID was deleted", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await table.delete("id = 2");
+
+    await expect(table.fetchBlobs("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+    await expect(table.fetchBlobFiles("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+  });
+
   it("adds a LargeBinary Arrow column to a blob table", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([new Field("id", new Int64()), blob("image")]);

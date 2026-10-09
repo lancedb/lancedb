@@ -2058,15 +2058,20 @@ class Table(ABC):
 
     @abstractmethod
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
-        ``_rowid`` values stay valid after compaction when the table has stable
-        row ids.
+        ``row_ids`` may be a list, an integer Arrow array or chunked array,
+        or a query table with row ids. ``_rowid`` values stay valid after
+        compaction when the table has stable row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
 
         Remote servers limit each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
@@ -2078,17 +2083,20 @@ class Table(ABC):
     def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         """Materialize row-specific byte ranges from a blob v2 column.
 
-        Each request is a ``(row_id, offset, length)`` tuple. Requests may be
-        repeated or reordered, including multiple ranges for the same blob.
+        Each request is a three-item ``(row_id, offset, length)`` sequence.
+        Requests may be repeated or reordered, including multiple ranges for
+        the same blob.
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
@@ -2096,18 +2104,22 @@ class Table(ABC):
 
     @abstractmethod
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
-        a ``list[int]`` or a query ``pyarrow.Table`` carrying row identity via
-        ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
-        rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
-        newer.
+        a ``list[int]``, an integer Arrow array or chunked array, or a query
+        ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
+        ``_lance_row_id`` field on the blob descriptor. Null blob values return
+        ``None``. Remote tables require LanceDB Cloud server 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        handles are returned.
         """
 
     @abstractmethod
@@ -3013,19 +3025,23 @@ class LanceTable(Table):
         return LOOP.run(self._table.blob_columns())
 
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
@@ -7074,7 +7090,9 @@ class AsyncTable:
         return await self._inner.blob_columns()
 
     async def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return await self._inner.fetch_blobs(
             column, _normalize_blob_row_ids(row_ids, column)
@@ -7083,12 +7101,14 @@ class AsyncTable:
     async def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         handles = await self._inner.fetch_blob_files(
             column, _normalize_blob_row_ids(row_ids, column)
