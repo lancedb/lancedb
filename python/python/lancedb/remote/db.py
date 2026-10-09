@@ -379,7 +379,7 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+        """List a page of tables in this database.
 
         Parameters
         ----------
@@ -390,7 +390,8 @@ class RemoteDBConnection(DBConnection):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
@@ -409,7 +410,7 @@ class RemoteDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -425,8 +426,9 @@ class RemoteDBConnection(DBConnection):
             Empty list represents root namespace.
         page_token: str
             The last token to start the new page.
-        limit: int, default 10
-            The maximum number of tables to return for each page.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------

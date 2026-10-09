@@ -150,7 +150,7 @@ export interface TableNamesOptions {
    * the last table name from the previous page.
    */
   startAfter?: string;
-  /** An optional limit to the number of results to return. */
+  /** The maximum number of names to return. Omitted returns all names; zero returns none. */
   limit?: number;
 }
 
@@ -164,6 +164,7 @@ export interface ListTablesOptions {
   pageToken?: string;
   /**
    * An upper bound on how many tables to return.
+   * Defaults to 100. Zero returns an empty page without a continuation token.
    *
    * A page may hold fewer than this and still not be the last one, so keep
    * going while the response carries a page token rather than while pages are
