@@ -134,9 +134,11 @@ object  = table:db:ns$documents
 subject = G:data-science
 ```
 
-Results paginate through a continuation token, at most 100 entries to a page. One stored `(object, subject)`
-tuple carrying several privileges expands into several entries in the
-response, so the count reflects privileges rather than tuples.
+Results paginate through a continuation token. A page holds at most 100 stored
+`(object, subject)` tuples, and a tuple carrying several privileges expands
+into several entries in the response, so a page can return more than 100
+entries: the count reflects privileges rather than tuples. Keep requesting with
+the returned token until a page comes back without one.
 
 Listing by subject answers "what can this team reach"; listing by object
 answers "who can reach this table". Both are worth running before changing a

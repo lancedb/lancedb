@@ -56,13 +56,16 @@ reads ask for data at least as fresh as that moment, or as the configured interv
 whichever is later. Each opened table handle keeps its own floor.
 
 Each remote table handle also tracks the highest dataset version a response from the server has
-reported and sends it back with every subsequent request, so successive reads on the same handle
-never observe an older version even when a load balancer routes them to query nodes with
+reported and sends it back with every subsequent request, as `x-lancedb-min-read-version`. A
+deployment checks it against the version it has cached, so successive reads on the same handle do
+not observe an older version even when a load balancer routes them to query nodes with
 differently-cached views. `checkout_latest` resets this watermark.
 
-A write also records its new version on the handle, but deployments do not use that record to
-choose what a read sees, so the client alone does not guarantee that the next read reflects your
-own write. To be sure it does, set the interval to zero, or call `checkout_latest` after writing.
+A successful write's response reports the version it committed, so it advances the same watermark:
+the next read on that handle asks for at least that version. The client also sends the version a
+write returned in a separate header, `x-lancedb-min-version`, which deployments do not use. How a
+deployment honors the read watermark depends on its version and configuration, so when a read must
+reflect your own write, set the interval to zero, or call `checkout_latest` after writing.
 
 Stronger consistency is not free — the smaller the interval, the more often each read pays the cost
 of refreshing against storage, which raises per-read latency and cost.
