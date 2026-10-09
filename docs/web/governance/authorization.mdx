@@ -8,9 +8,10 @@ availability:
   oss: unavailable
   enterprise: varies
   summary: >-
-    A deployment checks privileges on its databases, namespaces and tables only
-    when its administrator has configured it to. Embedded LanceDB has no such
-    layer: access is whatever the object store allows.
+    A deployment checks privileges on its databases, namespaces, tables and
+    other catalog objects only when its administrator has configured it to.
+    Embedded LanceDB has no such layer: access is whatever the object store
+    allows.
 ---
 
 [Authentication](/enterprise/authentication) establishes who is calling.
@@ -28,15 +29,16 @@ A grant is held by one of four kinds of subject, distinguished by a prefix:
 | `p:` | a principal, by ID -- `P:` by name |
 | `g:` | a group, by ID -- `G:` by name |
 | `r:` | a role |
-| `a:` | an API key |
+| `a:` | the principal holding an API key, named by the key |
 
 Granting to a group or role rather than a principal is what keeps the entry
 count manageable: a principal's effective privileges are the union of what it
 holds directly and what it inherits.
 
-Granting to an API key is narrower than granting to the principal that owns
-it -- useful when a key is issued for one job and should not carry that
-principal's full authority.
+`P:`, `G:` and `a:` are ways of naming a subject when you make a request. The
+entry is stored against the ID they resolve to, so a grant to `a:` belongs to
+the principal holding that key and carries that principal's full authority,
+not a narrower one.
 
 ## Objects {#objects}
 
@@ -45,9 +47,15 @@ Objects are addressed by kind and path:
 ```
 system
 database:db
-namespace:db/ns
-table:db/ns/table
+namespace:db:ns
+table:db:ns$table
+view:db:ns$view
+function:db:ns$function
+secret:db:ns$secret
 ```
+
+A nested namespace joins its path with `$`, as in `namespace:db:parent$child`
+or `table:db:parent$child$table`.
 
 The hierarchy is not decorative. Reaching a table requires `USAGE` on the
 namespace containing it and on the database containing that -- a grant on the
@@ -57,19 +65,25 @@ table alone is not enough to traverse to it.
 
 | Privilege | Granted on | Allows |
 | --- | --- | --- |
-| `OWNERSHIP` | any object | ownership, conveying full authority |
+| `OWNERSHIP` | any object but `system` | ownership, conveying full authority |
+| `USAGE` | system | listing jobs and their events, and looking up other identities |
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
-| `SELECT` | table | reading rows |
+| `USAGE` | function | binding it to a column, and refreshing a column it computes |
+| `USAGE` | secret | binding and resolving it |
+| `SELECT` | table, view | reading rows |
 | `INSERT` | table | appending rows |
 | `UPDATE` | table | modifying existing rows |
+| `UPDATE` | secret | rotating it, without the right to bind or read it |
 | `DELETE` | table | deleting rows |
 | `CREATE_DATABASE` | system | creating a database |
 | `CREATE_NAMESPACE` | database, namespace | creating immediate child namespaces |
 | `CREATE_TABLE` | namespace | creating a table in it |
 | `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
 | `CREATE_VIEW` | namespace | creating a non-materialized view in it |
-| `OPERATE` | system | reading server configuration |
+| `CREATE_FUNCTION` | namespace | registering a function in it |
+| `CREATE_SECRET` | namespace | creating a secret in it |
+| `OPERATE` | system | describing and controlling jobs, managing caches, and reading server configuration |
 
 The four data privileges map onto the four
 [ingestion operations](/ingestion), so a principal that may append but not
@@ -87,26 +101,28 @@ grant the other.
 A subtlety worth knowing, because it explains grants that appear to work on
 objects that do not exist yet.
 
-When `USAGE` is checked on a database and **no entries exist for it at all**,
-the database is assumed not to exist yet, and `CREATE_DATABASE` on `system` is
-checked instead. The same applies to the default namespace: absent any
-entries, the check falls back to `CREATE_NAMESPACE` on the containing
-database.
+When you create an object, the deployment checks the database and each
+namespace that will contain it. One that **has no owner** -- because it does
+not exist yet, or predates per-object authorization -- is treated as one you are
+creating: the check falls back to `CREATE_DATABASE` on `system` for the
+database, or to `CREATE_NAMESPACE` on its parent for a namespace, and you become
+its owner. One that has an owner needs `USAGE` as usual.
 
-So a principal holding `CREATE_DATABASE` can act on a database that has not
-been created -- which is what makes creation possible at all, and why an empty
-ACL set is not the same as a deny.
+So a principal holding `CREATE_DATABASE` can create a table in a database that
+has not been created -- which is what makes creation possible at all, and why
+an empty ACL set is not the same as a deny. The fallback applies only when
+creating; other operations on a database or namespace need `USAGE` on it.
 
 ## Listing grants {#listing}
 
 Entries can be listed filtered by object, by subject, or both:
 
 ```
-object  = table:db/ns/documents
+object  = table:db:ns$documents
 subject = G:data-science
 ```
 
-Results paginate through a continuation token. One stored `(object, subject)`
+Results paginate through a continuation token, at most 100 entries to a page. One stored `(object, subject)`
 tuple carrying several privileges expands into several entries in the
 response, so the count reflects privileges rather than tuples.
 

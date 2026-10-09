@@ -57,7 +57,10 @@ Vector search is a technique used to search for similar items based on their vec
 Raw data (e.g. text, images, audio, etc.) is converted into embeddings via an embedding model, which are then stored in a multimodal lakehouse like LanceDB. To perform similarity search at scale, an index is created on the stored embeddings, which can then used to perform fast lookups.
 
 <Note>
-Vector search has **no SQL form**. Run it here and use [SQL](/sql) over the result.
+In [SQL](/sql), vector search depends on the deployment: some versions plan
+`ORDER BY distance(vector, query_vector) LIMIT k` as one -- see
+[SQL](/basics/sql#no-vector-sql). The query builder on this page works with
+every embedded and deployed database.
 </Note>
 
 ## Supported distance metrics
