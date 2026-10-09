@@ -112,10 +112,12 @@ Perform full-text search and retrieve results:
 
 <CodeGroup>
 ```python Python icon="python"
-results = table.search("puppy")
+results = (
+    table.search("puppy")
     .limit(10)
     .select(["text"])
     .to_list()
+)
 # [{'text': 'Frodo was a happy puppy', '_score': 0.6931471824645996}]
 ```
 

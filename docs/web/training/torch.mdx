@@ -99,16 +99,34 @@ a subset of columns, you can significantly reduce your I/O requirements by selec
 `Permutation` class provides a `select_columns` method that provides this functionality.
 
 ```py Python icon=Python 
+import lancedb
+import pyarrow as pa
+import torch
 from lancedb.permutation import Permutation
 
-permutation = Permutation.identity(table).select_columns(["id", "prompt"])
+db = lancedb.connect("memory://")
+prompts = db.create_table(
+    "prompts",
+    pa.table(
+        {
+            "id": range(4),
+            "prompt": ["north", "south", "east", "west"],
+            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]],
+        }
+    ),
+)
+
+permutation = Permutation.identity(prompts).select_columns(["id", "prompt"])
 dataloader = torch.utils.data.DataLoader(
     permutation, batch_size=1024, shuffle=True
 )
 
 for batch in dataloader:
-    print(batch.schema)
+    print(sorted(batch))  # ['id', 'prompt']: the embedding is never read
 ```
+
+Each batch is a dict of the selected columns, the default `Permutation` format
+described above.
 
 ## Using multiple DataLoader workers {#using-multiple-dataloader-workers}
 

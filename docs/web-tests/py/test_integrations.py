@@ -1390,9 +1390,12 @@ def test_frameworks_pydantic_examples() -> None:
             {"text": "goodbye world", "vector": [0.0, 1.0]},
         ]
     )
-    results = table.search("hello world").limit(1).to_pydantic(LanceDocs)
+    results = table.search([1.0, 0.0]).limit(1).to_pydantic(LanceDocs)
     print(results[0].text)
+    # hello world
     # --8<-- [end:frameworks_pydantic_base_example]
+    assert isinstance(results[0], LanceDocs)
+    assert results[0].text == "hello world"
 
 
 # Platform integrations
@@ -1686,7 +1689,7 @@ def test_platforms_pandas_examples() -> None:
     # --8<-- [end:platforms_pandas_vector_search]
 
     # --8<-- [start:platforms_pandas_async_example]
-    async def run_pandas_async_example() -> None:
+    async def run_pandas_async_example() -> pd.DataFrame:
         async_db = await lancedb.connect_async(
             str(Path(tempfile.mkdtemp()) / "pandas-async")
         )
@@ -1699,16 +1702,16 @@ def test_platforms_pandas_examples() -> None:
         async_table = await async_db.create_table(
             "creatures_async", data=async_df, mode="overwrite"
         )
-        async_results = await (
-            async_table.search([0.6, 0.4, 0.8])
-            .select(["text", "_distance"])
-            .limit(1)
-            .to_pandas()
-        )
+        # An async search returns its query builder from an await
+        query = await async_table.search([0.6, 0.4, 0.8])
+        async_results = await query.select(["text", "_distance"]).limit(1).to_pandas()
         print(async_results)
+        return async_results
 
-    asyncio.run(run_pandas_async_example())
+    async_results = asyncio.run(run_pandas_async_example())
     # --8<-- [end:platforms_pandas_async_example]
+    assert async_results["text"].tolist() == ["sage"]
+    assert async_results["_distance"].tolist() == [0.0]
 
 
 def test_platforms_polars_examples() -> None:
