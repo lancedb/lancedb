@@ -823,8 +823,8 @@ impl From<LanceDbFtsToken> for FtsToken {
     language = "English".to_string(),
     max_token_length = Some(40),
     lower_case = true,
-    stem = true,
-    remove_stop_words = true,
+    stem = None,
+    remove_stop_words = None,
     custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
@@ -838,15 +838,15 @@ pub fn tokenize(
     language: String,
     max_token_length: Option<u32>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
 ) -> PyResult<Vec<FtsToken>> {
-    let params = FtsIndexBuilder::default()
+    let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
         .map_err(|_| {
@@ -857,13 +857,17 @@ pub fn tokenize(
         })?
         .max_token_length(max_token_length.map(|value| value as usize))
         .lower_case(lower_case)
-        .stem(stem)
-        .remove_stop_words(remove_stop_words)
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
         .ngram_prefix_only(prefix_only)
         .custom_stop_words(custom_stop_words);
+    if let Some(stem) = stem {
+        params = params.stem(stem);
+    }
+    if let Some(remove_stop_words) = remove_stop_words {
+        params = params.remove_stop_words(remove_stop_words);
+    }
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
