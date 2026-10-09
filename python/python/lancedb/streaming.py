@@ -161,12 +161,25 @@ class _TwoPhaseSplitReader:
             raise ValueError(f"skip ({skip}) out of range for {total_rows} row(s)")
 
         # Natural (block, then row) order: block_pos[k]/local_offset[k]
-        # describe the row whose dense natural rank is exactly k.
-        block_pos = np.repeat(np.arange(num_blocks, dtype=np.int64), counts)
+        # describe the row whose dense natural rank is exactly k.  These two
+        # arrays are retained for the reader's whole lifetime, one entry per
+        # row in the *entire* split (not just the resident window -- see the
+        # whole-split-memory review thread, still open) -- so their dtype is
+        # the full per-row memory cost, not a rounding choice.  block_pos
+        # values are block indices (bounded by num_blocks) and local_offset
+        # values are in-block row offsets (bounded by this split's largest
+        # block), both far smaller than the row-rank range sigma/order below
+        # need int64 for, so int32 halves that cost in the realistic case;
+        # falls back to int64 only if a single split's block count or block
+        # size itself exceeds what int32 can represent.
+        max_count = int(counts.max()) if num_blocks else 0
+        pos_dtype = np.int32 if num_blocks < 2**31 else np.int64
+        local_dtype = np.int32 if max_count < 2**31 else np.int64
+        block_pos = np.repeat(np.arange(num_blocks, dtype=pos_dtype), counts)
         local_offset = (
-            np.concatenate([np.arange(c, dtype=np.int64) for c in counts])
+            np.concatenate([np.arange(c, dtype=local_dtype) for c in counts])
             if num_blocks
-            else np.array([], dtype=np.int64)
+            else np.array([], dtype=local_dtype)
         )
 
         if shuffle and total_rows:

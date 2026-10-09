@@ -36,6 +36,7 @@ import threading
 from unittest.mock import patch
 
 import lancedb
+import numpy as np
 import pyarrow as pa
 import pytest
 from utils import (
@@ -3474,6 +3475,25 @@ def test_two_phase_memory_table_already_at_a_later_version():
     ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
     ids = [s["id"] for s in ds]
     assert sorted(ids) == list(range(8))
+
+
+def test_two_phase_reader_plan_arrays_are_int32(lance_table):
+    """_plan_block_pos/_plan_local_offset are retained for the reader's
+    whole lifetime, one entry per row in the entire split (the open
+    whole-split-memory review thread) -- so their dtype is a real, constant
+    memory-footprint decision, not an implementation detail. Pinned here at
+    int32 (half of int64) so a future change can't silently regress it."""
+    ds = StreamingDataset(
+        lance_table, num_splits=1, shuffle_seed=SHUFFLE_SEED, block_size=10
+    )
+    reader = ds._make_two_phase_reader(0, ds._open_pinned_table(), None)
+    assert reader._plan_block_pos.dtype == np.int32
+    assert reader._plan_local_offset.dtype == np.int32
+    # Values must still be correct, not just narrower -- e.g. a block index
+    # silently wrapping around int32 would be a far worse regression than
+    # the memory this dtype choice saves.
+    assert reader._plan_block_pos.max() < ds._num_blocks // ds._num_splits
+    assert reader._plan_local_offset.max() < 10  # block_size
 
 
 def test_two_phase_rejects_lsm_write_spec_table(tmp_path):
