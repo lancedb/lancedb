@@ -693,9 +693,9 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The legacy number of IVF partitions to search. Lance interprets this as
-        a maximum. If this is None then
-        Lance's default probe settings will be used.
+        The legacy number of IVF partitions to search. Lance sets both probe
+        bounds to this value. If this is None then Lance's default probe settings
+        will be used.
 
         - A higher number makes search more accurate but also slower.
 
