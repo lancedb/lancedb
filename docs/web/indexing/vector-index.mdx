@@ -3,6 +3,14 @@ title: "Vector Indexes"
 sidebarTitle: "Vector Index"
 description: "Build and manage LanceDB vector indexes."
 icon: "arrow-up-right-dots"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Vector indexes are built in the embedded library and on a deployment. The
+    embedded library builds an index before `create_index()` returns; a
+    deployment builds it in the background, keeps it up to date, and builds
+    only `IVF_FLAT`, `IVF_PQ`, `IVF_RQ` and `IVF_HNSW_SQ`.
 ---
 
 import {
@@ -53,7 +61,7 @@ Lance with `index_type`.
 | Maximum compression | `IVF_RQ` | IVF indexing with RaBitQ quantization | Around `1/32` of raw size | `IvfRq` |
 | Higher accuracy at small dimensions (`dimension <= 256`) | `IVF_PQ` | IVF indexing with product quantization | Usually `1/64` to `1/16` of raw size (depends on `num_sub_vectors`) | `IvfPq` |
 | Best recall/latency trade-off | `IVF_HNSW_SQ` | IVF-HNSW indexing with scalar | Typically a little larger than `1/4` of raw size | `IvfHnswSq` |
-| Highest recall / no quantization | `IVF_HNSW_FLAT` | IVF-HNSW indexing with no quantization | Around raw vector size plus HNSW graph overhead | `IvfHnswFlat` |
+| Highest recall / no quantization | `IVF_HNSW_FLAT` | IVF-HNSW indexing with no quantization; embedded library only | Around raw vector size plus HNSW graph overhead | `IvfHnswFlat` |
 
 <Warning>
 If your vector search frequently includes metadata filters (`where(...)`), use `IVF_RQ` or `IVF_PQ`. In filtered workloads, HNSW-backed IVF indexes such as `IVF_HNSW_FLAT` and `IVF_HNSW_SQ` can show higher latency variance.
@@ -114,7 +122,7 @@ your destination. This iterative series of road networks mimics the layered grap
 In LanceDB, HNSW is not exposed as a top-level vector index. Instead, it's available as a substructure which 
 further indexes the selected vectors inside each IVF partition. 
 This combines the scalability of IVF with the high recall of HNSW.
-LanceDB supports IVF-HNSW-based quantized indexes `IVF_HNSW_FLAT`, `IVF_HNSW_PQ`, and `IVF_HNSW_SQ`. 
+LanceDB supports IVF-HNSW-based quantized indexes `IVF_HNSW_FLAT`, `IVF_HNSW_PQ`, and `IVF_HNSW_SQ`; a deployment builds only `IVF_HNSW_SQ`.
 </Info>
 
 
@@ -152,8 +160,8 @@ The `distance_type` can be specified at search time in addition to build time. I
 you do this, set it to the same value used to build the vector index. If the search
 metric does not match the index metric, LanceDB cannot use the index and falls
 back to a costly flat search. On LanceDB Cloud, the brute-force KNN safety limit
-can reject that search on a large table instead of executing it. LanceDB
-Enterprise doesn't have the limit.
+can reject that search on a large table instead of executing it. An Enterprise
+deployment applies the same limit only when it is configured to.
 
 When the search metric is omitted, current SDKs use the index metric if an index
 is available. Some older SDK versions sent `l2` when it was omitted, so explicitly
@@ -173,6 +181,8 @@ older client.
 **Filtered queries and adaptive `nprobes`.** When a `where(...)` filter is active, LanceDB initially scans `minimum_nprobes` 
 partitions and uses a wider scan if too few rows are found. 
 Set `minimum_nprobes == maximum_nprobes` or call `nprobes(n)` to instead fix the partition count.
+Whether a deployment widens the scan this way depends on its version; one that does not scans exactly
+`minimum_nprobes` partitions.
 </Note>
 
 Here is an example of a vector search exercising several of the above parameters.
@@ -265,17 +275,18 @@ The snippet below builds and queries an `IVF_HNSW_SQ` index.
  <Badge color="red">Enterprise-only</Badge> 
 In LanceDB Enterprise, vector indexes are managed **automatically**. The system asynchronously updates and optimizes indexes as a background process:
 - Automatically manages indexing parameters and storage
-- Infers vector columns from the schema
-- GPU-based indexing is available on request -- [contact support](/deployment/support) to enable it for your deployment. A few billion vectors index in under 4 hours on GPU.
+- Can build an `IVF_PQ` index automatically on a vector column the deployment is configured to index
+- GPU-based `IVF_PQ` builds are available on request -- [contact support](/deployment/support) to enable them for your deployment. A few billion vectors index in under 4 hours on GPU.
 
  <Badge color="gray">Open-Source</Badge> 
  LanceDB OSS users can manually create vector indexes by calling `table.create_index()`. 
  See the above sections for guidance on manually tuning index parameters as data changes.
 
 <Note>
-`create_index()` returns immediately, but the vector index builds asynchronously. 
+On a deployment, `create_index()` returns immediately and the vector index builds asynchronously.
 To wait until all data is indexed, specify the `wait_timeout` parameter, or call `wait_for_index(...)` afterward — 
 it waits for the named index to exist and for `index_stats(...)` to report `num_unindexed_rows == 0`.
+In the embedded library the index is built before `create_index()` returns.
 </Note>
 
 <Note>
@@ -287,11 +298,12 @@ fallback and searches only indexed rows.
 <Info>
 **Operational checks**
 
-After appends or other writes, use `optimize()` to fold new rows into existing indexes.
+In the embedded library, use `optimize()` after appends or other writes to fold new rows into existing indexes.
+A deployment does this in the background, and `optimize()` is not available there.
 </Info>
 #### Check Index Status
 
-Vector index creation runs in the background and may take some time to complete. 
+On a deployment, vector index creation runs in the background and may take some time to complete. 
 While it is ongoing, you can check its status through the API or the **LanceDB Enterprise UI**.
 
 In the LanceDB Enterprise UI, navigate to your table page - the "Index" column reflects each column's index status: it is blank when no index exists, shows an "in progress" label while the index is being built, and shows the index type once the build completes.
@@ -318,7 +330,7 @@ Each entry returned by `list_indices()` also carries detailed per-index metadata
 
 
 <Note>
-These fields are populated for local and embedded tables. On LanceDB Enterprise remote tables they are returned as `None` / `undefined` until the server response surfaces them.
+These fields are populated for local tables. On a deployment, `list_indices()` returns them except `num_unindexed_rows`; use `index_stats()` for index coverage.
 </Note>
 #### Custom Index Names
 

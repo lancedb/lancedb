@@ -4,6 +4,15 @@ sidebarTitle: "Cleanup"
 description: "Pruning old versions and the files only they referenced."
 icon: broom
 keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
+availability:
+  oss: available
+  enterprise: varies
+  summary: >-
+    In the embedded library, `optimize()` removes versions older than a
+    retention window, 7 days by default. A deployment removes old versions in
+    the background only when its configuration enables cleanup, and that
+    configuration sets the retention period; `optimize()` is not available
+    there.
 ---
 
 Every write keeps the version before it, which is what makes
@@ -14,7 +23,8 @@ those versions referenced.
 <Note>
 **Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
 merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
-Enterprise schedules them as separate jobs.
+Enterprise schedules them as separate jobs, and runs cleanup only when the
+deployment's configuration enables it.
 </Note>
 
 ## Retention {#retention}
@@ -26,7 +36,8 @@ table.optimize(cleanup_older_than=timedelta(days=30))
 ```
 
 `cleanup_older_than` defaults to **7 days**. Versions older than that are
-removed, along with the files only they referenced.
+removed, along with the files only they referenced. On a deployment, the
+retention period comes from its configuration instead.
 
 The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
 everything except it.
@@ -46,8 +57,8 @@ Compaction writes new, merged files before the old ones are removed, so disk
 usage can rise before it falls. Space is reclaimed only when cleanup prunes the
 versions that referenced the superseded files.
 
-If you need to reclaim space aggressively, shorten the retention window rather
-than waiting for the default:
+If you need to reclaim space aggressively in the embedded library, shorten the
+retention window rather than waiting for the default:
 
 ```python
 table.optimize(cleanup_older_than=timedelta(days=1))
@@ -62,6 +73,9 @@ old, because it cannot tell them apart from a live write.
 ```python
 table.optimize(delete_unverified=True)
 ```
+
+This option belongs to `optimize()` in the embedded library. A deployment's
+cleanup jobs never set it.
 
 <Warning>
 `delete_unverified=True` removes them regardless of age. Only set it when you

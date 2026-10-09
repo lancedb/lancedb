@@ -4,19 +4,25 @@ sidebarTitle: "Background Jobs"
 description: "Jobs a deployment runs on its own — visible in SHOW JOBS, not started by a call you make."
 icon: gears
 keywords: ["background jobs", "job type", "wal", "spfresh", "prewarm", "archive"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Background jobs run only on a deployment, which starts them itself; its
+    configuration decides which of them run.
 ---
 
-<Badge color="red">Enterprise</Badge>
-
-Every job documented elsewhere in these docs -- [Build & Repair](/indexing/reindexing),
+The jobs documented elsewhere in these docs -- [Build & Repair](/indexing/reindexing),
 [Compaction](/maintenance/compaction), [Cleanup](/maintenance/cleanup),
-[Column Refresh](/feature-engineering/refresh-column) -- is one you cause,
-directly or by a schedule you set. This page is the rest: jobs the deployment
-runs to keep itself correct and fast, which you may see named in
-[`SHOW JOBS`](/sql/ddl/job#show) without having asked for any of them.
+[Column Refresh](/feature-engineering/refresh-column) -- start from a call you
+make or, for compaction, cleanup and index updates, from the deployment's own
+maintenance. This page is the rest: jobs the deployment runs to keep itself
+correct and fast, which you may see named in [`SHOW JOBS`](/sql/ddl/job#show)
+without having asked for any of them.
 
 There is no action to take on these beyond recognizing the name. None of them
-has a parameter you set or a call you make.
+has a parameter you set from an SDK; the deployment's operators configure them,
+and start the cache-warming jobs through its admin API.
 
 ## Write-ahead log maintenance {#wal}
 
@@ -41,7 +47,7 @@ log from growing without bound:
 | --- | --- |
 | `prewarm_page_cache` | Loads table data into a query node's page cache ahead of a request needing it. |
 | `prewarm_index_cache` | The same, for index structures. |
-| `startup_prewarm_idx` | Runs cache prewarming as part of a query node's own startup, rather than on a schedule. |
+| `startup_prewarm_idx` | Runs cache prewarming as part of a plan executor's own startup, rather than on a schedule, when the deployment enables it. |
 
 ## Registry housekeeping {#registry}
 
@@ -51,8 +57,8 @@ log from growing without bound:
 | `job_events_export` | Copies terminal jobs' event histories into a curated system table for metering. Registry-scoped, like the archive sweep. |
 
 These two are why an old job you completed weeks ago no longer shows in
-`SHOW JOBS` -- it was archived, not deleted; its events survive in the exported
-table.
+`SHOW JOBS` -- it was archived, not deleted. Where the deployment enables the
+export, its events also survive in the exported table.
 
 ## Object teardown {#teardown}
 
