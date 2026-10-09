@@ -1,7 +1,7 @@
 ---
-title: "Sampling a dataset"
-sidebarTitle: "Sampling"
-description: "Drawing a subset you can afford to work with, and fixing it when it has to be reproducible."
+title: "SQL sampling"
+sidebarTitle: "SQL Sampling"
+description: "Drawing a subset with SQL's TABLESAMPLE, and fixing it when it has to be reproducible."
 icon: dice
 keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
 availability:
@@ -9,13 +9,16 @@ availability:
   enterprise: varies
   summary: >-
     `TABLESAMPLE` is SQL, which runs on an Enterprise deployment with SQL
-    enabled. Shuffled reads for training work in both through the SDK; see
-    [Shuffling for training](#training).
+    enabled. Without SQL, the Python SDK samples and shuffles rows in both
+    offerings; see [Without SQL](#training).
 ---
 
 Most curation starts with a subset. A question you can answer in ten seconds on
 1% of the data is worth asking twenty times; the same question on the whole
 table is worth asking once.
+
+This page draws that subset with SQL's `TABLESAMPLE`. Without SQL, in either
+offering, the Python SDK can do it too -- see [Without SQL](#training).
 
 ## A quick look {#quick}
 
@@ -83,21 +86,34 @@ were drawn. Sampling 10% of each side does **not** give 10% of the join — it
 gives roughly 1%. Sample once, after the join, unless you specifically want the
 smaller result.
 
-## Shuffling for training {#training}
+## Without SQL {#training}
 
-For a training loop rather than a query, the SDKs read a table in a shuffled
-order without SQL at all, in the embedded library and on a deployment alike:
+<Badge color="green">OSS</Badge> <Badge color="red">Enterprise</Badge>
+
+Everything above needs SQL. The Python SDK's permutation builder samples and
+shuffles without it, in the embedded library and on a deployment alike:
 
 ```python
-from lancedb.permutation import Permutation
+from lancedb.permutation import Permutation, permutation_builder
 
-permutation = Permutation.identity(table)
-dataloader = torch.utils.data.DataLoader(permutation)
+# Every row, in a seeded shuffled order
+shuffled = permutation_builder(table).shuffle(seed=42).execute()
+permutation = Permutation.from_tables(table, shuffled)
+
+# A reproducible 10% sample: the first of two random splits
+splits = permutation_builder(table).split_random(ratios=[0.1, 0.9], seed=42).execute()
+sample = Permutation.from_tables(table, splits, split=0)
+
+for batch in sample.iter(batch_size=256):
+    ...
 ```
 
-This is the right tool for epoch-level shuffling, where you want every row
-eventually and only the order varies. `TABLESAMPLE` is for when you want fewer
-rows. See [Training](/training/data-loading).
+`Permutation.identity(table)` reads rows in their stored order and does not
+shuffle. A `Permutation` is a map-style PyTorch dataset, so either of the above
+can be passed to `torch.utils.data.DataLoader`, which reads it in the
+permutation's order. A shuffled order is the right tool for epoch-level
+shuffling, where you want every row eventually and only the order varies; a
+split is for when you want fewer rows. See [Training](/training/data-loading).
 
 ## Reference {#reference}
 
