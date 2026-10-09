@@ -352,7 +352,7 @@ The choice gets baked into both sub-queries, so the vector and FTS halves see th
 
 ## More on Reranking {#more-on-reranking}
 
-You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB comes with [**built-in rerankers**](https://docs.lancedb.com/reranking) and you can implement your own **custom reranker** as well. Reranking and score normalization run in your application, whether the table is local or on a deployment. 
+You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB comes with [**built-in rerankers**](https://docs.lancedb.com/reranking) and you can implement your own **custom reranker** as well. Reranking and score normalization run in your application, whether the table is local or on a deployment.
 
 By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion score, to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 
