@@ -541,7 +541,9 @@ class DBConnection(EnforceOverrides):
         LanceTable(name='table4', ...)
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_table is not supported for this connection type"
+        )
 
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
@@ -596,7 +598,9 @@ class DBConnection(EnforceOverrides):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "open_table is not supported for this connection type"
+        )
 
     def create_materialized_view(
         self,
@@ -725,13 +729,17 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table is not supported for this connection type"
+        )
 
     def drop_table_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job:
         """Start dropping a table and return its cleanup job."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table_async is not supported for this connection type"
+        )
 
     def rename_table(
         self,
@@ -759,18 +767,25 @@ class DBConnection(EnforceOverrides):
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "rename_table is not supported for this connection type"
+        )
 
     def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_database is not supported for this connection type"
+        )
 
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """
         Drop all tables from the database
+
+        Remote connections do not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
 
         Parameters
         ----------
@@ -780,7 +795,9 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_all_tables is not supported for this connection type"
+        )
 
     @property
     def uri(self) -> str:

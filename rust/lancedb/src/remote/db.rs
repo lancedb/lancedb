@@ -1665,7 +1665,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // TODO: Implement namespace-aware drop_all_tables
         let _namespace_path = namespace_path; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
-            message: "Dropping all tables is not currently supported in the remote API".to_string(),
+            message: "Dropping all tables is not currently supported in the remote API. \
+                      List tables and call drop_table for each table instead."
+                .to_string(),
         })
     }
 
