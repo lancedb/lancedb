@@ -451,7 +451,7 @@ class StreamingDataset(IterableDataset):
       default, the number of workers is determined by ``os.cpu_count()``.
 
     The main thread round-robins over the cooked queues, yielding one row per
-    split per cycle. 
+    split per cycle.
 
     Parameters
     ----------
@@ -894,6 +894,24 @@ class StreamingDataset(IterableDataset):
                     "block_size does not yet support a table checked out to "
                     f"a non-default branch ({self._pinned_branch!r}); check "
                     "out the default branch before constructing StreamingDataset"
+                )
+            # An LSM write spec means some acknowledged writes only exist in
+            # the MemWAL, not yet flushed into the base table that the native
+            # scanner/take paths below read; a version pin can't see them, so
+            # reads here would silently omit them with no error.  1-phase
+            # already refuses this for the same reason (unflushed rows have
+            # no row id -- see PermutationBuilder); block_size mode has no
+            # row ids in its read path either, but reads positionally, so it
+            # fails differently (stale values, not a missing-row-id error)
+            # and needs its own explicit check.
+            if table.get_lsm_write_spec() is not None:
+                raise ValueError(
+                    "block_size does not yet support a table with an LSM "
+                    "write spec set; unflushed MemWAL rows are not visible "
+                    "to a version-pinned read, so block reads could "
+                    "silently miss acknowledged writes. Call "
+                    "table.checkpoint_lsm() and table.unset_lsm_write_spec() "
+                    "first, or construct StreamingDataset without block_size"
                 )
             self._pinned_version = table.version
 

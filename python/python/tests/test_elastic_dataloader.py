@@ -3418,6 +3418,36 @@ def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
     )
 
 
+def test_two_phase_rejects_lsm_write_spec_table(tmp_path):
+    """An LSM write spec means some acknowledged writes live only in the
+    MemWAL, invisible to a version-pinned read; block_size must refuse the
+    table at construction rather than silently reading stale base-table
+    values (mirroring the row-id rejection 1-phase already applies)."""
+    from lancedb import LsmWriteSpec
+
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64(), nullable=False),
+            pa.field("value", pa.int64(), nullable=False),
+        ]
+    )
+    table = db.create_table(
+        "t",
+        pa.Table.from_pydict({"id": list(range(8)), "value": [0] * 8}, schema=schema),
+    )
+    table.set_unenforced_primary_key("id")
+    table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 1))
+    table.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        pa.Table.from_pydict({"id": list(range(8)), "value": [99] * 8}, schema=schema)
+    )
+
+    with pytest.raises(ValueError, match="LSM write spec"):
+        StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+
+
 def test_two_phase_reshuffle_blocks_per_epoch_toggle(lance_table):
     """reshuffle_blocks_per_epoch=False keeps each split's blocks fixed
     across epochs; the default (True) reassigns them every epoch."""
