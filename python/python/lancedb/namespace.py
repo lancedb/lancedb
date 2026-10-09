@@ -209,6 +209,13 @@ def _query_to_namespace_request(
     if query.distance_type is not None:
         kwargs["distance_type"] = query.distance_type
 
+    if kwargs.get("maximum_nprobes") == 0:
+        # The generated 0.13 model rejects LanceDB's unbounded sentinel;
+        # model_copy preserves direct wire pass-through to the Lance receiver.
+        maximum_nprobes = kwargs.pop("maximum_nprobes")
+        return QueryTableRequest(**kwargs).model_copy(
+            update={"maximum_nprobes": maximum_nprobes}
+        )
     return QueryTableRequest(**kwargs)
 
 

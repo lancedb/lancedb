@@ -1133,6 +1133,7 @@ class TestPushdownOperations:
         )
         assert request.nprobes == 5
         assert request.maximum_nprobes == 0
+        assert request.to_dict()["maximum_nprobes"] == 0
 
 
 @pytest.mark.asyncio

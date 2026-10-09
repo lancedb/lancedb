@@ -2334,7 +2334,7 @@ def test_query_sync_maximal():
             "prefilter": True,
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
-            "maximum_nprobes": 5,
+            "nprobes": 5,
             "lower_bound": None,
             "upper_bound": None,
             "ef": None,
