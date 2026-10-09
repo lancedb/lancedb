@@ -1949,7 +1949,7 @@ def test_write_vectors_with_null_elements(
     schema = pa.schema({"vector": pa.list_(pa.float32(), 2), "id": pa.int64()})
     vectors = [[3.0, 4.0], [np.nan, 1.0], [np.nan, np.nan]]
     if input_type == "pandas":
-        import pandas as pd
+        pd = pytest.importorskip("pandas")
 
         data = pd.DataFrame(
             {
