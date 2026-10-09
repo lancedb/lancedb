@@ -193,7 +193,7 @@ impl VectorQueryTable {
                 || options.output.id_column.is_some())
         {
             return plan_err!(
-                "vector_dedup requires all partitions and returns original rows; sampling and id_column are pair-query options"
+                "dedupe requires all partitions and returns original rows; sampling and id_column are pair-query options"
             );
         }
         let config = DuplicatePairsConfig {
