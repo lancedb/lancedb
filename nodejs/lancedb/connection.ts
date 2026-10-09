@@ -723,7 +723,7 @@ export class LocalConnection extends Connection {
     return this.inner.tableNames(
       namespacePath ?? [],
       tableNamesOptions?.startAfter,
-      tableNamesOptions?.limit,
+      normalizeTableListingLimit(tableNamesOptions?.limit),
     );
   }
 
@@ -833,7 +833,7 @@ export class LocalConnection extends Connection {
     return this.inner.listTables(
       namespacePath ?? [],
       listTablesOptions?.pageToken,
-      listTablesOptions?.limit,
+      normalizeTableListingLimit(listTablesOptions?.limit),
     );
   }
 
@@ -1101,6 +1101,13 @@ export class LocalConnection extends Connection {
   async resumeJob(jobId: string): Promise<string> {
     return this.inner.resumeJob(jobId);
   }
+}
+
+function normalizeTableListingLimit(limit?: number): number | undefined {
+  validateNonNegativeInteger(limit, "limit");
+  // The native binding takes u32: larger JS numbers otherwise wrap to zero or
+  // a smaller page size. A listing limit is an upper bound, so saturate it.
+  return limit === undefined ? undefined : Math.min(limit, 0xffffffff);
 }
 
 /**
