@@ -807,67 +807,55 @@ def test_table_unimplemented_functions():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", [None, 1])
-async def test_remote_to_lance(tmp_path, version):
+@pytest.mark.parametrize("expose_location", [False, True])
+async def test_remote_to_lance_rejection(
+    tmp_path, version, expose_location, monkeypatch
+):
     import lance
 
     location = tmp_path / "test.lance"
     lance.write_dataset(pa.table({"id": [1]}), location)
     lance.write_dataset(pa.table({"id": [2]}), location, mode="append")
+    requests = []
+
+    def fail_dataset(*args, **kwargs):
+        raise AssertionError("remote storage must not be opened")
+
+    monkeypatch.setattr(lance, "dataset", fail_dataset)
 
     def handler(request):
+        requests.append(request.path)
         assert request.path == "/v1/table/test/describe/"
         content_len = int(request.headers.get("Content-Length", 0))
         body = json.loads(request.rfile.read(content_len)) if content_len else {}
         request.send_response(200)
         request.send_header("Content-Type", "application/json")
         request.end_headers()
-        request.wfile.write(
-            json.dumps(
-                {
-                    "version": body.get("version") or 2,
-                    "schema": {"fields": []},
-                    "location": str(location),
-                }
-            ).encode()
-        )
+        response = {
+            "version": body.get("version") or 2,
+            "schema": {"fields": []},
+        }
+        if expose_location:
+            response["location"] = str(location)
+        request.wfile.write(json.dumps(response).encode())
 
     options = {"default_scan_options": {"with_row_id": True}}
     with mock_lancedb_connection(handler) as db:
         table = db.open_table("test", version=version)
-        sync_dataset = table.to_lance(**options)
+        opened_requests = list(requests)
+        with pytest.raises(NotImplementedError) as sync_error:
+            table.to_lance(**options)
+        assert requests == opened_requests
 
     async with mock_lancedb_connection_async(handler) as db:
         table = await db.open_table("test", version=version)
-        async_dataset = await table.to_lance(**options)
-
-    for dataset in [sync_dataset, async_dataset]:
-        assert isinstance(dataset, lance.LanceDataset)
-        assert dataset.version == (version or 2)
-        result = dataset.to_table()
-        assert result["id"].to_pylist() == ([1] if version == 1 else [1, 2])
-        assert "_rowid" in result.column_names
-
-
-@pytest.mark.asyncio
-async def test_remote_to_lance_without_server_location():
-    def handler(request):
-        assert request.path == "/v1/table/test/describe/"
-        request.send_response(200)
-        request.send_header("Content-Type", "application/json")
-        request.end_headers()
-        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
-
-    with mock_lancedb_connection(handler) as db:
-        table = db.open_table("test")
-        with pytest.raises(NotImplementedError) as sync_error:
-            table.to_lance()
-
-    async with mock_lancedb_connection_async(handler) as db:
-        table = await db.open_table("test")
+        opened_requests = list(requests)
         with pytest.raises(NotImplementedError) as async_error:
-            await table.to_lance()
+            await table.to_lance(**options)
+        assert requests == opened_requests
 
-    assert "Table URI not supported by the server" in str(sync_error.value)
+    assert "to_lance() is not supported for remote tables" in str(sync_error.value)
+    assert "query the server" in str(sync_error.value)
     assert str(sync_error.value) == str(async_error.value)
 
 
@@ -3284,14 +3272,17 @@ def blob_descriptor_take_table():
 
 
 @contextlib.contextmanager
-def blob_remote_table(*, server_version=Version("0.5.0")):
+def blob_remote_table(*, server_version=Version("0.5.0"), location=None):
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
-            request.wfile.write(json.dumps(BLOB_DESCRIBE_RESPONSE).encode())
+            response = dict(BLOB_DESCRIBE_RESPONSE)
+            if location is not None:
+                response["location"] = str(location)
+            request.wfile.write(json.dumps(response).encode())
         elif request.path.startswith("/v1/table/test/blob/image/"):
             path = request.path.partition("?")[0]
             row_id = int(path.split("/")[-2])
@@ -3321,14 +3312,19 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length", 0))
             body = json.loads(request.rfile.read(content_len))
-            assert body["with_row_id"] is True
-            if body["columns"] == ["image"]:
-                # fetch_blob_files sizes its handles from a descriptor take.
-                assert body["filter"].startswith("_rowid IN")
-                response_table = blob_descriptor_take_table()
+            columns = body.get("columns")
+            assert columns in (None, ["id", "image"], ["id"], ["image"])
+            if columns == ["id"]:
+                response_table = blob_query_response_table().select(["id"])
             else:
-                assert body["columns"] == ["id", "image"]
-                response_table = blob_query_response_table()
+                if columns == ["image"]:
+                    # fetch_blob_files sizes its handles from a descriptor take.
+                    assert body["filter"].startswith("_rowid IN")
+                    response_table = blob_descriptor_take_table()
+                else:
+                    response_table = blob_query_response_table()
+                if not body.get("with_row_id", False):
+                    response_table = response_table.drop(["_rowid"])
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
             request.end_headers()
@@ -3360,6 +3356,106 @@ def test_remote_blob_columns_and_fetch():
         assert table.blob_columns() == ["image"]
         blobs = table.fetch_blobs("image", [10, 20, 30])
         assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+@pytest.mark.parametrize("blob_mode", ["descriptions", "bytes", "lazy"])
+def test_sync_remote_blob_pandas_rejects_storage_access(
+    tmp_path, monkeypatch, blob_mode
+):
+    import lance
+
+    location = tmp_path / "remote.lance"
+    lance.write_dataset(pa.table({"id": [7], "image": [b"server-owned"]}), location)
+
+    def fail_dataset(*args, **kwargs):
+        raise AssertionError("remote storage must not be opened")
+
+    monkeypatch.setattr(lance, "dataset", fail_dataset)
+    with blob_remote_table(location=location) as table:
+        with pytest.raises(RuntimeError, match="to_lance.*remote tables") as error:
+            table.search().select(["id", "image"]).to_pandas(blob_mode=blob_mode)
+
+    assert isinstance(error.value.__cause__, NotImplementedError)
+
+
+@pytest.mark.asyncio
+async def test_async_remote_to_lance_rejects_storage_access(monkeypatch):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table
+
+        async def fail_uri():
+            raise AssertionError("remote table URI must not be requested")
+
+        monkeypatch.setattr(table, "uri", fail_uri)
+        with pytest.raises(NotImplementedError, match="remote tables"):
+            await table.to_lance()
+
+
+@pytest.mark.asyncio
+async def test_async_remote_blob_descriptions_to_pandas_uses_server(monkeypatch):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table
+
+        async def fail_uri():
+            raise AssertionError("remote table URI must not be requested")
+
+        async def fail_to_lance():
+            raise AssertionError("remote table storage must not be opened")
+
+        monkeypatch.setattr(table, "uri", fail_uri)
+        monkeypatch.setattr(table, "to_lance", fail_to_lance)
+
+        query_df = await (
+            table.query().select(["id", "image"]).to_pandas(blob_mode="descriptions")
+        )
+        table_df = await table.to_pandas(blob_mode="descriptions")
+
+        for df in (query_df, table_df):
+            assert df["id"].tolist() == [1, 2, 3]
+            assert "_rowid" not in df.columns
+            images = df["image"].tolist()
+            assert images[1] is None
+            assert images[0]["size"] == 5
+            assert "_lance_row_id" not in images[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
+async def test_async_remote_blob_pandas_rejects_unpinned_fetch(monkeypatch, blob_mode):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table
+
+        async def fail_uri():
+            raise AssertionError("remote table URI must not be requested")
+
+        async def fail_to_lance():
+            raise AssertionError("remote table storage must not be opened")
+
+        async def fail_fetch(*args, **kwargs):
+            raise AssertionError("blob fetch must not use an unpinned remote table")
+
+        monkeypatch.setattr(table, "uri", fail_uri)
+        monkeypatch.setattr(table, "to_lance", fail_to_lance)
+        monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
+        monkeypatch.setattr(table, "fetch_blob_files", fail_fetch)
+
+        pandas_kwargs = {} if blob_mode == "lazy" else {"blob_mode": blob_mode}
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await table.query().select(["id", "image"]).to_pandas(**pandas_kwargs)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await table.to_pandas(**pandas_kwargs)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
+async def test_async_remote_nonblob_projection_to_pandas(blob_mode):
+    with blob_remote_table() as remote_table:
+        df = await (
+            remote_table._table.query().select(["id"]).to_pandas(blob_mode=blob_mode)
+        )
+
+    assert df["id"].tolist() == [1, 2, 3]
+    assert list(df.columns) == ["id"]
 
 
 def test_remote_blob_files_are_lazy_seekable_handles():

@@ -259,10 +259,9 @@ class RemoteTable(Table):
         )
 
     def to_lance(self, **kwargs) -> "lance.LanceDataset":
-        """Return the Lance dataset at this table handle's version and branch.
+        """Direct Lance dataset access is not supported for remote tables.
 
-        Requires the server to provide a dataset location accessible to the client.
-        Keyword arguments are forwarded to ``lance.dataset``.
+        Use ``table.search().to_arrow()`` to read query results through the server.
         """
         return LOOP.run(self._table.to_lance(**kwargs))
 
