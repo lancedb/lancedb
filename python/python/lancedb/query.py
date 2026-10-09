@@ -3713,7 +3713,7 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions may be searched.
+        partitions will be searched.
 
         Increasing this value will increase the recall of your query but will
         also increase the latency of your query. If this method is not called,
@@ -3724,8 +3724,8 @@ class AsyncVectorQueryBase:
         you the desired recall.
 
         LanceDB retains this as `nprobes` through local and remote request
-        construction. Lance interprets it as a maximum, so unless configured
-        separately, the minimum remains at Lance's adaptive default.
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
         """
         self._inner.nprobes(nprobes)
         return self
