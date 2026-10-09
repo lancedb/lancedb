@@ -3931,22 +3931,14 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
         let when_matched_update_all_filt = match value.when_matched_update_all_filt {
             Some(MergeFilter::Sql(sql)) => Some(sql),
-            Some(MergeFilter::Expr(_)) => {
-                return Err(Error::NotSupported {
-                    message: "DataFusion expressions are not supported on remote tables".into(),
-                });
-            }
+            Some(MergeFilter::Expr(expr)) => Some(expr_to_sql_string(&expr)?),
             None => None,
         };
 
         let when_not_matched_by_source_delete_filt =
             match value.when_not_matched_by_source_delete_filt {
                 Some(MergeFilter::Sql(sql)) => Some(sql),
-                Some(MergeFilter::Expr(_)) => {
-                    return Err(Error::NotSupported {
-                        message: "DataFusion expressions are not supported on remote tables".into(),
-                    });
-                }
+                Some(MergeFilter::Expr(expr)) => Some(expr_to_sql_string(&expr)?),
                 None => None,
             };
 
@@ -4817,6 +4809,69 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[rstest]
+    #[case::sql(false, false)]
+    #[case::expr_update(true, false)]
+    #[case::expr_delete(false, true)]
+    #[case::expr_both(true, true)]
+    #[tokio::test]
+    async fn test_merge_insert_filter_expressions(
+        #[case] update_expr: bool,
+        #[case] delete_expr: bool,
+    ) {
+        use datafusion_expr::{col, lit};
+
+        let batch = record_batch!(("id", Int32, [0, 1]), ("v", Int32, [100, 110])).unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "id");
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "true");
+            assert_eq!(
+                params["when_matched_update_all_filt"],
+                if update_expr {
+                    "(`target`.v < `source`.v)"
+                } else {
+                    "target.v < source.v"
+                }
+            );
+            assert_eq!(
+                params["when_not_matched_by_source_delete_filt"],
+                if delete_expr { "(id > 3)" } else { "id > 3" }
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 2, "num_updated_rows": 2, "num_inserted_rows": 0, "num_deleted_rows": 2}"#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["id"]);
+        if update_expr {
+            merge.when_matched_update_all_expr(col("target.v").lt(col("source.v")));
+        } else {
+            merge.when_matched_update_all(Some("target.v < source.v".into()));
+        }
+        if delete_expr {
+            merge.when_not_matched_by_source_delete_expr(col("id").gt(lit(3)));
+        } else {
+            merge.when_not_matched_by_source_delete(Some("id > 3".into()));
+        }
+
+        let result = merge.execute(data).await.unwrap();
+        assert_eq!(result.version, 2);
+        assert_eq!(result.num_updated_rows, 2);
+        assert_eq!(result.num_inserted_rows, 0);
+        assert_eq!(result.num_deleted_rows, 2);
     }
 
     #[rstest]
