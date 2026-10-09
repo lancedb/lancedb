@@ -3074,10 +3074,8 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. Local plain scan queries
-            use Lance native conversion. Remote queries support descriptions,
-            but cannot safely materialize bytes or lazy handles without a
-            stable table snapshot across the query and blob fetches.
+            Controls how blob columns are returned. Remote queries support
+            "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
