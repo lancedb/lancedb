@@ -189,9 +189,9 @@ Table-level `storage_options` inherit every key from the connection and override
 </CodeGroup>
 
 <Tip>
-**Inspect the effective options**
+**Inspect a table's own options**
 
-On `AsyncTable`, `await table.initial_storage_options()` returns the options the table was opened with, and `await table.latest_storage_options()` returns the current options after any provider-driven refresh. The deprecated `table.storage_options()` method will be removed in a future release.
+On `AsyncTable`, `await table.initial_storage_options()` returns the options passed when the table was opened, and `await table.latest_storage_options()` returns them after any provider-driven refresh. Neither includes what the table inherits from its connection's `storage_options`, which still apply. The deprecated `table.storage_options()` method will be removed in a future release.
 </Tip>
 
 #### General object store options {#general-object-store-options}

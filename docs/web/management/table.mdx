@@ -185,10 +185,16 @@ await db.tableNames();
 </CodeGroup>
 
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
-rather than at the database root. Python's `table_exists` works only on a
-namespace connection, where it takes the table's full path as a list; local
-directory and deployment connections raise `NotImplementedError`. TypeScript
-has no `tableExists`.
+rather than at the database root.
+
+To find out whether a table exists, open it and handle the error, or look for
+its name in a listing. A missing table raises `ValueError` on a local directory
+or a deployment, and `lance_namespace.TableNotFoundError` on a connection from
+`connect_namespace`. A listing returns one page of names at a time, so check
+every page. Python's `table_exists` is no substitute: a local directory or a
+deployment raises `NotImplementedError` for it, and on a connection from
+`connect_namespace("dir", ...)` or `connect_namespace("rest", ...)` it fails with
+an `AttributeError`. TypeScript has no `tableExists`.
 
 ## Renaming and cloning {#rename-clone}
 
@@ -204,8 +210,8 @@ db.clone_table(
 ```
 
 Renaming is not supported on a local directory connection. On a deployment,
-whether a table can be renamed depends on how the deployment stores its
-catalog.
+whether a table can be renamed or cloned at all depends on how the deployment
+stores its catalog.
 
 A **shallow** clone -- the default -- references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
@@ -218,7 +224,8 @@ is [compacted](/maintenance/compaction) past the retention window, the version
 the clone points at can be pruned. Local OSS connections support shallow clones
 only; `is_shallow=False` is not implemented. If the copy must outlive the
 source's history, copy its data into an independent table instead. A deployment
-also makes shallow clones only.
+that supports cloning also makes shallow clones only, and one whose catalog
+does not support it refuses every clone.
 </Warning>
 
 <Note>
@@ -896,8 +903,13 @@ Remove several columns at once for efficiency:
     </CodeBlock>
 </CodeGroup>
 
-<Warning title="Irreversible Column Deletion">
-Dropping columns cannot be undone. Make sure you have backups or are certain before removing columns.
+<Warning title="Dropping a column is undone only by restoring a version">
+Dropping a column changes the latest version only. Until
+[cleanup](/maintenance/cleanup) prunes the versions from before the drop,
+[restoring](#versioning) one of them brings the column and its values back --
+along with the rest of the table as it was then. Once those versions are
+pruned, the drop cannot be undone, so check before dropping a column you may
+need.
 </Warning>
 
 ## Versioning {#versioning}

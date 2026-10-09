@@ -116,12 +116,24 @@ def namespace_table_ops_example():
         mode="create",  # use "overwrite" only if you want to replace existing table
     )
 
-    # Verify
-    print(db.list_namespaces())  # ['prod']
-    print(db.list_namespaces(namespace_path=["prod"]))  # ['recommendations', 'search']
-    print(db.list_tables(namespace_path=["prod", "search"]))  # ['user']
-    print(db.list_tables(namespace_path=["prod", "recommendations"]))  # ['user']
+    # Verify: listings return a response with the names and a page token
+    print(db.list_namespaces().namespaces)  # ['prod']
+    print(db.list_namespaces(namespace_path=["prod"]).namespaces)
+    # ['recommendations', 'search']
+    print(db.list_tables(namespace_path=["prod", "search"]).tables)  # ['user']
+    print(db.list_tables(namespace_path=["prod", "recommendations"]).tables)  # ['user']
     # --8<-- [end:namespace_table_ops]
+
+
+def test_namespace_table_ops(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    namespace_table_ops_example()
+    assert capsys.readouterr().out.splitlines() == [
+        "['prod']",
+        "['recommendations', 'search']",
+        "['user']",
+        "['user']",
+    ]
 
 
 def namespace_admin_ops_example():
@@ -135,8 +147,8 @@ def namespace_admin_ops_example():
     db.create_namespace(["prod", "search"])
 
     child_namespaces = db.list_namespaces(namespace_path=["prod"]).namespaces
-    print(f"Child namespaces under {namespace}: {child_namespaces}")
-    # Child namespaces under ['prod', 'search']: ['search']
+    print(f"Child namespaces under ['prod']: {child_namespaces}")
+    # Child namespaces under ['prod']: ['search']
 
     metadata = db.describe_namespace(["prod", "search"])
     print(f"Metadata for namespace {namespace}: {metadata}")
@@ -145,7 +157,17 @@ def namespace_admin_ops_example():
     db.drop_namespace(["prod", "search"], mode="skip")
     db.drop_namespace(["prod"], mode="skip")
     # --8<-- [end:namespace_admin_ops]
-    return child_namespaces, metadata
+    return db, child_namespaces, metadata
+
+
+def test_namespace_admin_ops(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    db, child_namespaces, metadata = namespace_admin_ops_example()
+    assert child_namespaces == ["search"]
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "Child namespaces under ['prod']: ['search']"
+    )
+    assert db.list_namespaces().namespaces == []
 
 async def connect_object_storage_config_async():
     # --8<-- [start:connect_object_storage_async]

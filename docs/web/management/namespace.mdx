@@ -53,14 +53,15 @@ If you want to go deeper, see the Lance format [namespace documentation](https:/
 A namespace path is a list of components. For example, `["prod", "search"]` means the `search`
 namespace inside the `prod` namespace. The empty path, `[]`, means the root namespace.
 
-Each component is a name, not a filesystem path segment. Namespace names can't be empty, and each
-component can contain only letters, numbers, underscores, hyphens, and periods. That keeps the same
-identifier usable across local directory namespaces and REST namespace identifiers.
+Each component is a name, not a filesystem path segment, and can't be empty. Keep each one to
+letters, numbers, underscores, hyphens, and periods, so the same identifier is usable everywhere: a
+local directory namespace accepts other characters too, but other namespace implementations and
+deployments can refuse them.
 
 ## Directory namespaces {#directory-namespaces}
 
 The simplest namespace model in LanceDB is a single root namespace, often represented by one
-directory:
+directory. Namespaces can nest inside it, as in this hierarchy:
 
 ```bash
 ./local_lancedb (root)
@@ -70,7 +71,12 @@ directory:
             └── data   (table)
 ```
 
-As a user of LanceDB OSS, you might never notice namespaces at first, because LanceDB exposes the single-level hierarchy shown above, with the data stored in the `data/` directory, where the root namespace is implicit. Connecting to this namespace is as simple as connecting to the catalog root:
+The hierarchy is logical, not a tree of folders: a directory namespace records it in a
+`__manifest` table in the root directory, and stores each table in a directory of its own there.
+
+As a user of LanceDB OSS, you might never notice namespaces at first, because a plain connection
+uses only the root namespace, which is implicit. Connecting to this namespace is as simple as
+connecting to the catalog root:
 
 <CodeGroup>
 ```python Python icon="python"
@@ -95,7 +101,7 @@ let db = connect("./local_lancedb").execute().await?;
 ```
 </CodeGroup>
 
-This creates the default namespace directory (`data/`) under the specified root path.
+A table created through this connection is stored directly under that path, as `<name>.lance`.
 
 You can also explicitly connect to a namespace using `lancedb.connect_namespace(...)` with the directory namespace implementation:
 
@@ -286,8 +292,8 @@ The SDK methods expose the namespace path in the idiom of each language:
 
 <Note>
 Using namespaces is **optional** in LanceDB, and most basic use cases do not require to work with them.
-An empty namespace (`[]`), which is the default, means "root namespace", and the data will be stored in
-the `data/` directory under the specified root path.
+An empty namespace (`[]`), which is the default, means the root namespace, whose tables are stored
+directly under the specified root path.
 </Note>
 
 ## Namespace management APIs {#namespace-management-apis}
@@ -322,12 +328,13 @@ doesn't exist, or contains data:
 - Drop mode: `fail` reports an error when the namespace doesn't exist, and `skip` treats a missing namespace as a successful no-op.
 - Drop behavior: `restrict` keeps non-empty namespaces from being dropped, and `cascade` drops child namespaces and tables first.
 
-Namespace path components can't be empty. Each component can contain only letters, numbers,
-underscores, hyphens, and periods.
+Namespace path components can't be empty, and are best kept to letters, numbers, underscores,
+hyphens, and periods, as [above](#namespace-paths-and-names).
 
 Listing APIs return the immediate children of the requested namespace path. Use `limit` with the
 returned `page_token` to page through large catalogs; pass an empty namespace path (`[]`) when you
-want to list from the root namespace.
+want to list from the root namespace. In Python, a listing returns a response: the names are in its
+`namespaces` or `tables`, and `page_token` is set when there is another page.
 
 ## Namespaces in LanceDB Enterprise {#namespaces-in-lancedb-enterprise}
 

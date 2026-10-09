@@ -352,5 +352,8 @@ Use the `drop_table()` method on the database to remove a table.
 </CodeGroup>
 
 This permanently removes the table and is not recoverable, unlike deleting rows.
-By default, if the table does not exist an exception is raised. To suppress this
-in Python on a local database, you can pass in `ignore_missing=True`.
+On a local database, dropping a table that does not exist raises an error; in
+Python, pass `ignore_missing=True` to suppress it. A deployment may report
+success instead, depending on how it stores its catalog, so do not rely on the
+error to tell you a table was missing. Python's deployment connection does not
+take `ignore_missing`.
