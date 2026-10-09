@@ -71,13 +71,14 @@ REFRESH MATERIALIZED VIEW chunks WITH (full = true)
 
 On earlier deployment versions, `full = true` asks for every row to be
 recomputed, and without it a refresh can reconcile only what changed in the
-source. Newer versions rebuild the whole view on every refresh, as every local
-SDK refresh does, and refuse `WITH` options.
+source. Recent versions refuse `WITH` options; whether their refresh rebuilds
+the whole view, as every local SDK refresh does, or adds only what changed
+depends on the version and on the view's query.
 
 <Warning>
 `CASCADE` asks for the views this one is built on to be refreshed first, in
 dependency order. Whether a deployment carries it out depends on its version,
-and newer versions refuse it; where it is refused, refresh each view yourself,
+and recent versions refuse it; where it is refused, refresh each view yourself,
 its sources first.
 </Warning>
 

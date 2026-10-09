@@ -111,7 +111,7 @@ operations that have no SQL form, such as a merge insert -- see
 | [Insert](/sql/dml/insert) | `INSERT INTO`, including `INSERT ... SELECT` |
 | [Update](/sql/dml/update) | `UPDATE ... SET` |
 | [Delete](/sql/dml/delete) | `DELETE FROM` |
-| [Copy](/sql/dml/copy) | `COPY` -- refused by newer deployment versions |
+| [Copy](/sql/dml/copy) | `COPY` -- refused by recent deployment versions |
 | [Refresh](/sql/dml/refresh) | filling computed columns and materialized views |
 
 ### DQL {#dql}
@@ -144,7 +144,7 @@ operations that have no SQL form, such as a merge insert -- see
 | Vector search | [depends on the deployment](/basics/sql#no-vector-sql); the query builder always has it |
 | Merge insert | no SQL form -- needs a source relation and a per-match policy |
 | `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
-| `COPY` | refused by newer deployment versions -- see [Copy](/sql/dml/copy) |
+| `COPY` | refused by recent deployment versions -- see [Copy](/sql/dml/copy) |
 | `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 

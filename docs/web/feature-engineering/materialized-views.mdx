@@ -92,20 +92,21 @@ the SDK refuses them on a `db://` connection.
 
 Materialized views are off by default on a deployment and have to be enabled
 there. How a deployment handles a view then depends on its LanceDB Enterprise
-version. Newer versions run every create and refresh as a job that rebuilds the
-whole view, as a local refresh does; the source does not need stable row ids,
-and [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view)
-accepts no options. Earlier versions could instead reconcile only what changed
-in the source, and could require the source to have stable row ids. A view
-created by an earlier version has to be recreated once the deployment moves to
-a newer one.
+version. Recent versions create and refresh every view as a SQL job: the source
+does not need stable row ids,
+[`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view) takes
+no options, and whether a refresh rebuilds the whole view, as a local refresh
+does, or adds only what changed in the source depends on the version and on the
+view's query. Earlier versions could require the source to have stable row ids
+and took refresh options; a view they created has to be recreated once the
+deployment moves to a recent version.
 
 Stable row ids are set up on the deployment, not by the SDK: a `db://`
 connection does not send `new_table_enable_stable_row_ids`, and no SDK call adds
 them to an existing table. An earlier version that requires them may give new
 tables stable row ids, may refuse a view created through SQL -- as the SDK
 creates one -- over a source without them, or may convert an existing source
-when a view is created through its REST API, which newer versions no longer
+when a view is created through its REST API, which recent versions no longer
 have. Check with the deployment's administrator which version it runs before
 relying on a source.
 
