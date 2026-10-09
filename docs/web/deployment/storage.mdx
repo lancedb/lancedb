@@ -1,7 +1,7 @@
 ---
-title: "Storage"
-sidebarTitle: "Storage"
-description: "Choosing and configuring where LanceDB stores its data -- how you deploy an embedded database."
+title: "Embedded storage configuration"
+sidebarTitle: "Embedded Storage"
+description: "Choosing and configuring where embedded LanceDB stores its data -- how you deploy an embedded database."
 icon: database
 keywords: ["storage", "s3", "gcs", "azure", "object store", "configuration", "deploy"]
 availability:
@@ -12,6 +12,12 @@ availability:
     connection URI and `storage_options`. On a deployment, storage is part of
     the deployment's own configuration instead.
 ---
+
+This page is about the embedded library, where your connection chooses and
+configures the storage backend. A LanceDB Enterprise deployment sets up its own
+storage when it is deployed, so a `db://` connection passes none of these
+options except an Azure storage account name -- see
+[Deployment](/enterprise/deployment) for how a deployment is set up.
 
 LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
 
