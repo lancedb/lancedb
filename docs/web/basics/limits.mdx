@@ -26,7 +26,9 @@ deployment.
 A name must not be empty, and must not contain `$` or `:` -- both are reserved
 as path delimiters, so a name holding one could not be addressed unambiguously.
 Length is counted in characters, not bytes. These lengths are a deployment's
-limits; the embedded library does not limit name length.
+limits; the embedded library does not limit name length. Keep to them anyway,
+and to the characters in [Naming rules](/basics/naming), which says what each
+connection and version checks.
 
 ## Jobs {#jobs}
 

@@ -1,0 +1,72 @@
+---
+title: "Naming rules"
+sidebarTitle: "Naming Rules"
+description: "The names a database, namespace, table or view can have, and which versions check them."
+icon: signature
+keywords: ["names", "naming", "table name", "namespace name", "identifier", "characters", "limits"]
+---
+
+A name ends up in a storage path, in a deployment's URLs, and in the identifiers
+that [authorization](/governance/authorization) records, so not every string
+works as one. A name that follows the rules on this page works on every
+connection. Some connections accept more today, as
+[below](#which-versions-check-them), but treat these rules as the contract.
+
+## The rules {#rules}
+
+| Object | Characters | Length |
+| --- | --- | --- |
+| Table, materialized view | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| View | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Namespace | each component: ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters a component; at most 10 components |
+| Database | ASCII letters and digits, `-`, `_`, `.`, and `/` between components | up to 64 characters |
+| Branch | anything but `$` and `:` | 1 to 64 characters |
+| Secret | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Function {/* if functions launched */} | ASCII letters and digits, `_` -- no `-` or `.` | 1 to 128 characters |
+
+And for every name:
+
+- It can't be empty, and neither can any component of a namespace path or a
+  database name.
+- It can't be `.` or `..`, nor can any of its components.
+- A namespace path whose first component is `public` can't have a second one.
+
+`$` and `:` are never in a name: a deployment writes a namespace path and a
+table as one identifier joined by `$`, and a database and a table, or a table
+and a branch, joined by `:`.
+
+## Examples {#examples}
+
+| Name | |
+| --- | --- |
+| `documents`, `user-events.v2`, `train_2026` | valid table names |
+| `["prod", "search"]` | a valid two-component namespace path |
+| `my table` | refused: a space |
+| `orders$2026` | refused: `$` joins a namespace and a table |
+| `résumés` | refused: not ASCII |
+| `["public", "search"]` | refused: `public` can't have a child |
+
+## Which versions check them {#which-versions-check-them}
+
+The rules come from lancedb
+[#4490](https://github.com/lancedb/lancedb/pull/4490), which gives the SDKs and
+deployments one set of name checks. What enforces them depends on the
+connection and the version:
+
+- **The embedded library** refuses a table name with any other character, and
+  `.` and `..`, but sets no length limit beyond what the filesystem allows. A
+  directory namespace accepts other characters in namespace names.
+- **The SDKs on a `db://` connection** check every name above before sending a
+  request, from the first release that includes #4490. As of v0.41.0-beta.2, no
+  release does: earlier releases send names to the deployment unchecked.
+- **A deployment** checks names itself, but not on every path in every version.
+  Some accept a longer name when a table is created and then fail on it later --
+  when the table is dropped, or in background work on it.
+
+So keep to the rules even where a longer or unusual name is accepted: a name
+that works today on one connection can fail on another, or later on the same
+one.
+
+See [Limits](/basics/limits#names) for the other bounds, and
+[Namespaces](/management/namespace#namespace-paths-and-names) for how a path is
+built.

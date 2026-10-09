@@ -272,7 +272,8 @@
               "basics/jobs",
               "tables/consistency",
               "basics/guarantees",
-              "basics/limits"
+              "basics/limits",
+              "basics/naming"
             ]
           },
           {
