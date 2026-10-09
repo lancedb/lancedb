@@ -4,7 +4,7 @@ export const PyConnect = "import lancedb\n\nuri = \"ex_lancedb\"\ndb = lancedb.c
 
 export const PyConnectAsync = "import lancedb\n\nuri = \"ex_lancedb\"\nasync_db = await lancedb.connect_async(uri)\n";
 
-export const PyConnectEnterpriseQuickstart = "uri = \"db://your-database-uri\"\napi_key = \"your-api-key\"\nregion = \"us-east-1\"\nhost_override = \"https://your-enterprise-endpoint.com\"\n\ndb = lancedb.connect(\n    uri=uri,\n    api_key=api_key,\n    region=region,\n    host_override=host_override,\n)\n";
+export const PyConnectEnterpriseQuickstart = "import os\n\nimport lancedb\n\ndb = lancedb.connect(\n    uri=os.environ[\"LANCEDB_URI\"],  # db://your-database\n    api_key=os.environ[\"LANCEDB_API_KEY\"],\n    region=os.environ.get(\"LANCEDB_REGION\", \"us-east-1\"),\n    host_override=os.environ[\"LANCEDB_HOST_OVERRIDE\"],  # https://your-endpoint\n)\n";
 
 export const PyConnectObjectStorage = "import lancedb\n\nuri = \"s3://your-bucket/path\"\n# You can also use \"gs://your-bucket/path\" or \"az://your-container/path\".\ndb = lancedb.connect(uri)\n";
 
@@ -16,7 +16,7 @@ export const PyNamespaceTableOps = "import lancedb\n\ndb = lancedb.connect_names
 
 export const TsConnect = "import * as lancedb from \"@lancedb/lancedb\";\n\nasync function connectExample(uri: string) {\n  const db = await lancedb.connect(uri);\n  return db;\n}\n";
 
-export const TsConnectEnterpriseQuickstart = "const uri = \"db://your-database-uri\";\nconst apiKey = \"your-api-key\";\nconst region = \"us-east-1\";\nconst hostOverride = \"https://your-enterprise-endpoint.com\";\n\nconst db = await lancedb.connect(uri, {\n  apiKey,\n  region,\n  hostOverride,\n});\n";
+export const TsConnectEnterpriseQuickstart = "const setting = (name: string) => {\n  const value = process.env[name];\n  if (!value) throw new Error(`Set ${name}`);\n  return value;\n};\n\nconst db = await lancedb.connect(setting(\"LANCEDB_URI\"), {\n  apiKey: setting(\"LANCEDB_API_KEY\"),\n  region: process.env.LANCEDB_REGION ?? \"us-east-1\",\n  hostOverride: setting(\"LANCEDB_HOST_OVERRIDE\"),\n});\n";
 
 export const TsConnectObjectStorage = "async function connectObjectStorageExample() {\n  const uri = \"s3://your-bucket/path\";\n  // You can also use \"gs://your-bucket/path\" or \"az://your-container/path\".\n  const db = await lancedb.connect(uri);\n  return db;\n}\n";
 
@@ -26,7 +26,7 @@ export const TsNamespaceTableOps = "const db = await lancedb.connectNamespace(\"
 
 export const RsConnect = "async fn connect_example(uri: &str) {\n    let db = connect(uri).execute().await.unwrap();\n    let _ = db;\n}\n";
 
-export const RsConnectEnterpriseQuickstart = "let uri = \"db://your-database-uri\";\nlet api_key = \"your-api-key\";\nlet region = \"us-east-1\";\nlet host_override = \"https://your-enterprise-endpoint.com\";\n";
+export const RsConnectEnterpriseQuickstart = "let uri = std::env::var(\"LANCEDB_URI\")?; // db://your-database\nlet api_key = std::env::var(\"LANCEDB_API_KEY\")?;\nlet region = std::env::var(\"LANCEDB_REGION\").unwrap_or_else(|_| \"us-east-1\".to_string());\nlet host_override = std::env::var(\"LANCEDB_HOST_OVERRIDE\")?; // https://your-endpoint\n";
 
 export const RsConnectObjectStorage = "let uri = \"s3://your-bucket/path\";\n// You can also use \"gs://your-bucket/path\" or \"az://your-container/path\".\n";
 

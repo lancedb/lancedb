@@ -4,6 +4,8 @@
 from pathlib import Path
 import shutil
 
+import pytest
+
 
 def test_connection():
     # --8<-- [start:connect]
@@ -29,19 +31,16 @@ async def connect_async_example():
 
 
 def connect_enterprise_quickstart_config():
+    # --8<-- [start:connect_enterprise_quickstart]
+    import os
+
     import lancedb
 
-    # --8<-- [start:connect_enterprise_quickstart]
-    uri = "db://your-database-uri"
-    api_key = "your-api-key"
-    region = "us-east-1"
-    host_override = "https://your-enterprise-endpoint.com"
-
     db = lancedb.connect(
-        uri=uri,
-        api_key=api_key,
-        region=region,
-        host_override=host_override,
+        uri=os.environ["LANCEDB_URI"],  # db://your-database
+        api_key=os.environ["LANCEDB_API_KEY"],
+        region=os.environ.get("LANCEDB_REGION", "us-east-1"),
+        host_override=os.environ["LANCEDB_HOST_OVERRIDE"],  # https://your-endpoint
     )
     # --8<-- [end:connect_enterprise_quickstart]
     return db
@@ -57,15 +56,27 @@ def test_connect_enterprise_quickstart(monkeypatch):
         return object()
 
     monkeypatch.setattr(lancedb, "connect", fake_connect)
+    monkeypatch.setenv("LANCEDB_URI", "db://your-database")
+    monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
+    monkeypatch.delenv("LANCEDB_REGION", raising=False)
+    monkeypatch.setenv("LANCEDB_HOST_OVERRIDE", "https://your-endpoint")
 
-    db = connect_enterprise_quickstart_config()
-    assert db is not None
+    assert connect_enterprise_quickstart_config() is not None
     assert captured == {
-        "uri": "db://your-database-uri",
+        "uri": "db://your-database",
         "api_key": "your-api-key",
         "region": "us-east-1",
-        "host_override": "https://your-enterprise-endpoint.com",
+        "host_override": "https://your-endpoint",
     }
+
+
+def test_connect_enterprise_quickstart_requires_an_endpoint(monkeypatch):
+    monkeypatch.setenv("LANCEDB_URI", "db://your-database")
+    monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
+    monkeypatch.delenv("LANCEDB_HOST_OVERRIDE", raising=False)
+
+    with pytest.raises(KeyError, match="LANCEDB_HOST_OVERRIDE"):
+        connect_enterprise_quickstart_config()
 
 
 def connect_object_storage_config():

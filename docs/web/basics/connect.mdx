@@ -80,12 +80,12 @@ In Rust, pass the same URI to `connect`.
 
 A `db://` URI connects to a deployment, which runs each operation for you. Get
 the database URI, API key, region and endpoint from the deployment's
-administrator, and pass the endpoint as `host_override`. Keep the API key in a
-secret manager or the environment rather than in source.
+administrator. These examples read them from `LANCEDB_URI`, `LANCEDB_API_KEY`,
+`LANCEDB_REGION` and `LANCEDB_HOST_OVERRIDE`, which keeps the API key out of
+source, and pass the endpoint as `host_override`.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    { "import lancedb\n\n" }
     {PyConnectEnterpriseQuickstart}
     </CodeBlock>
 

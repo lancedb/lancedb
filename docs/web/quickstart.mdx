@@ -184,12 +184,12 @@ For credentials, endpoints, and provider-specific options, see
 
 If you're using LanceDB Enterprise, you can connect to the remote database using the
 `db://` URI along with the API key, region, and cluster endpoint you received from the
-LanceDB team. Pass the cluster endpoint via `host_override` so the client routes
-requests to your deployment.
+LanceDB team. These examples read them from `LANCEDB_URI`, `LANCEDB_API_KEY`,
+`LANCEDB_REGION` and `LANCEDB_HOST_OVERRIDE`, and pass the cluster endpoint via
+`host_override` so the client routes requests to your deployment.
 
 <CodeGroup >
     <CodeBlock filename="Python" language="Python" icon="python">
-    { "import lancedb\n\n" }
     {PyConnectEnterpriseQuickstart}
     </CodeBlock>
 
@@ -199,7 +199,6 @@ requests to your deployment.
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
-    { "use lancedb::connect;\n\n" }
     {RsConnectEnterpriseQuickstart}
     </CodeBlock>
 </CodeGroup >

@@ -23,19 +23,15 @@ async fn main() {
     let _ = connect_object_storage_config();
 }
 
-fn connect_enterprise_quickstart_config() -> (String, String, String, String) {
+fn connect_enterprise_quickstart_config()
+-> Result<(String, String, String, String), std::env::VarError> {
     // --8<-- [start:connect_enterprise_quickstart]
-    let uri = "db://your-database-uri";
-    let api_key = "your-api-key";
-    let region = "us-east-1";
-    let host_override = "https://your-enterprise-endpoint.com";
+    let uri = std::env::var("LANCEDB_URI")?; // db://your-database
+    let api_key = std::env::var("LANCEDB_API_KEY")?;
+    let region = std::env::var("LANCEDB_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let host_override = std::env::var("LANCEDB_HOST_OVERRIDE")?; // https://your-endpoint
     // --8<-- [end:connect_enterprise_quickstart]
-    (
-        uri.to_string(),
-        api_key.to_string(),
-        region.to_string(),
-        host_override.to_string(),
-    )
+    Ok((uri, api_key, region, host_override))
 }
 
 fn connect_object_storage_config() -> &'static str {

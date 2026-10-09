@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import { expect, jest, test } from "@jest/globals";
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import * as path from "node:path";
 import { withTempDirectory } from "./util.ts";
 // --8<-- [start:connect]
@@ -22,34 +22,56 @@ test("connect to a local database", async () => {
 
 async function connectEnterpriseQuickstart() {
   // --8<-- [start:connect_enterprise_quickstart]
-  const uri = "db://your-database-uri";
-  const apiKey = "your-api-key";
-  const region = "us-east-1";
-  const hostOverride = "https://your-enterprise-endpoint.com";
+  const setting = (name: string) => {
+    const value = process.env[name];
+    if (!value) throw new Error(`Set ${name}`);
+    return value;
+  };
 
-  const db = await lancedb.connect(uri, {
-    apiKey,
-    region,
-    hostOverride,
+  const db = await lancedb.connect(setting("LANCEDB_URI"), {
+    apiKey: setting("LANCEDB_API_KEY"),
+    region: process.env.LANCEDB_REGION ?? "us-east-1",
+    hostOverride: setting("LANCEDB_HOST_OVERRIDE"),
   });
   // --8<-- [end:connect_enterprise_quickstart]
   return db;
 }
 
-test("enterprise quickstart connect uses placeholder config", async () => {
-  const mockDb = { __mock: true } as unknown as Awaited<
-    ReturnType<typeof lancedb.connect>
-  >;
-  const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
-
-  const db = await connectEnterpriseQuickstart();
-  expect(db).toBe(mockDb);
-  expect(spy).toHaveBeenCalledWith("db://your-database-uri", {
-    apiKey: "your-api-key",
-    region: "us-east-1",
-    hostOverride: "https://your-enterprise-endpoint.com",
+describe("enterprise quickstart connect", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
   });
-  spy.mockRestore();
+
+  test("reads the connection from the environment", async () => {
+    const mockDb = { __mock: true } as unknown as Awaited<
+      ReturnType<typeof lancedb.connect>
+    >;
+    const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
+    process.env.LANCEDB_URI = "db://your-database";
+    process.env.LANCEDB_API_KEY = "your-api-key";
+    delete process.env.LANCEDB_REGION;
+    process.env.LANCEDB_HOST_OVERRIDE = "https://your-endpoint";
+
+    const db = await connectEnterpriseQuickstart();
+    expect(db).toBe(mockDb);
+    expect(spy).toHaveBeenCalledWith("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+    spy.mockRestore();
+  });
+
+  test("requires an endpoint", async () => {
+    process.env.LANCEDB_URI = "db://your-database";
+    process.env.LANCEDB_API_KEY = "your-api-key";
+    delete process.env.LANCEDB_HOST_OVERRIDE;
+
+    await expect(connectEnterpriseQuickstart()).rejects.toThrow(
+      "Set LANCEDB_HOST_OVERRIDE",
+    );
+  });
 });
 
 // --8<-- [start:connect_object_storage]

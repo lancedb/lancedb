@@ -35,9 +35,12 @@ To authenticate to the Enterprise REST API, you need the endpoint for your deplo
 
 ```bash
 export LANCEDB_API_KEY="<your-api-key>"
-export LANCEDB_URI="https://your-enterprise-endpoint.com"
+export LANCEDB_HOST_OVERRIDE="https://your-enterprise-endpoint.com"
 export LANCEDB_DATABASE="your-database-name"
 ```
+
+`LANCEDB_HOST_OVERRIDE` is the endpoint the SDKs take as `host_override`; the
+database name is the part of its `db://` URI after `db://`.
 
 3. If your Enterprise deployment is private, connect through the private network endpoint provided for your deployment. For example, Azure Private Link deployments commonly use a private IP or an internal DNS name as the endpoint.
 
@@ -46,30 +49,37 @@ export LANCEDB_DATABASE="your-database-name"
 4. Check that you can reach the deployment and list tables:
 
 ```bash
-curl -X GET "$LANCEDB_URI/v1/management/table" \
-   -H "Content-Type: application/json" \
+curl -X GET "$LANCEDB_HOST_OVERRIDE/v1/table/" \
    -H "x-api-key: $LANCEDB_API_KEY" \
    -H "x-lancedb-database: $LANCEDB_DATABASE"
 ```
 
+The response lists one page of table names, with a token for the next page when
+there are more.
+
 If your deployment endpoint already includes the database host name, you can omit the `x-lancedb-database` header.
 
-5. Create a table to confirm write access. Let's call it `words`.
+5. Create a table to confirm write access. Let's call it `words`. A table is
+created from an Arrow IPC stream, which this writes with PyArrow:
 
 ```bash
-curl -X POST "$LANCEDB_URI/v1/tables/words" \
+python -c "import pyarrow as pa, sys; t = pa.table({'word': ['hello', 'world']}); w = pa.ipc.new_stream(sys.stdout.buffer, t.schema); w.write_table(t); w.close()" > words.arrow
+
+curl -X POST "$LANCEDB_HOST_OVERRIDE/v1/table/words/create" \
    -H "Content-Type: application/vnd.apache.arrow.stream" \
    -H "x-api-key: $LANCEDB_API_KEY" \
-   -H "x-lancedb-database: $LANCEDB_DATABASE"
+   -H "x-lancedb-database: $LANCEDB_DATABASE" \
+   --data-binary @words.arrow
 ```
 
 6. Check that the table has been created:
 
 ```bash
-curl -X GET "$LANCEDB_URI/v1/management/table" \
+curl -X POST "$LANCEDB_HOST_OVERRIDE/v1/table/words/describe" \
    -H "Content-Type: application/json" \
    -H "x-api-key: $LANCEDB_API_KEY" \
-   -H "x-lancedb-database: $LANCEDB_DATABASE"
+   -H "x-lancedb-database: $LANCEDB_DATABASE" \
+   -d '{}'
 ```
 
 That's it -- you're connected! Now, you can start adding data and querying it.
