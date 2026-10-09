@@ -12,6 +12,7 @@ use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::D
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
+use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
 
@@ -383,6 +384,7 @@ pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
             message: format!("Invalid encoded database name: {err}"),
         })?
         .into_owned();
+    validate_database_name(&db_name)?;
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -1202,6 +1204,29 @@ mod tests {
         let parsed = parse_db_url("db://db/prefix").unwrap();
         assert_eq!(parsed.db_name, "db");
         assert_eq!(parsed.db_prefix.as_deref(), Some("prefix"));
+    }
+
+    #[test]
+    fn test_parse_database_uri_validates_decoded_name() {
+        for name in [
+            "a b",
+            "a$b",
+            "a?b",
+            "café",
+            "/db",
+            "db/",
+            "a//b",
+            "a/../b",
+            "a/./b",
+            &"a".repeat(65),
+        ] {
+            let uri = format!("db://{}", urlencoding::encode(name));
+            assert!(
+                matches!(parse_db_url(&uri), Err(Error::InvalidInput { .. })),
+                "accepted {name:?}"
+            );
+        }
+        assert!(parse_db_url(&format!("db://{}", "a".repeat(64))).is_ok());
     }
 
     #[test]

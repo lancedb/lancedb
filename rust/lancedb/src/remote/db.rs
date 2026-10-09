@@ -36,7 +36,10 @@ use crate::remote::util::stream_as_body;
 use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
-use crate::utils::{reject_relative_segment, validate_table_name};
+use crate::utils::{
+    validate_database_name, validate_function_name, validate_namespace, validate_secret_name,
+    validate_table_name, validate_view_name,
+};
 use crate::view::ViewDescription;
 
 use super::client::{
@@ -230,6 +233,7 @@ pub struct RemoteDatabase<S: HttpSend = Sender> {
     /// TLS configuration for mTLS support
     tls_config: Option<super::client::TlsConfig>,
     sql_client: Option<SqlClient>,
+    is_catalog_root: bool,
 }
 
 #[derive(Clone)]
@@ -320,6 +324,9 @@ impl RemoteDatabase {
         name: Option<&str>,
         options: &super::catalog::RemoteCatalogOptions,
     ) -> Result<Self> {
+        if let Some(name) = name {
+            validate_database_name(name)?;
+        }
         let scope = super::catalog::ScopedHeaderProvider {
             provider: options.client_config.header_provider.clone(),
             database: name.map(str::to_string),
@@ -348,6 +355,7 @@ impl RemoteDatabase {
         )?;
         if name.is_none() {
             db.sql_client = None;
+            db.is_catalog_root = true;
         }
         Ok(db)
     }
@@ -422,11 +430,38 @@ impl RemoteDatabase {
             namespace_context_provider,
             tls_config: client_config.tls_config,
             sql_client: Some(sql_client),
+            is_catalog_root: false,
         })
     }
 }
 
 impl<S: HttpSend> RemoteDatabase<S> {
+    // A catalog's root namespaces are database names, which may contain slashes.
+    fn namespace_identifier(&self, namespace: &[String]) -> Result<String> {
+        match namespace.first() {
+            None => Ok(ID_DELIMITER.to_string()),
+            Some(first) => {
+                if self.is_catalog_root {
+                    // When dealing with the catalog root, the first component is a
+                    // database name. Those need to be validated differently because
+                    // they can contain slashes. Also, we need to use percent encoding
+                    // for the slashes.
+                    validate_database_name(first)?;
+                    validate_namespace(&namespace[1..])?;
+                    Ok(namespace
+                        .iter()
+                        .map(|component| urlencoding::encode(component).into_owned())
+                        .collect::<Vec<_>>()
+                        .join(ID_DELIMITER))
+                } else {
+                    // If we're not dealing with the catalog root, build the namespace identifier in the
+                    // usual way.
+                    build_namespace_identifier(namespace)
+                }
+            }
+        }
+    }
+
     /// Post a request whose body carries a credential.
     ///
     /// Shared by the create and alter verbs, which declare their own request
@@ -537,6 +572,7 @@ mod test_utils {
                 namespace_context_provider: None,
                 tls_config: None,
                 sql_client: None,
+                is_catalog_root: false,
             }
         }
 
@@ -560,6 +596,7 @@ mod test_utils {
                 namespace_context_provider,
                 tls_config: config.tls_config.clone(),
                 sql_client: None,
+                is_catalog_root: false,
             }
         }
     }
@@ -581,93 +618,60 @@ impl From<&CreateTableMode> for &'static str {
     }
 }
 
-/// The path segment addressing one object: its namespace path and its name.
-///
-/// One builder for tables, Secrets, Functions and materialized views: the
-/// identifier grammar belongs to the namespace spec, not to an object type. An
-/// empty path addresses an object with no namespace.
-///
-/// Components are checked for addressability, not a character set. The name's
-/// grammar is the caller's, so a table reports [`Error::InvalidTableName`], a
-/// Function admits names a table may not, and a catalog database carries the
-/// `/` that [`RemoteCatalog`] allows.
-///
-/// [`RemoteCatalog`]: super::catalog::RemoteCatalog
-fn build_object_identifier(what: &str, name: &str, namespace: &[String]) -> Result<String> {
-    for segment in namespace {
-        reject_unaddressable_component("namespace segment", segment)?;
+fn build_compound_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_namespace(namespace)?;
+    let mut identifier = namespace.join("$");
+    if !namespace.is_empty() {
+        identifier.push('$');
     }
-    reject_unaddressable_component(what, name)?;
-    Ok(join_identifier(
-        namespace.iter().map(String::as_str).chain([name]),
-    ))
+    identifier.push_str(name);
+    Ok(identifier)
 }
 
-/// What a component may not be if the join is to survive being split back
-/// apart: empty, a segment URL parsing resolves away, or the delimiter itself.
-///
-/// Each erases a boundary no encoding of the joined form recovers. `["prod",
-/// ""]` joins to `prod$`, which reads back as `["prod"]`, so a drop reaches the
-/// parent of the namespace the caller named.
-///
-/// Not a character set: per-component percent-encoding makes the wider set
-/// safe, since a `/` in a name reaches the service as `%2F`, still one
-/// segment.
-fn reject_unaddressable_component(what: &str, value: &str) -> Result<()> {
-    if value.is_empty() {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "{what} must not be empty: the identifier would carry two delimiters in a row, \
-                 and splitting it back apart would name a different object"
-            ),
-        });
-    }
-    reject_relative_segment(what, value)?;
-    if value.contains(ID_DELIMITER) {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "{what} '{value}' contains the identifier delimiter '{ID_DELIMITER}', so the \
-                 namespace path and the name it joins could not be told apart"
-            ),
-        });
-    }
-    Ok(())
-}
-
-/// The path segment addressing one table. A wrapper for the error type:
-/// callers match on [`Error::InvalidTableName`].
+/// Build a full path to a table. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
 fn build_table_identifier(name: &str, namespace: &[String]) -> Result<String> {
     validate_table_name(name)?;
-    build_object_identifier("table name", name, namespace)
+    build_compound_identifier(name, namespace)
 }
 
-/// Join components into the `{id}` a route addresses: each percent-encoded,
-/// then joined by the delimiter.
-///
-/// Per component rather than over the joined string, so the delimiter stays a
-/// delimiter and nothing inside a component can end the path segment.
-///
-/// A second line, not the first: a component from the object charset is all
-/// unreserved and encodes to itself, so the route reads as the caller wrote it.
-/// It does not cover `.` and `..`, which are unreserved too and resolve away
-/// after decoding -- [`build_object_identifier`] refuses those.
-fn join_identifier<'a>(components: impl Iterator<Item = &'a str>) -> String {
-    components
-        .map(|component| urlencoding::encode(component).into_owned())
-        .collect::<Vec<_>>()
-        .join(ID_DELIMITER)
-}
-
-/// The path segment addressing one namespace.
+/// Translate an array of namespace components into a namespace string.
+/// Note that we do not need to percent-encode this when using it in a URL
+/// because validate_namespace ensures that only URL-safe characters are
+/// present.
 fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
-    for segment in namespace {
-        reject_unaddressable_component("namespace segment", segment)?;
-    }
+    validate_namespace(namespace)?;
     if namespace.is_empty() {
         // According to the namespace spec, use delimiter to represent root namespace
-        return Ok(ID_DELIMITER.to_string());
+        Ok(ID_DELIMITER.to_string())
+    } else {
+        Ok(namespace.join(ID_DELIMITER))
     }
-    Ok(join_identifier(namespace.iter().map(String::as_str)))
+}
+
+/// Build a full path to a function. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
+fn build_function_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_function_name(name)?;
+    build_compound_identifier(name, namespace)
+}
+
+/// Build a full path to a secret. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
+fn build_secret_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_secret_name(name)?;
+    build_compound_identifier(name, namespace)
+}
+
+/// Build a full path to a view. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
+fn build_view_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_view_name(name)?;
+    build_compound_identifier(name, namespace)
 }
 
 /// Build a secure cache key using length prefixes.
@@ -945,7 +949,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: FunctionRegistrationRequest,
         namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        let function_id = build_object_identifier("Function name", &request.name, namespace_path)?;
+        let function_id = build_function_identifier(&request.name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/create"))
@@ -976,7 +980,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         version: &str,
         namespace_path: &[String],
     ) -> Result<FunctionVersion> {
-        let function_id = build_object_identifier("Function name", name, namespace_path)?;
+        let function_id = build_function_identifier(name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/describe"))
@@ -1036,7 +1040,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         version: &str,
         namespace_path: &[String],
     ) -> Result<(bool, Job)> {
-        let function_id = build_object_identifier("Function name", name, namespace_path)?;
+        let function_id = build_function_identifier(name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/function/{function_id}/drop"))
@@ -1081,7 +1085,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/create"),
             &RemoteCreateSecretRequest { value },
@@ -1090,7 +1094,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path)?;
         self.post_secret_write(
             &format!("/v1/secret/{secret_id}/alter"),
             &RemoteAlterSecretRequest { value },
@@ -1127,7 +1131,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path)?;
         let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         self.client.check_response(&request_id, response).await?;
@@ -1135,7 +1139,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = build_object_identifier("Secret name", name, namespace_path)?;
+        let secret_id = build_secret_identifier(name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/secret/{secret_id}/describe"));
@@ -1150,7 +1154,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         query: &str,
         namespace_path: &[String],
     ) -> Result<ViewDescription> {
-        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let view_id = build_view_identifier(name, namespace_path)?;
         let req = self
             .client
             .post(&format!("/v1/view/{view_id}/create"))
@@ -1167,7 +1171,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         namespace_path: &[String],
     ) -> Result<ViewDescription> {
-        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let view_id = build_view_identifier(name, namespace_path)?;
         let req = self.client.post(&format!("/v1/view/{view_id}/describe"));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
@@ -1184,7 +1188,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
-        let view_id = build_object_identifier("View name", name, namespace_path)?;
+        let view_id = build_view_identifier(name, namespace_path)?;
         let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
         let (request_id, response) = self.client.send(req).await?;
         let response = self.client.check_response(&request_id, response).await?;
@@ -1407,7 +1411,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts)?;
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/table/list", namespace_id));
@@ -1674,7 +1678,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: ListNamespacesRequest,
     ) -> Result<ListNamespacesResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts)?;
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .get(&format!("/v1/namespace/{}/list", namespace_id));
@@ -1696,7 +1700,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: CreateNamespaceRequest,
     ) -> Result<CreateNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts)?;
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/create", namespace_id));
@@ -1727,7 +1731,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts)?;
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let mut req = self
             .client
             .post(&format!("/v1/namespace/{}/drop", namespace_id));
@@ -1761,7 +1765,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: DescribeNamespaceRequest,
     ) -> Result<DescribeNamespaceResponse> {
         let namespace_parts = request.id.as_deref().unwrap_or(&[]);
-        let namespace_id = build_namespace_identifier(namespace_parts)?;
+        let namespace_id = self.namespace_identifier(namespace_parts)?;
         let req = self
             .client
             .post(&format!("/v1/namespace/{}/describe", namespace_id))
@@ -1886,6 +1890,40 @@ mod tests {
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+
+    #[tokio::test]
+    async fn test_catalog_namespace_identifier_validates_all_namespace_components() {
+        let mut db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("identifier validation must not send a request")
+        });
+        db.is_catalog_root = true;
+
+        for (path, expected) in [
+            (vec![], "$"),
+            (vec!["team/search"], "team%2Fsearch"),
+            (vec!["team/search", "ns"], "team%2Fsearch$ns"),
+            (vec!["team/search", "ns", "child"], "team%2Fsearch$ns$child"),
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(db.namespace_identifier(&path).unwrap(), expected);
+        }
+
+        for path in [
+            vec!["../search"],
+            vec!["team/search", "bad/name"],
+            vec!["team/search", "ns", "bad/name"],
+            vec!["team/search", "public", "child"],
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(
+                matches!(
+                    db.namespace_identifier(&path),
+                    Err(Error::InvalidInput { .. })
+                ),
+                "accepted {path:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_cache_key_security() {
@@ -4045,7 +4083,7 @@ mod tests {
                 .expect_err("an illegal component must be refused");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
             assert!(
-                error.to_string().contains("Secret name"),
+                error.to_string().contains("secret name"),
                 "{name:?}: {error}"
             );
         }
@@ -4076,7 +4114,7 @@ mod tests {
                 .await
                 .expect_err("a dot-only name must be refused");
             assert!(
-                by_name.to_string().contains("relative path segments"),
+                by_name.to_string().contains("Illegal secret name"),
                 "{by_name}"
             );
 
@@ -4086,7 +4124,9 @@ mod tests {
                 .await
                 .expect_err("a dot-only namespace segment must be refused");
             assert!(
-                by_segment.to_string().contains("relative path segments"),
+                by_segment
+                    .to_string()
+                    .contains("Illegal namespace component"),
                 "{by_segment}"
             );
             assert!(
@@ -4165,28 +4205,20 @@ mod tests {
         }
     }
 
-    /// A segment outside the table charset still addresses one segment: the
-    /// service decides whether it may exist, and percent-encoding is what keeps
-    /// the question reaching the right route. A catalog database is named this
-    /// way.
+    /// Slashes belong to catalog database names, not table namespace segments.
     #[tokio::test]
-    async fn test_a_namespace_segment_outside_the_charset_is_encoded_not_refused() {
-        use std::sync::{Arc, Mutex};
-        let seen = Arc::new(Mutex::new(String::new()));
-        let path = seen.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            *path.lock().unwrap() = request.url().path().to_string();
-            http::Response::builder().status(200).body("{}").unwrap()
+    async fn test_a_namespace_segment_outside_the_charset_is_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("invalid namespace reached the transport")
         });
-        conn.drop_table("t", &["team/search".to_string()])
-            .await
-            .unwrap();
-        assert_eq!(*seen.lock().unwrap(), "/v1/table/team%2Fsearch$t/drop/");
+        assert!(matches!(
+            conn.drop_table("t", &["team/search".to_string()]).await,
+            Err(Error::InvalidInput { .. })
+        ));
     }
 
-    /// A Function name is percent-encoded, which covers everything but the
-    /// relative segment: `..` is unreserved, so it survives encoding and is
-    /// then resolved away, posting a registration body to `/v1/create`.
+    /// Reject relative segments and their encoded forms before sending a request,
+    /// so a function name cannot change the route through URL normalization.
     #[tokio::test]
     async fn test_a_relative_segment_function_name_is_refused() {
         use std::sync::{Arc, Mutex};
@@ -4201,10 +4233,7 @@ mod tests {
                 .drop_function(name, "fv_1", &[])
                 .await
                 .expect_err("a dot-only Function name must be refused");
-            assert!(
-                error.to_string().contains("relative path segments"),
-                "{error}"
-            );
+            assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
         }
     }
@@ -4585,7 +4614,7 @@ mod tests {
             };
             // A view is not a table, so the refusal says so.
             assert!(
-                error.contains("view name") || error.contains("view namespace path segment"),
+                error.contains("view name") || error.contains("namespace component"),
                 "{error}"
             );
         }
