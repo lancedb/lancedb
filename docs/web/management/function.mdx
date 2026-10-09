@@ -4,6 +4,12 @@ sidebarTitle: "Function"
 description: "Register a Python function once and apply it as a column, for work SQL cannot express."
 icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    Functions run on a LanceDB Enterprise deployment that has them enabled; the
+    embedded library cannot register or run them.
 ---
 
 import {
@@ -17,14 +23,13 @@ import {
     PyFunctionInspect as FunctionInspect,
 } from '/snippets/function.mdx';
 
-<Badge color="red">Enterprise</Badge>
-
 Some columns cannot be written as a SQL expression: an embedding, a model call,
 an image decode. A function is a Python callable registered with the database,
 versioned, and then applied as a column — the code runs where the data is
 rather than pulling rows to your process.
 
-Registering and running a function needs a LanceDB Enterprise connection. On a
+Registering and running a function needs a LanceDB Enterprise deployment with
+Functions enabled, which they are not by default. On a
 local connection `create_function` raises `NotImplementedError`; to derive a
 column locally, declare a
 [SQL computed column](/feature-engineering/add-computed-column) instead.
@@ -211,6 +216,10 @@ it is bound to; `version` must be a version that exists. It returns `False` if
 the name was already gone. Deleting the object's content can finish after the
 call returns, as a [background job](/maintenance/background-jobs).
 `drop_function_async` returns that job with the result, so you can wait for it.
+
+A deployment refuses the drop unless it also allows changes to a function's
+lifecycle, which is a separate setting, off by default even where Functions are
+enabled.
 
 ## What to read next {#next}
 

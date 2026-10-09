@@ -4,10 +4,13 @@ sidebarTitle: "Aggregate"
 description: "Counting, grouping and summarizing — finding out what your data actually contains."
 icon: chart-column
 keywords: ["aggregate", "group by", "class balance", "count", "profiling", "distinct"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    Aggregation is SQL, which runs on an Enterprise deployment with SQL
+    enabled; the embedded library does not run SQL.
 ---
-
-<Badge color="red">Enterprise</Badge> Aggregation is SQL, and
-[SQL needs a deployment](/basics/sql#sql-is-remote).
 
 Before curating anything, find out what you have. Most of the surprises in a
 training set — a class that is 90% of the rows, a column that is half null, a

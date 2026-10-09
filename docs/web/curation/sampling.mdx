@@ -4,6 +4,13 @@ sidebarTitle: "Sampling"
 description: "Drawing a subset you can afford to work with, and fixing it when it has to be reproducible."
 icon: dice
 keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    `TABLESAMPLE` is SQL, which runs on an Enterprise deployment with SQL
+    enabled. Shuffled reads for training work in both through the SDK; see
+    [Shuffling for training](#training).
 ---
 
 Most curation starts with a subset. A question you can answer in ten seconds on
@@ -79,7 +86,7 @@ smaller result.
 ## Shuffling for training {#training}
 
 For a training loop rather than a query, the SDKs read a table in a shuffled
-order without SQL at all:
+order without SQL at all, in the embedded library and on a deployment alike:
 
 ```python
 from lancedb.permutation import Permutation

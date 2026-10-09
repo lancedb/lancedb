@@ -4,10 +4,13 @@ sidebarTitle: "Join"
 description: "Bringing labels, metadata and scores together with the rows they describe."
 icon: link
 keywords: ["join", "labels", "metadata", "enrichment", "namespace"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    Joins are SQL, which runs on an Enterprise deployment with SQL enabled;
+    the embedded library does not run SQL.
 ---
-
-<Badge color="red">Enterprise</Badge> Joins are SQL, and
-[SQL needs a deployment](/basics/sql#sql-is-remote).
 
 Curation usually means combining things that were produced separately — images
 in one table, human labels in another, model scores in a third. A join is how
@@ -62,9 +65,10 @@ ORDER BY hits DESC
 ```
 
 <Note>
-Vector search has no SQL form, so a similarity result cannot be joined this way.
-Run the search in an SDK, then join over its output — or write the result to a
-table first.
+Whether SQL can express vector search
+[depends on the deployment](/basics/sql#no-vector-sql). Where it cannot, run the
+search in an SDK, then join over its output — or write the result to a table
+first.
 </Note>
 
 ## Making it fast {#performance}

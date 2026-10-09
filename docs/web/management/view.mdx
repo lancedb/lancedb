@@ -4,13 +4,13 @@ sidebarTitle: "View"
 description: "A saved query, evaluated when read. The non-materialized counterpart to a materialized view."
 icon: eye
 keywords: ["view", "create view", "sql", "catalog"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    Views need a LanceDB Enterprise deployment that has them enabled; the
+    embedded library cannot create them.
 ---
-
-<Badge color="red">Enterprise</Badge>
-
-This page describes a LanceDB Enterprise capability. The embedded form
-of LanceDB has no server to provide it -- see
-[Architecture](/architecture) for what differs between the two.
 
 A view stores a **query**, not rows. Reading it runs the query against current
 data, so a view is never stale -- and never faster than the query it wraps.
@@ -27,6 +27,8 @@ defined by a query; the difference is entirely when that query runs.
 | Read cost | the full query, every read | a table scan |
 | Write cost | none | a refresh |
 
-Views are created in SQL, over the [Flight SQL endpoint](/sql#connecting) --
-there is no SDK method, because the thing a view stores *is* a SQL statement.
-See [View](/sql/ddl/view) for `CREATE VIEW`, `DROP VIEW`, and listing.
+Views are created on a deployment, either in SQL over the
+[Flight SQL endpoint](/sql#connecting) or with the SDKs' `create_view` /
+`createView`, which send the query to the deployment. Either way, the deployment
+must have views enabled. See [View](/sql/ddl/view) for `CREATE VIEW`,
+`DROP VIEW`, and listing.

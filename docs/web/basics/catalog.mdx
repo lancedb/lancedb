@@ -27,6 +27,10 @@ resolves the same names to the same tables.
 | [View](/management/view) | A saved query. Computed when read, not stored. |
 | [Function](/management/function) | Registered code, applied to produce column values. |
 
+Views and functions exist only on an Enterprise deployment that enables them.
+Materialized views also exist in the embedded library, and a deployment has to
+enable them too.
+
 ```
 database
 └── namespace
@@ -63,7 +67,8 @@ and it inherits down the path: reaching a table requires `USAGE` on the
 namespace containing it and on the database containing that.
 
 That is the practical reason to put a boundary in the hierarchy -- a namespace
-per team gives you something to grant on. See
+per team gives you something to grant on. A deployment checks these grants only
+when its administrator has configured it to. See
 [Authorization](/governance/authorization).
 
 Embedded LanceDB has no such layer. Access is whatever the object store enforces

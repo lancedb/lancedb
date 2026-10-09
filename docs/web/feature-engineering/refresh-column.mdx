@@ -4,6 +4,12 @@ sidebarTitle: "Column Refresh"
 description: "Fill the rows of a computed column that lack values — in process, or as a server-side job."
 icon: arrows-rotate
 keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
+availability:
+  oss: available
+  enterprise: varies
+  summary: >-
+    In the embedded library a refresh runs in your process. On a deployment it
+    runs as a server job, which has to be enabled there.
 ---
 
 A [declared column](/feature-engineering/add-computed-column) starts empty. A
@@ -72,7 +78,8 @@ REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 
 <Badge color="red">Enterprise</Badge>
 
-Against a deployment the refresh runs on the cluster. `refresh_column` raises
+Against a deployment that enables computed columns, the refresh runs on the
+cluster. `refresh_column` raises
 there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
 wait on or poll instead of holding a connection open:
 

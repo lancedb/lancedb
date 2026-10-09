@@ -4,6 +4,14 @@ sidebarTitle: "Materialized View"
 description: "Create, open, list and drop a table whose contents are defined by a query."
 icon: table
 keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
+availability:
+  oss: available
+  enterprise: varies
+  summary: >-
+    Materialized views are created and managed in the embedded library. On a
+    deployment they are off by default and have to be enabled, and the SDK
+    creates them through the deployment's SQL endpoint; see
+    [Against a deployment](#deployment).
 ---
 
 A materialized view is a table whose contents are defined by a query over
@@ -41,8 +49,8 @@ const view = await db.createMaterializedView("recent_docs", "documents", {
 </CodeGroup>
 
 `source` names the table it derives from. A local source does not need stable
-row ids or any other storage option; a deployment may require stable row ids
-(see [Against a deployment](#deployment)). `select`, `where` and `limit` record
+row ids or any other storage option; an earlier deployment version may require
+stable row ids (see [Against a deployment](#deployment)). `select`, `where` and `limit` record
 the query -- there is no separate definition step.
 
 ## Opening, listing and dropping {#manage}
@@ -78,9 +86,10 @@ rows. Both are properties; on an async view, the definition is read with
 <Badge color="red">Enterprise</Badge> `create_materialized_view` works on a
 `db://` connection as well as a local one. There the SDK creates and refreshes
 the view through SQL, and the work runs on the cluster rather than in your
-process. Materialized views are off by default on a deployment and have to be
-enabled there, and a deployment may require a view's source to have stable row
-ids; see
+process, so the deployment's [SQL endpoint](/basics/sql#sql-is-remote) has to be
+reachable. Materialized views are off by default on a deployment and have to be
+enabled there, and an earlier deployment version may require a view's source to
+have stable row ids; see
 [Against a deployment](/feature-engineering/materialized-views#availability).
 
 ## What to read next {#next}

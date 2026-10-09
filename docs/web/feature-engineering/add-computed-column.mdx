@@ -4,6 +4,12 @@ sidebarTitle: "Computed Columns"
 description: "Declare a column from a SQL expression. Nothing is evaluated until you refresh it."
 icon: table-columns
 keywords: ["computed columns", "add_columns", "transforms", "schema"]
+availability:
+  oss: available
+  enterprise: varies
+  summary: >-
+    Computed columns work in the embedded library. On a deployment they are off
+    by default and have to be enabled there.
 ---
 
 A computed column is declared with an expression and starts with no values.
@@ -33,7 +39,8 @@ including that you can travel back to before the column existed.
 - **SQL expressions in `transforms`** are evaluated *now*, for every row, as
   part of the call. Good for a small table, or a column you want populated
   immediately. A `FunctionApplication` passed through `transforms` instead
-  declares empty Function-bound columns; a refresh fills them.
+  declares empty Function-bound columns, which a refresh fills; that needs a
+  deployment with Functions enabled, and the embedded library refuses it.
 - **`computed`** stores the expression and evaluates nothing. The column is
   committed empty and filled later by
   [`refresh_column`](/feature-engineering/refresh-column).
@@ -77,7 +84,8 @@ reshape later. Dropping the computed column releases the constraint.
 When the value cannot be expressed in SQL -- an embedding, a model call, an
 image decode -- the column is filled by a registered
 [function](/management/function) instead of an expression. Declaring it looks
-the same; what differs is what fills it.
+the same; what differs is what fills it. It needs a deployment with Functions
+enabled.
 
 ## What to read next {#next}
 
