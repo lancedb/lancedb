@@ -445,9 +445,9 @@ impl<S: HttpSend> RemoteDatabase<S> {
                     // When dealing with the catalog root, the first component is a
                     // database name. Those need to be validated differently because
                     // they can contain slashes. Also, we need to use percent encoding
-                    // for the slahes.
+                    // for the slashes.
                     validate_database_name(first)?;
-                    validate_namespace(&namespace[2..])?;
+                    validate_namespace(&namespace[1..])?;
                     Ok(namespace
                         .iter()
                         .map(|component| urlencoding::encode(component).into_owned())
@@ -1870,6 +1870,40 @@ mod tests {
         job::JobEventsRequest,
         remote::{ARROW_STREAM_CONTENT_TYPE, ClientConfig, HeaderProvider, JSON_CONTENT_TYPE},
     };
+
+    #[tokio::test]
+    async fn test_catalog_namespace_identifier_validates_all_namespace_components() {
+        let mut db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("identifier validation must not send a request")
+        });
+        db.is_catalog_root = true;
+
+        for (path, expected) in [
+            (vec![], "$"),
+            (vec!["team/search"], "team%2Fsearch"),
+            (vec!["team/search", "ns"], "team%2Fsearch$ns"),
+            (vec!["team/search", "ns", "child"], "team%2Fsearch$ns$child"),
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert_eq!(db.namespace_identifier(&path).unwrap(), expected);
+        }
+
+        for path in [
+            vec!["../search"],
+            vec!["team/search", "bad/name"],
+            vec!["team/search", "ns", "bad/name"],
+            vec!["team/search", "public", "child"],
+        ] {
+            let path = path.into_iter().map(String::from).collect::<Vec<_>>();
+            assert!(
+                matches!(
+                    db.namespace_identifier(&path),
+                    Err(Error::InvalidInput { .. })
+                ),
+                "accepted {path:?}"
+            );
+        }
+    }
 
     #[test]
     fn test_cache_key_security() {
@@ -4030,9 +4064,8 @@ mod tests {
         ));
     }
 
-    /// A Function name is percent-encoded, which covers everything but the
-    /// relative segment: `..` is unreserved, so it survives encoding and is
-    /// then resolved away, posting a registration body to `/v1/create`.
+    /// Reject relative segments and their encoded forms before sending a request,
+    /// so a function name cannot change the route through URL normalization.
     #[tokio::test]
     async fn test_a_relative_segment_function_name_is_refused() {
         use std::sync::{Arc, Mutex};
@@ -4047,10 +4080,7 @@ mod tests {
                 .drop_function(name, "fv_1", &[])
                 .await
                 .expect_err("a dot-only Function name must be refused");
-            assert!(
-                error.to_string().contains("relative path segments"),
-                "{error}"
-            );
+            assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
             assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
         }
     }
