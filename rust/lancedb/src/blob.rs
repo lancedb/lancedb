@@ -247,8 +247,10 @@ impl BlobRangeRequest {
 /// `Struct<data, uri>` with the `lance.blob.v2` marker. Same layout Lance
 /// expects on write.
 ///
-/// A blob column may be top-level or nested inside a struct or list. Nested
-/// blobs are addressed by a dotted path (e.g. `info.blob`) in the read APIs.
+/// A blob column may be top-level or nested inside a struct or list. Blobs
+/// nested inside structs use dotted paths (e.g. `info.blob`) in the read APIs.
+/// Blobs inside lists can be written and queried as descriptors, but cannot
+/// currently be fetched by row id.
 ///
 /// ```
 /// use arrow_schema::{DataType, Field, Schema};
@@ -286,7 +288,7 @@ fn field_tree_has_blob_v2(field: &Field) -> bool {
     }
 }
 
-/// Collects the dotted paths of blob v2 columns under `field`, into `paths`.
+/// Collects the dotted paths of row-addressable blob v2 columns under `field`.
 fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
     let path = if prefix.is_empty() {
         field.name().clone()
@@ -297,17 +299,48 @@ fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
         paths.push(path);
         return;
     }
-    match field.data_type() {
-        DataType::Struct(children) => {
-            for child in children {
-                collect_blob_paths(child, &path, paths);
-            }
+    if let DataType::Struct(children) = field.data_type() {
+        for child in children {
+            collect_blob_paths(child, &path, paths);
         }
-        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
-            collect_blob_paths(child, &path, paths)
-        }
-        _ => {}
     }
+}
+
+fn is_list_blob_path(field: &Field, prefix: &str, column: &str, inside_list: bool) -> bool {
+    let path = if prefix.is_empty() {
+        field.name().clone()
+    } else {
+        format!("{prefix}.{}", field.name())
+    };
+    if field.is_blob_v2() {
+        return inside_list && column == path;
+    }
+    match field.data_type() {
+        DataType::Struct(children) => children
+            .iter()
+            .any(|child| is_list_blob_path(child, &path, column, inside_list)),
+        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
+            (column == path && field_tree_has_blob_v2(child))
+                || is_list_blob_path(child, &path, column, true)
+        }
+        _ => false,
+    }
+}
+
+/// Give list blob paths a useful error before they reach the row-based reader.
+pub(crate) fn reject_list_blob_column(schema: &Schema, column: &str) -> Result<()> {
+    if schema
+        .fields()
+        .iter()
+        .any(|field| is_list_blob_path(field, "", column, false))
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "column '{column}' contains a blob inside a list; blobs inside lists cannot be fetched by row id yet"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Returns true if `schema` declares any blob v2 column, including nested ones.
@@ -315,8 +348,9 @@ pub(crate) fn has_blob_columns(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| field_tree_has_blob_v2(f))
 }
 
-/// Blob v2 column paths in `schema`, declaration order preserved. Nested blobs
-/// are dotted paths (e.g. `info.blob`).
+/// Row-addressable blob v2 column paths in `schema`, in declaration order.
+/// Struct-nested blobs use dotted paths (e.g. `info.blob`); list-nested blobs
+/// are omitted because a row id cannot identify an individual list element.
 pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
     let mut paths = Vec::new();
     for field in schema.fields() {
@@ -351,6 +385,11 @@ pub(crate) fn ensure_blob_v2_column(
     schema: &lance_core::datatypes::Schema,
     column: &str,
 ) -> Result<()> {
+    // A top-level blob cannot have a list ancestor. Keep the common read path
+    // from converting the entire schema just to validate that condition.
+    if column.contains('.') || schema.field(column).is_none_or(|field| !field.is_blob_v2()) {
+        reject_list_blob_column(&Schema::from(schema), column)?;
+    }
     match schema.field(column) {
         Some(field) if field.is_blob_v2() => Ok(()),
         Some(field) if field.is_blob() => Err(Error::InvalidInput {
@@ -617,6 +656,54 @@ mod tests {
         );
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, false), info]);
         assert_eq!(blob_column_names(&schema), vec!["info.blob"]);
+    }
+
+    #[test]
+    fn list_blob_paths_are_not_row_addressable() {
+        let schema = Schema::new(vec![
+            blob("image", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![blob("thumbnail", true)].into()),
+                true,
+            ),
+            Field::new("images", DataType::List(Arc::new(blob("item", true))), true),
+            Field::new(
+                "groups",
+                DataType::LargeList(Arc::new(Field::new(
+                    "group",
+                    DataType::Struct(vec![blob("photo", true)].into()),
+                    true,
+                ))),
+                true,
+            ),
+            Field::new(
+                "frames",
+                DataType::FixedSizeList(Arc::new(blob("frame", true)), 2),
+                true,
+            ),
+        ]);
+        assert!(has_blob_columns(&schema));
+        assert_eq!(blob_column_names(&schema), vec!["image", "info.thumbnail"]);
+
+        for column in [
+            "images",
+            "images.item",
+            "groups",
+            "groups.group.photo",
+            "frames",
+            "frames.frame",
+        ] {
+            let err = reject_list_blob_column(&schema, column).unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }));
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+        for column in ["image", "info.thumbnail", "info"] {
+            reject_list_blob_column(&schema, column).unwrap();
+        }
     }
 
     #[test]
