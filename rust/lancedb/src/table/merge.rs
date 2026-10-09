@@ -1787,7 +1787,6 @@ mod lsm_tests {
         use crate::index::Index;
         use crate::index::vector::IvfPqIndexBuilder;
         use arrow::array::{FixedSizeListBuilder, Float32Builder};
-        use arrow::datatypes::Int64Type;
 
         const DIM: i32 = 8;
         const N: i64 = 256;
