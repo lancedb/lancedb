@@ -349,6 +349,21 @@ vector and non-vector searches)
 We currently don't support custom named indexes.
 The index name will always be `${column}_idx`.
 
+On local tables the index is built before the returned promise resolves.
+On remote tables (LanceDB Cloud and Enterprise) it resolves once the build
+is scheduled. Until the build finishes, a vector index may be missing from
+[Table.listIndices](Table.md#listindices), a scalar or FTS index may be listed with 0
+indexed rows, and queries won't use the index. To wait until the index is
+ready, set [IndexOptions.waitTimeoutSeconds](../interfaces/IndexOptions.md#waittimeoutseconds), call
+[Table.waitForIndex](Table.md#waitforindex), or wait on the job returned by
+[Table.createIndexAsync](Table.md#createindexasync).
+
+When replacing an existing index, `waitTimeoutSeconds` and
+[Table.waitForIndex](Table.md#waitforindex) may return before the new build finishes,
+because they look the index up by name and the old index can still match.
+To track a specific build, wait on the job returned by
+[Table.createIndexAsync](Table.md#createindexasync).
+
 #### Parameters
 
 * **column**: `string`
@@ -759,6 +774,11 @@ abstract listIndices(): Promise<IndexConfig[]>
 ```
 
 List all indices that have been created with [Table.createIndex](Table.md#createindex)
+
+On remote tables, an index whose build hasn't finished may be missing
+(vector indices) or listed with 0 indexed rows (scalar and FTS indices),
+and `numUnindexedRows` may be undefined. Use [Table.waitForIndex](Table.md#waitforindex) to
+wait until an index is ready.
 
 #### Returns
 

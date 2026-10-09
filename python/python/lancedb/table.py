@@ -1436,11 +1436,30 @@ class Table(ABC):
         replace : bool, default True
             Whether to replace an existing index on this column.
         wait_timeout : timedelta, optional
-            Timeout to wait for async indexing to complete.
+            Remote tables only: how long to wait for the index build to finish.
+            If not set, the call returns once the build is scheduled.
         name : str, optional
             Custom name for the index.
         train : bool, default True
             Whether to train the index with existing data.
+
+        Notes
+        -----
+        On local tables the index is built before this method returns. On
+        remote tables (LanceDB Cloud and Enterprise) it returns once the build
+        is scheduled. Until the build finishes, a vector index may be missing
+        from [list_indices][lancedb.table.Table.list_indices], a scalar or FTS
+        index may be listed with 0 indexed rows, and queries won't use the
+        index. To block until the index is ready, pass ``wait_timeout``, call
+        [wait_for_index][lancedb.table.Table.wait_for_index], or wait on the
+        job returned by
+        [create_index_async][lancedb.table.Table.create_index_async].
+
+        When replacing an existing index, ``wait_timeout`` and
+        ``wait_for_index`` may return before the new build finishes, because
+        they look the index up by name and the old index can still match. To
+        track a specific build, wait on the job returned by
+        [create_index_async][lancedb.table.Table.create_index_async].
 
         Examples
         --------
@@ -2388,6 +2407,12 @@ class Table(ABC):
         """
         List all indices that have been created with
         [Table.create_index][lancedb.table.Table.create_index]
+
+        On remote tables, an index whose build hasn't finished may be missing
+        (vector indices) or listed with 0 indexed rows (scalar and FTS
+        indices), and ``num_unindexed_rows`` may be ``None``. Use
+        [wait_for_index][lancedb.table.Table.wait_for_index] to wait until an
+        index is ready.
         """
 
     @abstractmethod
@@ -5751,12 +5776,31 @@ class AsyncTable:
             like to create.   You can also specify index-specific parameters when
             creating an index object.
         wait_timeout: timedelta, optional
-            The timeout to wait if indexing is asynchronous.
+            Remote tables only: how long to wait for the index build to finish.
+            If not set, the call returns once the build is scheduled.
         name: str, optional
             The name of the index. If not provided, a default name will be generated.
         train: bool, default True
             Whether to train the index with existing data. Vector indices always train
             with existing data.
+
+        Notes
+        -----
+        On local tables the index is built before this method returns. On
+        remote tables (LanceDB Cloud and Enterprise) it returns once the build
+        is scheduled. Until the build finishes, a vector index may be missing
+        from [list_indices][lancedb.table.AsyncTable.list_indices], a scalar or
+        FTS index may be listed with 0 indexed rows, and queries won't use the
+        index. To block until the index is ready, pass ``wait_timeout``, call
+        [wait_for_index][lancedb.table.AsyncTable.wait_for_index], or wait on
+        the job returned by
+        [create_index_async][lancedb.table.AsyncTable.create_index_async].
+
+        When replacing an existing index, ``wait_timeout`` and
+        ``wait_for_index`` may return before the new build finishes, because
+        they look the index up by name and the old index can still match. To
+        track a specific build, wait on the job returned by
+        [create_index_async][lancedb.table.AsyncTable.create_index_async].
         """
         if config is not None:
             if not isinstance(
@@ -7197,6 +7241,12 @@ class AsyncTable:
     async def list_indices(self) -> Iterable[IndexConfig]:
         """
         List all indices that have been created with Self::create_index
+
+        On remote tables, an index whose build hasn't finished may be missing
+        (vector indices) or listed with 0 indexed rows (scalar and FTS
+        indices), and ``num_unindexed_rows`` may be ``None``. Use
+        [wait_for_index][lancedb.table.AsyncTable.wait_for_index] to wait until
+        an index is ready.
         """
         return await self._inner.list_indices()
 

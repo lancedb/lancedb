@@ -365,6 +365,21 @@ export abstract class Table {
    * We currently don't support custom named indexes.
    * The index name will always be `${column}_idx`.
    *
+   * On local tables the index is built before the returned promise resolves.
+   * On remote tables (LanceDB Cloud and Enterprise) it resolves once the build
+   * is scheduled. Until the build finishes, a vector index may be missing from
+   * {@link Table.listIndices}, a scalar or FTS index may be listed with 0
+   * indexed rows, and queries won't use the index. To wait until the index is
+   * ready, set {@link IndexOptions.waitTimeoutSeconds}, call
+   * {@link Table.waitForIndex}, or wait on the job returned by
+   * {@link Table.createIndexAsync}.
+   *
+   * When replacing an existing index, `waitTimeoutSeconds` and
+   * {@link Table.waitForIndex} may return before the new build finishes,
+   * because they look the index up by name and the old index can still match.
+   * To track a specific build, wait on the job returned by
+   * {@link Table.createIndexAsync}.
+   *
    * @example
    * // If the column has a vector (fixed size list) data type then
    * // an IvfPq vector index will be created.
@@ -973,7 +988,14 @@ export abstract class Table {
    *  modification operations.
    */
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
-  /** List all indices that have been created with {@link Table.createIndex} */
+  /**
+   * List all indices that have been created with {@link Table.createIndex}
+   *
+   * On remote tables, an index whose build hasn't finished may be missing
+   * (vector indices) or listed with 0 indexed rows (scalar and FTS indices),
+   * and `numUnindexedRows` may be undefined. Use {@link Table.waitForIndex} to
+   * wait until an index is ready.
+   */
   abstract listIndices(): Promise<IndexConfig[]>;
   /**
    * Tokenize a full-text search query using the tokenizer configured on an FTS index.

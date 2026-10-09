@@ -851,7 +851,9 @@ export interface IndexOptions {
   /**
    * Timeout in seconds to wait for index creation to complete.
    *
-   * If not specified, the method will return immediately after starting the index creation.
+   * Only applies to remote tables, which build the index in the background.
+   * If not specified, `createIndex` returns once the build is scheduled.
+   * Local tables always build the index before `createIndex` returns.
    */
   waitTimeoutSeconds?: number;
 
