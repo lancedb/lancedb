@@ -210,7 +210,7 @@ below.
 ## Apply branch-tested changes to `main` {#apply-branch-tested-changes-to-main}
 
 <Warning>
-A branch has its own writable history. Outside of the [diff and merge
+A branch has its own writable history. Outside of the [diff and cherry-pick
 APIs](#compare-and-merge-a-branch-into-main) — which are available on
 LanceDB Enterprise and promote added columns only — LanceDB does not reconcile
 one branch's history with another or detect conflicts between them. To carry
@@ -221,8 +221,8 @@ explicitly write selected results to it.
 How you apply a validated change depends on the type of work:
 
 - **Added columns (Enterprise):** review the branch with `diff`, then promote
-  the new columns onto `main` with `merge`. See
-  [Compare and merge a branch into `main`](#compare-and-merge-a-branch-into-main).
+  the new columns onto `main` with `cherry_pick` (`cherryPick` in TypeScript). See
+  [Compare and promote a branch into `main`](#compare-and-merge-a-branch-into-main).
 - **Backfill or transformation:** rerun the validated job against `main`.
 - **Schema change:** apply the same reviewed schema operation to `main`.
 - **Index change:** build the index on `main` using the configuration validated
@@ -268,103 +268,122 @@ newer values with the same key. Read and upsert the whole branch only when that
 overwrite is intentional; otherwise, filter the branch read to the rows you
 intend to apply.
 
-## Compare and merge a branch into `main` {#compare-and-merge-a-branch-into-main}
+## Compare and promote a branch into `main` {#compare-and-merge-a-branch-into-main}
 
 <Badge color="red">Enterprise</Badge>
 
-On LanceDB Enterprise, branches expose two review-and-land calls that let you
-inspect what a branch has changed relative to `main` and then promote its new
-columns onto `main` in place — without reissuing the branch's writes.
+On LanceDB Enterprise, branches expose two review-and-land calls: `diff`
+inspects what a branch has changed relative to `main`, and `cherry_pick`
+(`cherryPick` in TypeScript) promotes the branch's new columns onto `main` in
+place, without reissuing the branch's writes.
 
 <Info>
-`diff` and `merge` are available on Enterprise (remote) tables only. On local
-tables both calls raise `NotSupported`. `merge` currently promotes added
-columns; use the [upsert](#upsert-selected-branch-rows-into-main) or rerun
-patterns above for row and index changes.
+`diff` and `cherry_pick` work on Enterprise (remote) tables only. On a local
+table they fail as not supported: Python raises `NotImplementedError`, and
+TypeScript and Rust return an error. A cherry-pick promotes added columns; use
+the [upsert](#upsert-selected-branch-rows-into-main) or rerun patterns above for
+row and index changes.
 </Info>
 
 ### Diff a branch {#diff-a-branch}
 
-`diff` reads the branch and `main`, and returns a summary of what has changed:
-which columns were added, removed, or altered; which indexes were added or
-removed; row-count deltas; and — most importantly — a list of merge blockers
-explaining why the branch cannot currently be merged, if any.
+`diff` reads the branch and `main` without modifying either, and returns what
+has changed: columns added, removed or changed, indexes added or removed, row
+counts, and a list of `errors` -- the reasons a cherry-pick of the branch could
+not land now. An empty list means it could.
 
 <CodeGroup>
 ```python Python icon="python"
 diff = table.branches.diff("exp")
 
-print(diff["addedColumns"])       # columns the branch introduced
-print(diff["mergeable"])          # True when there are no blockers
-print(diff["mergeBlockers"])      # list of {"code", "message"} entries
+print([c["name"] for c in diff["addedColumns"]])  # columns the branch introduced
+print(diff["baseMoved"])        # True if main has moved on since the branch's fork
+for error in diff["errors"]:    # empty when a cherry-pick could land
+    print(error["code"], error["message"])
 ```
 
 ```typescript TypeScript icon="square-js"
-const diff = await table.branches.diff("exp");
+const branches = await table.branches();
+const diff = await branches.diff("exp");
 
-console.log(diff.addedColumns);   // columns the branch introduced
-console.log(diff.mergeable);      // true when there are no blockers
-console.log(diff.mergeBlockers);  // array of { code, message } entries
+console.log(diff.addedColumns.map((c) => c.name)); // columns the branch introduced
+console.log(diff.baseMoved);   // true if main has moved on since the branch's fork
+for (const error of diff.errors) {  // empty when a cherry-pick could land
+  console.log(error.code, error.message);
+}
 ```
 </CodeGroup>
 
-Common merge blocker codes include `BaseMoved` (the branch's parent no longer
-matches `main`'s latest), `RowsChanged`, `ColumnRemoved`, `ColumnChanged`,
-`NoMergeableChanges`, `NoColumnChanges`, `InputColumnDependency`, and
-`ParentNotMain`. Newer server codes surface as `Unknown` so older clients
-keep working.
+The result also carries the versions it compared (`parentVersion`,
+`mainVersion`, `branchVersion`), `rowCountMain` and `rowCountBranch`, a
+`rowSummary`, and `removedColumns`, `changedColumns`, `addedIndexes` and
+`removedIndexes`. In Python the result is a dictionary with the same camelCase
+keys.
 
-### Merge a branch {#merge-a-branch}
+The error codes are `baseMoved` (`main` has moved on since the version the
+branch was forked from), `rowCountMismatch`, `rowsChanged`, `columnRemoved`,
+`columnChanged`, `nothingToApply`, `noColumnChanges`, `inputColumnDependency`
+and `parentNotMain`. A code the client does not know surfaces as `unknown`, so
+older clients keep working.
 
-`merge` promotes a branch's added columns onto `main`. It is a review-and-land
-operation: the server re-evaluates the diff at request time, and either lands
-the promotion or rejects it with the same blockers `diff` would report. A
-rejected merge is not an exception — it resolves with `status="rejected"` so
-you can inspect the blockers and decide what to do next.
+### Promote a branch's columns {#merge-a-branch}
 
-Set `dry_run=True` (Python) or `dryRun: true` (TypeScript) to preview the
-merge without landing it. The result includes a `preview.promoted_columns`
-list showing which columns the merge would (or did) promote.
+`cherry_pick` promotes the columns a branch added onto `main`. The server
+re-evaluates the diff when the request arrives and either lands the change or
+refuses it for the reasons `diff` would report. A refusal is not an exception:
+the call returns a result whose `status` is `"failed"`, with the reasons in
+`diff.errors`, so you can decide what to do next. Cherry-picks are not retried.
+
+Pass `dry_run=True` in Python, or `true` as the second argument in TypeScript,
+to check without landing anything. `preview.promotedColumns` lists the columns
+the cherry-pick would promote, or did.
 
 <CodeGroup>
 ```python Python icon="python"
-# Preview first — this does not modify main.
-preview = table.branches.merge("exp", dry_run=True)
-print(preview["status"])                   # "ready" | "rejected" | ...
+# Check first; this does not modify main.
+preview = table.branches.cherry_pick("exp", dry_run=True)
+print(preview["status"])                      # "ready" when it would land
 print(preview["preview"]["promotedColumns"])
 
-# Land the merge.
-result = table.branches.merge("exp")
-if result["status"] == "merged":
+# Land it.
+result = table.branches.cherry_pick("exp")
+if result["status"] == "cherryPicked":
     print("landed at main version", result["mainVersionAfter"])
-elif result["status"] == "rejected":
-    for blocker in result["diff"]["mergeBlockers"]:
-        print(blocker["code"], blocker["message"])
+elif result["status"] == "failed":
+    for error in result["diff"]["errors"]:
+        print(error["code"], error["message"])
 ```
 
 ```typescript TypeScript icon="square-js"
-// Preview first — this does not modify main.
-const preview = await table.branches.merge("exp", true);
-console.log(preview.status);               // "ready" | "rejected" | ...
+const branches = await table.branches();
+
+// Check first; this does not modify main.
+const preview = await branches.cherryPick("exp", true);
+console.log(preview.status);                  // "ready" when it would land
 console.log(preview.preview.promotedColumns);
 
-// Land the merge.
-const result = await table.branches.merge("exp");
-if (result.status === "merged") {
+// Land it.
+const result = await branches.cherryPick("exp");
+if (result.status === "cherryPicked") {
   console.log("landed at main version", result.mainVersionAfter);
-} else if (result.status === "rejected") {
-  for (const blocker of result.diff.mergeBlockers) {
-    console.log(blocker.code, blocker.message);
+} else if (result.status === "failed") {
+  for (const error of result.diff.errors) {
+    console.log(error.code, error.message);
   }
 }
 ```
 </CodeGroup>
 
-Possible `status` values are `ready` (returned by `dry_run` when the merge
-would land), `merged` (a real merge that landed), `rejected` (server declined;
-see `diff.mergeBlockers`), `notImplemented`, and `unknown` for forward
-compatibility. Merge requests are not retried on rejection — the response
-carries everything you need to decide next steps.
+`status` is `ready` (a dry run that would land), `cherryPicked` (it landed, and
+`mainVersionAfter` is the new version of `main`), `failed` (refused, or for a
+dry run, would be refused; see `diff.errors`), `notImplemented`, or `unknown`
+for a status the client does not know. A branch that does not exist raises a
+not-found error instead of returning a status.
+
+In async Python, await the same calls on an `AsyncTable`:
+`await table.branches.diff("exp")` and
+`await table.branches.cherry_pick("exp", dry_run=True)`. In Rust they are
+`Table::diff_branch` and `Table::cherry_pick`.
 
 ## Build indexes on a branch {#build-indexes-on-a-branch}
 
