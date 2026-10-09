@@ -1,5 +1,15 @@
 [default]
-extend-ignore-re = ["(?Rm)^.*(#|//)\\s*spellchecker:disable-line$"]
+extend-ignore-re = [
+    "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",
+    # Conventional import aliases in the docs examples: `import fiftyone as fo`
+    # and `import torchvision.io as tio`.
+    "\\bas (fo|tio)\\b",
+    "\\btio\\.",
+    # The substring query in the n-gram full-text search example.
+    'search\("nce"',
+    # Garbled OCR output quoted verbatim in the VLM fine-tuning tutorial.
+    "permission nstallation",
+]
 
 [default.extend-words]
 # Azure Kubernetes Service, mentioned in rust/lancedb/src/remote/oauth.rs.
@@ -12,6 +22,10 @@ mmaped = "mmaped"
 # `WriteableBuffer` is the real name of a type from Python's `_typeshed` stubs,
 # used in python/python/lancedb/_blob.py.
 Writeable = "Writeable"
+# Superlinked's self-hosted inference engine (SIE), its `sie-lancedb` package,
+# and the `sie` embedding function it registers, in
+# docs/web/integrations/embedding/superlinked.mdx.
+SIE = "SIE"
 
 [files]
 extend-exclude = [

@@ -1,0 +1,98 @@
+---
+title: "View"
+sidebarTitle: "View"
+description: "CREATE VIEW and DROP VIEW — a saved query, evaluated when read."
+icon: eye
+keywords: ["create view", "drop view", "sql", "catalog"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A view stores a **query**, not rows. Reading it runs the query against current
+data, so a view is never stale -- and never faster than the query it wraps. It
+is the counterpart to a [materialized view](/sql/ddl/materialized-view), which
+stores rows and is brought up to date by a refresh; both are
+[catalog objects](/basics/catalog) defined by a query, differing only in when
+that query runs.
+
+There is no SDK method for a view, because the thing it stores *is* a SQL
+statement.
+
+## CREATE VIEW {#create}
+
+```sql
+CREATE VIEW "recent_matches" AS
+SELECT t1.floats
+FROM "documents" AS t1
+INNER JOIN "categories" AS t2 ON t1.ints = t2.ints
+```
+
+The statement returns the view's schema -- column name, data type, nullability
+-- resolved from the query at creation time. Anything the
+[dialect](/sql/functions) supports can define one: joins, predicates,
+aggregates, window functions.
+
+## Reading one {#reading}
+
+A view is queried like a table:
+
+```sql
+SELECT * FROM "recent_matches" WHERE floats > 0.5
+```
+
+Predicates applied to the view compose with the query inside it rather than
+filtering its output afterwards, so a selective filter does not pay for rows
+the view would have produced and then discarded.
+
+## DROP VIEW {#drop}
+
+```sql
+DROP VIEW "recent_matches"
+```
+
+Removes the saved query. Unlike dropping a table, no data is removed -- there
+was none to begin with.
+
+## Listing {#listing}
+
+Views and tables share a namespace, and both are things you can query. The
+catalog distinguishes them:
+
+| | |
+| --- | --- |
+| view names | the views in the database |
+| table names | the tables |
+| relation names | everything queryable -- both |
+
+Use the relation listing when the question is "what can I select from," and the
+separate listings when the distinction matters -- before dropping, for
+instance, since dropping a view removes only the saved query while dropping a
+table removes data.
+
+## Choosing between a view and a materialized view {#choosing}
+
+| | View | Materialized view |
+| --- | --- | --- |
+| Stores | the query | the rows |
+| Freshness | always current | as of the last refresh |
+| Read cost | the full query, every read | a table scan |
+| Write cost | none | a refresh |
+
+Reach for a **view** when the query is cheap, or when reading stale rows would
+be wrong. Reach for a **materialized view** when the query is expensive and the
+data changes less often than it is read.
+
+The privileges are separate too: `CREATE_VIEW` and `CREATE_MATERIALIZED_VIEW`
+are distinct grants on a namespace, so the ability to create one does not imply
+the other. See [Authorization](/governance/authorization).
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Materialized View" icon="table" href="/sql/ddl/materialized-view">
+    The stored-rows counterpart.
+  </Card>
+  <Card title="Management" icon="folder-tree" href="/management">
+    Where views fit among the other catalog objects.
+  </Card>
+</CardGroup>

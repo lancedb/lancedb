@@ -1,0 +1,170 @@
+---
+title: "Authentication"
+sidebarTitle: "Authentication"
+description: "Authentication modes for LanceDB Enterprise: API keys and OAuth credentials."
+icon: key
+keywords: ["authentication", "oauth", "api key", "azure managed identity", "client credentials"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+A deployment authenticates every request before
+[authorization](/governance/authorization) decides what it may do, against a
+`db://` remote table, in one of two ways:
+
+- **API keys** -- a long-lived shared secret passed as `api_key` on connect. Works in every SDK.
+- **OAuth 2.0** -- short-lived bearer tokens obtained from your identity provider, refreshed automatically by the client.
+
+OAuth is the recommended option when you want to rotate credentials centrally,
+plug into an existing identity provider, or run on Azure with managed
+identities so no secret material lives on the client.
+
+## API key {#api-key}
+
+Pass the API key from your Enterprise tenant on `connect`. This works with
+both the synchronous and asynchronous Python clients, as well as TypeScript
+and Rust.
+
+```python
+import lancedb
+
+db = lancedb.connect(
+    uri="db://your-database-uri",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-enterprise-endpoint.com",
+)
+```
+
+An API key belongs in the environment rather than in source. See
+[Database](/management/database#deployment) for the connection options.
+
+## OAuth {#oauth}
+
+The async Python client and the TypeScript client can obtain bearer tokens
+from an OIDC issuer and attach them to every request. Token acquisition,
+caching, and refresh are handled inside the client -- your application code
+only provides the configuration.
+
+<Info>
+In Python, OAuth is supported through `lancedb.connect_async`. The synchronous
+`connect` entry point continues to use API key authentication for `db://`
+URIs. In TypeScript, `lancedb.connect` accepts `oauthConfig` directly.
+</Info>
+
+### Supported flows {#supported-flows}
+
+`OAuthFlowType` selects how the client acquires tokens:
+
+| Flow | Python value | TypeScript value | When to use |
+| --- | --- | --- | --- |
+| Client Credentials | `OAuthFlowType.CLIENT_CREDENTIALS` | `OAuthFlowType.ClientCredentials` | Service-to-service / machine-to-machine. Requires a client ID and client secret registered with your identity provider. |
+| Azure Managed Identity | `OAuthFlowType.AZURE_MANAGED_IDENTITY` | `OAuthFlowType.AzureManagedIdentity` | Workloads running on Azure compute (VMs, AKS, App Service, Container Apps). Tokens are fetched from the Azure IMDS endpoint, so no client secret is stored on the client. |
+
+### Configure OAuth {#configure-oauth}
+
+Build an OAuth config and pass it on connect. Use `oauth_config` in Python and
+`oauthConfig` in TypeScript.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from lancedb.remote import OAuthConfig, OAuthFlowType
+
+# Client Credentials (service-to-service)
+oauth_config = OAuthConfig(
+    issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
+    client_id="your-application-client-id",
+    client_secret="your-application-client-secret",
+    scopes=["api://lancedb-api/.default"],
+    flow=OAuthFlowType.CLIENT_CREDENTIALS,
+)
+
+db = await lancedb.connect_async(
+    uri="db://your-database-uri",
+    region="us-east-1",
+    host_override="https://your-enterprise-endpoint.com",
+    oauth_config=oauth_config,
+)
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import { OAuthConfig, OAuthFlowType } from "@lancedb/lancedb";
+
+// Client Credentials (service-to-service)
+const oauthConfig: OAuthConfig = {
+  issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
+  clientId: "your-application-client-id",
+  clientSecret: "your-application-client-secret",
+  scopes: ["api://lancedb-api/.default"],
+  flow: OAuthFlowType.ClientCredentials,
+};
+
+const db = await lancedb.connect("db://your-database-uri", {
+  region: "us-east-1",
+  hostOverride: "https://your-enterprise-endpoint.com",
+  oauthConfig,
+});
+```
+</CodeGroup>
+
+For workloads running on Azure compute, use a managed identity instead of a
+client secret:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.remote import OAuthConfig, OAuthFlowType
+
+oauth_config = OAuthConfig(
+    issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
+    client_id="your-application-client-id",
+    scopes=["api://lancedb-api/.default"],
+    flow=OAuthFlowType.AZURE_MANAGED_IDENTITY,
+    # Optional: required only for user-assigned managed identities.
+    managed_identity_client_id="your-user-assigned-identity-client-id",
+)
+```
+
+```typescript TypeScript icon="square-js"
+import { OAuthConfig, OAuthFlowType } from "@lancedb/lancedb";
+
+const oauthConfig: OAuthConfig = {
+  issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
+  clientId: "your-application-client-id",
+  scopes: ["api://lancedb-api/.default"],
+  flow: OAuthFlowType.AzureManagedIdentity,
+  // Optional: required only for user-assigned managed identities.
+  managedIdentityClientId: "your-user-assigned-identity-client-id",
+};
+```
+</CodeGroup>
+
+### Configuration reference {#configuration-reference}
+
+The same configuration is available in both SDKs. Python uses `snake_case`
+field names; TypeScript uses `camelCase`.
+
+| Python field / TypeScript field | Required | Description |
+| --- | --- | --- |
+| `issuer_url` / `issuerUrl` | Yes | OIDC issuer URL or OAuth authority URL. For Azure, use `https://login.microsoftonline.com/{tenant_id}/v2.0`. |
+| `client_id` / `clientId` | Yes | Application / client ID registered with your identity provider. |
+| `scopes` | Yes | List of OAuth scopes to request. For Azure managed identity, provide exactly one scope or resource, for example `["api://your-app-id/.default"]`. |
+| `flow` | No | Selects the OAuth flow. Defaults to Client Credentials. |
+| `client_secret` / `clientSecret` | Conditional | Required for Client Credentials. Redacted from the config's `repr` (Python) and `Debug` output (TypeScript native binding) so it does not leak into logs. |
+| `managed_identity_client_id` / `managedIdentityClientId` | No | Client ID of a user-assigned managed identity. Only used with Azure Managed Identity; omit for system-assigned identities. |
+| `refresh_buffer_secs` / `refreshBufferSecs` | No | How many seconds before token expiry to proactively refresh. Defaults to 300. Keep this well below the token TTL -- setting it greater than or equal to the TTL forces a refresh on every request. |
+
+<Warning>
+Treat the client secret like any other production credential. Load it from a
+secret manager or environment variable rather than committing it to source
+control. Both SDKs deliberately omit the secret from their debug/repr output
+so accidental log lines do not expose the value.
+</Warning>
+
+Embedded LanceDB has nothing to authenticate to -- your process opens the files
+directly, and the object store's own credentials are the only gate.

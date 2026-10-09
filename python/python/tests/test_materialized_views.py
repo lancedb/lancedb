@@ -93,7 +93,7 @@ def test_remote_list_uses_namespace_route():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.list_materialized_views() == ["daily_sales"]
+        assert list(db.list_materialized_views()) == ["daily_sales"]
     assert requests == ["/v1/namespace/$/materialized_view/list"]
 
 
@@ -190,7 +190,7 @@ def test_create_and_refresh_jobs(tmp_path):
     drop_job = db.drop_materialized_view_async("adults")
     assert drop_job.id is None
     assert drop_job.wait() is None
-    assert "adults" not in db.list_materialized_views()
+    assert "adults" not in list(db.list_materialized_views())
 
 
 def test_definition_round_trips(tmp_path):
@@ -246,18 +246,43 @@ def test_legacy_storage_source_update_rebuilds(tmp_path):
     assert sorted(row["age"] for row in rows) == [8, 36]
 
 
+def test_direct_writes_to_a_view_are_refused(tmp_path):
+    db = make_db(tmp_path)
+    view = db.create_materialized_view("copy", "people")
+    table = view.table
+    row = [{"name": "eve", "age": 1}]
+    refused = pytest.raises(NotImplementedError, match="is a materialized view")
+
+    with refused:
+        table.add(row)
+    with refused:
+        table.update(where="name = 'kid'", values={"age": 8})
+    with refused:
+        table.delete("age < 18")
+    with refused:
+        table.merge_insert("name").when_not_matched_insert_all().execute(row)
+    with refused:
+        table.add_columns({"older": "age + 1"})
+    with refused:
+        table.drop_columns(["age"])
+    assert table.count_rows() == 3
+
+    db.open_table("people").add(row)
+    assert view.refresh().rows_written == 4
+
+
 def test_list_and_not_a_view(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")
 
-    assert db.list_materialized_views() == ["adults"]
+    assert list(db.list_materialized_views()) == ["adults"]
     with pytest.raises(ValueError, match="not a materialized view"):
         db.open_materialized_view("people")
     with pytest.raises(ValueError, match="not a materialized view"):
         db.drop_materialized_view("people")
 
     db.drop_materialized_view("adults")
-    assert db.list_materialized_views() == []
+    assert list(db.list_materialized_views()) == []
 
 
 def test_invalid_expression_fails_at_create(tmp_path):
@@ -285,7 +310,7 @@ async def test_async_create_refresh_and_open(tmp_path):
     reopened = await db.open_materialized_view("shouts")
     definition = await reopened.definition()
     assert definition.query == "SELECT upper(name) AS shout FROM people"
-    assert await db.list_materialized_views() == ["shouts"]
+    assert [item async for item in db.list_materialized_views()] == ["shouts"]
 
 
 @pytest.mark.asyncio
@@ -309,7 +334,7 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     drop_job = await db.drop_materialized_view_async("adults")
     assert drop_job.id is None
     assert await drop_job.wait() is None
-    assert "adults" not in await db.list_materialized_views()
+    assert "adults" not in [item async for item in db.list_materialized_views()]
 
 
 @pytest.mark.asyncio
@@ -399,7 +424,7 @@ def test_namespace_connection_materialized_views(tmp_path):
     view = db.create_materialized_view("adults", "people", where="age >= 18")
     view.refresh()
     assert view.table.count_rows() == 1
-    assert db.list_materialized_views() == ["adults"]
+    assert list(db.list_materialized_views()) == ["adults"]
 
     reopened = db.open_materialized_view("adults")
     assert reopened.definition.query.startswith("SELECT name, age FROM ")
@@ -415,7 +440,7 @@ def test_namespace_connection_materialized_views(tmp_path):
 
     assert db.drop_materialized_view_async("job_view").wait() is None
     db.drop_materialized_view("adults")
-    assert db.list_materialized_views() == []
+    assert list(db.list_materialized_views()) == []
 
 
 @pytest.mark.asyncio
@@ -434,7 +459,7 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     view = await db.create_materialized_view("adults", "people", where="age >= 18")
     await view.refresh()
     assert await view.table.count_rows() == 1
-    assert await db.list_materialized_views() == ["adults"]
+    assert [item async for item in db.list_materialized_views()] == ["adults"]
 
     reopened = await db.open_materialized_view("adults")
     assert (await reopened.definition()).query.startswith("SELECT name, age FROM ")
@@ -460,7 +485,7 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     drop_job = await db.drop_materialized_view_async("job_view")
     assert await drop_job.wait() is None
     await db.drop_materialized_view("adults")
-    assert await db.list_materialized_views() == []
+    assert [item async for item in db.list_materialized_views()] == []
 
 
 def test_stored_queries_and_legacy_layouts_are_read():
@@ -509,3 +534,19 @@ def test_stored_queries_and_legacy_layouts_are_read():
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):
             read(newer)
+
+
+def test_local_materialized_view_listing_pages_and_resume(tmp_path):
+    db = make_db(tmp_path)
+    db.create_materialized_view("a_view", "people", with_no_data=True)
+    db.create_materialized_view("z_view", "people", with_no_data=True)
+    db.create_table("ordinary", [{"id": 1}])
+    names = db.list_materialized_views(page_limit=1)
+    assert names.num_page_results() == 0
+    first = next(names)
+    assert names.num_page_results() == 0
+    assert names.page_token() is not None
+    resumed = db.list_materialized_views(page_token=names.page_token(), page_limit=1)
+    assert sorted([first, *resumed]) == ["a_view", "z_view"]
+    assert resumed.page_token() is None
+    assert list(resumed) == []

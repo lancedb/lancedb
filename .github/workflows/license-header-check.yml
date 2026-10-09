@@ -9,6 +9,7 @@ on:
       - python/**
       - nodejs/**
       - java/**
+      - docs/web-tests/**
       - .github/workflows/license-header-check.yml
 
 permissions:

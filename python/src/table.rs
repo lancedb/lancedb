@@ -267,7 +267,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
-/// MemWAL supports, resolved on install.
+/// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -307,9 +307,9 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default)
-    /// resolves every supported index on install; a list is verbatim,
-    /// and an empty list maintains nothing.
+    /// Set which indexes the MemWAL maintains. `None` (the default) is
+    /// every index the table has, including ones created later; a list is
+    /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
     pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
@@ -1266,6 +1266,7 @@ impl Table {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
                 dict.set_item("num_indices", stats.num_indices)?;
 
                 let fragment_stats = PyDict::new(py);

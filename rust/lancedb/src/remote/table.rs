@@ -1180,11 +1180,14 @@ impl<S: HttpSend> RemoteTable<S> {
                             .values()
                             .iter()
                             .map(|v| {
-                                serde_json::Value::Number(
-                                    serde_json::Number::from_f64(*v as f64).unwrap(),
-                                )
+                                serde_json::Number::from_f64(*v as f64)
+                                    .map(serde_json::Value::Number)
+                                    .ok_or_else(|| Error::InvalidInput {
+                                        message: "query vector must contain only finite values"
+                                            .into(),
+                                    })
                             })
-                            .collect(),
+                            .collect::<Result<Vec<_>>>()?,
                     ))
                 }
                 _ => Err(Error::InvalidInput {
@@ -2272,11 +2275,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(Some(Arc::new(snapshot)))
     }
     async fn restore(&self) -> Result<()> {
+        let read_snapshot = self.snapshot_read_state().await;
+        let version = read_snapshot.version.ok_or_else(|| Error::InvalidInput {
+            message: "you must run checkout before running restore".to_string(),
+        })?;
         let mut request = self
             .client
             .post(&format!("/v1/table/{}/restore/", self.identifier));
-        let read_snapshot = self.snapshot_read_state().await;
-        let mut body = serde_json::json!({ "version": read_snapshot.version });
+        let mut body = serde_json::json!({ "version": version });
         self.apply_branch_body(&mut body);
         request = request.json(&body);
 
@@ -3252,8 +3258,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         #[derive(Deserialize)]
         struct LsmWriteSpecBody {
             sharding: Sharding,
+            /// `null` selects every index the table has; `[]` selects none.
             #[serde(default)]
-            maintained_indexes: Vec<String>,
+            maintained_indexes: Option<Vec<String>>,
             #[serde(default)]
             writer_config_defaults: std::collections::HashMap<String, String>,
         }
@@ -4619,10 +4626,18 @@ mod tests {
     }
 
     #[rstest]
-    #[case(true)]
-    #[case(false)]
+    #[case::old_server("", 0, 0)]
+    #[case::rows_updated(r#"{"rows_updated": 5, "version": 43}"#, 5, 43)]
+    #[case::updated_rows(r#"{"updated_rows": 5, "version": 43}"#, 5, 43)]
+    #[case::zero_updated_rows(r#"{"updated_rows": 0, "version": 43}"#, 0, 43)]
+    #[case::missing_row_count(r#"{"version": 43}"#, 0, 43)]
     #[tokio::test]
-    async fn test_update(#[case] old_server: bool) {
+    async fn test_update(
+        #[case] response_body: &'static str,
+        #[case] expected_rows_updated: u64,
+        #[case] expected_version: u64,
+        #[values(true, false)] filtered: bool,
+    ) {
         let table = Table::new_with_handler("my_table", move |request| {
             if request.url().path() == "/v1/table/my_table/update/" {
                 assert_eq!(request.method(), "POST");
@@ -4647,32 +4662,29 @@ mod tests {
                     assert_eq!(col_name, "b");
                     assert_eq!(expression, "b - 1");
 
-                    let only_if = value.get("predicate").unwrap().as_str().unwrap();
-                    assert_eq!(only_if, "`B` > 10");
+                    assert_eq!(
+                        value.get("predicate").unwrap(),
+                        &serde_json::json!(if filtered { Some("`B` > 10") } else { None })
+                    );
                 }
 
-                if old_server {
-                    http::Response::builder().status(200).body("").unwrap()
-                } else {
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"rows_updated": 5, "version": 43}"#)
-                        .unwrap()
-                }
+                http::Response::builder()
+                    .status(200)
+                    .body(response_body)
+                    .unwrap()
             } else {
                 panic!("Unexpected request path: {}", request.url().path());
             }
         });
 
-        let update = table
-            .update()
-            .column("a", "a + 1")
-            .column("b", "b - 1")
-            .only_if(r#""B" > 10"#);
+        let mut update = table.update().column("a", "a + 1").column("b", "b - 1");
+        if filtered {
+            update = update.only_if(r#""B" > 10"#);
+        }
         let result = table.base_table().update(update).await.unwrap();
 
-        assert_eq!(result.version, if old_server { 0 } else { 43 });
-        assert_eq!(result.rows_updated, if old_server { 0 } else { 5 });
+        assert_eq!(result.version, expected_version);
+        assert_eq!(result.rows_updated, expected_rows_updated);
     }
 
     #[tokio::test]
@@ -5881,6 +5893,47 @@ mod tests {
         let blobs = table.fetch_blobs("image", &[10]).await.unwrap();
 
         assert_eq!(blobs.value(0), b"alpha");
+    }
+
+    #[rstest]
+    #[case(DEFAULT_SERVER_VERSION.clone())]
+    #[case(semver::Version::new(0, 2, 0))]
+    #[tokio::test]
+    async fn test_query_vector_non_finite(#[case] version: semver::Version) {
+        let table =
+            Table::new_with_handler_version("my_table", version, |_| -> http::Response<String> {
+                panic!("non-finite vectors must be rejected before sending a request")
+            });
+
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            // Requests built without the query builder must also return an
+            // error, including a non-finite vector later in a batch.
+            for batched in [false, true] {
+                let mut request = table
+                    .query()
+                    .nearest_to(&[0.1, 0.2])
+                    .unwrap()
+                    .into_request();
+                if !batched {
+                    request.query_vector.clear();
+                }
+                request
+                    .query_vector
+                    .push(Arc::new(arrow_array::Float32Array::from(vec![0.1, value])));
+                let result = table
+                    .base_table()
+                    .query(
+                        &AnyQuery::VectorQuery(request),
+                        QueryExecutionOptions::default(),
+                    )
+                    .await;
+                let Err(err) = result else {
+                    panic!("non-finite query vector unexpectedly succeeded")
+                };
+                assert!(matches!(err, Error::InvalidInput { .. }));
+                assert!(err.to_string().contains("only finite values"));
+            }
+        }
     }
 
     #[tokio::test]
@@ -8158,6 +8211,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_restore_requires_checkout() {
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_clone = request_count.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            request_count_clone.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request_body_json(&request)["version"], 42);
+            let body = match request.url().path() {
+                "/v1/table/my_table/describe/" => r#"{"version":42,"schema":{"fields":[]}}"#,
+                "/v1/table/my_table/restore/" => r#"{"version":43}"#,
+                path => panic!("unexpected request path: {path}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 0);
+
+        table.checkout(42).await.unwrap();
+        table.checkout_latest().await.unwrap();
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+
+        table.checkout(42).await.unwrap();
+        table.restore().await.unwrap();
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+
+        let err = table.restore().await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { message }
+            if message == "you must run checkout before running restore"));
+        assert_eq!(request_count.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
     async fn test_fails_if_checkout_version_doesnt_exist() {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
@@ -9584,6 +9674,43 @@ mod tests {
         }
     }
 
+    /// Every selection reads back as the server reported it: every index
+    /// (`null`), none (`[]`), and a named list.
+    #[rstest::rstest]
+    #[case::every_index(serde_json::Value::Null, None)]
+    #[case::no_index(serde_json::json!([]), Some(vec![]))]
+    #[case::named(serde_json::json!(["id_idx"]), Some(vec!["id_idx".to_string()]))]
+    #[tokio::test]
+    async fn test_get_lsm_write_spec_round_trips_the_selection(
+        #[case] reported: serde_json::Value,
+        #[case] expected: Option<Vec<String>>,
+    ) {
+        let table = Table::new_with_handler("my_table", move |_| {
+            let response = serde_json::json!({
+                "lsm_write_spec": {
+                    "sharding": { "mode": "unsharded" },
+                    "maintained_indexes": reported,
+                    "writer_config_defaults": {},
+                }
+            });
+            http::Response::builder()
+                .status(200)
+                .body(response.to_string())
+                .unwrap()
+        });
+
+        let spec = table
+            .get_lsm_write_spec()
+            .await
+            .unwrap()
+            .expect("a spec should be reported");
+        assert_eq!(
+            spec.maintained_indexes().map(<[String]>::to_vec),
+            expected,
+            "the selection the server reported must survive the read"
+        );
+    }
+
     #[tokio::test]
     async fn test_get_lsm_write_spec_absent() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -10949,22 +11076,24 @@ mod tests {
             }
         });
 
+        table.checkout(1).await.unwrap();
+
         // First schema call
         let schema1 = table.schema().await.unwrap();
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         // Second schema call uses cache
         let schema2 = table.schema().await.unwrap();
         assert_eq!(Arc::as_ptr(&schema2), Arc::as_ptr(&schema1));
-        assert_eq!(call_count.load(Ordering::SeqCst), 1);
+        assert_eq!(call_count.load(Ordering::SeqCst), 2);
 
         // Restore operation
-        let _ = table.restore().await;
+        table.restore().await.unwrap();
 
         // Schema call after restore should re-fetch (cache invalidated)
         let schema3 = table.schema().await.unwrap();
         assert_ne!(Arc::as_ptr(&schema3), Arc::as_ptr(&schema1));
-        assert_eq!(call_count.load(Ordering::SeqCst), 2);
+        assert_eq!(call_count.load(Ordering::SeqCst), 3);
     }
 
     /// Test that centralized error handling invalidates cache on query errors
@@ -13785,8 +13914,17 @@ mod tests {
                     .status(200)
                     .body("{}".to_string())
                     .unwrap(),
+                "/v1/table/my_table/describe/" => {
+                    assert_eq!(request_body_json(&request)["branch"], "exp");
+                    assert_eq!(request_body_json(&request)["version"], 1);
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version":1,"schema":{"fields":[]}}"#.to_string())
+                        .unwrap()
+                }
                 "/v1/table/my_table/restore/" => {
                     assert_eq!(request_body_json(&request)["branch"], "exp");
+                    assert_eq!(request_body_json(&request)["version"], 1);
                     http::Response::builder()
                         .status(200)
                         .body(r#"{"version":1}"#.to_string())
@@ -13798,6 +13936,7 @@ mod tests {
             .create_branch("exp", Ref::Version(None, None))
             .await
             .unwrap();
+        branch.checkout(1).await.unwrap();
         branch.restore().await.unwrap();
     }
 
@@ -14252,5 +14391,19 @@ mod tests {
                 .all(|b| b["with_row_id"] == serde_json::Value::Bool(true)),
             "no retry should have been attempted"
         );
+    }
+
+    #[tokio::test]
+    async fn test_stats_num_deleted_rows_is_none_when_absent() {
+        // The stats endpoint does not report num_deleted_rows, so the response
+        // must still parse and value set to None.
+        let body = r#"{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":{"num_fragments":1,"num_small_fragments":0,"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}"#;
+        let table = Table::new_with_handler("my_table", move |_| {
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        });
+        assert_eq!(table.stats().await.unwrap().num_deleted_rows, None);
     }
 }

@@ -17,8 +17,9 @@ from packaging.version import Version
 
 import lancedb
 import numpy as np
-from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import AsyncQuery, ColumnOrdering
+from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.query import AsyncQuery, ColumnOrdering, LanceVectorQueryBuilder
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -593,6 +594,106 @@ def test_remote_permutation_is_picklable():
             {"a": 2},
             {"a": 0},
             {"a": 4},
+        ]
+
+
+@pytest.mark.parametrize("with_schema", [True, False])
+def test_create_table_embedding_functions(with_schema):
+    func = MockNonNormTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    received = {}
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            # Echo the metadata actually sent by create_table, as the server does.
+            metadata = received["create"].schema.metadata or {}
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "text",
+                                "type": {"type": "string"},
+                                "nullable": True,
+                            },
+                            {
+                                "name": "vector",
+                                "type": {
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        {
+                                            "name": "item",
+                                            "type": {"type": "float"},
+                                            "nullable": True,
+                                        }
+                                    ],
+                                    "length": 10,
+                                },
+                                "nullable": True,
+                            },
+                        ],
+                        "metadata": {
+                            k.decode(): v.decode() for k, v in metadata.items()
+                        },
+                    },
+                },
+            )
+        elif request.path in (
+            "/v1/table/test/create/?mode=create",
+            "/v1/table/test/insert/",
+        ):
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                body = bytearray()
+                while True:
+                    size = int(request.rfile.readline(), 16)
+                    if size == 0:
+                        request.rfile.readline()
+                        break
+                    body.extend(request.rfile.read(size))
+                    request.rfile.read(2)
+            else:
+                body = request.rfile.read(int(request.headers["Content-Length"]))
+            operation = "create" if "/create/" in request.path else "insert"
+            received[operation] = pa.ipc.open_stream(body).read_all()
+            send_json(request, {})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema if with_schema else None,
+            data=None if with_schema else [{"text": "hello world"}],
+            embedding_functions=[config],
+        )
+        metadata = pa.schema(
+            [],
+            metadata=EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                [config]
+            ),
+        ).metadata
+        assert received["create"].schema.metadata == metadata
+        assert table.schema.metadata == metadata
+        assert table.schema.field("vector").type == pa.list_(pa.float32(), 10)
+        assert table.embedding_functions["vector"].source_column == "text"
+        if with_schema:
+            assert received["create"].num_rows == 0
+        else:
+            assert received["create"]["vector"].to_pylist() == [
+                func.compute_source_embeddings(["hello world"])[0].tolist()
+            ]
+
+        table.add([{"text": "goodbye world"}])
+        assert received["insert"]["vector"].to_pylist() == [
+            func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
 
 
@@ -1373,7 +1474,9 @@ def test_stats():
         table = db.create_table("test", [{"id": 1}])
         res = table.stats()
         print(f"{res=}")
-        assert res == stats
+        # The server does not report num_deleted_rows, and that unsupported
+        # state is preserved as None.
+        assert res == {**stats, "num_deleted_rows": None}
 
 
 @contextlib.contextmanager
@@ -1502,14 +1605,51 @@ def test_checkpoint_lsm_sync():
 
 
 @contextlib.contextmanager
-def query_test_table(query_handler, *, server_version=Version("0.1.0")):
+def query_test_table(
+    query_handler,
+    *,
+    server_version=Version("0.1.0"),
+    vector_columns=None,
+    embedding_functions=None,
+):
+    if vector_columns is None:
+        vector_columns = {"vector": 3}
+    schema = {
+        "fields": [
+            {"name": "text", "type": {"type": "string"}, "nullable": False},
+            *[
+                {
+                    "name": name,
+                    "type": {
+                        "type": "fixed_size_list",
+                        "fields": [
+                            {
+                                "name": "item",
+                                "type": {"type": "float"},
+                                "nullable": True,
+                            }
+                        ],
+                        "length": dim,
+                    },
+                    "nullable": False,
+                }
+                for name, dim in vector_columns.items()
+            ],
+        ]
+    }
+    if embedding_functions:
+        metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+            embedding_functions
+        )
+        schema["metadata"] = {key: value.decode() for key, value in metadata.items()}
+
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
-            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+            request.wfile.write(json.dumps({"version": 1, "schema": schema}).encode())
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length"))
             body = request.rfile.read(content_len)
@@ -1560,6 +1700,7 @@ def test_query_sync_minimal():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
+            "vector_column": "vector",
             "nprobes": 20,
             "minimum_nprobes": 20,
             "maximum_nprobes": 20,
@@ -1574,7 +1715,84 @@ def test_query_sync_minimal():
         assert data == expected
 
 
-def test_query_sync_empty_query():
+@pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
+@pytest.mark.parametrize("vector_column_name", [None, "embedding"])
+def test_query_sync_text_embedding(query_type, vector_column_name):
+    embedding_func = MockTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="embedding", function=embedding_func
+    )
+    query = "quick brown fox"
+    expected_vector = embedding_func.compute_query_embeddings(query)[0]
+    queries = []
+
+    def handler(body):
+        queries.append(body)
+        if "full_text_query" in body:
+            assert query_type == "hybrid"
+            assert body["full_text_query"]["query"] == query
+            return pa.table({"id": [1], "_rowid": [1], "_score": [1.0]})
+        assert body["vector_column"] == "embedding"
+        assert body["vector"] == pytest.approx(expected_vector)
+        return pa.table({"id": [1], "_rowid": [1], "_distance": [0.0]})
+
+    with query_test_table(
+        handler,
+        vector_columns={
+            "embedding": embedding_func.ndims(),
+            **({"other": embedding_func.ndims()} if vector_column_name else {}),
+        },
+        embedding_functions=[config],
+    ) as table:
+        assert list(table.embedding_functions) == ["embedding"]
+        builder = table.search(
+            query, query_type=query_type, vector_column_name=vector_column_name
+        )
+        if query_type != "hybrid":
+            assert isinstance(builder, LanceVectorQueryBuilder)
+        results = builder.to_list()
+        assert results[0]["id"] == 1
+        if query_type != "hybrid":
+            assert results[0]["_distance"] == 0.0
+    assert len(queries) == (2 if query_type == "hybrid" else 1)
+
+
+@pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
+def test_query_sync_ambiguous_vector_columns(query_type):
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="v1",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    queries = []
+
+    def handler(body):
+        queries.append(body)
+        return pa.table({"id": [1]})
+
+    with query_test_table(
+        handler,
+        vector_columns={"v1": 10, "v2": 10},
+        embedding_functions=[config],
+    ) as table:
+        with pytest.raises(ValueError, match=r"Candidates: \['v1', 'v2'\]"):
+            table.search("puppy", query_type=query_type).to_list()
+    assert queries == []
+
+
+@pytest.mark.parametrize("vector_column, dim", [("v1", 3), ("v2", 4)])
+def test_query_sync_infers_vector_column_by_dimension(vector_column, dim):
+    def handler(body):
+        assert body["vector_column"] == vector_column
+        assert body["vector"] == [1.0] * dim
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns={"v1": 3, "v2": 4}) as table:
+        assert table.search([1.0] * dim).to_list() == [{"id": 1}]
+
+
+@pytest.mark.parametrize("vector_columns", [{}, {"v1": 3, "v2": 3}])
+def test_query_sync_empty_query(vector_columns):
     def handler(body):
         assert body == {
             "k": 10,
@@ -1587,7 +1805,7 @@ def test_query_sync_empty_query():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
+    with query_test_table(handler, vector_columns=vector_columns) as table:
         data = table.search(None).where("true").select(["id"]).limit(10).to_list()
         expected = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert data == expected
@@ -1837,7 +2055,9 @@ def test_query_sync_batch_queries(server_version):
         assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
 
 
-def test_query_sync_fts():
+@pytest.mark.parametrize("vector_columns", [{}, {"vector": 3}, {"v1": 3, "v2": 3}])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts(vector_columns, query_type):
     def handler(body):
         assert body == {
             "full_text_query": {
@@ -1852,8 +2072,8 @@ def test_query_sync_fts():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
-        (table.search("puppy", query_type="fts").to_list())
+    with query_test_table(handler, vector_columns=vector_columns) as table:
+        (table.search("puppy", query_type=query_type).to_list())
 
     def handler(body):
         assert body == {
@@ -1880,9 +2100,11 @@ def test_query_sync_fts():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
+    with query_test_table(handler, vector_columns=vector_columns) as table:
         (
-            table.search("puppy", query_type="fts", fts_columns=["name", "description"])
+            table.search(
+                "puppy", query_type=query_type, fts_columns=["name", "description"]
+            )
             .with_row_id(True)
             .limit(42)
             .to_list()
@@ -1920,7 +2142,9 @@ def test_query_sync_fts_document_granularity():
             }
         )
 
-    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+    with query_test_table(
+        handler, server_version=Version("0.6.0"), vector_columns={}
+    ) as table:
         result = table.search(
             MatchQuery(
                 "alpha",
@@ -1955,6 +2179,7 @@ def test_query_sync_hybrid():
                 "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "vector_column": "vector",
                 "nprobes": 20,
                 "minimum_nprobes": 20,
                 "maximum_nprobes": 20,
@@ -1966,15 +2191,14 @@ def test_query_sync_hybrid():
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 
-    with query_test_table(handler) as table:
-        embedding_func = MockTextEmbeddingFunction()
-        embedding_config = MagicMock()
-        embedding_config.function = embedding_func
-
-        embedding_funcs = MagicMock()
-        embedding_funcs.get = MagicMock(return_value=embedding_config)
-        table.embedding_functions = embedding_funcs
-
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    with query_test_table(
+        handler, vector_columns={"vector": 10}, embedding_functions=[config]
+    ) as table:
         (table.search("puppy", query_type="hybrid").limit(42).to_list())
 
 
@@ -2901,7 +3125,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        jobs = db.list_jobs()
+        jobs = list(db.list_jobs())
         assert [job.job_id for job in jobs] == ["job-1", "job-2"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
@@ -3061,7 +3285,7 @@ def test_view_crud_addresses_its_own_routes():
         described = db.describe_view("adults", namespace_path=["analytics"])
         assert described.schema == view.schema
 
-        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        assert list(db.list_views(namespace_path=["analytics"])) == ["adults"]
         db.drop_view("adults", namespace_path=["analytics"])
 
     assert paths == [

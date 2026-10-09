@@ -1,0 +1,99 @@
+---
+title: "SDKs"
+sidebarTitle: "SDKs"
+description: "The language clients — Python, TypeScript, Rust — and what stays true across all of them."
+icon: code-compare
+keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
+---
+
+A language SDK is the primary way to work with LanceDB: create and manage
+tables, write and query data, build indexes, run feature engineering. The same
+table API works whether you're connected to an embedded database or an
+Enterprise deployment -- application code moves between the two by changing
+the connection URI.
+
+## Officially supported SDKs {#supported-sdks}
+
+Python, TypeScript and Rust are supported against both embedded and deployed
+LanceDB.
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="python" /> [Python](https://lancedb.github.io/lancedb/python/python/) | Full-featured Python client with pandas and numpy integration |
+| <Icon icon="square-js" /> [TypeScript](https://lancedb.github.io/lancedb/js/) | A TypeScript wrapper around the Rust library, built with `napi-rs` |
+| <Icon icon="rust" /> [Rust](https://docs.rs/lancedb/latest/lancedb/index.html) | Native Rust library with persistent storage and high performance |
+
+Not every SDK covers the same surface, though:
+
+| | Python | TypeScript |
+| --- | :---: | :---: |
+| Create and manage catalog objects | yes | yes |
+| Insert, merge, update, delete | yes | yes |
+| Filter, project, aggregate, join | yes | yes |
+| Vector search | yes | yes |
+| Full-text search | yes | yes |
+| Feature engineering, jobs | yes | partly |
+| Runs against a local database | yes | yes |
+
+TypeScript has no methods for [functions](/management/function). Reach the
+gap with SQL instead -- see [SQL](/basics/sql).
+
+## REST API {#rest}
+
+<Badge color="red">Enterprise</Badge> A deployment implements the
+[Lance REST Namespace](/basics/lance#enterprise), so the catalog is reachable
+over HTTP by anything that speaks it -- see the
+[REST API reference](/api-reference/rest).
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="java" /> [Java](https://lancedb.github.io/lancedb/java/java/) | REST API Enterprise SDK in Java |
+
+## Community SDKs {#community-sdks}
+
+Contributed by the community rather than supported by LanceDB, so feature parity
+and release cadence vary.
+
+| Reference | Description |
+|:--------------|-------------------|
+| <Icon icon="golang" /> [Go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) | Community-contributed Go SDK |
+| <Icon icon="gem" /> [Ruby](https://github.com/scientist-labs/lancelot) | Community-contributed Ruby bindings |
+| <Icon icon="swift" /> [Swift](https://github.com/RyanLisse/LanceDbSwiftKit) | Community-contributed Swift SDK |
+| <Icon icon="R" /> [R](https://github.com/CathalByrneGit/lancedb) | Community-contributed R package |
+| <Icon icon="flutter" /> [Flutter](https://github.com/Alexcn/flutter_lancedb) | Community-contributed Flutter bindings |
+
+For any other language, [SQL](/basics/sql) reaches the same tables without a
+LanceDB-specific SDK at all.
+
+## Python multiprocessing {#multiprocessing}
+
+<Warning>
+Do not use `fork` as the start method with Python's `multiprocessing` module.
+Lance is multi-threaded internally, and `fork` with alive threads is unsafe --
+use `spawn` instead. See
+[this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
+for why.
+</Warning>
+
+## What stays the same {#invariants}
+
+Whichever you pick:
+
+- **Types are Arrow types.** A vector column is a `FixedSizeList<Float32>`
+  everywhere, not a SQL type mapped onto storage. See
+  [Functions and types](/sql/functions).
+- **Reads are Arrow.** Nothing is serialized into language objects on the way out
+  unless you convert it.
+- **The catalog is one catalog.** A table created from TypeScript is visible to
+  Python and to SQL immediately -- there is no per-language namespace.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="SQL" icon="table-list" href="/basics/sql">
+    The same tables, reached by any Flight SQL client -- and the one way in for a language with no SDK.
+  </Card>
+  <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
+    Give a coding agent a current reference to this same API surface.
+  </Card>
+</CardGroup>
