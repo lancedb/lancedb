@@ -20,6 +20,7 @@ import {
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
+import { Expr } from "./expr";
 
 export async function* RecordBatchIterator(
   promisedInner: Promise<NativeBatchIterator>,
@@ -374,8 +375,14 @@ export class StandardQueryBase<
    * Calling this multiple times combines the filters with a logical AND rather
    * than replacing the previous filter.
    */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+  where(predicate: string | Expr): this {
+    this.doCall((inner: NativeQueryType) => {
+      if (predicate instanceof Expr) {
+        inner.onlyIf(predicate.toSql());
+      } else {
+        inner.onlyIf(predicate);
+      }
+    });
     return this;
   }
   /**
