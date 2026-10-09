@@ -20,7 +20,8 @@ use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics}
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType, dml::InsertOp};
 use datafusion_physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, stream::RecordBatchStreamAdapter,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execution_plan::CardinalityEffect,
+    stream::RecordBatchStreamAdapter,
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
@@ -123,12 +124,11 @@ impl ExecutionPlan for MetadataEraserExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         assert_eq!(children.len(), 1);
-        let new_properties = Self::compute_properties_from_input(&children[0], &self.schema);
-        Ok(Arc::new(Self {
-            input: children[0].clone(),
-            schema: self.schema.clone(),
-            properties: new_properties,
-        }))
+        Ok(Arc::new(Self::new(children[0].clone())))
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
     }
 
     fn execute(
@@ -667,5 +667,60 @@ pub mod tests {
         let partition_stats = physical_plan.partition_statistics(None).unwrap();
 
         assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
+    }
+
+    #[tokio::test]
+    async fn test_count_pushdown_through_metadata_eraser() {
+        let fixture = TestFixture::new().await;
+        let state = datafusion::execution::SessionStateBuilder::new()
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(lance::io::exec::count_pushdown::CountPushdown))
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let df = ctx
+            .sql("SELECT COUNT(*) FROM foo WHERE indexed > 2")
+            .await
+            .unwrap();
+        let plan = df.clone().create_physical_plan().await.unwrap();
+        let plan = datafusion_physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(plan.contains("CountFromMask"), "{plan}");
+
+        let batches = df.collect().await.unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .value(0),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_with_new_children_takes_child_schema() {
+        let fixture = TestFixture::new().await;
+        let ctx = SessionContext::new();
+        let scan = |adapter: Arc<BaseTableAdapter>, name: &str| {
+            LogicalPlanBuilder::scan(name, provider_as_source(adapter), None)
+                .unwrap()
+                .build()
+                .unwrap()
+        };
+        let foo = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter.clone(), "foo"))
+            .await
+            .unwrap();
+        let tbl2 = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter2.clone(), "tbl2"))
+            .await
+            .unwrap();
+
+        let rewired = foo.with_new_children(vec![tbl2.clone()]).unwrap();
+        assert_eq!(rewired.schema(), tbl2.schema());
     }
 }

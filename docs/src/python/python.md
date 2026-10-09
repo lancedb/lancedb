@@ -26,6 +26,14 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
+Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
+::: lancedb.listing.Listing
+
 ::: lancedb.Session
 
 ## Catalogs (Synchronous)
@@ -37,7 +45,8 @@ are ordinary connections. Dropping a database requires it to be empty.
 
 ::: lancedb.catalog.Catalog
 
-::: lancedb.catalog.ListDatabasesResponse
+::: lancedb.catalog.DatabaseNames
+
 
 ## Remote SQL
 
@@ -76,6 +85,15 @@ print(query.id)
 print(query.describe().status)
 for batch in query.reader():
     print(batch.num_rows)
+
+# Values bind to $1 / $name placeholders and travel as Arrow, so a float32
+# stays a float32 and a vector stays a compact fixed-size list:
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k",
+    parameters={"vector": np.random.rand(768).astype(np.float32), "k": 10},
+)
 
 # The async connection exposes the same lifecycle without blocking:
 # async_db = await lancedb.connect_async(
@@ -192,38 +210,13 @@ listing a storage directory.
 
 ::: lancedb.sql.QueryDescription
 
+::: lancedb.sql.QueryParameters
+
 ## Materialized Views (Synchronous)
 
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
-
-::: lancedb.vector_dedup
-
-::: lancedb.materialized_view.VectorDedupSource
-
-For an existing indexed source, declare and materialize a dedup result without
-writing SQL. Creation captures the source version once and waits for the complete
-result; remote connections use the service's MV jobs.
-
-```python
-from lancedb import vector_dedup
-
-view = db.create_materialized_view(
-    "images_clean",
-    vector_dedup("images", column="phash", distance_threshold=4),
-)
-cleaned = view.table
-```
-
-To submit without waiting, call `db.create_materialized_view_async(...)` with the
-same source expression and wait on the returned job. To declare only, pass
-`with_no_data=True`, then use `view.refresh_async().wait()` when ready. Pass
-`dataset_version=...` to `vector_dedup` for an explicit snapshot. The default
-policy retains direct representatives (A-B-C without A-C keeps A and C), preserves
-the source, and materializes its original columns. Only within-segment/partition
-pairs are covered, using the index's distance representation.
-
 
 ## Views
 
@@ -440,12 +433,16 @@ latency on your workload before opting in.
 
 ::: lancedb.catalog.AsyncCatalog
 
+::: lancedb.catalog.AsyncDatabaseNames
+
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.
 
 ::: lancedb.connect_async
 
 ::: lancedb.db.AsyncConnection
+
+::: lancedb.listing.AsyncListing
 
 ## Namespaces (Asynchronous)
 

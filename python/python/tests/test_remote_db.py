@@ -16,8 +16,15 @@ import uuid
 from packaging.version import Version
 
 import lancedb
-from lancedb.conftest import MockTextEmbeddingFunction
-from lancedb.query import ColumnOrdering
+import numpy as np
+from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
+from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.query import (
+    AsyncQuery,
+    ColumnOrdering,
+    LanceVectorQueryBuilder,
+    MatchQuery,
+)
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -117,6 +124,77 @@ async def test_async_remote_db():
     async with mock_lancedb_connection_async(handler) as db:
         table_names = await db.table_names()
         assert table_names == []
+
+
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+def test_remote_alter_columns_rejects_invalid_before_request(alteration, match):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            table.alter_columns(alteration)
+
+        assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "alteration, match",
+    [
+        ({"path": "id"}, "One of rename, nullable or data_type"),
+        (
+            {"path": "id", "nulable": False},  # spellchecker:disable-line
+            "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+        ),
+    ],
+)
+async def test_async_remote_alter_columns_rejects_invalid_before_request(
+    alteration, match
+):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        requests.clear()
+
+        with pytest.raises(ValueError, match=match):
+            await table.alter_columns(alteration)
+
+        assert requests == []
 
 
 @pytest.mark.asyncio
@@ -524,6 +602,106 @@ def test_remote_permutation_is_picklable():
         ]
 
 
+@pytest.mark.parametrize("with_schema", [True, False])
+def test_create_table_embedding_functions(with_schema):
+    func = MockNonNormTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="vector", function=func
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    received = {}
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            # Echo the metadata actually sent by create_table, as the server does.
+            metadata = received["create"].schema.metadata or {}
+            send_json(
+                request,
+                {
+                    "version": 1,
+                    "schema": {
+                        "fields": [
+                            {
+                                "name": "text",
+                                "type": {"type": "string"},
+                                "nullable": True,
+                            },
+                            {
+                                "name": "vector",
+                                "type": {
+                                    "type": "fixed_size_list",
+                                    "fields": [
+                                        {
+                                            "name": "item",
+                                            "type": {"type": "float"},
+                                            "nullable": True,
+                                        }
+                                    ],
+                                    "length": 10,
+                                },
+                                "nullable": True,
+                            },
+                        ],
+                        "metadata": {
+                            k.decode(): v.decode() for k, v in metadata.items()
+                        },
+                    },
+                },
+            )
+        elif request.path in (
+            "/v1/table/test/create/?mode=create",
+            "/v1/table/test/insert/",
+        ):
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                body = bytearray()
+                while True:
+                    size = int(request.rfile.readline(), 16)
+                    if size == 0:
+                        request.rfile.readline()
+                        break
+                    body.extend(request.rfile.read(size))
+                    request.rfile.read(2)
+            else:
+                body = request.rfile.read(int(request.headers["Content-Length"]))
+            operation = "create" if "/create/" in request.path else "insert"
+            received[operation] = pa.ipc.open_stream(body).read_all()
+            send_json(request, {})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.create_table(
+            "test",
+            schema=schema if with_schema else None,
+            data=None if with_schema else [{"text": "hello world"}],
+            embedding_functions=[config],
+        )
+        metadata = pa.schema(
+            [],
+            metadata=EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+                [config]
+            ),
+        ).metadata
+        assert received["create"].schema.metadata == metadata
+        assert table.schema.metadata == metadata
+        assert table.schema.field("vector").type == pa.list_(pa.float32(), 10)
+        assert table.embedding_functions["vector"].source_column == "text"
+        if with_schema:
+            assert received["create"].num_rows == 0
+        else:
+            assert received["create"]["vector"].to_pylist() == [
+                func.compute_source_embeddings(["hello world"])[0].tolist()
+            ]
+
+        table.add([{"text": "goodbye world"}])
+        assert received["insert"]["vector"].to_pylist() == [
+            func.compute_source_embeddings(["goodbye world"])[0].tolist()
+        ]
+
+
 def test_create_table_exist_ok():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=exist_ok":
@@ -622,6 +800,8 @@ def test_table_unimplemented_functions():
             message = str(exc_info.value)
             assert method in message
             assert "not" in message and "supported" in message
+            assert "remote tables" in message
+            assert "cloud" not in message.lower()
             assert f"search().{method}()" in message
 
 
@@ -1202,7 +1382,7 @@ def test_remote_job_wait_raises_on_failure():
             job.wait()
 
 
-def test_remote_create_index_new_api():
+def test_remote_create_index_new_api(caplog):
     received_requests = []
 
     def handler(request):
@@ -1263,7 +1443,8 @@ def test_remote_create_index_new_api():
     from lancedb.index import BTree, FTS, IvfPq, IvfRq
 
     with mock_lancedb_connection(handler) as db:
-        table = db.create_table("test", [{"id": 1}])
+        table = db.create_table("test", [{"id": 1}], embedding_functions=[])
+        assert "embedding_functions is not yet supported" not in caplog.text
 
         # New API: column-first, config= kwarg. Should NOT emit DeprecationWarning.
         import warnings as _warnings
@@ -1285,6 +1466,8 @@ def test_remote_create_index_new_api():
                 vector_column_name="vector",
                 index_type="IVF_RQ",
                 num_partitions=8,
+                replace=False,
+                accelerator="cuda",
             )
 
         assert len(received_requests) == 6
@@ -1298,6 +1481,163 @@ def test_remote_create_index_new_api():
         ]
         assert received_requests[2]["block_size"] == 256
         assert received_requests[4]["replace"] is False
+        assert received_requests[5]["replace"] is False
+        assert "replace is not supported" not in caplog.text
+        assert caplog.messages == [
+            "GPU accelerator is not supported for remote tables and will be ignored."
+        ]
+
+
+def remote_unsupported_handler(request):
+    assert request.path == "/v1/table/test/describe/"
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(
+        json.dumps(
+            dict(
+                version=1,
+                schema=dict(
+                    fields=[
+                        dict(name="id", type={"type": "int64"}, nullable=False),
+                        dict(
+                            name="vector",
+                            type={
+                                "type": "fixed_size_list",
+                                "fields": [
+                                    dict(
+                                        name="item",
+                                        type={"type": "float"},
+                                        nullable=True,
+                                    )
+                                ],
+                                "length": 2,
+                            },
+                            nullable=False,
+                        ),
+                    ]
+                ),
+            )
+        ).encode()
+    )
+
+
+def remote_unsupported_operations():
+    from lancedb.index import HnswPq
+
+    return [
+        ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
+        ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
+        ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
+        ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
+        ("optimize", (), {}, "optimize"),
+        ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
+def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(NotImplementedError) as error:
+            getattr(table, method)(*args, **kwargs)
+        expected = f"LanceDBError: not supported: {operation} is not supported "
+        expected += "for remote tables."
+        if operation == "IVF_HNSW_PQ":
+            expected += " Please use IVF_HNSW_SQ instead."
+        assert str(error.value) == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,args,kwargs,operation", remote_unsupported_operations()
+)
+async def test_remote_unsupported_operations_async(method, args, kwargs, operation):
+    async with mock_lancedb_connection_async(remote_unsupported_handler) as db:
+        table = await db.open_table("test")
+        if method == "migrate_v2_manifest_paths":
+            method = "migrate_manifest_paths_v2"
+        with pytest.raises(NotImplementedError) as error:
+            await getattr(table, method)(*args, **kwargs)
+        expected = f"LanceDBError: not supported: {operation} is not supported "
+        expected += "for remote tables."
+        if operation == "IVF_HNSW_PQ":
+            expected += " Please use IVF_HNSW_SQ instead."
+        assert str(error.value) == expected
+
+
+def test_remote_unsupported_legacy_hnsw_pq():
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        table = db.open_table("test")
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            with pytest.raises(
+                NotImplementedError,
+                match="IVF_HNSW_PQ is not supported for remote tables. "
+                "Please use IVF_HNSW_SQ instead.",
+            ):
+                table.create_index(
+                    vector_column_name="vector", index_type="IVF_HNSW_PQ"
+                )
+
+
+def test_remote_python_only_messages(caplog):
+    with mock_lancedb_connection(remote_unsupported_handler) as db:
+        with caplog.at_level("INFO"):
+            table = db.open_table("test", storage_options={}, index_cache_size=1)
+        assert "storage_options is ignored for remote tables" in caplog.text
+        assert "index_cache_size is ignored for remote tables" in caplog.text
+        for method in ["to_arrow", "to_pandas", "to_polars"]:
+            with pytest.raises(NotImplementedError) as error:
+                getattr(table, method)()
+            assert str(error.value) == (
+                f"{method}() is not supported for remote tables. "
+                f"Use table.search().{method}() instead."
+            )
+        for method in ["compact_files", "cleanup_old_versions"]:
+            with pytest.warns(UserWarning) as warning:
+                getattr(table, method)()
+            assert (
+                str(warning[0].message) == f"{method}() is a no-op for remote tables."
+            )
+
+
+def test_remote_embedding_config_does_not_warn_or_drop_metadata(caplog):
+    received_tables = []
+
+    def handler(request):
+        assert request.path == "/v1/table/test/create/?mode=create"
+        if request.headers.get("Transfer-Encoding") == "chunked":
+            body = bytearray()
+            while size := int(request.rfile.readline().split(b";")[0], 16):
+                body.extend(request.rfile.read(size))
+                assert request.rfile.read(2) == b"\r\n"
+            assert request.rfile.read(2) == b"\r\n"
+        else:
+            body = request.rfile.read(int(request.headers["Content-Length"]))
+        received_tables.append(pa.ipc.open_stream(body).read_all())
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockNonNormTextEmbeddingFunction.create(),
+    )
+    schema = pa.schema(
+        [pa.field("text", pa.string()), pa.field("vector", pa.list_(pa.float32(), 10))]
+    )
+    with mock_lancedb_connection(handler) as db:
+        db.create_table("test", schema=schema, embedding_functions=[config])
+    assert caplog.messages == []
+    assert len(received_tables) == 1
+    metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata([config])
+    assert (
+        received_tables[0].schema.metadata == pa.schema([], metadata=metadata).metadata
+    )
 
 
 def test_table_wait_for_index_timeout():
@@ -1404,7 +1744,9 @@ def test_stats():
         table = db.create_table("test", [{"id": 1}])
         res = table.stats()
         print(f"{res=}")
-        assert res == stats
+        # The server does not report num_deleted_rows, and that unsupported
+        # state is preserved as None.
+        assert res == {**stats, "num_deleted_rows": None}
 
 
 @contextlib.contextmanager
@@ -1533,14 +1875,51 @@ def test_checkpoint_lsm_sync():
 
 
 @contextlib.contextmanager
-def query_test_table(query_handler, *, server_version=Version("0.1.0")):
+def query_test_table(
+    query_handler,
+    *,
+    server_version=Version("0.1.0"),
+    vector_columns=None,
+    embedding_functions=None,
+):
+    if vector_columns is None:
+        vector_columns = {"vector": 3}
+    schema = {
+        "fields": [
+            {"name": "text", "type": {"type": "string"}, "nullable": False},
+            *[
+                {
+                    "name": name,
+                    "type": {
+                        "type": "fixed_size_list",
+                        "fields": [
+                            {
+                                "name": "item",
+                                "type": {"type": "float"},
+                                "nullable": True,
+                            }
+                        ],
+                        "length": dim,
+                    },
+                    "nullable": False,
+                }
+                for name, dim in vector_columns.items()
+            ],
+        ]
+    }
+    if embedding_functions:
+        metadata = EmbeddingFunctionRegistry.get_instance().get_table_metadata(
+            embedding_functions
+        )
+        schema["metadata"] = {key: value.decode() for key, value in metadata.items()}
+
     def handler(request):
         if request.path == "/v1/table/test/describe/":
             request.send_response(200)
             request.send_header("Content-Type", "application/json")
             request.send_header("phalanx-version", str(server_version))
             request.end_headers()
-            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+            request.wfile.write(json.dumps({"version": 1, "schema": schema}).encode())
         elif request.path == "/v1/table/test/query/":
             content_len = int(request.headers.get("Content-Length"))
             body = request.rfile.read(content_len)
@@ -1563,6 +1942,108 @@ def query_test_table(query_handler, *, server_version=Version("0.1.0")):
         table = db.open_table("test")
         assert repr(table) == "RemoteTable(dev.test)"
         yield table
+
+
+@pytest.mark.parametrize(
+    "query,search_kwargs,expected_column",
+    [
+        pytest.param([0.5] * 8, {}, "vector", id="vector-8"),
+        pytest.param([0.5] * 4, {}, "vec2", id="vector-4"),
+        pytest.param(np.array([0.5] * 4), {}, "vec2", id="numpy-vector"),
+        pytest.param([[0.5] * 4, [0.2] * 4], {}, "vec2", id="batch-vectors"),
+        pytest.param(
+            [0.5] * 4, {"vector_column_name": "vec2"}, "vec2", id="explicit-column"
+        ),
+        pytest.param(None, {}, None, id="scan"),
+        pytest.param("hello", {"query_type": "fts"}, None, id="fts"),
+        pytest.param(
+            "hello", {"query_type": "fts", "fts_columns": "text"}, None, id="fts-column"
+        ),
+        pytest.param(MatchQuery("hello", "text"), {}, None, id="structured-fts"),
+    ],
+)
+def test_query_object_sync_matches_local(mem_db, query, search_kwargs, expected_column):
+    vector_columns = {"vector": 8, "vec2": 4}
+    schema = pa.schema(
+        [
+            pa.field(name, pa.list_(pa.float32(), dim))
+            for name, dim in vector_columns.items()
+        ]
+    )
+    local = mem_db.create_table("test", schema=schema)
+    local_query = local.search(query, **search_kwargs).limit(2).to_query_object()
+    assert local_query.vector_column == expected_column
+    assert local_query.fast_search is None
+
+    with query_test_table(None, vector_columns=vector_columns) as remote:
+        remote_query = remote.search(query, **search_kwargs).limit(2).to_query_object()
+        assert remote_query == local_query
+
+
+@pytest.mark.parametrize("fast_search", [None, False, True])
+@pytest.mark.parametrize("query,query_type", [([1, 2, 3], "vector"), ("hello", "fts")])
+def test_query_object_sync_preserves_fast_search(fast_search, query, query_type):
+    vector_columns = {"vector": 3} if query_type == "vector" else {}
+    with query_test_table(None, vector_columns=vector_columns) as table:
+        query_obj = table.search(
+            query, query_type=query_type, fast_search=fast_search
+        ).to_query_object()
+        assert query_obj.fast_search is fast_search
+
+
+def test_query_sync_rejects_ambiguous_vector_column(mem_db):
+    vector_columns = {"vector": 4, "vec2": 4}
+    schema = pa.schema(
+        [
+            pa.field(name, pa.list_(pa.float32(), dim))
+            for name, dim in vector_columns.items()
+        ]
+    )
+    local = mem_db.create_table("test", schema=schema)
+    with pytest.raises(ValueError, match="Candidates:.*vector.*vec2") as local_error:
+        local.search([0.5] * 4)
+
+    with query_test_table(None, vector_columns=vector_columns) as remote:
+        with pytest.raises(ValueError) as remote_error:
+            remote.search([0.5] * 4)
+        assert str(remote_error.value) == str(local_error.value)
+
+
+@pytest.mark.parametrize("vector_columns", [{}, {"v1": 4, "v2": 8}])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts_without_embeddings(vector_columns, query_type):
+    seen = []
+
+    def handler(body):
+        seen.append(body)
+        assert body["full_text_query"] == {"query": "hello", "columns": []}
+        assert body["vector"] == []
+        assert "vector_column" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns=vector_columns) as table:
+        assert table.search("hello", query_type=query_type).to_list() == [{"id": 1}]
+    assert len(seen) == 1
+
+
+def test_query_sync_auto_with_embedding_function():
+    def handler(body):
+        assert body["vector_column"] == "vector"
+        assert body["vector"] == [0.0] * 10
+        assert "full_text_query" not in body
+        return pa.table({"id": [1]})
+
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    with query_test_table(
+        handler, vector_columns={"vector": 10}, embedding_functions=[config]
+    ) as table:
+        query = table.search("hello")
+        assert query.to_query_object().vector_column == "vector"
+        assert query.to_list() == [{"id": 1}]
 
 
 def test_head():
@@ -1591,6 +2072,7 @@ def test_query_sync_minimal():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
+            "vector_column": "vector",
             "nprobes": 20,
             "minimum_nprobes": 20,
             "maximum_nprobes": 20,
@@ -1605,7 +2087,84 @@ def test_query_sync_minimal():
         assert data == expected
 
 
-def test_query_sync_empty_query():
+@pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
+@pytest.mark.parametrize("vector_column_name", [None, "embedding"])
+def test_query_sync_text_embedding(query_type, vector_column_name):
+    embedding_func = MockTextEmbeddingFunction.create()
+    config = EmbeddingFunctionConfig(
+        source_column="text", vector_column="embedding", function=embedding_func
+    )
+    query = "quick brown fox"
+    expected_vector = embedding_func.compute_query_embeddings(query)[0]
+    queries = []
+
+    def handler(body):
+        queries.append(body)
+        if "full_text_query" in body:
+            assert query_type == "hybrid"
+            assert body["full_text_query"]["query"] == query
+            return pa.table({"id": [1], "_rowid": [1], "_score": [1.0]})
+        assert body["vector_column"] == "embedding"
+        assert body["vector"] == pytest.approx(expected_vector)
+        return pa.table({"id": [1], "_rowid": [1], "_distance": [0.0]})
+
+    with query_test_table(
+        handler,
+        vector_columns={
+            "embedding": embedding_func.ndims(),
+            **({"other": embedding_func.ndims()} if vector_column_name else {}),
+        },
+        embedding_functions=[config],
+    ) as table:
+        assert list(table.embedding_functions) == ["embedding"]
+        builder = table.search(
+            query, query_type=query_type, vector_column_name=vector_column_name
+        )
+        if query_type != "hybrid":
+            assert isinstance(builder, LanceVectorQueryBuilder)
+        results = builder.to_list()
+        assert results[0]["id"] == 1
+        if query_type != "hybrid":
+            assert results[0]["_distance"] == 0.0
+    assert len(queries) == (2 if query_type == "hybrid" else 1)
+
+
+@pytest.mark.parametrize("query_type", ["auto", "vector", "hybrid"])
+def test_query_sync_ambiguous_vector_columns(query_type):
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="v1",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    queries = []
+
+    def handler(body):
+        queries.append(body)
+        return pa.table({"id": [1]})
+
+    with query_test_table(
+        handler,
+        vector_columns={"v1": 10, "v2": 10},
+        embedding_functions=[config],
+    ) as table:
+        with pytest.raises(ValueError, match=r"Candidates: \['v1', 'v2'\]"):
+            table.search("puppy", query_type=query_type).to_list()
+    assert queries == []
+
+
+@pytest.mark.parametrize("vector_column, dim", [("v1", 3), ("v2", 4)])
+def test_query_sync_infers_vector_column_by_dimension(vector_column, dim):
+    def handler(body):
+        assert body["vector_column"] == vector_column
+        assert body["vector"] == [1.0] * dim
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns={"v1": 3, "v2": 4}) as table:
+        assert table.search([1.0] * dim).to_list() == [{"id": 1}]
+
+
+@pytest.mark.parametrize("vector_columns", [{}, {"v1": 3, "v2": 3}])
+def test_query_sync_empty_query(vector_columns):
     def handler(body):
         assert body == {
             "k": 10,
@@ -1618,10 +2177,64 @@ def test_query_sync_empty_query():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
+    with query_test_table(handler, vector_columns=vector_columns) as table:
         data = table.search(None).where("true").select(["id"]).limit(10).to_list()
         expected = [{"id": 1}, {"id": 2}, {"id": 3}]
         assert data == expected
+
+
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_query_sync_empty_vector(query, vector_column_name, query_type):
+    def handler(body):
+        pytest.fail("An empty query vector must be rejected before sending a query")
+
+    with query_test_table(handler) as table:
+        with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+            table.search(
+                query, vector_column_name=vector_column_name, query_type=query_type
+            ).limit(3).to_arrow()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("search_kwargs", [{}, {"query": None}])
+async def test_async_search_without_query(search_kwargs):
+    expected = pa.table({"id": [7, 8, 9]})
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            request.send_response(200)
+            request.send_header("Content-Type", "application/json")
+            request.end_headers()
+            request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
+        elif request.path == "/v1/table/test/query/":
+            body = json.loads(
+                request.rfile.read(int(request.headers["Content-Length"]))
+            )
+            assert body == {
+                "k": 3,
+                "filter": "id >= 7",
+                "vector": [],
+                "columns": ["id"],
+                "prefilter": True,
+                "version": None,
+            }
+            request.send_response(200)
+            request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.end_headers()
+            with pa.ipc.new_file(request.wfile, schema=expected.schema) as writer:
+                writer.write_table(expected)
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = await table.search(**search_kwargs)
+        assert isinstance(query, AsyncQuery)
+        result = await query.where("id >= 7").select(["id"]).limit(3).to_arrow()
+        assert result == expected
 
 
 def test_query_sync_maximal():
@@ -1682,6 +2295,53 @@ def test_query_sync_maximal():
             .select(["id", "name"])
             .to_list()
         )
+
+
+@pytest.mark.parametrize("hybrid", [False, True])
+def test_query_sync_nprobes_zero(hybrid):
+    query_requests = []
+
+    def handler(body):
+        query_requests.append(body)
+        return pa.table({"id": []})
+
+    with query_test_table(handler) as table:
+        if hybrid:
+            query = table.search(query_type="hybrid").vector([1, 2, 3]).text("dog")
+        else:
+            query = table.search([1, 2, 3])
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert query_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+async def test_query_async_nprobes_zero(hybrid):
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        if request.path == "/v1/table/test/describe/":
+            send_json(request, {"version": 1, "schema": {"fields": []}})
+        else:
+            request.send_response(404)
+            request.end_headers()
+
+    async with mock_lancedb_connection_async(handler) as db:
+        table = await db.open_table("test")
+        query = table.query().nearest_to([1, 2, 3])
+        if hybrid:
+            query = query.nearest_to_text("dog")
+        with pytest.raises(
+            ValueError, match="^Invalid input, nprobes must be greater than 0$"
+        ):
+            query.nprobes(0)
+
+    assert requests == ["/v1/table/test/describe/"]
 
 
 def test_query_sync_nprobes():
@@ -1767,7 +2427,9 @@ def test_query_sync_batch_queries(server_version):
         assert results == [{"id": 1, "query_index": 0}, {"id": 1, "query_index": 1}]
 
 
-def test_query_sync_fts():
+@pytest.mark.parametrize("vector_columns", [{}, {"vector": 3}, {"v1": 3, "v2": 3}])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts(vector_columns, query_type):
     def handler(body):
         assert body == {
             "full_text_query": {
@@ -1782,8 +2444,8 @@ def test_query_sync_fts():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
-        (table.search("puppy", query_type="fts").to_list())
+    with query_test_table(handler, vector_columns=vector_columns) as table:
+        (table.search("puppy", query_type=query_type).to_list())
 
     def handler(body):
         assert body == {
@@ -1810,9 +2472,11 @@ def test_query_sync_fts():
 
         return pa.table({"id": [1, 2, 3]})
 
-    with query_test_table(handler) as table:
+    with query_test_table(handler, vector_columns=vector_columns) as table:
         (
-            table.search("puppy", query_type="fts", fts_columns=["name", "description"])
+            table.search(
+                "puppy", query_type=query_type, fts_columns=["name", "description"]
+            )
             .with_row_id(True)
             .limit(42)
             .to_list()
@@ -1850,7 +2514,9 @@ def test_query_sync_fts_document_granularity():
             }
         )
 
-    with query_test_table(handler, server_version=Version("0.6.0")) as table:
+    with query_test_table(
+        handler, server_version=Version("0.6.0"), vector_columns={}
+    ) as table:
         result = table.search(
             MatchQuery(
                 "alpha",
@@ -1885,6 +2551,7 @@ def test_query_sync_hybrid():
                 "prefilter": True,
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+                "vector_column": "vector",
                 "nprobes": 20,
                 "minimum_nprobes": 20,
                 "maximum_nprobes": 20,
@@ -1896,15 +2563,14 @@ def test_query_sync_hybrid():
             }
             return pa.table({"_rowid": [1, 2, 3], "_distance": [0.1, 0.2, 0.3]})
 
-    with query_test_table(handler) as table:
-        embedding_func = MockTextEmbeddingFunction()
-        embedding_config = MagicMock()
-        embedding_config.function = embedding_func
-
-        embedding_funcs = MagicMock()
-        embedding_funcs.get = MagicMock(return_value=embedding_config)
-        table.embedding_functions = embedding_funcs
-
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    with query_test_table(
+        handler, vector_columns={"vector": 10}, embedding_functions=[config]
+    ) as table:
         (table.search("puppy", query_type="hybrid").limit(42).to_list())
 
 
@@ -2248,15 +2914,46 @@ async def test_header_provider_overrides_static_headers():
 
 
 def test_close():
-    """Test that close() works without AttributeError."""
-    import asyncio
-
     def handler(req):
         req.send_response(200)
         req.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        asyncio.run(db.close())
+        assert db.close() is None
+        assert not db.is_open()
+        assert db.close() is None
+
+        with pytest.warns(DeprecationWarning, match="table_names"):
+            with pytest.raises(RuntimeError, match="Connection is closed"):
+                db.table_names()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(raise_error):
+    def handler(req):
+        req.send_response(200)
+        req.send_header("Content-Type", "application/json")
+        req.end_headers()
+        req.wfile.write(b'{"tables": []}')
+
+    with mock_lancedb_connection(handler) as db:
+        with contextlib.ExitStack() as stack:
+            if raise_error:
+                stack.enter_context(pytest.raises(ValueError, match="test error"))
+            with db as conn:
+                assert conn is db
+                assert conn.is_open()
+                assert conn.list_tables().tables == []
+                if raise_error:
+                    raise ValueError("test error")
+
+        assert not db.is_open()
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            db.list_tables()
 
 
 @pytest.mark.parametrize("exception", [KeyboardInterrupt, SystemExit, GeneratorExit])
@@ -2670,9 +3367,15 @@ def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
 def test_remote_blob_byte_apis_not_supported_on_old_server():
     with blob_remote_table(server_version=Version("0.1.0")) as table:
         assert table.blob_columns() == ["image"]
-        with pytest.raises(NotImplementedError, match="not supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="fetch_blobs is not supported by this LanceDB server",
+        ):
             table.fetch_blobs("image", [1])
-        with pytest.raises(NotImplementedError, match="not supported"):
+        with pytest.raises(
+            NotImplementedError,
+            match="fetch_blob_files requires LanceDB server 0.5.0 or newer",
+        ):
             table.fetch_blob_files("image", [1])
 
 
@@ -2800,7 +3503,7 @@ def test_remote_connection_jobs_surface():
             request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        jobs = db.list_jobs()
+        jobs = list(db.list_jobs())
         assert [job.job_id for job in jobs] == ["job-1", "job-2"]
         assert jobs[0].state == "running"
         assert jobs[0].table == "t1"
@@ -2960,7 +3663,7 @@ def test_view_crud_addresses_its_own_routes():
         described = db.describe_view("adults", namespace_path=["analytics"])
         assert described.schema == view.schema
 
-        assert db.list_views(namespace_path=["analytics"]) == ["adults"]
+        assert list(db.list_views(namespace_path=["analytics"])) == ["adults"]
         db.drop_view("adults", namespace_path=["analytics"])
 
     assert paths == [

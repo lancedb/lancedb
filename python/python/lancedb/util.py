@@ -280,6 +280,14 @@ def infer_vector_column_dim(data_type: pa.DataType) -> Optional[int]:
     return None
 
 
+def _validate_query_vector(query: Any) -> None:
+    """Reject empty vector inputs before vector-column inference or execution."""
+    if (isinstance(query, list) and not query) or (
+        isinstance(query, np.ndarray) and query.size == 0
+    ):
+        raise ValueError("Query vector must not be empty")
+
+
 def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
     if query is None:
         return None
@@ -301,6 +309,9 @@ def infer_vector_column_name(
     query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
 ):
+    if query_type != "fts":
+        _validate_query_vector(query)
+
     if vector_column_name is not None:
         return vector_column_name
 

@@ -13,6 +13,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import json
 import os
 import random
 import shutil
@@ -1137,6 +1138,34 @@ def test_fts_lindera_tokenizer(
     assert [row["text"] for row in results] == ["成田国際空港"]
 
 
+@pytest.mark.parametrize("fuzziness", [None, 0, 1, 2])
+def test_match_query_fuzziness_to_json(fuzziness):
+    query = MatchQuery("puppy", "text", fuzziness=fuzziness)
+
+    assert query.fuzziness == fuzziness
+    assert json.loads(query.to_json())["match"]["fuzziness"] == fuzziness
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        pytest.param({}, ["ab"], id="default-exact"),
+        pytest.param({"fuzziness": 0}, ["ab"], id="explicit-exact"),
+        pytest.param({"fuzziness": None}, ["ab"], id="automatic"),
+        pytest.param({"fuzziness": 1}, ["ab", "ac"], id="one-edit"),
+        pytest.param({"fuzziness": 2}, ["ab", "ac", "zz"], id="two-edits"),
+    ],
+)
+def test_match_query_fuzziness_search(tmp_db, options, expected):
+    # Automatic fuzziness is zero for two-character terms.
+    table = tmp_db.create_table("fuzzy", pa.table({"text": ["ab", "ac", "zz"]}))
+    table.create_index("text", config=FTS(stem=False, remove_stop_words=False))
+
+    results = table.search(MatchQuery("ab", "text", **options)).to_list()
+
+    assert sorted(row["text"] for row in results) == sorted(expected)
+
+
 def test_fts_query_to_json():
     """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
@@ -1267,7 +1296,10 @@ def test_fts_query_to_json():
     json_str = multi_match.to_json()
     expected = (
         '{"multi_match":{"query":"python","columns":["tags","title"],'
-        '"boost":[1.0,1.0]}}'
+        '"boost":[1.0,1.0],"match_queries":[{"column":"tags","terms":"python",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0},{"column":"title","terms":"python","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}]}}'
     )
     assert json_str == expected
 

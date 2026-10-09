@@ -13,7 +13,7 @@ use crate::Result;
 /// The result of an update operation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
-    #[serde(default)]
+    #[serde(default, alias = "updated_rows")]
     pub rows_updated: u64,
     /// The commit version associated with the operation.
     #[serde(default)]
@@ -93,6 +93,7 @@ pub(crate) async fn execute_update(
 
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
+    crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
     super::computed_columns::ensure_no_function_bindings_for_mutation(
         &arrow_schema::Schema::from(dataset.schema()),
         "update",

@@ -11,7 +11,7 @@ use arrow_array::{
     Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt64Array,
     cast::AsArray,
     make_array,
-    types::{Int64Type, UInt64Type},
+    types::{Float32Type, Int64Type, UInt64Type},
 };
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
@@ -1024,6 +1024,8 @@ impl Query {
     ///
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
+    /// NaN and infinite components are rejected with [`Error::InvalidInput`]
+    /// after conversion to Float32, for both local and remote tables.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1050,8 +1052,7 @@ impl Query {
     /// * `vector` - The vector that will be used for search.
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
-        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.request.query_vector.push(query_vector);
+        vector_query.request.add_query_vector(vector)?;
 
         if vector_query.request.base.limit.is_none() {
             vector_query.request.base.limit = Some(DEFAULT_TOP_K);
@@ -1154,6 +1155,23 @@ impl Default for VectorQueryRequest {
 }
 
 impl VectorQueryRequest {
+    fn add_query_vector(&mut self, vector: impl IntoQueryVector) -> Result<()> {
+        let vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        let array =
+            vector
+                .as_primitive_opt::<Float32Type>()
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "VectorQuery vector must be of type Float32".into(),
+                })?;
+        if array.values().iter().any(|value| !value.is_finite()) {
+            return Err(Error::InvalidInput {
+                message: "query vector must contain only finite values".into(),
+            });
+        }
+        self.query_vector.push(vector);
+        Ok(())
+    }
+
     pub fn from_plain_query(query: QueryRequest) -> Self {
         Self {
             base: query,
@@ -1222,9 +1240,11 @@ impl VectorQuery {
     /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
+    ///
+    /// NaN and infinite components are rejected with [`Error::InvalidInput`]
+    /// after conversion to Float32, for both local and remote tables.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
-        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        self.request.query_vector.push(query_vector);
+        self.request.add_query_vector(vector)?;
         Ok(self)
     }
 
@@ -1252,10 +1272,17 @@ impl VectorQuery {
     /// This method sets both the minimum and maximum number of partitions to search.
     /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
-    pub fn nprobes(mut self, nprobes: usize) -> Self {
+    ///
+    /// Returns an error if `nprobes` is not greater than 0.
+    pub fn nprobes(mut self, nprobes: usize) -> Result<Self> {
+        if nprobes == 0 {
+            return Err(Error::InvalidInput {
+                message: "nprobes must be greater than 0".to_string(),
+            });
+        }
         self.request.minimum_nprobes = nprobes;
         self.request.maximum_nprobes = Some(nprobes);
-        self
+        Ok(self)
     }
 
     /// Set the minimum number of partitions to search
@@ -2330,6 +2357,69 @@ mod tests {
     use crate::{Table, connect, database::CreateTableMode, index::Index};
 
     #[tokio::test]
+    async fn test_query_vector_non_finite() {
+        let conn = connect("memory://non_finite_vectors")
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let assert_invalid = |result: Result<VectorQuery>| {
+            let err = result.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }));
+            assert!(err.to_string().contains("only finite values"));
+        };
+
+        // Float64 values can be finite before conversion but overflow Float32.
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            assert_invalid(table.query().nearest_to(&[0.1, value as f32]));
+            assert_invalid(table.query().nearest_to(vec![0.1, value]));
+            assert_invalid(
+                table
+                    .query()
+                    .nearest_to(&[0.1, 0.2])
+                    .unwrap()
+                    .add_query_vector(vec![0.1, value]),
+            );
+
+            let arrays: [Arc<dyn Array>; 3] = [
+                Arc::new(Float16Array::from(vec![
+                    f16::from_f32(0.1),
+                    f16::from_f64(value),
+                ])),
+                Arc::new(Float32Array::from(vec![0.1, value as f32])),
+                Arc::new(Float64Array::from(vec![0.1, value])),
+            ];
+            for array in arrays {
+                assert_invalid(table.query().nearest_to(array.clone()));
+                assert_invalid(
+                    table
+                        .query()
+                        .nearest_to(&[0.1, 0.2])
+                        .unwrap()
+                        .add_query_vector(array),
+                );
+            }
+        }
+
+        table
+            .query()
+            .nearest_to(&[f32::MIN, f32::MAX])
+            .unwrap()
+            .add_query_vector(&[0.0, -0.0])
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_setters_getters() {
         let batches = make_test_batches();
         let conn = connect("memory://foo").execute().await.unwrap();
@@ -2361,6 +2451,7 @@ mod tests {
             .nearest_to(&[9.8, 8.7])
             .unwrap()
             .nprobes(1000)
+            .unwrap()
             .postfilter()
             .distance_type(DistanceType::Cosine)
             .approx_mode(ApproxMode::Accurate)
@@ -2384,6 +2475,31 @@ mod tests {
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[tokio::test]
+    async fn test_nprobes_validation() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+
+        assert!(matches!(
+            query.clone().nprobes(0),
+            Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
+        ));
+
+        // Fixed probe counts replace both bounds, even when moving below or
+        // above the previous range.
+        let mut query = query;
+        for nprobes in [30, 1, 50] {
+            query = query.nprobes(nprobes).unwrap();
+            assert_eq!(query.request.minimum_nprobes, nprobes);
+            assert_eq!(query.request.maximum_nprobes, Some(nprobes));
+        }
     }
 
     #[test]

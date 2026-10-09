@@ -469,13 +469,12 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn refresh_materialized_view(
         &self,
-        full: Option<bool>,
         source_version: Option<i64>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh().full(full.unwrap_or(false));
+        let mut builder = view.refresh();
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -492,11 +491,9 @@ impl Table {
         let view = lancedb::MaterializedView::from_table(inner)
             .await
             .default_error()?;
-        view.definition().to_json().map_err(|err| {
-            napi::Error::from_reason(format!(
-                "failed to serialize materialized-view definition: {err}"
-            ))
-        })
+        Ok(lancedb::materialized_view::definition_metadata_from_sql(
+            view.definition_sql(),
+        ))
     }
 
     #[napi(catch_unwind)]
@@ -839,7 +836,10 @@ impl Table {
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .uses_v2_manifest_paths()
             .await
             .default_error()
@@ -849,7 +849,10 @@ impl Table {
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .migrate_manifest_paths_v2()
             .await
             .default_error()
@@ -1365,6 +1368,16 @@ pub struct TableStatistics {
     /// The number of rows in the table
     pub num_rows: i64,
 
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// These rows are not included in `numRows`, but still occupy space on disk
+    /// until the table is compacted, so a large value here indicates that the
+    /// table should be optimized. Fragments in which every row was deleted are
+    /// dropped outright, so their rows are not counted here.
+    ///
+    /// Absent (`undefined`) when the backend does not report deletion counts.
+    pub num_deleted_rows: Option<i64>,
+
     /// The number of indices in the table
     pub num_indices: i64,
 
@@ -1413,6 +1426,7 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
         Self {
             total_bytes: v.total_bytes as i64,
             num_rows: v.num_rows as i64,
+            num_deleted_rows: v.num_deleted_rows.map(|n| n as i64),
             num_indices: v.num_indices as i64,
             fragment_stats: FragmentStatistics {
                 num_fragments: v.fragment_stats.num_fragments as i64,
@@ -1608,7 +1622,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    /// How the view was brought up to date: "rebuild".
     pub mode: String,
     pub rows_written: i64,
     pub source_version: i64,
@@ -1619,8 +1633,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match value.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),

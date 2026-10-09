@@ -267,7 +267,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
-/// MemWAL supports, resolved on install.
+/// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -307,9 +307,9 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default)
-    /// resolves every supported index on install; a list is verbatim,
-    /// and an empty list maintains nothing.
+    /// Set which indexes the MemWAL maintains. `None` (the default) is
+    /// every index the table has, including ones created later; a list is
+    /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
     pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
@@ -592,8 +592,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match result.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),
@@ -1268,6 +1266,7 @@ impl Table {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
                 dict.set_item("num_indices", stats.num_indices)?;
 
                 let fragment_stats = PyDict::new(py);
@@ -1709,7 +1708,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .uses_v2_manifest_paths()
                 .await
                 .infer_error()
@@ -1721,7 +1723,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
@@ -1817,10 +1822,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1828,7 +1832,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1837,10 +1841,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1848,7 +1851,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1863,11 +1866,9 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            view.definition().to_json().map_err(|err| {
-                PyRuntimeError::new_err(format!(
-                    "failed to serialize materialized-view definition: {err}"
-                ))
-            })
+            Ok(lancedb::materialized_view::definition_metadata_from_sql(
+                view.definition_sql(),
+            ))
         })
     }
 
@@ -1897,6 +1898,17 @@ impl Table {
         let alterations = alterations
             .iter()
             .map(|alteration| {
+                for key in alteration.keys().iter() {
+                    let key = key.extract::<String>()?;
+                    if !matches!(
+                        key.as_str(),
+                        "path" | "rename" | "name" | "nullable" | "data_type"
+                    ) {
+                        return Err(PyValueError::new_err(format!(
+                            "Unknown column alteration key '{key}'"
+                        )));
+                    }
+                }
                 let path = alteration
                     .get_item("path")?
                     .ok_or_else(|| PyValueError::new_err("Missing path"))?

@@ -1,0 +1,29 @@
+---
+title: "LanceDB Enterprise"
+sidebarTitle: "Overview"
+description: "What a deployment adds over embedded LanceDB."
+icon: building
+keywords: ["enterprise", "deployment", "cluster"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. The embedded form
+of LanceDB has no server to provide it -- see
+[Architecture](/architecture) for what differs between the two.
+
+LanceDB Enterprise runs the lakehouse as a service: a control plane for
+configuration, identity and policy; a data plane serving reads and writes; and
+indexers building indexes and compacting outside the request path.
+
+What it adds over the embedded form:
+
+| | |
+| --- | --- |
+| [SQL](/sql) | an Arrow Flight SQL endpoint |
+| [Functions](/management/function) | Python running on workers |
+| [Jobs](/basics/jobs) | server-side work with ids, status and events |
+| [Authorization](/governance/authorization) | per-object grants |
+| Scale | a cluster rather than your process |
+
+See [Architecture](/architecture) for the two shapes side by side.
