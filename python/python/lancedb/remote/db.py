@@ -41,7 +41,7 @@ from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
-from ..sql import QueryDescription
+from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
@@ -1090,18 +1090,22 @@ class RemoteDBConnection(DBConnection):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
         """Start executing SQL through this remote connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may
         reference other databases available to the same deployment.
+        ``parameters`` binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
         """
         return SqlQuery(
             LOOP.run(
                 self._conn.execute_query_async(
                     query,
                     default_namespace_path=default_namespace_path,
+                    parameters=parameters,
                 )
             )
         )

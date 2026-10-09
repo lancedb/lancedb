@@ -53,7 +53,7 @@ from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
 from lancedb.listing import AsyncListing, Listing
 from lancedb.sql import AsyncQuery as AsyncSqlQuery
-from lancedb.sql import QueryDescription
+from lancedb.sql import QueryDescription, QueryParameters
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -1584,11 +1584,13 @@ class AsyncLanceNamespaceDBConnection:
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncRecordBatchReader:
         """Execute SQL when supported by the underlying connection."""
         return await self._inner.execute_query(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
 
     async def execute_query_async(
@@ -1596,6 +1598,7 @@ class AsyncLanceNamespaceDBConnection:
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncSqlQuery:
         """Start executing SQL when supported by the underlying connection.
 
@@ -1604,6 +1607,7 @@ class AsyncLanceNamespaceDBConnection:
         return await self._inner.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
 
     async def describe_query(self, query_id: UUID) -> QueryDescription:
