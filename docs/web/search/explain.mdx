@@ -3,12 +3,19 @@ title: "Explain a query plan"
 sidebarTitle: "Query Plans"
 description: "Read the plan LanceDB resolved for a query, and measure it with analyze."
 icon: "map"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Query plans can be explained and analyzed in the embedded library and against
+    a deployment. A deployment's plans include its own operators, and per-worker
+    metrics apply only to a deployment that distributes its queries.
 ---
 
 `explain_plan` prints the plan LanceDB resolved for a query without executing
 it. It answers structural questions -- did the filter push into the scan, is the
-vector index being used, which columns are actually read -- and costs nothing to
-run, so it is the first thing to reach for when a query behaves unexpectedly.
+vector index being used, which columns are actually read -- and does not execute
+the query, so it is the first thing to reach for when a query behaves unexpectedly.
 
 To measure a query rather than read it, use
 [`analyze_plan`](/search/explain), which executes it and annotates every
@@ -34,7 +41,7 @@ the number of rows available after filtering.
 
 ## Reading the Execution Plan {#reading-the-execution-plan}
 
-To demonstrate query performance analysis, we'll use a table containing 1.2M rows sampled from the [Wikipedia dataset](https://huggingface.co/datasets/wikimedia/wikipedia). Initially, the table has no indices, allowing us to observe the impact of optimization.
+To demonstrate query performance analysis, we'll use a table containing 1.2M rows sampled from the [Wikipedia dataset](https://huggingface.co/datasets/wikimedia/wikipedia). Initially, the table has no indices, allowing us to observe the impact of optimization. The table is on a deployment, so its plans include deployment operators such as `RemoteTake` and hide storage paths as `uri=***`; a local plan shows Lance's `Take` and the dataset path instead.
 
 Let's examine a vector search query that:
 
@@ -126,7 +133,7 @@ CoalesceBatchesExec: target_batch_size=1024
 
 #### 5\. Data Retrieval {#5-data-retrieval}
 
-- `RemoteTake` is a key component of Lance's I/O cache
+- `RemoteTake` is the deployment's operator for this step; a local plan shows Lance's `Take`
 - Handles efficient data retrieval from remote storage locations
 - Fetches specific rows and columns needed for the final output
 - Optimizes network bandwidth by only retrieving required data
@@ -148,7 +155,7 @@ This plan demonstrates a basic search without index optimizations: it performs a
 ## Non-vector queries {#analyzing-non-vector-queries}
 
 `explain_plan` is not vector-specific -- it is available on every query builder,
-including FTS and hybrid. The most common reason to read the plan for a
+including FTS, and on hybrid queries in Python. The most common reason to read the plan for a
 non-vector query is to confirm whether your `where` clause pushed into the scan
 (good) or ran as a separate `FilterExec` on top of the search results (often
 slower, and a hint that the filter column needs a scalar index).
@@ -288,7 +295,7 @@ ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier
 
 <Badge color="red">Enterprise</Badge>
 
-When you call `analyze_plan` against a LanceDB Enterprise table, the query runs across a pool of workers. By default the returned plan aggregates each operator's metrics into a single value, matching the local single-node output. Pass a `distributed_metrics` mode when you need to see how work was split across workers:
+When you call `analyze_plan` against a LanceDB Enterprise deployment that distributes its queries across a pool of workers, the query runs on those workers. By default the returned plan aggregates each operator's metrics into a single value, matching the local single-node output. Pass a `distributed_metrics` mode when you need to see how work was split across workers:
 
 | Mode          | What it shows                                                                       | When to use it                                                                                          |
 | :------------ | :---------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ |

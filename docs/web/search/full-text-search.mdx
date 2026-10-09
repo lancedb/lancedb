@@ -3,6 +3,13 @@ title: Full-Text Search (FTS)
 sidebarTitle: Full-Text Search (FTS)
 description: Learn how to implement full-text search in LanceDB using BM25 for keyword-based retrieval.
 icon: "book"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Full-text search runs in the embedded library and against a deployment. On a
+    deployment, indexes are built in the background and kept up to date by the
+    deployment rather than by optimize().
 ---
 
 import {
@@ -15,7 +22,7 @@ import { PyFtsBooleanQueries } from '/snippets/doc_function_examples.mdx'
 LanceDB provides support for Full-Text Search via Lance, allowing you to incorporate keyword-based search (based on BM25) in your retrieval solutions.
 
 <Note>
-In SQL, full-text search is the [`fts()`](/sql/functions#fts) table function, or the [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate when you do not need a score.
+In SQL, full-text search is the [`fts()`](/sql/functions#fts) table function, or the [`contains_tokens`](/sql/scalar-functions#contains-tokens) predicate when you do not need a score. [SQL](/basics/sql) runs on a deployment.
 </Note>
 
 ## Basic Usage {#basic-usage}
@@ -95,6 +102,10 @@ tbl
 ```
 </CodeGroup>
 
+Locally the index is built before the call returns. On a deployment the call
+starts a background build and returns at once; pass `wait_timeout` or call
+`wait_for_index` before relying on the index.
+
 ### Full-text Search {#full-text-search}
 
 Perform full-text search and retrieve results:
@@ -137,6 +148,10 @@ LanceDB automatically searches on the existing FTS index if the input to the sea
 
 If a table has more than one FTS index, specify the indexed text column in the query. In Python you can use `fts_columns` or the query builder's `nearest_to_text(..., columns=...)`; in TypeScript, use `query().nearestToText(..., columns)`. The newer Lance-native FTS does not accept legacy Tantivy-only index parameters.
 
+A deployment that distributes search across its workers scores each worker's
+rows with that worker's statistics unless it is configured for global scoring,
+so scores and close rankings can differ slightly from the embedded library's.
+
 ### Keeping the index up to date {#keeping-the-index-up-to-date}
 
 Rows you add after building an FTS index aren't part of the index until you optimize the table. Until then, queries fall back to a flat scan over the unindexed fragments to keep results complete, which slows them down as the unindexed tail grows. Call `table.optimize()` to fold new rows into the existing index — it's the same operation used for vector indexes:
@@ -158,6 +173,8 @@ tbl.optimize(OptimizeAction::All).await?;
 </CodeGroup>
 
 A useful rule of thumb is to call `optimize()` after roughly 100,000 row changes or 20 data-modification operations, whichever comes first. For tables with continuous ingest, schedule it on a cadence that keeps `num_unindexed_rows` (from `table.index_stats(...)`) close to zero. If you want to skip the flat scan over unindexed rows entirely — for example, on a hot read path where stale results are acceptable — call `.fast_search()` on the query so the search returns only indexed results.
+
+On a deployment, `optimize()` is not available: the deployment adds new rows to the index itself, and until it has, queries scan the unindexed rows.
 
 ## Advanced Usage {#advanced-usage}
 
@@ -214,6 +231,10 @@ export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
 ```
 
 For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
+
+The model files are read where the index is built and queried. For a table on a
+deployment that is the deployment, so ask its administrator whether they are
+installed there.
 
 <Note>
 Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. If you use another stemming language, such as Arabic, Greek, Romanian, Tamil, or Turkish, set `remove_stop_words=False` or pass `custom_stop_words`.
@@ -720,7 +741,7 @@ const multiMatchBoostingResults = await table.query()
 - Create full-text search indices on text columns that will be frequently searched
 - For hybrid search combining text and vectors, see our [hybrid search guide](/search/hybrid-search/)
 - For performance benchmarks, check our [benchmark results](/enterprise/benchmarks/)
-- For complex queries, use SQL to combine FTS with other filter conditions
+- For complex queries on a deployment, use SQL to combine FTS with other filter conditions
 </Card>
 
 ### Boolean Queries {#boolean-queries}
