@@ -479,7 +479,7 @@ class MatchQuery(FullTextQuery):
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
-    fuzziness : int, optional
+    fuzziness : int or None, default 0
         The maximum edit distance for each term in the match query.
         Defaults to 0 (exact match).
         If None, fuzziness is applied automatically by the rules:
@@ -506,7 +506,7 @@ class MatchQuery(FullTextQuery):
     query: str
     column: str
     boost: float = pydantic.Field(1.0, kw_only=True)
-    fuzziness: int = pydantic.Field(0, kw_only=True)
+    fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
