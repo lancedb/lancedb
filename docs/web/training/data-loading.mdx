@@ -3,6 +3,12 @@ title: "Loading Data for Model Training"
 sidebarTitle: "Data Loading & Shuffles"
 description: "Stream, shuffle, transform, and resume model training data with LanceDB."
 icon: boxes-stacked
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Streaming, shuffling and resuming training data work with local,
+    object-storage and deployment tables in the Python SDK.
 ---
 
 LanceDB provides an excellent data backend for training machine learning models. For basic use cases, a `Table` can be fed directly into a data loader. For a more complete solution, a `StreamingDataset` adds prefetching, elastic determinism, resumability, multithreaded transformations, and more.
