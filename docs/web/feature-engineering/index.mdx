@@ -25,19 +25,33 @@ alongside.
 On a deployment, every operation here also has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
 </Note>
 
-## The shape everything shares {#the-shape}
+## How each one fills {#the-shape}
 
-Every mechanism here separates **declaring** from **filling**, and that
-separation is the point:
+Computed columns and materialized views both keep derived data in the
+lakehouse, but they fill it differently, and the difference decides what a
+refresh costs:
 
-- Declaring is cheap and immediate. It records intent in the schema and commits
-  a new table version, with no data written. Declaring a column on a
-  billion-row table costs what declaring one on an empty table costs.
+| | Computed column | Materialized view |
+| --- | --- | --- |
+| Declaring or creating it | records the expression; no values are written | runs the query and stores its rows, unless created empty |
+| A refresh | fills rows with no value and recomputes rows whose inputs changed | locally, runs the query again and replaces every row |
+| A refresh when nothing changed | fills nothing | locally, rewrites the view and commits a new version |
+| On a deployment | runs as a [job](/basics/jobs) | depends on the deployment's version and the view's query |
+
+### Computed columns fill incrementally {#incremental}
+
+A [computed column](/feature-engineering/add-computed-column) separates
+**declaring** from **filling**:
+
+- Declaring is cheap and immediate. It records the expression in the schema
+  and commits a new table version, with no data written. Declaring a column on
+  a billion-row table costs what declaring one on an empty table costs.
 - Filling is a separate call you control, can retry, and -- against a deployment
   -- can hand to the server as a [job](/basics/jobs) rather than waiting on.
 
-**Filling does not redo current work.** A refresh gives values to rows that
-lack them and recomputes rows whose inputs changed since they were computed. It
+**Filling does not redo current work.** A
+[refresh](/feature-engineering/refresh-column) gives values to rows that lack
+them and recomputes rows whose inputs changed since they were computed. It
 leaves the rest alone, so calling it twice is not twice the work, and appending
 rows means the next refresh handles only the new ones.
 
@@ -47,6 +61,20 @@ inputs only when you refresh.** If a column derives from `price` and a row's
 refresh recomputes it. That is a deliberate trade -- it is what makes refreshes
 idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
 
+### Materialized views are rebuilt {#views}
+
+A [materialized view](/feature-engineering/materialized-views) has no separate
+declaration step: creating one runs its query and stores the result, so the view
+is ready to read. A local refresh runs the query again and replaces everything
+the view holds, in one commit -- even when the source has not changed. Its cost
+is the size of the result every time, not the size of what changed, so schedule
+refreshes with that in mind.
+
+On a deployment, views are off by default. Whether a refresh rebuilds the view
+or applies only what changed in the source depends on the deployment's version
+and on the view's query; see
+[Against a deployment](/feature-engineering/materialized-views#availability).
+
 ## Which one to reach for {#which-one}
 
 | | What it produces | Filled by | Available |
@@ -54,6 +82,8 @@ idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
 | [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | embedded, and deployments that enable it |
 | [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | embedded, and deployments that enable it |
 | [Function](/management/function) {/* if functions launched */} | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> deployments that enable it |
+| [Geneva](/geneva) {/* if functions not launched */} | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
+| [Geneva](/geneva) {/* if functions launched */} | columns filled by Python, for existing pipelines | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).
@@ -65,7 +95,14 @@ result is an ordinary table: queryable, indexable, searchable.
 {/* if functions launched */}
 **Functions** run Python where the data is, for work SQL cannot express:
 embedding a column, calling a model, decoding an image. Registered once,
-versioned, then applied as a column.
+versioned, then applied as a column. They are the way to do that on a
+deployment; [Geneva](/geneva) remains available for existing pipelines.
+
+{/* end if */}
+{/* if functions not launched */}
+**Geneva** is LanceDB Enterprise's Python package for work SQL cannot express:
+embedding a column, calling a model, decoding an image. It defines features as
+Python functions and backfills them as distributed jobs.
 
 {/* end if */}
 They compose. A materialized view can select computed columns.
@@ -77,10 +114,12 @@ A computed column can be filled by a registered function. {/* if functions launc
 
 Locally, a refresh runs in your process. Against a deployment it runs across the
 cluster, and the API reflects that: `refresh_column` raises, and
-`refresh_column_async` returns a [job](/basics/jobs) handle instead.
+`refresh_column_async` returns a [job](/basics/jobs) handle instead. Computed
+columns are off by default on a deployment, and its administrator has to enable
+them before a column can be declared there.
 
 ```python
-job = table.refresh_column_async("embedding")
+job = table.refresh_column_async("power_score")
 result = job.wait()
 result.rows_assigned
 ```
@@ -90,7 +129,9 @@ from a different process -- the connection does not have to stay open.
 
 That relocation is the main thing to understand about Enterprise feature
 engineering. The API is the same; what changes is that the code runs somewhere
-else.
+else. Running there does not make a column refresh itself: a computed column
+declared with the SDK or SQL is filled when you submit a refresh, and not
+otherwise.
 That is also why a function must declare the environment it needs. {/* if functions launched */}
 
 ## Recovering from a failure {#failures}
