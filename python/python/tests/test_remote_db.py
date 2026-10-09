@@ -3508,6 +3508,56 @@ def test_remote_blob_query_stashes_row_ids_for_fetch():
     assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
 
 
+def test_remote_blob_query_to_pandas():
+    with blob_remote_table() as table:
+        query = table.search().select(["id", "image"]).limit(3)
+        df = query.to_pandas(blob_mode="descriptions", split_blocks=True)
+
+    assert df["id"].tolist() == [1, 2, 3]
+    assert "_rowid" not in df.columns
+    assert df["image"].iloc[1] is None
+    assert "_lance_row_id" not in df["image"].iloc[0]
+
+
+@pytest.mark.parametrize("blob_mode", ["default", "lazy", "bytes"])
+def test_remote_blob_query_to_pandas_rejects_unpinned_fetch(monkeypatch, blob_mode):
+    with blob_remote_table() as table:
+
+        def fail_fetch(*args, **kwargs):
+            raise AssertionError("blob fetch must not use an unpinned remote table")
+
+        monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
+        query = table.search().select(["id", "image"]).limit(3)
+        pandas_kwargs = {} if blob_mode == "default" else {"blob_mode": blob_mode}
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            query.to_pandas(**pandas_kwargs)
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes"])
+def test_remote_nonblob_projection_to_pandas(blob_mode):
+    with blob_remote_table() as table:
+        df = table.search().select(["id"]).to_pandas(blob_mode=blob_mode)
+
+    assert df["id"].tolist() == [1, 2, 3]
+    assert list(df.columns) == ["id"]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_blob_query_to_pandas_flatten():
+    with blob_remote_table() as table:
+        df = (
+            await table._table.query()
+            .select(["id", "image"])
+            .limit(3)
+            .to_pandas(blob_mode="descriptions", flatten=True, split_blocks=True)
+        )
+
+    assert df["id"].tolist() == [1, 2, 3]
+    assert df["image.size"].iloc[0] == 5
+    assert "image._lance_row_id" not in df.columns
+    assert "_rowid" not in df.columns
+
+
 def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
     def handler(request):
         if request.path == "/v1/table/test/describe/":
@@ -3537,6 +3587,8 @@ def test_remote_blob_query_survives_a_server_that_ignores_the_row_id_request():
         assert "_lance_row_id" not in hits.schema.field("image").type.names
         with pytest.raises(ValueError, match="pass a list of row ids"):
             table.fetch_blobs("image", hits)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            table.search().select(["id", "image"]).to_pandas(blob_mode="bytes")
 
 
 def test_remote_blob_byte_apis_not_supported_on_old_server():
