@@ -19,7 +19,12 @@ import lancedb
 import numpy as np
 from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
-from lancedb.query import AsyncQuery, ColumnOrdering, LanceVectorQueryBuilder
+from lancedb.query import (
+    AsyncQuery,
+    ColumnOrdering,
+    LanceVectorQueryBuilder,
+    MatchQuery,
+)
 from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
@@ -1829,6 +1834,108 @@ def query_test_table(
         table = db.open_table("test")
         assert repr(table) == "RemoteTable(dev.test)"
         yield table
+
+
+@pytest.mark.parametrize(
+    "query,search_kwargs,expected_column",
+    [
+        pytest.param([0.5] * 8, {}, "vector", id="vector-8"),
+        pytest.param([0.5] * 4, {}, "vec2", id="vector-4"),
+        pytest.param(np.array([0.5] * 4), {}, "vec2", id="numpy-vector"),
+        pytest.param([[0.5] * 4, [0.2] * 4], {}, "vec2", id="batch-vectors"),
+        pytest.param(
+            [0.5] * 4, {"vector_column_name": "vec2"}, "vec2", id="explicit-column"
+        ),
+        pytest.param(None, {}, None, id="scan"),
+        pytest.param("hello", {"query_type": "fts"}, None, id="fts"),
+        pytest.param(
+            "hello", {"query_type": "fts", "fts_columns": "text"}, None, id="fts-column"
+        ),
+        pytest.param(MatchQuery("hello", "text"), {}, None, id="structured-fts"),
+    ],
+)
+def test_query_object_sync_matches_local(mem_db, query, search_kwargs, expected_column):
+    vector_columns = {"vector": 8, "vec2": 4}
+    schema = pa.schema(
+        [
+            pa.field(name, pa.list_(pa.float32(), dim))
+            for name, dim in vector_columns.items()
+        ]
+    )
+    local = mem_db.create_table("test", schema=schema)
+    local_query = local.search(query, **search_kwargs).limit(2).to_query_object()
+    assert local_query.vector_column == expected_column
+    assert local_query.fast_search is None
+
+    with query_test_table(None, vector_columns=vector_columns) as remote:
+        remote_query = remote.search(query, **search_kwargs).limit(2).to_query_object()
+        assert remote_query == local_query
+
+
+@pytest.mark.parametrize("fast_search", [None, False, True])
+@pytest.mark.parametrize("query,query_type", [([1, 2, 3], "vector"), ("hello", "fts")])
+def test_query_object_sync_preserves_fast_search(fast_search, query, query_type):
+    vector_columns = {"vector": 3} if query_type == "vector" else {}
+    with query_test_table(None, vector_columns=vector_columns) as table:
+        query_obj = table.search(
+            query, query_type=query_type, fast_search=fast_search
+        ).to_query_object()
+        assert query_obj.fast_search is fast_search
+
+
+def test_query_sync_rejects_ambiguous_vector_column(mem_db):
+    vector_columns = {"vector": 4, "vec2": 4}
+    schema = pa.schema(
+        [
+            pa.field(name, pa.list_(pa.float32(), dim))
+            for name, dim in vector_columns.items()
+        ]
+    )
+    local = mem_db.create_table("test", schema=schema)
+    with pytest.raises(ValueError, match="Candidates:.*vector.*vec2") as local_error:
+        local.search([0.5] * 4)
+
+    with query_test_table(None, vector_columns=vector_columns) as remote:
+        with pytest.raises(ValueError) as remote_error:
+            remote.search([0.5] * 4)
+        assert str(remote_error.value) == str(local_error.value)
+
+
+@pytest.mark.parametrize("vector_columns", [{}, {"v1": 4, "v2": 8}])
+@pytest.mark.parametrize("query_type", ["auto", "fts"])
+def test_query_sync_fts_without_embeddings(vector_columns, query_type):
+    seen = []
+
+    def handler(body):
+        seen.append(body)
+        assert body["full_text_query"] == {"query": "hello", "columns": []}
+        assert body["vector"] == []
+        assert "vector_column" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler, vector_columns=vector_columns) as table:
+        assert table.search("hello", query_type=query_type).to_list() == [{"id": 1}]
+    assert len(seen) == 1
+
+
+def test_query_sync_auto_with_embedding_function():
+    def handler(body):
+        assert body["vector_column"] == "vector"
+        assert body["vector"] == [0.0] * 10
+        assert "full_text_query" not in body
+        return pa.table({"id": [1]})
+
+    config = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    with query_test_table(
+        handler, vector_columns={"vector": 10}, embedding_functions=[config]
+    ) as table:
+        query = table.search("hello")
+        assert query.to_query_object().vector_column == "vector"
+        assert query.to_list() == [{"id": 1}]
 
 
 def test_head():

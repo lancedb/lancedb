@@ -686,7 +686,7 @@ class RemoteTable(Table):
         vector_column_name: Optional[str] = None,
         query_type="auto",
         fts_columns: Optional[Union[str, List[str]]] = None,
-        fast_search: bool = False,
+        fast_search: Optional[bool] = None,
     ) -> LanceVectorQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support
@@ -743,7 +743,7 @@ class RemoteTable(Table):
             Skip a flat search of unindexed data. This may improve
             search performance but search results will not include unindexed data.
 
-            - *default False*.
+            - *default None*, which leaves fast search disabled.
 
         Returns
         -------
@@ -778,7 +778,7 @@ class RemoteTable(Table):
             query,
             query_type,
             vector_column_name=vector_column_name,
-            fts_columns=fts_columns,
+            fts_columns=fts_columns or [],
             fast_search=fast_search,
         )
 
