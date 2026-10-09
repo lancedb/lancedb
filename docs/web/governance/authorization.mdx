@@ -1,0 +1,115 @@
+---
+title: "Authorization"
+sidebarTitle: "Authorization"
+description: "Who may do what: privileges granted on catalog objects to principals, groups, roles, and API keys."
+icon: shield-halved
+keywords: ["authorization", "authz", "privileges", "rbac", "access control"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+This page describes a LanceDB Enterprise capability. Embedded LanceDB has no
+such layer -- access is whatever the object store enforces on the bucket or
+directory, which is coarser and has no concept of a table. See
+[Architecture](/architecture) for what differs between the two.
+
+[Authentication](/enterprise/authentication) establishes who is calling.
+Authorization decides what they may do.
+
+An access control entry grants **one privilege** on **one object** to **one
+subject**. Everything below is a consequence of that shape.
+
+## Subjects {#subjects}
+
+A grant is held by one of four kinds of subject, distinguished by a prefix:
+
+| Prefix | Subject |
+| --- | --- |
+| `p:` | a principal, by ID -- `P:` by name |
+| `g:` | a group, by ID -- `G:` by name |
+| `r:` | a role |
+| `a:` | an API key |
+
+Granting to a group or role rather than a principal is what keeps the entry
+count manageable: a principal's effective privileges are the union of what it
+holds directly and what it inherits.
+
+Granting to an API key is narrower than granting to the principal that owns
+it -- useful when a key is issued for one job and should not carry that
+principal's full authority.
+
+## Objects {#objects}
+
+Objects are addressed by kind and path:
+
+```
+system
+database:db
+namespace:db/ns
+table:db/ns/table
+```
+
+The hierarchy is not decorative. Reaching a table requires `USAGE` on the
+namespace containing it and on the database containing that -- a grant on the
+table alone is not enough to traverse to it.
+
+## Privileges {#privileges}
+
+| Privilege | Granted on | Allows |
+| --- | --- | --- |
+| `OWNERSHIP` | any object | ownership, conveying full authority |
+| `USAGE` | database | accessing the namespaces inside |
+| `USAGE` | namespace | accessing the tables inside |
+| `SELECT` | table | reading rows |
+| `INSERT` | table | appending rows |
+| `UPDATE` | table | modifying existing rows |
+| `DELETE` | table | deleting rows |
+| `CREATE_DATABASE` | system | creating a database |
+| `CREATE_NAMESPACE` | database, namespace | creating immediate child namespaces |
+| `CREATE_TABLE` | namespace | creating a table in it |
+| `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
+| `CREATE_VIEW` | namespace | creating a non-materialized view in it |
+| `OPERATE` | system | reading server configuration |
+
+The four data privileges map onto the four
+[ingestion operations](/ingestion), so a principal that may append but not
+modify is expressed by granting `INSERT` without `UPDATE`.
+
+<Note>
+`CREATE_MATERIALIZED_VIEW` and `CREATE_VIEW` are separate privileges because
+[the two objects differ](/basics/catalog): one stores rows and is refreshed,
+the other stores only a query. Granting the ability to create one does not
+grant the other.
+</Note>
+
+## Creation privileges resolve upward {#upward}
+
+A subtlety worth knowing, because it explains grants that appear to work on
+objects that do not exist yet.
+
+When `USAGE` is checked on a database and **no entries exist for it at all**,
+the database is assumed not to exist yet, and `CREATE_DATABASE` on `system` is
+checked instead. The same applies to the default namespace: absent any
+entries, the check falls back to `CREATE_NAMESPACE` on the containing
+database.
+
+So a principal holding `CREATE_DATABASE` can act on a database that has not
+been created -- which is what makes creation possible at all, and why an empty
+ACL set is not the same as a deny.
+
+## Listing grants {#listing}
+
+Entries can be listed filtered by object, by subject, or both:
+
+```
+object  = table:db/ns/documents
+subject = G:data-science
+```
+
+Results paginate through a continuation token. One stored `(object, subject)`
+tuple carrying several privileges expands into several entries in the
+response, so the count reflects privileges rather than tuples.
+
+Listing by subject answers "what can this team reach"; listing by object
+answers "who can reach this table". Both are worth running before changing a
+grant.

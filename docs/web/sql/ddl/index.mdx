@@ -1,0 +1,49 @@
+---
+title: "Index"
+sidebarTitle: "Index"
+description: "CREATE INDEX and DROP INDEX — one column, server-chosen name."
+icon: bolt
+keywords: ["create index", "drop index", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+## CREATE INDEX {#create}
+
+```sql
+CREATE INDEX ON documents (title)
+```
+
+<Note>
+SQL `CREATE INDEX` covers **one column** and takes **no user-chosen name** --
+the server names it. For a multi-column or explicitly-named index, or to
+choose the algorithm, use the SDK's
+[`create_index`](/indexing).
+</Note>
+
+<Note>
+**Enterprise job type:** `create_ivf_pq`, `create_btree`, `create_fts`, and one
+more per algorithm -- the type names which algorithm is building, not a
+different feature. See [Build & Repair](/indexing/reindexing).
+</Note>
+
+## DROP INDEX {#drop}
+
+```sql
+DROP INDEX documents.title_idx
+```
+
+Takes the qualified `table.index` name. Find it with the SDK's
+[`list_indices`](/indexing) if you created the index without
+naming it yourself.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Indexing" icon="bolt" href="/indexing">
+    Choosing an index type from the SDK.
+  </Card>
+  <Card title="Build & Repair" icon="refresh" href="/indexing/reindexing">
+    Keeping an index current as data arrives.
+  </Card>
+</CardGroup>

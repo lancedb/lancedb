@@ -1,0 +1,34 @@
+---
+title: "Update"
+sidebarTitle: "Update"
+description: "UPDATE ... SET ... WHERE — and why it does not recompute derived columns."
+icon: pen
+keywords: ["update", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+UPDATE documents SET title = upper(title) WHERE category = 'film'
+```
+
+Assignments take any expression the [dialect](/sql/functions) supports,
+including references to other columns of the same row. Without a `WHERE`
+clause every row is updated.
+
+<Warning>
+An update does not recompute [computed columns](/feature-engineering/add-computed-column)
+that derive from the column you changed. Those rows keep the value computed from
+the old input until the next refresh recomputes them -- see
+[Guarantees](/basics/guarantees#jobs).
+</Warning>
+
+Commits a new table version, so [versioning](/management/table#versioning) and
+the [write guarantees](/basics/guarantees#writes) apply -- including that the
+version advances even when the statement affects zero rows.
+
+## What to read next {#next}
+
+<Card title="Update" icon="pen" href="/ingestion/update">
+  The SDK equivalent.
+</Card>

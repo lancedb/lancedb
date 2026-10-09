@@ -491,6 +491,7 @@ export type BaseTokenizer =
   | "whitespace"
   | "raw"
   | "ngram"
+  | "code"
   | "icu"
   | "icu/split"
   | `jieba/${string}`
@@ -519,6 +520,8 @@ export interface FtsOptions {
    * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   *
+   * "code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
    *
    * "icu" - ICU dictionary-based word segmentation.
    *

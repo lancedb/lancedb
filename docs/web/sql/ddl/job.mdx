@@ -1,0 +1,90 @@
+---
+title: "Job"
+sidebarTitle: "Job"
+description: "SHOW JOBS, SHOW ERRORS, and controlling a running job with PAUSE, RESUME and CANCEL."
+icon: hourglass-half
+keywords: ["show jobs", "show errors", "pause job", "resume job", "cancel job", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A [job](/basics/jobs) is not a catalog object -- it has no schema and is not
+namespaced -- but it has its own SQL statements, grouped here the same way the
+catalog objects are.
+
+## SHOW JOBS {#show}
+
+```sql
+SHOW JOBS
+```
+
+Every job the server knows about -- id, type, state, creation time. The SQL
+counterpart of `list_jobs`.
+
+## SHOW ERRORS {#errors}
+
+```sql
+SHOW ERRORS ON <table> [FOR JOB '<job-id>'] [LIMIT <n>]
+```
+
+```sql
+SHOW ERRORS ON documents
+SHOW ERRORS ON documents FOR JOB 'job-abc' LIMIT 100
+```
+
+Why rows failed. Reach for this when a [refresh](/sql/dml/refresh) reports
+fewer filled rows than you expected.
+
+**Errors and limits**
+
+| | |
+| --- | --- |
+| `LIMIT` | must be between 1 and 100,000 |
+| Failed jobs scanned without `FOR JOB` | 32 most recent |
+| Tables the server does not open directly | not supported |
+
+Without `FOR JOB` this surveys recent failures and stops at 32 jobs. When the
+listing stops at your `LIMIT`, the message says so -- narrow with `FOR JOB`
+rather than raising the limit blindly.
+
+## PAUSE JOB {#pause}
+
+```sql
+PAUSE JOB 'j-ci-abc-def'
+```
+
+## RESUME JOB {#resume}
+
+```sql
+RESUME JOB 'j-ci-abc-def'
+```
+
+## CANCEL JOB {#cancel}
+
+```sql
+CANCEL JOB 'j-ci-abc-def'
+```
+
+The job id is always a quoted string literal. All three take exactly one and
+nothing after it -- a second token on the line is a syntax error rather than
+being ignored.
+
+<Note>
+Cancellation is a request, matching the SDK's
+[`cancel()`](/basics/jobs#managing): it does not guarantee the job stops before
+doing more work, and asking twice or cancelling a finished job does nothing.
+`CANCEL JOB` itself can be unavailable on a deployment with no job registry
+configured, which is a deployment condition rather than something you can work
+around from SQL.
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Query and job" icon="hourglass-half" href="/basics/jobs">
+    The handle these statements are the SQL view of.
+  </Card>
+  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
+    Job types you did not start yourself.
+  </Card>
+</CardGroup>

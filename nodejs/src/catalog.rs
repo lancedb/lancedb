@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lancedb::catalog::{
-    CatalogConnection, CreateDatabaseRequest, DropDatabaseRequest, ListDatabasesRequest,
-};
+use futures::{StreamExt, future::poll_fn};
+
+use lancedb::catalog::{CatalogConnection, CreateDatabaseRequest, DropDatabaseRequest};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -25,10 +25,37 @@ pub struct CatalogOptions {
     pub oauth_config: Option<OAuthConfig>,
 }
 
-#[napi(object)]
-pub struct ListDatabasesResponse {
-    pub databases: Vec<String>,
-    pub page_token: Option<String>,
+/// A lazy iterator over database names with inspectable pagination state.
+#[napi]
+pub struct DatabaseNames {
+    inner: Mutex<lancedb::catalog::DatabaseNames>,
+    next_lock: futures::lock::Mutex<()>,
+}
+
+#[napi]
+impl DatabaseNames {
+    /// Number of names cached without another REST request.
+    #[napi]
+    pub fn num_page_results(&self) -> u32 {
+        self.inner.lock().unwrap().num_page_results() as u32
+    }
+
+    /// Continuation token for the next REST request.
+    #[napi]
+    pub fn page_token(&self) -> Option<String> {
+        self.inner.lock().unwrap().page_token().map(str::to_owned)
+    }
+
+    /// Fetch the next name, returning None when exhausted.
+    #[napi]
+    pub async fn next(&self) -> Result<Option<String>> {
+        // Serialize advances but allow synchronous inspection between polls.
+        let _guard = self.next_lock.lock().await;
+        poll_fn(|cx| self.inner.lock().unwrap().poll_next_unpin(cx))
+            .await
+            .transpose()
+            .default_error()
+    }
 }
 
 #[napi]
@@ -106,18 +133,14 @@ impl Catalog {
             .default_error()
     }
     #[napi]
-    pub async fn list_databases(
+    pub fn list_databases(
         &self,
-        limit: Option<u32>,
         page_token: Option<String>,
-    ) -> Result<ListDatabasesResponse> {
-        let mut request = ListDatabasesRequest::default();
-        request.limit = limit;
-        request.page_token = page_token;
-        let response = self.inner.list_databases(request).await.default_error()?;
-        Ok(ListDatabasesResponse {
-            databases: response.databases,
-            page_token: response.page_token,
-        })
+        page_limit: Option<u32>,
+    ) -> DatabaseNames {
+        DatabaseNames {
+            inner: Mutex::new(self.inner.list_databases(page_token, page_limit)),
+            next_lock: futures::lock::Mutex::new(()),
+        }
     }
 }
