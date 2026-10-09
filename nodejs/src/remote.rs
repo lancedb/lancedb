@@ -92,6 +92,10 @@ pub struct ClientConfig {
     pub user_agent: Option<String>,
     pub retry_config: Option<RetryConfig>,
     pub timeout_config: Option<TimeoutConfig>,
+    /// Maximum number of concurrent blob HTTP requests across all tables and
+    /// blob handles on this connection. Defaults to 8. Can also be set with
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`. Must be greater than zero.
+    pub blob_request_concurrency: Option<u32>,
     pub extra_headers: Option<HashMap<String, String>>,
     /// The delimiter joining a namespace path and a name into one object
     /// identifier. `"$"` is the only supported value, and leaving this unset is
@@ -428,6 +432,7 @@ impl From<ClientConfig> for lancedb::remote::ClientConfig {
                 .unwrap_or(concat!("LanceDB-Node-Client/", env!("CARGO_PKG_VERSION")).to_string()),
             retry_config: config.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: config.timeout_config.map(Into::into).unwrap_or_default(),
+            blob_request_concurrency: config.blob_request_concurrency.map(|value| value as usize),
             extra_headers: config.extra_headers.unwrap_or_default(),
             id_delimiter: config.id_delimiter,
             tls_config: config.tls_config.map(Into::into),

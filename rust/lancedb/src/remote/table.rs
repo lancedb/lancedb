@@ -5514,7 +5514,7 @@ mod tests {
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
-                    "bytes=0-" => http::Response::builder()
+                    "bytes=0-9" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
@@ -5536,7 +5536,7 @@ mod tests {
         assert_eq!(blobs.value(4), b"bbb");
         let requests = requests.lock().unwrap();
         assert!(requests.contains(&"GET bytes=0-0".to_string()));
-        assert!(requests.contains(&"GET bytes=0-".to_string()));
+        assert!(requests.contains(&"GET bytes=0-9".to_string()));
     }
 
     #[tokio::test]
