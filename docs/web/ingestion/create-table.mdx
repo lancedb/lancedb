@@ -4,6 +4,13 @@ sidebarTitle: "Create Table"
 description: "Start here: turn the data you already have into a LanceDB table."
 icon: table
 keywords: ["create table", "ingest", "arrow", "pandas", "polars", "pydantic", "schema"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Tables are created, opened and dropped in the embedded library and on a
+    deployment. On a deployment, reusing an existing table does not check its
+    schema against your data.
 ---
 
 import {
@@ -94,8 +101,10 @@ You can change this behavior with two parameters that resolve the conflict in di
 
 - **Idempotent open**: return the existing table without modifying it. Use when your
   code may run more than once (notebooks, retries, init scripts) and you want to reuse
-  the table on subsequent runs. The provided data is ignored, but the schema is
-  validated against the existing table and a mismatch raises an error.
+  the table on subsequent runs. The provided data is ignored. In the embedded
+  library the schema is validated against the existing table and a mismatch
+  raises an error; a deployment returns the existing table without comparing
+  schemas.
 - **Overwrite**: drop the existing table and create a new one with the provided data.
   Use this for test fixtures or when you intentionally want to replace prior contents.
   This permanently discards the old table's data.
@@ -343,5 +352,5 @@ Use the `drop_table()` method on the database to remove a table.
 </CodeGroup>
 
 This permanently removes the table and is not recoverable, unlike deleting rows.
-By default, if the table does not exist an exception is raised. To suppress this,
-you can pass in `ignore_missing=True`.
+By default, if the table does not exist an exception is raised. To suppress this
+in Python on a local database, you can pass in `ignore_missing=True`.

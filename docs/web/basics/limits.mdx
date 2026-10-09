@@ -10,8 +10,9 @@ Limits worth designing around, collected so you do not have to find them by
 hitting them. Each one is enforced -- where a value is refused rather than
 clamped, that is stated, because the two fail very differently.
 
-This page covers bounds that are the same for everyone. Deployment-specific
-quotas -- storage, throughput, concurrency -- come from your deployment.
+Some of these bounds apply only on a deployment, as their sections say. Quotas
+that a deployment sets -- storage, throughput, concurrency -- come from your
+deployment.
 
 ## Names {#names}
 
@@ -24,9 +25,13 @@ quotas -- storage, throughput, concurrency -- come from your deployment.
 
 A name must not be empty, and must not contain `$` or `:` -- both are reserved
 as path delimiters, so a name holding one could not be addressed unambiguously.
-Length is counted in characters, not bytes.
+Length is counted in characters, not bytes. These lengths are a deployment's
+limits; the embedded library does not limit name length.
 
 ## Jobs {#jobs}
+
+<Badge color="red">Enterprise</Badge> These bounds belong to a deployment's job
+service. Jobs on a local database run in-process and keep no event history.
 
 | | |
 | --- | --- |
@@ -90,14 +95,15 @@ not another.
 | | |
 | --- | --- |
 | SQL on a local database | unavailable; `execute_query` raises |
+| SQL on a deployment | needs its Flight SQL endpoint enabled and reachable |
 | SQL methods in the TypeScript SDK | none; use a Flight SQL client |
 | Function methods in the TypeScript SDK | none; use Python or SQL |
-| Vector search in SQL | no SQL form; use a query builder |
+| Vector search in SQL | [depends on the deployment](/basics/sql#no-vector-sql); the query builder always has it |
 | Geospatial `st_*` functions | behind a build feature LanceDB does not ship |
 | `tableExists` / `namespaceExists` in TypeScript | not present |
 | Server-side jobs on a local database | run in-process; `events()` raises |
 
-See [SQL](/basics/sql) for why the first two hold.
+See [SQL](/basics/sql) for why the first three hold.
 
 ## Nothing here is a quota {#not-quotas}
 

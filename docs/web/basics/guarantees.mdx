@@ -48,6 +48,10 @@ A long-lived connection **does not observe other processes' writes** until it
 reopens the table or its `read_consistency_interval` elapses. The default is
 right for a batch job reading a stable snapshot and wrong for a service
 expected to see fresh data.
+
+This describes the embedded library. A table on a deployment is not pinned to
+the version it opened: other writers' commits become visible as the
+deployment's freshness setting allows.
 </Warning>
 
 Set `read_consistency_interval` when several processes write the same table and
@@ -68,8 +72,9 @@ file. The data is recoverable for as long as the version that contains it
 exists.
 
 <Warning>
-Retention is finite. [Compaction](/maintenance/compaction) prunes versions
-older than the retention window — **7 days by default** — and a tag or branch
+Retention is finite. [Cleanup](/maintenance/cleanup) prunes versions older
+than the retention window — **7 days by default** for `optimize()` in the
+embedded library, while a deployment's configuration sets its own — and a tag or branch
 pointing at a pruned version no longer resolves. If you rely on reading old
 versions, widen the window before running it, not after.
 </Warning>
@@ -124,11 +129,11 @@ Worth stating plainly, because each is occasionally assumed:
 | | |
 | --- | --- |
 | Multi-table transactions | A commit covers one table. There is no cross-table atomic write. |
-| Read-your-writes across processes | Governed by `read_consistency_interval`, not automatic. |
+| Read-your-writes across processes | Governed by `read_consistency_interval` and, on a deployment, its freshness setting; not automatic. |
 | Unenforced primary keys | `SET UNENFORCED PRIMARY KEY` records intent; it does not enforce uniqueness. |
 | Ordering of concurrent appends | Two appends both succeed; their relative row order is not defined. |
-| Index freshness | An index does not cover rows added after it was built until [optimized](/maintenance/compaction). |
-| Automatic compaction | Nothing runs in the background. `optimize()` runs when you call it. |
+| Index freshness | An index does not cover rows added after it was built until [optimized](/maintenance/compaction) in the embedded library, or until a deployment's background maintenance adds them. |
+| Automatic compaction | In the embedded library nothing runs in the background; `optimize()` runs when you call it. A deployment compacts automatically. |
 
 The last two are the most common source of "why is this query slow" — see
 [Limits](/basics/limits) for the bounds that pair with them.

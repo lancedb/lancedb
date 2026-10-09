@@ -4,6 +4,13 @@ sidebarTitle: "Table"
 description: "The object most operations act on: creating, opening, renaming, cloning and dropping one."
 icon: table
 keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Tables are created, evolved, versioned and dropped in the embedded library
+    and on a deployment. Renaming, cloning, dropping every table and pruning old
+    versions differ between the two, as their sections say.
 ---
 
 import {
@@ -121,7 +128,7 @@ This page covers the table as a catalog object. Getting data into one is
 [Schema evolution](/management/table#schema).
 
 <Note>
-Tables are created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl/table).
+On a deployment, tables are also created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl/table).
 </Note>
 
 ## What a table carries {#carries}
@@ -156,10 +163,10 @@ frame, or Pydantic models. [Ingesting data](/ingestion) covers each, plus
 `exist_ok` and `mode="overwrite"` for re-runnable scripts.
 
 <Warning>
-An explicit schema is where nullability is decided. Creation is also the only
-point at which the SDK can give a table **stable row ids**, which a deployment
-may require on a [materialized view](/management/materialized-view) source. See
-[Limits](/basics/limits#schema).
+An explicit schema is where nullability is decided. In the embedded library,
+creation is also the only point at which a table can be given **stable row
+ids**; on a deployment, whether a new table gets them is the deployment's
+setting. See [Limits](/basics/limits#schema).
 </Warning>
 
 ## Opening and listing {#open}
@@ -168,7 +175,6 @@ may require on a [materialized view](/management/materialized-view) source. See
 ```python Python icon="python"
 tbl = db.open_table("documents")
 db.table_names()
-db.table_exists("documents")
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -179,7 +185,10 @@ await db.tableNames();
 </CodeGroup>
 
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
-rather than at the database root. TypeScript has no `tableExists`.
+rather than at the database root. Python's `table_exists` works only on a
+namespace connection, where it takes the table's full path as a list; local
+directory and deployment connections raise `NotImplementedError`. TypeScript
+has no `tableExists`.
 
 ## Renaming and cloning {#rename-clone}
 
@@ -194,6 +203,10 @@ db.clone_table(
 )
 ```
 
+Renaming is not supported on a local directory connection. On a deployment,
+whether a table can be renamed depends on how the deployment stores its
+catalog.
+
 A **shallow** clone -- the default -- references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training
@@ -204,13 +217,14 @@ A shallow clone depends on the source's files continuing to exist. If the source
 is [compacted](/maintenance/compaction) past the retention window, the version
 the clone points at can be pruned. Local OSS connections support shallow clones
 only; `is_shallow=False` is not implemented. If the copy must outlive the
-source's history, copy its data into an independent table instead. For remote
-connections, confirm which clone modes your deployment supports.
+source's history, copy its data into an independent table instead. A deployment
+also makes shallow clones only.
 </Warning>
 
 <Note>
-**Enterprise job type:** `drop_table`. Fences the table's directory with a
-marker and deletes its content in the background -- see
+**Enterprise job type:** `drop_table`. On a deployment that drops tables in the
+background, fences the table's directory with a marker and deletes its content
+as a job -- see
 [Background jobs](/maintenance/background-jobs#teardown) for the namespace,
 view, and function equivalent.
 </Note>
@@ -238,11 +252,14 @@ DROP TABLE documents
 <Warning>
 Dropping removes the table and **every version of it**.
 [Versioning](/management/table#versioning) does not survive a drop, and neither
-`drop_all_tables` nor `drop_database` asks for confirmation.
+`drop_all_tables` nor `drop_database` asks for confirmation. Both work only on
+a local database; on a deployment connection the SDK raises instead.
 </Warning>
 
 On a large table the drop can take a while, so `drop_table_async` returns a
-[job](/basics/jobs) rather than blocking.
+[job](/basics/jobs) rather than blocking when the deployment drops tables in the
+background. In the embedded library, and on a deployment that drops inline, the
+returned job has already finished.
 
 ## The full surface {#surface}
 
@@ -1137,8 +1154,9 @@ mixing in lower-level Lance file operations.
 **System Operations**
 
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
-In LanceDB OSS and Enterprise, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
-which is when old-version files are removed and disk space is reclaimed.
+In LanceDB OSS, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
+when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 
 **Tagged versions are exempt from cleanup.** A version with a tag pointing at it is
 retained regardless of age, and its files are not removed by `optimize()`. To make

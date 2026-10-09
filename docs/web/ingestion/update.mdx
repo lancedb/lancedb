@@ -3,6 +3,11 @@ title: "Update rows"
 sidebarTitle: "Update"
 description: "Change values in rows that already exist, by predicate or SQL expression."
 icon: pen
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Rows are updated by predicate in the embedded library and on a deployment.
 ---
 
 These examples use the table set up in
@@ -18,7 +23,7 @@ import {
 } from '/snippets/tables.mdx';
 
 <Note>
-In SQL this is [`UPDATE`](/sql/dml/update).
+In SQL on a deployment, this is [`UPDATE`](/sql/dml/update).
 </Note>
 
 ## Update rows {#update-rows}
@@ -79,4 +84,4 @@ Expected table contents:
 See the [SQL queries](/sql#connecting) page for more information on the supported SQL syntax.
 </Note>
 
-When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider triggering an index rebuild afterwards.
+When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows in the embedded library, consider triggering an index rebuild afterwards; a deployment adds updated rows back to its indexes in the background once enough have accumulated.

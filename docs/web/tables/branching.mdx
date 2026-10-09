@@ -3,6 +3,13 @@ title: "Branches"
 sidebarTitle: "Branch"
 description: "Fork isolated, writable lines of table history in LanceDB. Run experiments, backfills, and index rebuilds without disturbing production reads on main."
 icon: "code-branch"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Branches work in the embedded library and on a deployment. Comparing a
+    branch with `main` and promoting its new columns onto `main` is available
+    only on a deployment.
 ---
 import {
     PyConnect,
@@ -91,7 +98,8 @@ embedded library.
 
 <Badge color="red">Enterprise</Badge>
 
-Branching on LanceDB Enterprise works the same way as on OSS, but you connect to your
+Branching on LanceDB Enterprise works the same way as on OSS, apart from the differences
+noted below, but you connect to your
 Enterprise deployment with a `db://` URI, an API key, and your
 region. Once you have a connection, open a table and use the same branch calls in
 every example that follows.
@@ -179,6 +187,8 @@ table. Both routes give you a writable handle tracking the branch's latest state
 ### Delete a branch {#delete-a-branch}
 
 Deleting a branch removes it and its branch-local history; `main` is untouched.
+A deployment refuses to delete a branch whose columns have been promoted onto
+`main`, because `main` still depends on it.
 Before deleting a branch, make sure you've retained any results you need — see
 [Apply branch-tested changes to `main`](#apply-branch-tested-changes-to-main)
 below.
@@ -243,6 +253,10 @@ your key column — `id` in this example. Here, `candidate` is the branch handle
     {RsBranchUpsertToMain}
     </CodeBlock>
 </CodeGroup>
+
+Against a deployment, the synchronous Python table raises for `to_arrow()`; read
+the branch's rows with a query instead -- see
+[Avoid materializing the whole table](/search#avoid-materializing-the-whole-table).
 
 This operation transfers only the inserted or updated rows in its input. It does
 not transfer branch history, schema changes, indexes, or branch-local deletions,
@@ -363,9 +377,10 @@ deployment workflow. Because the indexes live on the branch, queries against
 `main` never see a half-built index and are never slowed down by the branch's
 build.
 
-This pattern is especially valuable on <Badge color="red">Enterprise</Badge>
-deployments, where `main` is typically serving production traffic while you tune
-an index configuration on the side.
+This pattern is especially valuable on Enterprise deployments, where `main` is
+typically serving production traffic while you tune an index configuration on
+the side. A deployment builds the branch's indexes in the background, so wait
+for them before measuring.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

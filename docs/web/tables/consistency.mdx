@@ -3,6 +3,13 @@ title: Consistency
 sidebarTitle: "Consistency"
 description: Learn about consistency settings and versioning in LanceDB tables.
 icon: "water"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Read freshness can be set per connection in the embedded library and on a
+    deployment. On a deployment, the default freshness comes from its
+    configuration, and the connection setting can only make reads fresher.
 ---
 import {
     PyConsistencyStrong as ConsistencyStrong,
@@ -40,14 +47,14 @@ write operations are always consistent.
 For remote tables (`db://` connections), `read_consistency_interval` is also
 respected by the client. The interval is sent to the server as a freshness bound on each read:
 
-- **Unset (default)**: no freshness header is sent; reads use the server's cached view of the table.
+- **Unset (default)**: no freshness bound is sent; reads are as fresh as the deployment's own setting, described below.
 - **Zero seconds**: every read asks the server for the latest committed version.
 - **Non-zero interval**: reads accept data at least as fresh as `now - interval`.
 
 In addition, after any write or after a `checkout_latest` / `restore` on a table handle, subsequent
 reads on that same handle carry a freshness floor so you read your own writes without extra
 configuration. The floor is the later of the configured interval and the moment of the last
-write or refresh, and it is shared across handles to the same table on the same connection.
+write or refresh. Each opened table handle keeps its own floor.
 
 Each remote table handle also tracks the highest dataset version it has observed in a read
 response and sends it back with every subsequent read, so successive reads on the same handle
@@ -59,7 +66,8 @@ of refreshing against storage, which raises per-read latency and cost.
 
 In <Badge color="red">Enterprise</Badge> deployments, the server-side default freshness is still
 controlled by the cluster-level `weak_read_consistency_interval_seconds` parameter; the client setting
-tightens that bound on a per-connection basis.
+tightens that bound on a per-connection basis. When the parameter is unset, every read is strongly
+consistent; deployments installed from the Helm chart default it to 600 seconds.
 
 <Tip>
 30-60 seconds is a reasonable starting point for
@@ -112,7 +120,7 @@ For eventual consistency, use a non-zero interval:
 </CodeGroup>
 
 
-With the default unset interval, tables do not auto-refresh from other writers.
+In the embedded library, with the default unset interval, tables do not auto-refresh from other writers.
 To manually check for updates, use `checkout_latest` / `checkoutLatest`:
 
 <CodeGroup>
