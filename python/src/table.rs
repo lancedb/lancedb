@@ -1106,7 +1106,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1137,7 +1139,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);

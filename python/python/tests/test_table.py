@@ -1585,6 +1585,25 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.cancel()
 
 
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
+def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("invalid_timeout", [{"id": 1}])
+    with pytest.raises(TypeError):
+        getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    assert table.list_indices() == []
+
+
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", [None, timedelta(seconds=1)])
+def test_create_index_valid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("valid_timeout", [{"id": 1}])
+    result = getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    if result is not None:
+        result.wait()
+    assert len(table.list_indices()) == 1
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
