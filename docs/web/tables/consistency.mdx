@@ -51,15 +51,18 @@ respected by the client. The interval is sent to the server as a freshness bound
 - **Zero seconds**: every read asks the server for the latest committed version.
 - **Non-zero interval**: reads accept data at least as fresh as `now - interval`.
 
-In addition, after any write or after a `checkout_latest` / `restore` on a table handle, subsequent
-reads on that same handle carry a freshness floor so you read your own writes without extra
-configuration. The floor is the later of the configured interval and the moment of the last
-write or refresh. Each opened table handle keeps its own floor.
+In addition, `checkout_latest` and `restore` set a time floor on that table handle: later
+reads ask for data at least as fresh as that moment, or as the configured interval allows,
+whichever is later. Each opened table handle keeps its own floor.
 
-Each remote table handle also tracks the highest dataset version it has observed in a read
-response and sends it back with every subsequent read, so successive reads on the same handle
+Each remote table handle also tracks the highest dataset version a response from the server has
+reported and sends it back with every subsequent request, so successive reads on the same handle
 never observe an older version even when a load balancer routes them to query nodes with
 differently-cached views. `checkout_latest` resets this watermark.
+
+A write also records its new version on the handle, but deployments do not use that record to
+choose what a read sees, so the client alone does not guarantee that the next read reflects your
+own write. To be sure it does, set the interval to zero, or call `checkout_latest` after writing.
 
 Stronger consistency is not free — the smaller the interval, the more often each read pays the cost
 of refreshing against storage, which raises per-read latency and cost.

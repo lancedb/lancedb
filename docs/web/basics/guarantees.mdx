@@ -58,8 +58,10 @@ Set `read_consistency_interval` when several processes write the same table and
 readers must observe those writes. The cost is a metadata check on that
 interval. See [Consistency](/tables/consistency).
 
-**Your own writes are always visible to you.** The interval governs other
-writers, not yourself.
+**In the embedded library, your own writes are always visible to you** on the
+table handle that made them. The interval governs other writers, not yourself.
+On a deployment, see [Consistency](/tables/consistency) for how to make sure a
+read reflects your own write.
 
 ## Durability and history {#durability}
 
