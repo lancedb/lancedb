@@ -14,8 +14,8 @@ use arrow_array::{
     LargeStringArray, ListArray, MapArray, OffsetSizeTrait, RecordBatch, StringArray, StructArray,
 };
 use arrow_schema::{ArrowError, DataType, Field as ArrowField, Fields, Schema};
-use jsonb::OwnedJsonb;
-use jsonb::jsonpath::{JsonPath, Selector};
+use lance_jsonb::OwnedJsonb;
+use lance_jsonb::jsonpath::{JsonPath, Selector};
 
 use crate::ARROW_EXT_NAME_KEY;
 
@@ -336,19 +336,19 @@ impl TryFrom<ArrayRef> for JsonArray {
 
 /// Encode JSON string to JSONB format
 pub fn encode_json(json_str: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-    let value = jsonb::parse_value(json_str.as_bytes())?;
+    let value = lance_jsonb::parse_value(json_str.as_bytes())?;
     Ok(value.to_vec())
 }
 
 /// Decode JSONB bytes to JSON string
 pub fn decode_json(jsonb_bytes: &[u8]) -> String {
-    let raw_jsonb = jsonb::RawJsonb::new(jsonb_bytes);
+    let raw_jsonb = lance_jsonb::RawJsonb::new(jsonb_bytes);
     raw_jsonb.to_string()
 }
 
 /// Parse a JSONPath expression.
 pub fn parse_json_path(path: &str) -> Result<JsonPath<'_>, ArrowError> {
-    jsonb::jsonpath::parse_json_path(path.as_bytes())
+    lance_jsonb::jsonpath::parse_json_path(path.as_bytes())
         .map_err(|e| ArrowError::InvalidArgumentError(format!("Invalid JSONPath '{path}': {e}")))
 }
 
@@ -360,7 +360,7 @@ pub fn select_json_path(
     jsonb_bytes: &[u8],
     path: &JsonPath<'_>,
 ) -> Result<Option<OwnedJsonb>, ArrowError> {
-    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+    Selector::new(lance_jsonb::RawJsonb::new(jsonb_bytes))
         .select_value(path)
         .map_err(|e| {
             ArrowError::InvalidArgumentError(format!("Failed to select JSONPath {path}: {e}"))
@@ -369,7 +369,7 @@ pub fn select_json_path(
 
 /// Whether `path` matches any value in a JSONB value.
 pub fn json_path_exists(jsonb_bytes: &[u8], path: &JsonPath<'_>) -> Result<bool, ArrowError> {
-    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+    Selector::new(lance_jsonb::RawJsonb::new(jsonb_bytes))
         .exists(path)
         .map_err(|e| {
             ArrowError::InvalidArgumentError(format!("Failed to match JSONPath {path}: {e}"))
@@ -381,7 +381,7 @@ pub fn select_json_path_values(
     jsonb_bytes: &[u8],
     path: &JsonPath<'_>,
 ) -> Result<Vec<OwnedJsonb>, ArrowError> {
-    Selector::new(jsonb::RawJsonb::new(jsonb_bytes))
+    Selector::new(lance_jsonb::RawJsonb::new(jsonb_bytes))
         .select_values(path)
         .map_err(|e| {
             ArrowError::InvalidArgumentError(format!("Failed to select JSONPath {path}: {e}"))

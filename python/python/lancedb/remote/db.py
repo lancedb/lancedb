@@ -41,7 +41,7 @@ from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
-from ..sql import QueryDescription
+from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
@@ -379,7 +379,7 @@ class RemoteDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+        """List a page of tables in this database.
 
         Parameters
         ----------
@@ -390,7 +390,8 @@ class RemoteDBConnection(DBConnection):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
@@ -409,7 +410,7 @@ class RemoteDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -425,8 +426,9 @@ class RemoteDBConnection(DBConnection):
             Empty list represents root namespace.
         page_token: str
             The last token to start the new page.
-        limit: int, default 10
-            The maximum number of tables to return for each page.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -486,12 +488,12 @@ class RemoteDBConnection(DBConnection):
             namespace_path = []
         if storage_options is not None:
             logging.info(
-                "storage_options is ignored in LanceDb Cloud"
+                "storage_options is ignored for remote tables"
                 " (storage is managed; set storage_options on connect() instead)"
             )
         if index_cache_size is not None:
             logging.info(
-                "index_cache_size is ignored in LanceDb Cloud"
+                "index_cache_size is ignored for remote tables"
                 " (there is no local cache to configure)"
             )
 
@@ -1090,18 +1092,22 @@ class RemoteDBConnection(DBConnection):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
         """Start executing SQL through this remote connection.
 
         Unqualified tables use this connection's database and the
         ``["public"]`` namespace by default. Fully qualified table names may
         reference other databases available to the same deployment.
+        ``parameters`` binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
         """
         return SqlQuery(
             LOOP.run(
                 self._conn.execute_query_async(
                     query,
                     default_namespace_path=default_namespace_path,
+                    parameters=parameters,
                 )
             )
         )

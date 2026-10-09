@@ -53,7 +53,7 @@ from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
-from .sql import QueryDescription
+from .sql import QueryDescription, QueryParameters, to_parameter_batch
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
@@ -317,7 +317,7 @@ class DBConnection(EnforceOverrides):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+        """List a page of tables in this database.
 
         Parameters
         ----------
@@ -328,7 +328,8 @@ class DBConnection(EnforceOverrides):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
@@ -343,7 +344,7 @@ class DBConnection(EnforceOverrides):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -357,8 +358,9 @@ class DBConnection(EnforceOverrides):
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
-        limit: int, default 10
-            The size of the page to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -1178,6 +1180,7 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1188,6 +1191,7 @@ class DBConnection(EnforceOverrides):
         return self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         ).reader()
 
     def execute_query_async(
@@ -1195,8 +1199,31 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
+
+        ``parameters`` binds values to the statement's ``$1`` / ``$name``
+        placeholders. They travel as Arrow rather than as SQL text, so a
+        float keeps its exact value and type and a vector stays a compact
+        fixed-size list. A list binds by position, a dict binds by name, and
+        a one-row ``pyarrow.RecordBatch`` or ``pyarrow.Table`` binds both
+        ways. A 1-D numpy or pyarrow array becomes a fixed-size list of its
+        element type, the shape of a vector column:
+
+        .. code-block:: python
+
+            db.execute_query(
+                "SELECT id FROM docs ORDER BY distance(vector, $1) LIMIT $2",
+                parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
+            )
+
+        Parameters are supported in queries, not in DDL or DML. A
+        parameterized query runs on the call that returns its rows:
+        cancelling it, or dropping its handle before reading, stops it on the
+        server. Its status follows that stream as well: ``describe()``
+        reports ``running`` until the reader has received every row, so open
+        ``reader()`` directly rather than waiting for ``finished``.
 
         Local connections do not support SQL.
         """
@@ -1465,7 +1492,7 @@ class LanceDBConnection(DBConnection):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+        """List a page of tables in this database.
 
         Parameters
         ----------
@@ -1476,7 +1503,8 @@ class LanceDBConnection(DBConnection):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
@@ -1495,7 +1523,7 @@ class LanceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -1510,8 +1538,9 @@ class LanceDBConnection(DBConnection):
             The namespace to list tables in.
         page_token: str, optional
             The token to use for pagination.
-        limit: int, default 10
-            The maximum number of tables to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -2341,7 +2370,7 @@ class AsyncConnection(object):
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+        """List a page of tables in this database.
 
         Parameters
         ----------
@@ -2352,7 +2381,8 @@ class AsyncConnection(object):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
@@ -2389,8 +2419,9 @@ class AsyncConnection(object):
 
             This can be combined with limit to implement pagination by setting this to
             the last table name from the previous page.
-        limit: int, default 10
-            The number of results to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -3267,6 +3298,7 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -3277,6 +3309,7 @@ class AsyncConnection(object):
         submitted = await self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
         return await submitted.reader()
 
@@ -3285,17 +3318,21 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
         The database from ``connect_async`` is used for unqualified database
-        references. The namespace defaults to ``["public"]``. Local
-        connections raise ``NotImplementedError``.
+        references. The namespace defaults to ``["public"]``. ``parameters``
+        binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        Local connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
             await self._inner.execute_query_async(
                 query,
                 default_namespace_path=default_namespace_path,
+                parameters=to_parameter_batch(parameters),
             )
         )
 

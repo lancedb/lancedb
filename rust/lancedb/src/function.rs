@@ -453,7 +453,8 @@ pub struct FunctionVersion {
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
-    created_at: String,
+    /// When this version was created, in milliseconds since the epoch.
+    created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
 }
@@ -507,8 +508,9 @@ impl FunctionVersion {
         &self.secret_bindings
     }
 
-    pub fn created_at(&self) -> &str {
-        &self.created_at
+    /// When this version was created, in milliseconds since the epoch.
+    pub fn created_at_millis(&self) -> i64 {
+        self.created_at_millis
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "lance-arrow"
-version = "14.0.0-beta.7"
+version = "14.0.0-beta.10"
 edition = "2024"
 authors = ["Lance Devs <dev@lance.org>"]
 license = "Apache-2.0"
@@ -25,7 +25,7 @@ bytemuck = { version = "1", default-features = false, features = ["extern_crate_
 bytes.workspace = true
 futures.workspace = true
 half = { workspace = true, features = ["std", "bytemuck"] }
-jsonb = { version = "0.5.3", default-features = false, features = ["databend"] }
+lance-jsonb.workspace = true
 num-traits.workspace = true
 rand = { workspace = true, features = ["small_rng"] }
 

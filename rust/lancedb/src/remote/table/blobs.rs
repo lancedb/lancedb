@@ -393,7 +393,7 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         if !self.server_version.support_blobs() {
             return Err(Error::NotSupported {
-                message: "fetch_blobs is not supported on this LanceDB Cloud server".into(),
+                message: "fetch_blobs is not supported by this LanceDB server.".into(),
             });
         }
         let mut read_snapshot = self.snapshot_read_state().await;
@@ -716,7 +716,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Ok(())
         } else {
             Err(Error::NotSupported {
-                message: "fetch_blob_files requires LanceDB Cloud server 0.5.0 or newer".into(),
+                message: "fetch_blob_files requires LanceDB server 0.5.0 or newer.".into(),
             })
         }
     }

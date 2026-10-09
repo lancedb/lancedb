@@ -10,7 +10,7 @@ dependencies = [
     "pyarrow>=16",
     "pydantic>=2.7.4,<3",
     "tqdm>=4.27.0",
-    "lance-namespace>=0.3.2"
+    "lance-namespace>=0.13.0"
 ]
 description = "lancedb"
 authors = [{ name = "LanceDB Devs", email = "dev@lancedb.com" }]
@@ -63,7 +63,7 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow<25",
     "pyarrow-stubs>=16.0",
-    "pylance==14.0.0b6",
+    "pylance==14.0.0b10",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
