@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { readdirSync } from "fs";
+import { mkdirSync, readdirSync } from "fs";
+import { join } from "path";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
 import {
@@ -178,6 +179,32 @@ describe("given a connection", () => {
     } while (pageToken);
 
     expect(seen).toEqual(created);
+  });
+
+  it("should list all names and use a default page size of 100", async () => {
+    const names = Array.from(
+      { length: 130 },
+      (_, i) => `t${i.toString().padStart(3, "0")}`,
+    );
+    for (const name of names) {
+      mkdirSync(join(tmpDir.name, `${name}.lance`));
+    }
+    await expect(db.tableNames()).resolves.toEqual(names);
+    await expect(db.tableNames({ limit: 0 })).resolves.toEqual([]);
+    const first = await db.listTables();
+    expect(first.tables).toEqual(names.slice(0, 100));
+    expect(first.pageToken).toBeDefined();
+    const second = await db.listTables({ pageToken: first.pageToken });
+    expect(second.tables).toEqual(names.slice(100));
+    expect(second.pageToken).toBeUndefined();
+    await expect(db.listTables({ limit: 200 })).resolves.toEqual({
+      tables: names,
+      pageToken: undefined,
+    });
+    await expect(db.listTables({ limit: 0 })).resolves.toEqual({
+      tables: [],
+      pageToken: undefined,
+    });
   });
 
   it("should list tables in a namespace", async () => {

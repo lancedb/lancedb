@@ -1,0 +1,63 @@
+---
+title: Watsonx Reranker
+sidebarTitle: "IBM watsonx.ai"
+description: Rerank LanceDB search results with the IBM watsonx.ai text rerank API. Supports vector, FTS, and hybrid search with configurable models, projects, and spaces.
+
+---
+
+import { PyRerankingWatsonxUsage } from '/snippets/integrations.mdx';
+
+# Watsonx Reranker
+
+This reranker uses the [IBM watsonx.ai](https://cloud.ibm.com/docs/apis/watsonx-ai#text-rerank) text rerank API to reorder search results. Pass `WatsonxReranker()` to the `rerank()` method on a query. Credentials come from the `WATSONX_API_KEY` and `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) environment variables, or can be passed explicitly as arguments.
+
+> **Note:** Supported query types – Hybrid, Vector, and FTS.
+
+```shell
+pip install ibm-watsonx-ai
+```
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingWatsonxUsage}
+  </CodeBlock>
+</CodeGroup>
+
+## Accepted Arguments {#accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model_name` | `str` | `"cross-encoder/ms-marco-minilm-l-12-v2"` | The rerank model ID. See [supported rerank models](https://dataplatform.cloud.ibm.com/docs/content/wsj/analyze-data/fm-models-embed.html?context=wx#rerank). |
+| `column` | `str` | `"text"` | The name of the table column to use as document input. |
+| `top_n` | `int` | `None` | The number of results to return. If `None`, all results are returned. |
+| `return_score` | `str` | `"relevance"` | Options are `"relevance"` or `"all"`. Controls which score columns are kept on the result. |
+| `api_key` | `str` | `None` | IBM Cloud API key. Falls back to the `WATSONX_API_KEY` environment variable. |
+| `project_id` | `str` | `None` | watsonx.ai project ID. Falls back to `WATSONX_PROJECT_ID`. Mutually exclusive with `space_id`. |
+| `space_id` | `str` | `None` | watsonx.ai deployment space ID. Falls back to `WATSONX_SPACE_ID`. Mutually exclusive with `project_id`. |
+| `url` | `str` | `"https://us-south.ml.cloud.ibm.com"` | watsonx.ai service URL. |
+| `truncate_input_tokens` | `int` | `None` | Truncate each document to this many tokens before scoring. |
+
+<Info>
+You must supply exactly one of `project_id` or `space_id` (either as an argument or via its environment variable). Setting both, or neither, raises a `ValueError`.
+</Info>
+
+## Supported scores for each query type {#supported-scores-for-each-query-type}
+
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+### Hybrid Search {#hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ❌ Not Supported | Results have vector(`_distance`) and FTS(`score`) along with Hybrid Search score(`_relevance_score`). |
+
+### Vector Search {#vector-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have vector(`_distance`) along with Hybrid Search score(`_relevance_score`). |
+
+### FTS Search {#fts-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Results only have the `_relevance_score` column. |
+| `all` | ✅ Supported | Results have FTS(`score`) along with Hybrid Search score(`_relevance_score`). |

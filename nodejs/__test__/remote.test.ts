@@ -28,6 +28,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
 class CustomProvider extends HeaderProvider {
@@ -93,6 +94,58 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("reports unsupported operations with backend-neutral errors", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/table/test/describe/");
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            version: 1,
+            schema: {
+              fields: [
+                { name: "id", type: { type: "int64" }, nullable: false },
+                {
+                  name: "vector",
+                  type: {
+                    type: "fixed_size_list",
+                    fields: [
+                      { name: "item", type: { type: "float" }, nullable: true },
+                    ],
+                    length: 2,
+                  },
+                  nullable: false,
+                },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const table = (await db.openTable("test")) as LocalTable;
+        const cases: [() => Promise<unknown>, string][] = [
+          [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
+          [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
+          [
+            () => table.setUnenforcedPrimaryKey("id"),
+            "set_unenforced_primary_key",
+          ],
+          [() => table.optimize(), "optimize"],
+          [
+            () => table.createIndex("vector", { config: Index.hnswPq() }),
+            "IVF_HNSW_PQ",
+          ],
+        ];
+        for (const [run, operation] of cases) {
+          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          if (operation === "IVF_HNSW_PQ") {
+            message += " Please use IVF_HNSW_SQ instead.";
+          }
+          await expect(run()).rejects.toThrow(new Error(message));
+        }
+      },
+    );
+  });
+
   it("rejects nprobes(0) before sending a query", async () => {
     const requests: string[] = [];
     await withMockDatabase(
@@ -258,7 +311,9 @@ describe("remote connection", () => {
           .end(JSON.stringify({ views: ["daily_sales"] }));
       },
       async (db) => {
-        expect(await db.listMaterializedViews()).toEqual(["daily_sales"]);
+        expect(await collect(db.listMaterializedViews())).toEqual([
+          "daily_sales",
+        ]);
       },
     );
   });
@@ -308,7 +363,7 @@ describe("remote connection", () => {
           .end(JSON.stringify({ views: ["adults"] }));
       },
       async (db) => {
-        expect(await db.listViews()).toEqual(["adults"]);
+        expect(await collect(db.listViews())).toEqual(["adults"]);
       },
     );
 
@@ -1377,7 +1432,7 @@ describe("remote connection jobs surface", () => {
         });
       },
       async (db) => {
-        const jobs = await db.listJobs();
+        const jobs = await collect(db.listJobs());
         expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
         expect(jobs[0].state).toEqual("running");
         expect(jobs[1].state).toEqual("finished");
@@ -1449,4 +1504,171 @@ describe("remote connection jobs surface", () => {
       },
     );
   });
+
+  it("leaves numDeletedRows absent when the server omits it", async () => {
+    // A server that predates num_deleted_rows says nothing about deleted rows
+    const statsReply =
+      '{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":' +
+      '{"num_fragments":1,"num_small_fragments":0,' +
+      '"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}';
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        const body = path.endsWith("/describe/")
+          ? JSON.stringify({ name: "t", version: 1, schema: { fields: [] } })
+          : statsReply;
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        const stats = await (await db.openTable("t")).stats();
+        expect("numDeletedRows" in stats).toBe(false);
+        expect(stats.numDeletedRows).toBeUndefined();
+      },
+    );
+  });
+});
+
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of items) result.push(item);
+  return result;
+}
+
+describe("lazy resource listings", () => {
+  for (const kind of ["views", "materializedViews", "jobs"] as const) {
+    const listing = (
+      db: Connection,
+      options: { pageToken?: string; pageLimit?: number } = {},
+    ) => {
+      if (kind === "jobs") return db.listJobs(options);
+      if (kind === "views") return db.listViews(["team"], options);
+      return db.listMaterializedViews(options);
+    };
+    const page = (names: string[], token?: string) => {
+      const items =
+        kind === "jobs"
+          ? names.map((name) => ({
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              job_id: name,
+              table: "t",
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              job_type: "create_index",
+              state: "in_progress",
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              created_at_millis: 1,
+            }))
+          : names;
+      return {
+        [kind === "jobs" ? "jobs" : "views"]: items,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        page_token: token,
+      };
+    };
+
+    it(`${kind} fetches lazily, skips empty pages, and resumes`, async () => {
+      const requests: { url: string; body: Record<string, unknown> }[] = [];
+      const responses = [
+        page(["a", "b"], "empty"),
+        page([], "last"),
+        page(["c", "d"], ""),
+      ];
+      await withMockDatabase(
+        async (req, res) => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          const body = Buffer.concat(chunks).toString();
+          requests.push({
+            url: req.url ?? "",
+            body: body ? JSON.parse(body) : {},
+          });
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify(responses.shift()));
+        },
+        async (db) => {
+          const items = listing(db, { pageToken: "start/token", pageLimit: 2 });
+          expect(requests).toHaveLength(0);
+          expect(items.pageToken()).toBe("start/token");
+          expect(items.numPageResults()).toBe(0);
+          expect((await items.next()).done).toBe(false);
+          expect(items.numPageResults()).toBe(1);
+          expect(items.pageToken()).toBe("empty");
+          await items.next();
+          expect(requests).toHaveLength(1);
+          const resumed = listing(db, {
+            pageToken: items.pageToken(),
+            pageLimit: 2,
+          });
+          await resumed.next();
+          expect(resumed.numPageResults()).toBe(1);
+          expect(resumed.pageToken()).toBeUndefined();
+          expect(requests).toHaveLength(3);
+          await resumed.next();
+          expect((await resumed.next()).done).toBe(true);
+          expect((await resumed.next()).done).toBe(true);
+          for (const [i, request] of requests.entries()) {
+            const token = ["start/token", "empty", "last"][i];
+            const url = new URL(request.url, "http://localhost");
+            if (kind === "jobs") {
+              expect(url.pathname).toBe("/v1/jobs/list");
+              expect(request.body).toEqual({
+                // biome-ignore lint/style/useNamingConvention: server wire format
+                page_token: token,
+                limit: 2,
+              });
+            } else {
+              expect(url.pathname).toBe(
+                kind === "views"
+                  ? "/v1/namespace/team/view/list"
+                  : "/v1/namespace/$/materialized_view/list",
+              );
+              expect(url.searchParams.get("page_token")).toBe(token);
+              expect(url.searchParams.get("limit")).toBe("2");
+            }
+          }
+        },
+      );
+    });
+
+    it(`${kind} retains failed tokens and serializes concurrent advances`, async () => {
+      let requests = 0;
+      await withMockDatabase(
+        (_req, res) => {
+          requests += 1;
+          res
+            .writeHead(requests === 1 ? 401 : 200, {
+              "content-type": "application/json",
+            })
+            .end(JSON.stringify(requests === 1 ? {} : page(["a", "b"])));
+        },
+        async (db) => {
+          const failed = listing(db, { pageToken: "retry" });
+          await expect(failed.next()).rejects.toThrow();
+          expect(failed.pageToken()).toBe("retry");
+          expect((await failed.next()).done).toBe(true);
+          expect(requests).toBe(1);
+          const resumed = listing(db, { pageToken: failed.pageToken() });
+          const results = await Promise.all([
+            resumed.next(),
+            resumed.next(),
+            resumed.next(),
+          ]);
+          expect(results.filter((result) => result.done)).toHaveLength(1);
+          expect(requests).toBe(2);
+          for (const limit of [
+            0,
+            -1,
+            1.5,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            2147483648,
+          ]) {
+            expect(() => listing(db, { pageLimit: limit })).toThrow("limit");
+          }
+          expect(requests).toBe(2);
+        },
+      );
+    });
+  }
 });

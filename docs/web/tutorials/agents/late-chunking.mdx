@@ -1,0 +1,23 @@
+---
+title: "Late chunking"
+sidebarTitle: "Late Chunking"
+description: "Retrieve whole documents first, chunk them afterwards."
+---
+
+Inverts the usual order: documents are retrieved first and chunked just before
+synthesis. Chunking late preserves context that pre-chunking discards, since a
+chunk is cut with knowledge of the query it is answering.
+
+<Note>
+This example is a runnable notebook in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository rather than a page here.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Advanced_RAG_Late_Chunking/Late_Chunking_(Chunked_Pooling).ipynb">
+    Run it end to end in the browser.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/lancedb/vectordb-recipes/tree/main/examples/Advanced_RAG_Late_Chunking">
+    Read the source.
+  </Card>
+</CardGroup>

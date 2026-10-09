@@ -16,15 +16,11 @@ describe("materialized views", () => {
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
     db = await connect(tmpDir.name);
-    await db.createTable(
-      "people",
-      [
-        { name: "ada", age: 36 },
-        { name: "kid", age: 7 },
-        { name: "grace", age: 85 },
-      ],
-      { storageOptions: { newTableEnableStableRowIds: "true" } },
-    );
+    await db.createTable("people", [
+      { name: "ada", age: 36 },
+      { name: "kid", age: 7 },
+      { name: "grace", age: 85 },
+    ]);
   });
   afterEach(() => tmpDir.removeCallback());
 
@@ -52,19 +48,9 @@ describe("materialized views", () => {
       "SELECT * FROM people",
     );
 
-    for (const [format, fn] of [
-      [3, "vector_duplicate_pairs"],
-      [4, "vector_dedup"],
-    ]) {
-      const native = `SELECT * FROM ${fn}('images', 3, 'phash', 4)`;
-      expect(read(JSON.stringify({ format, query: native })).query).toBe(
-        native,
-      );
-    }
-
     // A newer writer's layout is reported, never guessed at.
     for (const newer of [
-      `{"format":5,"query":${JSON.stringify(query)}}`,
+      `{"format":3,"query":${JSON.stringify(query)}}`,
       '{"kind":"select_v3","source_table":"people"}',
     ]) {
       expect(() => read(newer)).toThrow(/cannot refresh/);
@@ -106,7 +92,7 @@ describe("materialized views", () => {
     );
   });
 
-  it("refreshes incrementally after an append", async () => {
+  it("fully refreshes after an append", async () => {
     const view = await db.createMaterializedView("copy", "people", {
       withNoData: true,
     });
@@ -115,18 +101,18 @@ describe("materialized views", () => {
     const people = await db.openTable("people");
     await people.add([{ name: "alan", age: 41 }]);
     const result = await view.refresh();
-    expect(result.mode).toBe("incremental");
-    expect(Number(result.rowsWritten)).toBe(1);
+    expect(result.mode).toBe("rebuild");
+    expect(Number(result.rowsWritten)).toBe(4);
     expect(await view.table().countRows()).toBe(4);
 
-    expect((await view.refresh()).mode).toBe("no_op");
+    expect((await view.refresh()).mode).toBe("rebuild");
   });
 
   it("lists views and rejects non-views", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
-    expect(await db.listMaterializedViews()).toEqual(["adults"]);
+    expect(await collect(db.listMaterializedViews())).toEqual(["adults"]);
     await expect(db.openMaterializedView("people")).rejects.toThrow(
       "not a materialized view",
     );
@@ -135,7 +121,7 @@ describe("materialized views", () => {
     );
 
     await db.dropMaterializedView("adults");
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
   it("returns a job when dropping a view asynchronously", async () => {
@@ -144,7 +130,7 @@ describe("materialized views", () => {
     const job = await db.dropMaterializedViewAsync("adults");
     expect(job.id).toBeNull();
     await job.wait();
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
   it("rejects an invalid expression at create time", async () => {
@@ -161,7 +147,7 @@ describe("materialized views", () => {
         db.createMaterializedView("bad", "people", { limit }),
       ).rejects.toThrow("non-negative integer");
     }
-    expect(await db.listMaterializedViews()).toEqual([]);
+    expect(await collect(db.listMaterializedViews())).toEqual([]);
 
     const view = await db.createMaterializedView("copy", "people");
     for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
@@ -172,9 +158,7 @@ describe("materialized views", () => {
   });
 
   it("quotes bare select names", async () => {
-    await db.createTable("odd_names", [{ "order item": "widget" }], {
-      storageOptions: { newTableEnableStableRowIds: "true" },
-    });
+    await db.createTable("odd_names", [{ "order item": "widget" }]);
     const view = await db.createMaterializedView("quoted", "odd_names", {
       select: ["order item"],
       withNoData: true,
@@ -183,10 +167,15 @@ describe("materialized views", () => {
     expect(Number(result.rowsWritten)).toBe(1);
   });
 
-  it("requires stable row ids on the source", async () => {
+  it("does not require stable row ids on the source", async () => {
     await db.createTable("plain", [{ x: 1 }]);
-    await expect(db.createMaterializedView("v", "plain")).rejects.toThrow(
-      "stable row ids",
-    );
+    const view = await db.createMaterializedView("v", "plain");
+    expect(await view.table().countRows()).toBe(1);
   });
 });
+
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of items) result.push(item);
+  return result;
+}

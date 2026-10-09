@@ -12,6 +12,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -39,8 +40,8 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
-from .util import _validate_query_vector, flatten_columns, get_uri_scheme
+from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
+from .util import _validate_query_vector, flatten_columns
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -109,7 +110,7 @@ def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
 
 def _is_remote_query_table(table: Any) -> bool:
     async_table = getattr(table, "_table", table)
-    return get_uri_scheme(async_table._inner.database().uri) == "db"
+    return not async_table._inner._is_native()
 
 
 def _query_is_plain_scan(query: Query) -> bool:
@@ -311,6 +312,28 @@ def _finish_plain_scan_pandas(
     if strip_auto_row_id and "_rowid" in df.columns:
         return df.drop(columns=["_rowid"])
     return df
+
+
+def _finish_remote_pandas(
+    tbl: pa.Table,
+    *,
+    blob_mode: BlobMode,
+    blob_paths: Iterable[str],
+    flatten: Optional[Union[int, bool]],
+    **kwargs,
+) -> pd.DataFrame:
+    # A live remote table can be replaced between query and blob fetch.
+    # Row ids and version numbers do not identify the producing table.
+    if not blob_column_paths(tbl.schema):
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    if blob_mode == "descriptions":
+        tbl = strip_auto_row_ids(tbl, blob_paths)
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    raise NotImplementedError(
+        f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+        "blob columns without a stable table snapshot; "
+        "use blob_mode='descriptions'"
+    )
 
 
 def _finish_arrow_pandas(
@@ -533,7 +556,7 @@ class MatchQuery(FullTextQuery):
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
-    fuzziness : int, optional
+    fuzziness : int or None, default 0
         The maximum edit distance for each term in the match query.
         Defaults to 0 (exact match).
         If None, fuzziness is applied automatically by the rules:
@@ -560,7 +583,7 @@ class MatchQuery(FullTextQuery):
     query: str
     column: str
     boost: float = pydantic.Field(1.0, kw_only=True)
-    fuzziness: int = pydantic.Field(0, kw_only=True)
+    fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
@@ -1116,10 +1139,12 @@ class LanceQueryBuilder(ABC):
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. For blob v2 columns, queries
+            Controls how blob columns are returned. For local blob v2 columns, queries
             that cannot use a native Lance scanner return descriptors in both
             ``"lazy"`` and ``"descriptions"`` modes. Use ``"bytes"`` to fetch
-            full payloads for those queries.
+            full payloads for those queries. Remote queries with blob columns
+            support only ``"descriptions"`` until a stable table snapshot can
+            bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -1139,6 +1164,14 @@ class LanceQueryBuilder(ABC):
 
         tbl = self.to_arrow(timeout=timeout)
         blob_sources = blob_v2_projection_sources(self._table.schema, self._columns)
+        if _is_remote_query_table(self._table):
+            return _finish_remote_pandas(
+                tbl,
+                blob_mode=blob_mode,
+                blob_paths=blob_sources,
+                flatten=flatten,
+                **kwargs,
+            )
         return _finish_arrow_pandas(
             tbl,
             blob_mode=blob_mode,
@@ -3129,18 +3162,23 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. For blob v2 columns, queries
+            Controls how blob columns are returned. For local blob v2 columns, queries
             that cannot use a native Lance scanner return descriptors in both
             ``"lazy"`` and ``"descriptions"`` modes. Use ``"bytes"`` to fetch
-            full payloads for those queries.
+            full payloads for those queries. Remote queries with blob columns
+            support only ``"descriptions"`` until a stable table snapshot can
+            bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
-        if hasattr(self._inner, "output_schema") and (
-            self._table is None or not _is_remote_query_table(self._table)
-        ):
+        if self._table is not None and not self._table._inner._is_native():
+            return await self._remote_to_pandas(
+                flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
+            )
+
+        if hasattr(self._inner, "output_schema"):
             schema = await self.output_schema()
             if (
                 schema_has_blob_field(schema)
@@ -3168,6 +3206,23 @@ class AsyncQueryBase(object):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
+            flatten=flatten,
+            **kwargs,
+        )
+
+    async def _remote_to_pandas(
+        self,
+        *,
+        flatten: Optional[Union[int, bool]],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        **kwargs,
+    ) -> "pd.DataFrame":
+        tbl = await self.to_arrow(timeout=timeout)
+        return _finish_remote_pandas(
+            tbl,
+            blob_mode=blob_mode,
+            blob_paths=self._blob_paths,
             flatten=flatten,
             **kwargs,
         )
@@ -4459,8 +4514,9 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. For blob v2 take queries,
+            Controls how blob columns are returned. For local blob v2 take queries,
             ``"lazy"`` returns descriptors and ``"bytes"`` fetches payloads.
+            Remote queries with blob columns support only ``"descriptions"``.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.

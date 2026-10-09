@@ -183,10 +183,6 @@ Define a materialized view named `name` over the table `source`.
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
-The source table must have stable row ids (create it with
-the `newTableEnableStableRowIds` storage option); they keep the view's
-provenance valid across source compactions and cannot be enabled after
-a table exists.
 
 #### Parameters
 
@@ -615,30 +611,42 @@ Return true if the connection has not been closed
 ### listJobs()
 
 ```ts
-abstract listJobs(): Promise<JobInfo[]>
+abstract listJobs(options?): Listing<JobInfo>
 ```
 
-List server-side jobs across the database's tables.
+Iterate lazily over server-side jobs across the database's tables.
+Use `for await...of`. Options control page size and the starting token.
+See [Listing](Listing.md) for pagination state and error behavior.
+
+#### Parameters
+
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`JobInfo`](../interfaces/JobInfo.md)[]&gt;
+[`Listing`](Listing.md)&lt;[`JobInfo`](../interfaces/JobInfo.md)&gt;
 
 ***
 
 ### listMaterializedViews()
 
 ```ts
-abstract listMaterializedViews(): Promise<string[]>
+abstract listMaterializedViews(options?): Listing<string>
 ```
 
 The names of the materialized views in this database.
 
-Found by reading every table's schema, so this costs an open per table.
+Iterate lazily with `for await...of`. Local listings inspect table schemas
+one page at a time. Options control page size and the starting token.
+See [Listing](Listing.md) for pagination state and error behavior.
+
+#### Parameters
+
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;`string`[]&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
@@ -739,20 +747,24 @@ A page of table names and an
 ### listViews()
 
 ```ts
-abstract listViews(namespacePath?): Promise<string[]>
+abstract listViews(namespacePath?, options?): Listing<string>
 ```
 
 The names of the views in one namespace.
 
 Names only; a definition comes from [describeView](Connection.md#describeview).
+Iterate lazily with `for await...of`. See [Listing](Listing.md) for pagination
+state and error behavior; options control page size and the starting token.
 
 #### Parameters
 
 * **namespacePath?**: `string`[]
 
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
+
 #### Returns
 
-`Promise`&lt;`string`[]&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
