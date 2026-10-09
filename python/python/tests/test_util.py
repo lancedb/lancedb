@@ -20,6 +20,7 @@ from lancedb.table import (
     _infer_target_schema,
     _merge_metadata,
     _sanitize_data,
+    has_nan_values,
     sanitize_create_table,
 )
 import pyarrow as pa
@@ -346,7 +347,7 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         ).read_all()
 
     if on_bad_vectors == "drop":
-        expected = pa.array([[1.0, 2.0], [4.0, 5.0], [None, 9.0]])
+        expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
     elif on_bad_vectors == "fill":
         expected = pa.array(
             [
@@ -354,12 +355,12 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
                 [3.0, 42.0],
                 [4.0, 5.0],
                 [6.0, 7.0],
-                [None, 9.0],
+                [42.0, 9.0],
                 [42.0, 42.0],
             ]
         )
     elif on_bad_vectors == "null":
-        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
+        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, None, None])
 
     assert output["vector"].combine_chunks() == expected
 
@@ -370,17 +371,17 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         (
             pa.list_(pa.float64()),
             [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
-            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [42.0, 3.0], [4.0, 5.0]],
         ),
         (
             pa.large_list(pa.float64()),
             [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
-            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [42.0, 3.0], [4.0, 5.0]],
         ),
         (
             pa.list_(pa.float64(), 2),
             [[1.0, float("nan")], None, [None, 3.0]],
-            [[1.0, 42.0], [42.0, 42.0], [None, 3.0]],
+            [[1.0, 42.0], [42.0, 42.0], [42.0, 3.0]],
         ),
     ],
 )
@@ -407,7 +408,7 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
             ).read_all()
         output = exception_output(e)
         assert output == (
-            "ValueError: Vector column 'vector' has NaNs. Set "
+            "ValueError: Vector column 'vector' has NaNs or null values. Set "
             "on_bad_vectors='drop' to remove them, set on_bad_vectors='fill' "
             "and fill_value=<value> to replace them, or set on_bad_vectors='null' "
             "to replace them with null."
@@ -428,6 +429,46 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
         expected = pa.array([None, [3.0, 4.0]])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize("value_type", [pa.float16(), pa.float32(), pa.float64()])
+@pytest.mark.parametrize(
+    "list_type", [pa.list_, pa.large_list, lambda t: pa.list_(t, 2)]
+)
+@pytest.mark.parametrize("chunked", [False, True])
+def test_has_nan_values_with_null_elements(value_type, list_type, chunked):
+    arr = pa.array(
+        [[None, None], [1.0, 2.0], [None, 3.0], None, [4.0, float("nan")], [5.0, 6.0]],
+        type=list_type(value_type),
+    ).slice(1, 5)
+    if chunked:
+        arr = pa.chunked_array([arr.slice(0, 2), arr.slice(2)])
+    # Whole null vectors have no components to inspect. Their handling is
+    # separate from missing or NaN components in a valid vector.
+    assert has_nan_values(arr).to_pylist() == [False, True, False, True, False]
+
+
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_sanitize_vectors_with_only_null_elements(on_bad_vectors):
+    data = pa.table({"vector": [[None, None]]})
+    schema = pa.schema({"vector": pa.list_(pa.float32(), 2)})
+
+    def sanitize():
+        return _sanitize_data(
+            data, schema, on_bad_vectors=on_bad_vectors, fill_value=42.0
+        ).read_all()
+
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="null"):
+            sanitize()
+        return
+
+    expected = {
+        "drop": [],
+        "fill": [{"vector": [42.0, 42.0]}],
+        "null": [{"vector": None}],
+    }
+    assert sanitize().to_pylist() == expected[on_bad_vectors]
 
 
 def test_handle_bad_vectors_noop():
