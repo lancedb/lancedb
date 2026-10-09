@@ -700,6 +700,44 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn test_topk_late_materialization_over_table_adapter() {
+        use lance::io::exec::topk_late_materialization::TopKLateMaterialization;
+
+        let fixture = TestFixture::new().await;
+        let run = |rule: Option<TopKLateMaterialization>| {
+            let adapter = fixture.adapter2.clone();
+            async move {
+                let mut state =
+                    datafusion::execution::SessionStateBuilder::new().with_default_features();
+                if let Some(rule) = rule {
+                    state = state.with_physical_optimizer_rule(Arc::new(rule));
+                }
+                let ctx = SessionContext::new_with_state(state.build());
+                ctx.register_table("tbl2", adapter).unwrap();
+                let df = ctx
+                    .sql("SELECT ints, strings, jsons FROM tbl2 WHERE floats > 10 ORDER BY ints DESC LIMIT 5")
+                    .await
+                    .unwrap();
+                let plan = df.clone().create_physical_plan().await.unwrap();
+                let plan = datafusion_physical_plan::displayable(plan.as_ref())
+                    .indent(true)
+                    .to_string();
+                (plan, df.collect().await.unwrap())
+            }
+        };
+
+        let (plan, expected) = run(None).await;
+        assert!(!plan.contains("Take"), "{plan}");
+
+        // The sort lands below `MetadataEraserExec`, so the rule needs no
+        // certification for it.
+        let (plan, batches) = run(Some(TopKLateMaterialization::new())).await;
+        assert!(plan.contains("Take"), "{plan}");
+        assert_eq!(batches, expected);
+        assert!(batches[0].schema().metadata().is_empty());
+    }
+
+    #[tokio::test]
     async fn test_metadata_eraser_with_new_children_takes_child_schema() {
         let fixture = TestFixture::new().await;
         let ctx = SessionContext::new();
