@@ -19,9 +19,10 @@ import {
 } from '/snippets/connection.mdx';
 import {
     PyQuickstartData,
+    PyQuickstartAddData,
     PyQuickstartComputedFeature,
+    PyQuickstartComputedFeatureEnterprise,
     PyQuickstartTraining,
-    PyQuickstartTrainingProjection,
     PyQuickstartCreateTable,
     PyQuickstartCreateTableAsync,
     PyQuickstartAddFeature,
@@ -31,6 +32,7 @@ import {
     PyQuickstartVectorSearch1,
     PyQuickstartVectorSearch1Async,
     PyQuickstartOutputPandas,
+    RsQuickstartAddData,
     RsQuickstartAddFeature,
     RsQuickstartCurateWithMetadata,
     RsQuickstartCreateTable,
@@ -39,6 +41,7 @@ import {
     RsQuickstartMultimodalBytes,
     RsQuickstartQueryFeature,
     RsQuickstartVectorSearch1,
+    TsQuickstartAddData,
     TsQuickstartAddFeature,
     TsQuickstartCurateWithMetadata,
     TsQuickstartCreateTable,
@@ -129,6 +132,8 @@ LanceDB supports several URI patterns to connect to a database.
 - A `db://...` URI (when using LanceDB Enterprise)
 - An object storage URI: `s3://...`, `gs://...`, or `az://...` (when connecting directly from the client SDK)
 
+Pick one. Steps 3 to 5 then run unchanged, whichever you picked.
+
 ### Connect via local directory path {#connect-via-local-directory-path}
 
 The simplest way to begin is to use LanceDB as an embedded library. Import LanceDB in your
@@ -182,11 +187,20 @@ For credentials, endpoints, and provider-specific options, see
 
 ### Connect to LanceDB Enterprise {#connect-to-lancedb-enterprise}
 
-If you're using LanceDB Enterprise, you can connect to the remote database using the
-`db://` URI along with the API key, region, and cluster endpoint you received from the
-LanceDB team. These examples read them from `LANCEDB_URI`, `LANCEDB_API_KEY`,
-`LANCEDB_REGION` and `LANCEDB_HOST_OVERRIDE`, and pass the cluster endpoint via
-`host_override` so the client routes requests to your deployment.
+Connecting to a deployment takes four settings, which its administrator gives
+you -- or the LanceDB team, for a deployment they run for you. If you don't have
+them, [contact the LanceDB team](https://www.lancedb.com/contact). Put them in
+your environment:
+
+| Variable | Holds |
+| --- | --- |
+| `LANCEDB_URI` | the database's `db://` URI |
+| `LANCEDB_HOST_OVERRIDE` | the deployment's endpoint: its full URL, with `https://` and any non-default port |
+| `LANCEDB_API_KEY` | an API key for the deployment |
+| `LANCEDB_REGION` | its region, if it needs one; `us-east-1` otherwise |
+
+The client reads them from there, so no credential appears in your code. The
+endpoint is required: without it the code stops rather than guessing one.
 
 <CodeGroup >
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -203,17 +217,13 @@ LanceDB team. These examples read them from `LANCEDB_URI`, `LANCEDB_API_KEY`,
     </CodeBlock>
 </CodeGroup >
 
-<Note>
-`host_override` is the full URL of your cluster endpoint, including the scheme
-(`https://`) and a port if your deployment listens on a non-default one
-(e.g. `https://your-enterprise-endpoint.com:443`). If you don't have the
-endpoint, [contact the LanceDB team](https://www.lancedb.com/contact).
-</Note>
+In Rust, pass the same settings to the connection builder's `api_key`, `region`
+and `host_override`. A deployment runs some things differently -- maintenance,
+long-running work, a few unsupported methods; see
+[Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise), and the
+[Enterprise overview](/enterprise) for how a deployment is put together.
 
-To learn more about `RemoteTable` semantics and how Enterprise differs operationally from
-embedded LanceDB, see the [Enterprise overview](/enterprise).
-
-## 3\. Create a new table {#3-create-a-new-table}
+## 3\. Create a table and add data {#3-create-a-new-table}
 
 Let's create a small table of characters from the kingdom of Camelot. Each row stores source text,
 metadata, structured fields, and a vector embedding in the same LanceDB table.
@@ -276,6 +286,22 @@ with the appropriate schema and ingests the data.
     </CodeBlock>
 </CodeGroup >
 
+A table grows by adding rows to it. Add a fourth character:
+
+<CodeGroup >
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartAddData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartAddData}
+    </CodeBlock>
+</CodeGroup >
+
 ## 4\. Semantic search {#4-semantic-search}
 
 Search is a useful capability for all kinds of AI data pipelines. Below, we do a vector similarity
@@ -304,9 +330,10 @@ dataset.
     </CodeBlock>
 </CodeGroup >
 
-The example for Python above shows how to convert results to a Polars DataFrame.
-Depending on your language, you can collect query results as a list/array of objects or DataFrames
-to be used downstream in your application.
+Merlin and Morgana, the two magic users, come back first. The example for Python above
+converts the results to a Polars DataFrame. Depending on your language, you can collect
+query results as a list/array of objects or DataFrames to be used downstream in your
+application.
 
 <Accordion title="Pandas users in Python can get results as a Pandas DataFrame">
   Use the `to_pandas()` method to convert query results into a Pandas DataFrame.
@@ -337,7 +364,16 @@ In this tiny example, we filter to examples with high `magic` stats.
 When working with large datasets, it's common to use the same pattern to filter on quality labels,
 train/eval splits, numeric fields, categorical values, timestamp windows, or generated tags and labels.
 
-## 6\. Add a derived feature {#6-add-a-derived-feature}
+That is the core of working with LanceDB: connect, create, add, search, filter. The code
+in steps 3 to 5 is the same whether you connected to a local directory, object storage or a
+deployment.
+
+## Optional extensions {#extensions}
+
+Each extension below starts from the `characters` table of step 3 and stands on its own,
+so take any of them, in any order, or none.
+
+### Add a derived feature {#6-add-a-derived-feature}
 
 Feature engineering is the process of cleaning up your data and creating new signals that
 help your model learn, make better predictions, or your agent retrieve more useful information.
@@ -380,39 +416,44 @@ Next, you can query a compact view of the new feature:
 | King Arthur | King | 3.5 |
 | Merlin | Wizard | 4.0 |
 | Sir Lancelot | Knight | 3.0 |
+| Morgana | Sorceress | 3.75 |
 
 The same workflow is used for data preparation tasks when adding derived features, cached model signals, review scores, or dataset
 quality indicators.
 
 ### Declare now, compute later {#computed-columns}
 
-The call above computes every row as part of the call, which is fine for three
-rows. On a table large enough that you would rather choose *when* the work
-happens, declare a column instead and fill it separately. The stored `power_score`
-column stays available; declare a separate
-`combat_score` column from magic and strength, then refresh it:
+`add_columns` above computes every row as part of the call, which is fine for
+four rows. On a table large enough that you would rather choose *when* the work
+happens, declare a column instead and fill it separately, with a refresh. The
+declaration is the same on every connection; the refresh is not:
 
-<CodeBlock filename="Python" language="Python" icon="python">
-{PyQuickstartComputedFeature}
-</CodeBlock>
+- Embedded, `refresh_column` fills the column in your process.
+- On LanceDB Enterprise, a refresh runs on the server as a [job](/basics/jobs):
+  `refresh_column` raises there, and `refresh_column_async` returns the job to
+  wait for. Computed columns are also off by default on a deployment -- its
+  administrator has to enable them before you can declare one.
+
+<CodeGroup >
+    <CodeBlock filename="Python (embedded)" language="Python" icon="python">
+    {PyQuickstartComputedFeature}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (Enterprise)" language="Python" icon="python">
+    {PyQuickstartComputedFeatureEnterprise}
+    </CodeBlock>
+</CodeGroup >
 
 A refresh gives values to rows that have none and recomputes only rows whose
-inputs changed, so appending more characters and refreshing again fills just
-the new ones -- it does not recompute the rows that are already current. That
-is what makes a backfill safe to retry and cheap to repeat as data arrives.
+inputs changed, so adding more characters and refreshing again fills just the
+new ones -- it does not recompute the rows that are already current. That is
+what makes a backfill safe to retry and cheap to repeat as data arrives.
 
-On a deployment the same refresh runs server-side, on a cluster, as a
-[job](/basics/jobs) you can walk away from:
-
-```python
-job = table.refresh_column_async("combat_score")
-job.wait()
-```
-
-See [Computed columns](/feature-engineering/add-computed-column) for expressions.
+See [Computed columns](/feature-engineering/add-computed-column) for
+expressions, including what a deployment can compute.
 See [Functions](/management/function) for filling a column with Python. {/* if functions launched */}
 
-## 7\. Store multimodal data {#7-store-multimodal-data}
+### Store multimodal data {#7-store-multimodal-data}
 
 Multimodal data is a first-class citizen in LanceDB. Binary data (image, audio, video, etc.) is
 stored as blobs or inline Arrow binary types in a LanceDB column, and they benefit from the same
@@ -423,10 +464,7 @@ fields, metadata, and embeddings.
 In this example, the
 [`lancedb/magical_kingdom`](https://huggingface.co/datasets/lancedb/magical_kingdom) dataset stores
 character images, descriptions, structured stats, image embeddings, and text embeddings together.
-
-Say we downloaded the image for Sir Lancelot from that dataset locally. You can read the image bytes
-in your client SDK and store them in a LanceDB column. The image bytes can be used for downstream tasks
-like retrieval, evaluation, or training.
+This step stores its portrait of Sir Lancelot:
 
 <div style={{ display: "flex", justifyContent: "center" }}>
   <img
@@ -436,7 +474,15 @@ like retrieval, evaluation, or training.
   />
 </div>
 
-These snippets load the local image file and store the bytes in an `image` column:
+From your application's directory, download the image into a `data` folder there:
+
+```bash Terminal icon="terminal"
+curl --create-dirs -L -o data/sir-lancelot.jpg https://docs.lancedb.com/static/assets/images/quickstart/sir-lancelot.jpg
+```
+
+Run the code below from that same directory: it reads `data/sir-lancelot.jpg`
+relative to where it runs, and stores the bytes in an `image` column. The image
+bytes can be used for downstream tasks like retrieval, evaluation, or training.
 
 <CodeGroup >
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -454,16 +500,16 @@ These snippets load the local image file and store the bytes in an `image` colum
 
 For more examples, see [Data types](/management/table#multimodal).
 
-## 8\. Train on the result {#8-train}
+### Train on the result {#8-train}
 
-The point of the previous steps is this one. The table you searched, filtered,
-and added features to is directly usable as a PyTorch
+The table you searched and filtered is directly usable as a PyTorch
 [Dataset](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.Dataset)
 -- there is no export step, and no second copy of the data to keep in sync.
 
-Install PyTorch with `pip install torch`. Select the numeric feature columns
-before constructing the loader; the full table also contains strings,
-structured stats, and vectors.
+Install PyTorch with `pip install torch`. A model trains on numeric features,
+so this step derives two from the structured `stats` field, then selects just
+those columns for the loader: the full table also contains strings, structs,
+and vectors.
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {PyQuickstartTraining}
@@ -471,21 +517,15 @@ structured stats, and vectors.
 
 ```python
 for batch in dataloader:
-    ...  # train with batch["power_score"] and batch["combat_score"]
+    ...  # train with batch["magic"] and batch["strength"]
 ```
 
-Because the loader reads from the table, the feature columns you just
+Because the loader reads from the table, the feature columns you
 materialized are read straight off storage rather than recomputed every epoch.
 That is the whole argument for doing feature engineering in the lakehouse: an
 expensive transform runs once, is versioned with the data, and every subsequent
-epoch is a read.
-
-Projection matters here. If a training step only needs `power_score`, select
-that column so the descriptions, stats, and vectors are excluded:
-
-<CodeBlock filename="Python" language="Python" icon="python">
-{PyQuickstartTrainingProjection}
-</CodeBlock>
+epoch is a read. Selecting only the columns a step needs keeps the descriptions,
+stats, and vectors from being read at all.
 
 See [Training](/training/data-loading) for shuffling, multi-worker loading, and reading from
 a remote table.
@@ -494,14 +534,14 @@ a remote table.
 
 See the full code for these examples (including helper functions) in the
 `quickstart` file for the appropriate client language in the
-[files provided in the repo](https://github.com/lancedb/docs/tree/main/tests).
+[tests they come from](https://github.com/lancedb/lancedb/tree/main/docs/web-tests).
 
 
 ## Next steps {#next-steps}
-You've gone from a table, through search and curation, to derived features and a
-training loop -- in one table, with no export step between any two stages. That
-arc is the argument for a multimodal lakehouse, and every stage of it scales
-past this toy example without changing shape.
+You've created a table, added to it, and searched and filtered it -- and, through the
+extensions, derived features from it and trained on it -- in one table, with no export
+step between any two stages. That arc is the argument for a multimodal lakehouse, and
+every stage of it scales past this toy example without changing shape.
 
 Continue to the guides to build on it with schema options, versioning, indexing,
 full-text and hybrid search, reranking, and server-side feature engineering.

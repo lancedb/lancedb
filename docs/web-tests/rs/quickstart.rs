@@ -175,16 +175,28 @@ async fn main() {
         .unwrap();
     // --8<-- [end:quickstart_create_table]
     assert_eq!(table.count_rows(None).await.unwrap(), 3);
-    db.drop_table("characters", &[]).await.unwrap();
 
-    // --8<-- [start:quickstart_create_table_no_overwrite]
-    let table = db
-        .create_table("characters", characters_to_reader(schema.clone(), &data))
+    // --8<-- [start:quickstart_add_data]
+    let more_data = vec![Character {
+        id: "4".to_string(),
+        name: "Morgana".to_string(),
+        role: "Sorceress".to_string(),
+        description: "Powerful sorceress of Avalon.".to_string(),
+        stats: Stats {
+            strength: 2,
+            magic: 5,
+            leadership: 4,
+            wisdom: 4,
+        },
+        vector: [0.3, 0.9, 0.6, 0.8],
+    }];
+    table
+        .add(characters_to_reader(schema.clone(), &more_data))
         .execute()
         .await
         .unwrap();
-    // --8<-- [end:quickstart_create_table_no_overwrite]
-    assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    // --8<-- [end:quickstart_add_data]
+    assert_eq!(table.count_rows(None).await.unwrap(), 4);
 
     // --8<-- [start:quickstart_vector_search_1]
     // Search for examples similar to a "wise magical advisor"
@@ -211,6 +223,7 @@ async fn main() {
     // --8<-- [end:quickstart_vector_search_1]
     let name_col = result.column("name").unwrap().str().unwrap();
     assert_eq!(name_col.get(0).unwrap(), "Merlin");
+    assert_eq!(name_col.get(1).unwrap(), "Morgana");
 
     // --8<-- [start:quickstart_curate_with_metadata]
     let curated: DataFrame = table
@@ -235,6 +248,7 @@ async fn main() {
     // --8<-- [end:quickstart_curate_with_metadata]
     let curated_name_col = curated.column("name").unwrap().str().unwrap();
     assert_eq!(curated_name_col.get(0).unwrap(), "Merlin");
+    assert_eq!(curated_name_col.get(1).unwrap(), "Morgana");
 
     // --8<-- [start:quickstart_output_array]
     let result: DataFrame = table
@@ -289,7 +303,18 @@ async fn main() {
         .unwrap();
     println!("{features:?}");
     // --8<-- [end:quickstart_query_feature]
-    assert!(features.column("power_score").is_ok());
+    assert_eq!(features.column("power_score").unwrap().len(), 4);
+
+    // What the quickstart's download step leaves in an application's directory.
+    let app = tempfile::tempdir().unwrap();
+    std::fs::create_dir(app.path().join("data")).unwrap();
+    std::fs::copy(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../web/static/assets/images/quickstart/sir-lancelot.jpg"),
+        app.path().join("data/sir-lancelot.jpg"),
+    )
+    .unwrap();
+    std::env::set_current_dir(app.path()).unwrap();
 
     // --8<-- [start:quickstart_multimodal_bytes]
     use std::sync::Arc;
@@ -299,9 +324,7 @@ async fn main() {
     };
     use arrow_schema::{DataType, Field, Schema};
 
-    let image_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../web/static/assets/images/quickstart/sir-lancelot.jpg");
-    let image_bytes = std::fs::read(image_path).unwrap();
+    let image_bytes = std::fs::read("data/sir-lancelot.jpg").unwrap();
 
     let image_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::LargeUtf8, false),
