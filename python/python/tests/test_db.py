@@ -257,6 +257,40 @@ def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConn
     assert "does_not_exist" not in tmp_db
 
 
+@pytest.mark.asyncio
+async def test_table_listing_defaults_and_zero_limit(tmp_path):
+    names = [f"t{i:03}" for i in range(130)]
+    for name in names:
+        (tmp_path / f"{name}.lance").mkdir()
+
+    db = lancedb.connect(tmp_path)
+    assert db.table_names() == names
+    assert db.table_names(limit=None) == names
+    assert db.table_names(limit=0) == []
+    first = db.list_tables()
+    assert first.tables == names[:100]
+    assert first.page_token
+    second = db.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    assert db.list_tables(limit=200).tables == names
+    empty = db.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+    adb = await lancedb.connect_async(tmp_path)
+    assert await adb.table_names() == names
+    assert await adb.table_names(limit=0) == []
+    first = await adb.list_tables()
+    assert first.tables == names[:100]
+    second = await adb.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    empty = await adb.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+
 def test_db_contains_stops_after_matching_table_page(
     tmp_db: lancedb.DBConnection, monkeypatch
 ):
@@ -361,6 +395,40 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
 
     table = await mem_db_async.create_table("test", data=gen_data())
     assert await table.count_rows() == 10
+
+
+def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    table = db.create_table("t1", data, mode="exist_ok")
+    assert table.count_rows() == 2
+    original = table.to_arrow()
+
+    reopened = db.create_table("t1", [{"vector": [9.0, 8.0]}], mode="exist_ok")
+    assert reopened.to_arrow().equals(original)
+
+
+def test_create_empty_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert table.schema == schema
+    assert table.count_rows() == 0
+    table.add([{"id": 7}])
+
+    reopened = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert reopened.to_arrow().to_pylist() == [{"id": 7}]
+
+    bad_schema = pa.schema([pa.field("other", pa.int64())])
+    with pytest.raises(ValueError):
+        tmp_db.create_table("empty", schema=bad_schema, mode="exist_ok")
+
+
+def test_create_table_invalid_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    with pytest.raises(ValueError, match="Invalid mode bogus"):
+        db.create_table("tb", data, mode="bogus")
+    assert "tb" not in db
 
 
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
@@ -549,6 +617,27 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.parametrize("enable_v2_manifest_paths", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_create_table_deprecated_v2_manifest_paths(
+    tmp_path, enable_v2_manifest_paths, empty
+):
+    db = lancedb.connect(tmp_path)
+    data = None if empty else [{"id": 1}]
+
+    with pytest.warns(DeprecationWarning, match="enable_v2_manifest_paths"):
+        table = db.create_table(
+            "test",
+            data=data,
+            schema=pa.schema([("id", pa.int64())]),
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
+        )
+
+    assert table.uses_v2_manifest_paths() == enable_v2_manifest_paths
+    assert table.to_arrow().to_pylist() == ([] if empty else data)
+    assert db.open_table("test").uses_v2_manifest_paths() == enable_v2_manifest_paths
 
 
 @pytest.mark.asyncio

@@ -40,7 +40,12 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
-import { coerceBlobValue, isBlobField } from "./blob";
+import {
+  blobToRead,
+  coerceBlobValue,
+  isBlobField,
+  withBlobBytes,
+} from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -449,6 +454,24 @@ export function makeArrowTable(
     );
   }
 
+  if (schema !== undefined) {
+    // Validate blob values up front and give every one the full
+    // `{ data, uri }` shape, so inference sees the same struct whether a row
+    // passed bytes, a URI, or a partial struct.
+    data = mapBlobInputs(data, schema, (value, field, row) => {
+      if (value === undefined) {
+        return value;
+      }
+      try {
+        return coerceBlobValue(value);
+      } catch (e) {
+        throw new Error(
+          `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,
+        );
+      }
+    });
+  }
+
   let schemaMetadata = schema?.metadata || new Map<string, string>();
   if (metadata !== undefined) {
     schemaMetadata = new Map([...schemaMetadata, ...metadata]);
@@ -508,6 +531,133 @@ function containsBlobField(field: Field): boolean {
   return (field.type.children ?? []).some((child: Field) =>
     containsBlobField(child),
   );
+}
+
+type BlobInputVisitor = (value: unknown, field: string, row: number) => unknown;
+
+/**
+ * Calls `visit` on every value that lands in a blob column of `schema`,
+ * including blobs nested in structs and lists, and replaces it with the
+ * result. Records and arrays are copied only where a value changed, so the
+ * caller's data is never mutated.
+ */
+function mapBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+  visit: BlobInputVisitor,
+): Array<Record<string, unknown>> {
+  if (!schema.fields.some(containsBlobField)) {
+    return data;
+  }
+  return data.map((record, row) =>
+    isObject(record)
+      ? mapBlobFields(record, schema.fields, "", row, visit)
+      : record,
+  );
+}
+
+function mapBlobFields(
+  record: Record<string, unknown>,
+  fields: Field[],
+  prefix: string,
+  row: number,
+  visit: BlobInputVisitor,
+): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const field of fields) {
+    if (!containsBlobField(field) || !Object.hasOwn(record, field.name)) {
+      continue;
+    }
+    const value = record[field.name];
+    const mapped = mapBlobField(
+      value,
+      field,
+      `${prefix}${field.name}`,
+      row,
+      visit,
+    );
+    if (mapped !== value) {
+      out ??= { ...record };
+      out[field.name] = mapped;
+    }
+  }
+  return out ?? record;
+}
+
+function mapBlobField(
+  value: unknown,
+  field: Field,
+  label: string,
+  row: number,
+  visit: BlobInputVisitor,
+): unknown {
+  if (isBlobField(field)) {
+    return visit(value, label, row);
+  }
+  if (field.type instanceof Struct && isObject(value)) {
+    return mapBlobFields(value, field.type.children, `${label}.`, row, visit);
+  }
+  if (isList(field.type) && Array.isArray(value)) {
+    const child = field.type.children[0];
+    let out: unknown[] | undefined;
+    for (const [index, element] of value.entries()) {
+      const mapped = mapBlobField(
+        element,
+        child,
+        `${label}[${index}]`,
+        row,
+        visit,
+      );
+      if (mapped !== element) {
+        out ??= [...value];
+        out[index] = mapped;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/**
+ * Reads `Blob` / `File` values in the blob columns of `schema` into bytes so
+ * the synchronous conversion in {@link makeArrowTable} can accept them.
+ * Returns `data` itself when there is nothing to read.
+ */
+export async function resolveBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema?: SchemaLike,
+): Promise<Array<Record<string, unknown>>> {
+  if (schema === undefined || schema === null) {
+    return data;
+  }
+  const sanitized = sanitizeSchema(schema);
+  // Keyed by the Blob itself, so rows sharing one Blob (bare or as
+  // `{ data }`) read it once and share the bytes.
+  const reads = new Map<Blob, Promise<Uint8Array>>();
+  mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    if (source !== undefined && !reads.has(source)) {
+      reads.set(
+        source,
+        source.arrayBuffer().then((buffer) => new Uint8Array(buffer)),
+      );
+    }
+    return value;
+  });
+  if (reads.size === 0) {
+    return data;
+  }
+  const bytes = new Map(
+    await Promise.all(
+      [...reads].map(async ([source, read]) => [source, await read] as const),
+    ),
+  );
+  return mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    return source === undefined
+      ? value
+      : withBlobBytes(value, bytes.get(source) as Uint8Array);
+  });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -1013,6 +1163,11 @@ export async function convertToTable(
     );
   }
 
+  processedData = await resolveBlobInputs(
+    processedData,
+    makeTableOptions?.schema,
+  );
+
   const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
 }
@@ -1369,7 +1524,7 @@ export function ensureNestedFieldsExist(
     for (const field of schema.fields) {
       if (field.name in row) {
         if (
-          field.type.constructor.name === "Struct" &&
+          isPlainStructField(field) &&
           row[field.name] !== null &&
           row[field.name] !== undefined
         ) {
@@ -1386,15 +1541,23 @@ export function ensureNestedFieldsExist(
       } else {
         // Keep a missing struct valid while filling each of its children with
         // null. This is distinct from an explicitly null struct value.
-        completeRow[field.name] =
-          field.type.constructor.name === "Struct"
-            ? ensureStructFieldsExist({}, field.type as Struct)
-            : null;
+        completeRow[field.name] = isPlainStructField(field)
+          ? ensureStructFieldsExist({}, field.type as Struct)
+          : null;
       }
     }
 
     return completeRow;
   });
+}
+
+/**
+ * Blob fields are Arrow structs, but their values are bytes, URIs, or
+ * `{ data } | { uri }` inputs that the blob coercion in `makeArrowTable`
+ * handles, so they must not be filled in like ordinary structs.
+ */
+function isPlainStructField(field: Field): boolean {
+  return field.type.constructor.name === "Struct" && !isBlobField(field);
 }
 
 /**
@@ -1410,7 +1573,7 @@ function ensureStructFieldsExist(
   for (const childField of structType.children) {
     if (childField.name in data) {
       if (
-        childField.type.constructor.name === "Struct" &&
+        isPlainStructField(childField) &&
         data[childField.name] !== null &&
         data[childField.name] !== undefined
       ) {
@@ -1426,10 +1589,9 @@ function ensureStructFieldsExist(
     } else {
       // Keep a missing struct valid while filling each of its children with
       // null. This is distinct from an explicitly null struct value.
-      completeStruct[childField.name] =
-        childField.type.constructor.name === "Struct"
-          ? ensureStructFieldsExist({}, childField.type as Struct)
-          : null;
+      completeStruct[childField.name] = isPlainStructField(childField)
+        ? ensureStructFieldsExist({}, childField.type as Struct)
+        : null;
     }
   }
 

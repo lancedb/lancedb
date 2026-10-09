@@ -110,6 +110,129 @@ describe("Query outputSchema", () => {
   });
 });
 
+describe("Query empty results", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const schema = new Schema(
+      [
+        new Field("id", new Int64(), false),
+        new Field(
+          "text",
+          new Utf8(),
+          true,
+          new Map([["description", "searchable text"]]),
+        ),
+        new Field(
+          "vector",
+          new FixedSizeList(2, new Field("item", new Float32())),
+          true,
+        ),
+      ],
+      new Map([["source", "empty-query-regression"]]),
+    );
+    table = await db.createTable(
+      "test",
+      makeArrowTable([{ id: 1n, text: "hello", vector: [1, 2] }], { schema }),
+    );
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it.each([
+    {
+      name: "filtered scan",
+      query: (table: Table) => table.query().where("id < 0"),
+      fields: ["id", "text", "vector"],
+    },
+    {
+      name: "zero limit",
+      query: (table: Table) => table.query().limit(0),
+      fields: ["id", "text", "vector"],
+    },
+    {
+      name: "column projection",
+      query: (table: Table) =>
+        table.query().where("id < 0").select(["text", "id"]),
+      fields: ["text", "id"],
+    },
+    {
+      name: "dynamic projection",
+      query: (table: Table) =>
+        table.query().where("id < 0").select({ doubled: "id * 2" }),
+      fields: ["doubled"],
+    },
+    {
+      name: "filtered vector search",
+      query: (table: Table) =>
+        table.search([0.5, 0.5]).where("id < 0").limit(3),
+      fields: ["id", "text", "vector", "_distance"],
+    },
+    {
+      name: "vector projection with row id",
+      query: (table: Table) =>
+        table
+          .vectorSearch([0.5, 0.5])
+          .where("id < 0")
+          .select(["id"])
+          .withRowId(),
+      fields: ["id", "_distance", "_rowid"],
+    },
+    {
+      name: "fast search without an index",
+      query: (table: Table) => table.search([0.5, 0.5]).fastSearch(),
+      fields: ["id", "text", "vector", "_distance"],
+    },
+    {
+      name: "take with no offsets",
+      query: (table: Table) => table.takeOffsets([]).select(["text"]),
+      fields: ["text"],
+    },
+  ])("preserves the output schema for $name", async ({ query, fields }) => {
+    const result = await query(table).toArrow({ maxBatchLength: 1 });
+
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((field) => field.name)).toEqual(fields);
+    for (const name of fields) {
+      expect(result.getChild(name)).not.toBeNull();
+      expect(result.getChild(name)?.length).toBe(0);
+    }
+  });
+
+  it("preserves types, nullability, and metadata", async () => {
+    const result = await table.query().where("id < 0").toArrow();
+    const schema = await table.schema();
+
+    expect(result.schema).toEqual(schema);
+    expect(result.getChild("id")?.type.toString()).toBe("Int64");
+    expect(result.schema.fields[0].nullable).toBe(false);
+    expect(result.schema.fields[1].metadata.get("description")).toBe(
+      "searchable text",
+    );
+    expect(result.schema.metadata.get("source")).toBe("empty-query-regression");
+  });
+
+  it("preserves the score column for full-text search with no matches", async () => {
+    await table.createIndex("text", { config: Index.fts() });
+    const result = await table
+      .search("missing", "fts")
+      .select(["id"])
+      .toArrow();
+
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((field) => field.name)).toEqual([
+      "id",
+      "_score",
+    ]);
+    expect(result.getChild("_score")?.type.toString()).toBe("Float32");
+  });
+});
+
 describe("Search pagination", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;

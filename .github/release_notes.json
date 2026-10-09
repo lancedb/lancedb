@@ -7,6 +7,10 @@
             "labels": ["highlight"]
         },
         {
+            "title": "## 🚨 Critical Fixes",
+            "labels": ["critical-fix"]
+        },
+        {
             "title": "## 🛠 Breaking Changes",
             "labels": ["breaking-change"]
         },

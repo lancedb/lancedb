@@ -662,10 +662,9 @@ Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on th
 
 Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
 spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
-The returned spec mirrors what was passed to
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec), except that `maintainedIndexes` always
-reports the concrete list resolved when the spec was set — `undefined`
-never round-trips.
+The spec is the one installed, including its maintained-index selection:
+an absent `maintainedIndexes` for every index the table has, an empty
+array for none.
 
 #### Returns
 
@@ -1107,8 +1106,8 @@ All variants require the table to have an unenforced primary key
 ([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
 requires it to be the single column being bucketed.
 
-Omitting `maintainedIndexes` maintains every index on the table, resolved
-here, failing if one cannot be maintained — name them to install anyway.
+Omitting `maintainedIndexes` maintains every index the table has,
+including ones created later, and skips a kind the MemWAL cannot maintain.
 Naming them pins an exact set, and a still-building index is rejected
 rather than quietly omitted.
 

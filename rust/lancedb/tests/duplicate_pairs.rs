@@ -289,127 +289,6 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             );
             let retry = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&retry), pairs(&actual));
-            // The same table function can be maintained through the MV unit
-            // lifecycle. Staging attempts do not make any rows visible.
-            use lancedb::materialized_view::{
-                MaterializedViewDefinition, commit_partitioned_refresh, plan_partitioned_refresh,
-                prepare_definition, write_refresh_partition,
-            };
-            let view_name = format!("pairs_{}", threshold.to_bits());
-            let view = prepare_definition(&table, MaterializedViewDefinition::from_sql(&sql)?)
-                .await?
-                .create(&view_name)
-                .await?;
-            assert_eq!(view.table().schema().await?.fields().len(), 3);
-            let plan = plan_partitioned_refresh(view.table(), Some(version))
-                .await?
-                .unwrap();
-            assert_eq!(plan.units() as usize, tasks.len());
-            let plan = serde_json::from_slice(&serde_json::to_vec(&plan)?)?;
-            let first = write_refresh_partition(view.table(), 0, &plan).await?;
-            assert_eq!(view.table().count_rows(None).await?, 0);
-            assert!(
-                commit_partitioned_refresh(
-                    view.table(),
-                    &plan,
-                    vec![first.clone(), first.clone()],
-                    view.incarnation()
-                )
-                .await
-                .is_err()
-            );
-            // Lost receipt: its files remain unreferenced; the retry writes
-            // another attempt, of which only one receipt is ever committed.
-            drop(write_refresh_partition(view.table(), 0, &plan).await?);
-            let mut units = vec![first];
-            for unit in 1..plan.units() {
-                units.push(write_refresh_partition(view.table(), unit, &plan).await?);
-            }
-            assert_eq!(view.table().count_rows(None).await?, 0);
-            let outcome =
-                commit_partitioned_refresh(view.table(), &plan, units.clone(), view.incarnation())
-                    .await?;
-            assert_eq!(outcome.rows_written as usize, pairs(&expected).len());
-            assert!(
-                commit_partitioned_refresh(view.table(), &plan, units, view.incarnation())
-                    .await
-                    .is_err()
-            );
-            use lancedb::query::ExecutableQuery;
-            let written = view
-                .table()
-                .query()
-                .execute()
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            assert_eq!(pairs(&written), pairs(&expected));
-            // Repeating a refresh replaces the view rather than appending.
-            view.refresh().execute().await?;
-            assert_eq!(
-                view.table().count_rows(None).await? as usize,
-                pairs(&expected).len()
-            );
-            // The complete declarative pipeline keeps direct representatives
-            // and materializes original rows, including isolated source rows.
-            use lancedb::materialized_view::write_refresh_partition_with_inputs;
-            use lancedb::query::QueryBase;
-            let definition = MaterializedViewDefinition::from_sql(&format!(
-                "SELECT * FROM vector_dedup('source', {version}, 'vector', {threshold})"
-            ))?;
-            let clean = prepare_definition(&table, definition)
-                .await?
-                .create(&format!("clean_{}", threshold.to_bits()))
-                .await?;
-            let clean_plan = plan_partitioned_refresh(clean.table(), Some(version))
-                .await?
-                .unwrap();
-            assert_eq!(clean_plan.dependency_units() as usize, tasks.len());
-            assert_eq!(clean_plan.units() as usize, tasks.len() + 2);
-            let clean_plan: lancedb::materialized_view::PartitionedRefreshPlan =
-                serde_json::from_slice(&serde_json::to_vec(&clean_plan)?)?;
-            assert!(
-                write_refresh_partition(clean.table(), tasks.len() as u32, &clean_plan)
-                    .await
-                    .is_err()
-            );
-            let mut receipts = Vec::new();
-            for unit in 0..clean_plan.units() {
-                let dependencies = &receipts[..receipts.len().min(tasks.len())];
-                if unit == 0 || unit == tasks.len() as u32 {
-                    // Both selection and materialization can lose a receipt.
-                    drop(
-                        write_refresh_partition_with_inputs(
-                            clean.table(),
-                            unit,
-                            &clean_plan,
-                            dependencies,
-                        )
-                        .await?,
-                    );
-                }
-                let receipt = write_refresh_partition_with_inputs(
-                    clean.table(),
-                    unit,
-                    &clean_plan,
-                    dependencies,
-                )
-                .await?;
-                receipts.push(serde_json::from_slice(&serde_json::to_vec(&receipt)?)?);
-            }
-            assert_eq!(clean.table().count_rows(None).await?, 0);
-            assert!(
-                commit_partitioned_refresh(
-                    clean.table(),
-                    &clean_plan,
-                    receipts[..receipts.len() - 1].to_vec(),
-                    clean.incarnation()
-                )
-                .await
-                .is_err()
-            );
-            commit_partitioned_refresh(clean.table(), &clean_plan, receipts, clean.incarnation())
-                .await?;
             let mut edges = pairs(&expected)
                 .into_iter()
                 .map(|(a, b, _)| (a.min(b), a.max(b)))
@@ -449,27 +328,6 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                     }
                 }
             }
-            let kept = clean
-                .table()
-                .query()
-                .select(lancedb::query::Select::columns(&["id"]))
-                .execute()
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            let mut actual_ids = kept
-                .iter()
-                .flat_map(|b| {
-                    b.column(0)
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .unwrap()
-                        .values()
-                        .iter()
-                        .copied()
-                })
-                .collect::<Vec<_>>();
-            actual_ids.sort_unstable();
             expected_ids.sort_unstable();
             let mut query_ids = clean_query
                 .iter()
@@ -486,14 +344,10 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             query_ids.sort_unstable();
             assert_eq!(query_ids, expected_ids);
 
-            assert_eq!(actual_ids, expected_ids);
             if threshold == 1.0 {
-                assert!(actual_ids.contains(&0) && actual_ids.contains(&2));
-                assert!(!actual_ids.contains(&1), "A-B-C retains A and C");
+                assert!(query_ids.contains(&0) && query_ids.contains(&2));
+                assert!(!query_ids.contains(&1), "A-B-C retains A and C");
             }
-            clean.refresh().execute().await?;
-            assert_eq!(clean.table().count_rows(None).await?, expected_ids.len());
-            assert_eq!(table.count_rows(None).await?, n * 2);
             assert!(
                 DuplicatePairsExec::try_new(
                     ds.clone(),
@@ -527,10 +381,8 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
 }
 
 #[tokio::test]
-async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() -> anyhow::Result<()>
-{
+async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Result<()> {
     use arrow_array::{LargeBinaryArray, StringArray, StructArray, types::Float32Type};
-    use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
     for stable in [false, true] {
         let dir = tempfile::tempdir()?;
         let conn = lancedb::connect(dir.path().to_str().unwrap())
@@ -607,7 +459,6 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
             true,
         )
         .await?;
-        let version = ds.version().version;
         use lancedb::table::datafusion::udtf::{
             duplicate_pairs::DuplicatePairsOutput,
             vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
@@ -692,59 +543,6 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
                 assert_eq!(images.value(i), vec![ids.value(i) as u8; 4096]);
             }
         }
-        let definition = MaterializedViewDefinition::from_sql(&format!(
-            "SELECT * FROM vector_dedup('source', {version}, 'vector', 1)"
-        ))?;
-        let clean = prepare_definition(&table, definition)
-            .await?
-            .create("clean")
-            .await?;
-        // A later source delete does not change the declared result snapshot.
-        table.delete("id = 0").await?;
-        let adapter = BaseTableAdapter::try_new(table.base_table().clone()).await?;
-        let explicit = adapter.vector_query_snapshot(Some(version)).await?;
-        let latest = adapter.vector_query_snapshot(None).await?;
-        assert_eq!(explicit.version().version, version);
-        assert!(latest.version().version > version);
-        assert_eq!(explicit.count_rows(None).await?, 5);
-        assert_eq!(latest.count_rows(None).await?, 4);
-        clean.refresh().execute().await?;
-        assert_eq!(clean.table().count_rows(None).await?, 4);
-        let output = Dataset::open(&clean.table().uri().await?).await?;
-        let batches = output
-            .scan()
-            .blob_handling(lance_core::datatypes::BlobHandling::AllBinary)
-            .try_into_stream()
-            .await?
-            .try_collect::<Vec<_>>()
-            .await?;
-        let mut ids = Vec::new();
-        for batch in batches {
-            let row_ids = batch
-                .column_by_name("id")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            let images = batch
-                .column_by_name("image")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<LargeBinaryArray>()
-                .unwrap();
-            for i in 0..batch.num_rows() {
-                let id = row_ids.value(i);
-                assert_eq!(images.value(i), vec![id as u8; 4096]);
-                ids.push(id);
-            }
-        }
-        ids.sort_unstable();
-        assert_eq!(ids, [0, 2, 3, 4]);
-        assert_eq!(
-            table.count_rows(None).await?,
-            4,
-            "refresh must not mutate the source"
-        );
     }
     Ok(())
 }

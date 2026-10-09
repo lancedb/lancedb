@@ -1604,8 +1604,8 @@ class Table(ABC):
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
+        stem: Optional[bool] = None,
+        remove_stop_words: Optional[bool] = None,
         custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
@@ -1655,6 +1655,7 @@ class Table(ABC):
             - "simple": Splits text by whitespace and punctuation.
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
+            - "code": Tokenizes source code and identifiers.
             - "ngram": N-Gram tokenizer.
             - "icu": ICU dictionary-based word segmentation.
             - "icu/split": ICU segmentation with simple-style delimiter splitting.
@@ -1669,12 +1670,16 @@ class Table(ABC):
         lower_case : bool, default True
             Whether to convert the token to lower case. This makes queries
             case-insensitive.
-        stem : bool, default True
+        stem : bool, optional
             Whether to stem the token. Stemming reduces words to their root form.
             For example, in English "running" and "runs" would both be reduced to "run".
-        remove_stop_words : bool, default True
+            ``None`` uses the base tokenizer's default: False for ``code`` and
+            ``ngram``, True otherwise.
+        remove_stop_words : bool, optional
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
+            ``None`` uses the base tokenizer's default: False for ``code`` and
+            ``ngram``, True otherwise.
         custom_stop_words : list of str, optional
             Custom words that replace the built-in language stop words. ``None``
             uses the built-in list; an empty list explicitly uses no stop words.
@@ -2618,6 +2623,10 @@ class Table(ABC):
                 nullability is not changed. Only non-nullable columns can be changed
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
+
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
 
         Returns
         -------
@@ -4092,8 +4101,8 @@ class LanceTable(Table):
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
+        stem: Optional[bool] = None,
+        remove_stop_words: Optional[bool] = None,
         custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
@@ -4622,9 +4631,9 @@ class LanceTable(Table):
             )
             if storage_options is None:
                 storage_options = {}
-            storage_options["new_table_enable_v2_manifest_paths"] = (
+            storage_options["new_table_enable_v2_manifest_paths"] = str(
                 enable_v2_manifest_paths
-            )
+            ).lower()
 
         self._storage_options = storage_options
         self._table = LOOP.run(
@@ -5058,7 +5067,7 @@ class LanceTable(Table):
         [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
-        LOOP.run(self._table.migrate_v2_manifest_paths())
+        LOOP.run(self._table.migrate_manifest_paths_v2())
 
     @deprecation.deprecated(
         deprecated_in="0.33.1",
@@ -5733,11 +5742,16 @@ class AsyncTable:
     async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the LsmWriteSpec currently installed on this table.
 
-        Returns ``None`` when the MemWAL LSM write path is not enabled (no
-        spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The returned spec mirrors what was passed to `set_lsm_write_spec`,
-        except that ``maintained_indexes`` always reports the concrete list
-        resolved when the spec was set — ``None`` never round-trips.
+        Returns ``None`` when the LSM write path is not enabled at all — no
+        spec has been set, or one was removed with `unset_lsm_write_spec`.
+        That is a different answer from a spec whose ``maintained_indexes``
+        is ``None``, which is an installed spec selecting indexes
+        automatically.
+
+        The spec read back is the one that was installed, selection
+        included: ``None`` maintains every supported index the table has now
+        or gains later, ``[]`` maintains none, and a non-empty list maintains
+        exactly those. All three round-trip.
         """
         return await self._inner.get_lsm_write_spec()
 
@@ -5880,7 +5894,11 @@ class AsyncTable:
         return AsyncQuery(self._inner.query(), self)
 
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the Lance dataset backing this table.
+        """Return the Lance dataset backing a local table.
+
+        Remote tables cannot be opened as Lance datasets by the client. Use
+        [to_arrow][lancedb.table.AsyncTable.to_arrow] or
+        [query][lancedb.table.AsyncTable.query] to read them through the server.
 
         Parameters
         ----------
@@ -5897,6 +5915,12 @@ class AsyncTable:
         >>> async def get_lance_dataset(table):
         ...     return await table.to_lance()
         """
+        if not self._inner._is_native():
+            raise NotImplementedError(
+                "to_lance() is not supported for remote tables; "
+                "query the server instead"
+            )
+
         try:
             import lance
         except ImportError:
@@ -5926,7 +5950,8 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned.
+            Controls how Lance blob columns are returned. Remote tables support
+            "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
 
@@ -5943,6 +5968,9 @@ class AsyncTable:
                     arrow_tbl, row_addressable_blob_v2_paths(schema)
                 )
             return arrow_tbl.to_pandas(**kwargs)
+
+        if not self._inner._is_native():
+            return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
@@ -6399,7 +6427,17 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: None = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncQuery: ...
+
+    @overload
+    async def search(
+        self,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -6409,7 +6447,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -6419,7 +6457,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[VEC, "PIL.Image.Image", Tuple]] = None,
+        query: Union[VEC, "PIL.Image.Image", Tuple],
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -6429,7 +6467,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -6439,9 +6477,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery],
         vector_column_name: Optional[str] = None,
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -6457,7 +6493,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
+    ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
         and [full-text search](https://lancedb.com/docs/search/full-text-search/).
@@ -6472,8 +6508,9 @@ class AsyncTable:
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/where/limit clauses are applied to filter
-            the table
+            - If None then a plain [AsyncQuery][lancedb.query.AsyncQuery] is
+            returned, equivalent to calling [query][lancedb.table.AsyncTable.query].
+            The select/where/limit clauses are applied to filter the table.
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -6501,9 +6538,12 @@ class AsyncTable:
 
         Returns
         -------
-        LanceQueryBuilder
+        AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, or AsyncVectorQuery
             A query builder object representing the query.
         """
+
+        if query is None:
+            return self.query()
 
         def is_embedding(query):
             return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
@@ -7154,6 +7194,10 @@ class AsyncTable:
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
 
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
+
         Returns
         -------
         AlterColumnsResult
@@ -7197,9 +7241,11 @@ class AsyncTable:
         """
         versions = await self._inner.list_versions()
         for v in versions:
-            ts_nanos = v["timestamp"]
-            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
-                microseconds=(ts_nanos % 1e9) // 1e3
+            # Use integer math: float division on ~1e18 nanosecond
+            # values loses sub-millisecond precision.
+            seconds, nanos = divmod(v["timestamp"], 1_000_000_000)
+            v["timestamp"] = datetime.fromtimestamp(seconds) + timedelta(
+                microseconds=nanos // 1000
             )
 
         return versions
@@ -7594,6 +7640,13 @@ class TableStatistics:
         and manifests.
     num_rows: int
         The total number of rows in the table.
+    num_deleted_rows: Optional[int]
+        The total number of rows marked as deleted across all fragments of the
+        table. These rows are not counted in ``num_rows``, but still occupy space
+        on disk until the table is compacted, so a large value here indicates
+        that the table should be optimized. Fragments in which every row was
+        deleted are dropped outright, so their rows are not counted here.
+        ``None`` when the backend does not report deletion counts.
     num_indices: int
         The total number of indices in the table.
     fragment_stats: FragmentStatistics
@@ -7602,6 +7655,7 @@ class TableStatistics:
 
     total_bytes: int
     num_rows: int
+    num_deleted_rows: Optional[int]
     num_indices: int
     fragment_stats: FragmentStatistics
 
