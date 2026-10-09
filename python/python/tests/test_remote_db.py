@@ -1038,8 +1038,9 @@ def test_table_create_indices():
         # Test create_fts_index with custom name (legacy method)
         with pytest.warns(DeprecationWarning, match="create_fts_index"):
             table.create_fts_index(
-                "text",
+                field_names="text",
                 wait_timeout=timedelta(seconds=2),
+                tokenizer_name="en_stem",
                 block_size=256,
                 custom_stop_words=["cloud"],
                 name="custom_fts_idx",
@@ -1048,6 +1049,8 @@ def test_table_create_indices():
         # Test create_index with custom name (legacy form: vector_column_name kwarg)
         with pytest.warns(DeprecationWarning, match="create_index"):
             table.create_index(
+                "cosine",
+                2,
                 vector_column_name="vector",
                 wait_timeout=timedelta(seconds=10),
                 name="custom_vector_idx",
@@ -1060,7 +1063,8 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
-        assert scalar_req["replace"] is False
+        # The wire protocol omits replace=True (the server default).
+        assert "replace" not in scalar_req
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
@@ -1069,18 +1073,39 @@ def test_table_create_indices():
         assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
+        assert fts_req["language"] == "English"
+        assert fts_req["stem"] is True
 
         # Check vector index request has custom name
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
         assert "replace" not in vector_req
+        assert vector_req["metric_type"] == "cosine"
+        assert vector_req["num_partitions"] == 2
+
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                index_type="IVF_HNSW_SQ",
+                num_partitions=1,
+                m=10,
+                ef_construction=50,
+                max_iterations=12,
+                sample_rate=64,
+            )
+        tuned_req = received_requests[-1]
+        assert tuned_req["index_type"] == "IVF_HNSW_SQ"
+        assert tuned_req["num_partitions"] == 1
+        assert tuned_req["m"] == 10
+        assert tuned_req["ef_construction"] == 50
+        assert tuned_req["max_iterations"] == 12
+        assert tuned_req["sample_rate"] == 64
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
             ["custom_fts_idx", "custom_vector_idx"], timedelta(seconds=2)
         )
-        table.drop_index("custom_vector_idx")
+        table.drop_index(name="custom_vector_idx")
         table.drop_index("custom_scalar_idx")
         table.drop_index("custom_fts_idx")
 
