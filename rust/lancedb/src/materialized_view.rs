@@ -42,6 +42,9 @@ pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 /// Schema metadata key holding the view definition; see [`DEFINITION_FORMAT`].
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
+/// How many views may stand between a view and a plain table.
+const MAX_SOURCE_DEPTH: usize = 32;
+
 /// Field metadata namespace for declarations about schema structure, such as
 /// an unenforced primary key.
 const SCHEMA_DECLARATION_META_PREFIX: &str = "lance-schema:";
@@ -1238,6 +1241,7 @@ impl PreparedDeclaration {
         namespace_path: &[String],
         name: &str,
     ) -> Result<MaterializedView> {
+        ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
@@ -1252,6 +1256,65 @@ impl PreparedDeclaration {
             parsed_definition: Some(self.definition),
         })
     }
+}
+
+/// Refuse to create `name` when following its source through each view's
+/// stored definition leads back to `name`: with no plain table beneath it,
+/// such a view would only ever refresh from itself. The walk follows the
+/// coordinates the views already record, so it opens one table per level.
+async fn ensure_no_source_cycle(
+    database: &Arc<dyn Database>,
+    namespace_path: &[String],
+    name: &str,
+    definition: &MaterializedViewDefinition,
+) -> Result<()> {
+    let mut path = vec![name.to_string()];
+    let mut next = (
+        definition.source_namespace.clone(),
+        definition.source_table.clone(),
+    );
+    for _ in 0..MAX_SOURCE_DEPTH {
+        let (namespace, source) = next;
+        path.push(source.clone());
+        if namespace == namespace_path && source == name {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "materialized view '{name}' would read itself: {}",
+                    path.join(" -> ")
+                ),
+            });
+        }
+        let table = match database
+            .open_table(OpenTableRequest {
+                name: source,
+                namespace_path: namespace,
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+        {
+            Ok(table) => table,
+            // A missing source ends the chain, so it cannot lead back here.
+            Err(Error::TableNotFound { .. }) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let schema = table.schema().await?;
+        // Only a definition this version reads can be followed.
+        match read_definition(schema.metadata()) {
+            Ok(Some(StoredDefinition::Query(upstream))) => {
+                next = (upstream.source_namespace, upstream.source_table);
+            }
+            _ => return Ok(()),
+        }
+    }
+    Err(Error::InvalidInput {
+        message: format!(
+            "materialized view '{name}' would nest deeper than {MAX_SOURCE_DEPTH} views"
+        ),
+    })
 }
 
 /// Column definitions are positional over the view schema: carry each
@@ -2015,6 +2078,41 @@ mod tests {
             ),
             other => panic!("{operation} on a view was not refused: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_view_cannot_lead_back_to_itself() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        conn.create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_table("src", &[]).await.unwrap();
+
+        let err = conn
+            .create_materialized_view("src", "m2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("materialized view 'src' would read itself: src -> m2 -> m -> src"),
+            "{err}"
+        );
+        assert!(conn.open_table("src").execute().await.is_err());
+
+        // Back under a plain table, the same chain is fine to extend.
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m3", "m2")
+            .execute()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
