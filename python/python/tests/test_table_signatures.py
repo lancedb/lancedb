@@ -171,7 +171,6 @@ def test_fts_unsupported_options(sync_table, kwargs, message):
 @pytest.mark.parametrize(
     "method, kwargs",
     [
-        ("optimize", {"retrain": True}),
         (
             "cleanup_old_versions",
             {"older_than": timedelta(days=1), "delete_unverified": True},
@@ -183,6 +182,18 @@ def test_remote_maintenance_options_warn(method, kwargs):
     table = RemoteTable(MagicMock(name="test"), "test_db")
     with pytest.warns(UserWarning, match="no-op"):
         getattr(table, method)(**kwargs)
+
+
+def test_remote_optimize_options():
+    handle = MagicMock()
+    handle.optimize = AsyncMock(side_effect=NotImplementedError("remote optimize"))
+    table = RemoteTable(handle, "test_db")
+    age = timedelta(days=1)
+    with pytest.raises(NotImplementedError, match="remote optimize"):
+        table.optimize(cleanup_older_than=age, delete_unverified=True, retrain=True)
+    handle.optimize.assert_awaited_once_with(
+        cleanup_older_than=age, delete_unverified=True, retrain=True
+    )
 
 
 @pytest.mark.parametrize(

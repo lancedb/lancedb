@@ -86,6 +86,15 @@ print(query.describe().status)
 for batch in query.reader():
     print(batch.num_rows)
 
+# Values bind to $1 / $name placeholders and travel as Arrow, so a float32
+# stays a float32 and a vector stays a compact fixed-size list:
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k",
+    parameters={"vector": np.random.rand(768).astype(np.float32), "k": 10},
+)
+
 # The async connection exposes the same lifecycle without blocking:
 # async_db = await lancedb.connect_async(
 #     "db://analytics",
@@ -121,9 +130,9 @@ index statistics, and search. For example, `table.delete(where="id = 1")`,
 
 `create_scalar_index` defaults to `replace=True` on both backends. Both scalar
 and full-text index creation accept `wait_timeout`. Remote maintenance methods
-accept the local options but warn that they are no-ops because the service
-manages maintenance. Removed Tantivy options produce the same explanatory
-errors on both backends.
+accept the local options: cleanup and compaction warn that they are no-ops,
+while `optimize` reports an unsupported operation. Removed Tantivy options
+produce the same explanatory errors on both backends.
 
 The old remote keyword names `predicate` for `delete`, `index_name` for
 `drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
@@ -219,6 +228,8 @@ code that used the former remote-only argument order.
 ::: lancedb.sql.AsyncQuery
 
 ::: lancedb.sql.QueryDescription
+
+::: lancedb.sql.QueryParameters
 
 ## Materialized Views (Synchronous)
 

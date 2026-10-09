@@ -58,8 +58,8 @@ def tokenize(
     language: str = "English",
     max_token_length: Optional[int] = 40,
     lower_case: bool = True,
-    stem: bool = True,
-    remove_stop_words: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
     custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
@@ -217,6 +217,7 @@ class Connection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[pa.RecordBatch] = None,
     ) -> SqlQuery: ...
     async def describe_query(self, query_id: UUID) -> QueryDescription: ...
     async def create_table(
@@ -422,6 +423,7 @@ class Table:
     def name(self) -> str: ...
     def __repr__(self) -> str: ...
     def is_open(self) -> bool: ...
+    def _is_native(self) -> bool: ...
     def close(self) -> None: ...
     async def schema(self) -> pa.Schema: ...
     async def add(

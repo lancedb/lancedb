@@ -13,6 +13,7 @@
 #  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 #  See the License for the specific language governing permissions and
 #  limitations under the License.
+import json
 import os
 import random
 import shutil
@@ -42,6 +43,75 @@ import pytest_asyncio
 from utils import exception_output
 
 TEST_LANGUAGE_MODEL_HOME = Path(__file__).parent / "models"
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.parametrize("block_size", [128, 256])
+def test_json_fts(tmp_path, block_size):
+    db = ldb.connect(tmp_path)
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3],
+            "doc": pa.array(
+                [
+                    '{"title":"brown fox","meta":{"tag":"nature"},"author":"alice"}',
+                    '{"title":"blue car","meta":{"tag":"city"}}',
+                    '{"title":"brown bear","meta":{"tag":"nature"}}',
+                    '{"title":"red fox","author":"alice"}',
+                ],
+                type=pa.json_(),
+            ),
+        }
+    )
+    table = db.create_table("json_fts", data)
+    table.create_index("doc", config=FTS(block_size=block_size), name="doc_fts")
+    table = db.open_table("json_fts")
+    index = table.list_indices()[0]
+    assert index.name == "doc_fts"
+    assert index.index_type == "FTS"
+    assert index.columns == ["doc"]
+    stats = table.index_stats("doc_fts")
+    assert stats.num_indexed_rows == 4
+    assert stats.num_unindexed_rows == 0
+
+    for query, expected in [
+        ("title,str,brown", [0, 2]),
+        ("meta.tag,str,nature", [0, 2]),
+        ("author,str,alice", [0, 3]),
+        ("title,str,alice", []),
+        ("title,str,title", []),
+    ]:
+        search = table.search(query, query_type="fts", fts_columns="doc")
+        assert sorted(row["id"] for row in search.to_list()) == expected
+        plan = search.explain_plan(True)
+        assert "MatchQuery" in plan, plan
+        assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_json_fts_async(tmp_path):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "json_fts",
+        pa.table({"doc": pa.array(['{"meta":{"tag":"nature"}}'], type=pa.json_())}),
+    )
+    await table.create_index("doc", config=FTS())
+    search = table.query().nearest_to_text(MatchQuery("meta.tag,str,nature", "doc"))
+    assert len(await search.to_list()) == 1
+    plan = await search.explain_plan(True)
+    assert "MatchQuery" in plan, plan
+    assert "FlatMatchQuery" not in plan, plan
+
+
+@pytest.mark.parametrize("dtype", [pa.binary(), pa.large_binary()])
+def test_fts_rejects_raw_binary(tmp_path, dtype):
+    table = ldb.connect(tmp_path).create_table(
+        "binary_fts", pa.table({"doc": pa.array([b'{"title":"brown"}'], type=dtype)})
+    )
+    with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+        table.create_index("doc", config=FTS())
+    assert table.list_indices() == []
 
 
 @pytest.fixture
@@ -894,6 +964,78 @@ def test_tokenize_uses_simple_index_tokenizer(mem_db: DBConnection):
     ]
 
 
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize(
+    ("base_tokenizer", "options", "expected_filters", "expected_tokens"),
+    [
+        (
+            "code",
+            {},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": None, "remove_stop_words": None},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True},
+            (True, False),
+            [("run", 0), ("in", 1), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"remove_stop_words": True},
+            (False, True),
+            [("running", 0), ("cafe", 2)],
+        ),
+        (
+            "code",
+            {"stem": True, "remove_stop_words": True},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {},
+            (True, True),
+            [("run", 0), ("cafe", 2)],
+        ),
+        (
+            "simple",
+            {"stem": False, "remove_stop_words": False},
+            (False, False),
+            [("running", 0), ("in", 1), ("cafe", 2)],
+        ),
+    ],
+)
+def test_fts_tokenizer_filter_defaults(
+    mem_db, legacy, base_tokenizer, options, expected_filters, expected_tokens
+):
+    text = "Running in café"
+    table = mem_db.create_table("test_filter_defaults", data=[{"text": text}])
+    if legacy:
+        with pytest.warns(DeprecationWarning, match="create_fts_index"):
+            table.create_fts_index("text", base_tokenizer=base_tokenizer, **options)
+    else:
+        table.create_index("text", config=FTS(base_tokenizer=base_tokenizer, **options))
+
+    details = table.list_indices()[0].index_details
+    assert (details["stem"], details["remove_stop_words"]) == expected_filters
+    assert [
+        (token.text, token.position) for token in table.tokenize(text, column="text")
+    ] == expected_tokens
+    assert [
+        (token.text, token.position)
+        for token in ldb.tokenize(text, base_tokenizer=base_tokenizer, **options)
+    ] == expected_tokens
+    if base_tokenizer == "code" and not expected_filters[1]:
+        assert table.search("in", query_type="fts").to_list()[0]["text"] == text
+
+
 def test_tokenize_uses_icu_index_tokenizer_by_name(mem_db: DBConnection):
     data = pa.table({"text": ["Hello, こんにちは世界!"]})
     table = mem_db.create_table("test_tokenize_icu", data=data)
@@ -1137,6 +1279,34 @@ def test_fts_lindera_tokenizer(
     assert [row["text"] for row in results] == ["成田国際空港"]
 
 
+@pytest.mark.parametrize("fuzziness", [None, 0, 1, 2])
+def test_match_query_fuzziness_to_json(fuzziness):
+    query = MatchQuery("puppy", "text", fuzziness=fuzziness)
+
+    assert query.fuzziness == fuzziness
+    assert json.loads(query.to_json())["match"]["fuzziness"] == fuzziness
+
+
+@pytest.mark.parametrize(
+    "options, expected",
+    [
+        pytest.param({}, ["ab"], id="default-exact"),
+        pytest.param({"fuzziness": 0}, ["ab"], id="explicit-exact"),
+        pytest.param({"fuzziness": None}, ["ab"], id="automatic"),
+        pytest.param({"fuzziness": 1}, ["ab", "ac"], id="one-edit"),
+        pytest.param({"fuzziness": 2}, ["ab", "ac", "zz"], id="two-edits"),
+    ],
+)
+def test_match_query_fuzziness_search(tmp_db, options, expected):
+    # Automatic fuzziness is zero for two-character terms.
+    table = tmp_db.create_table("fuzzy", pa.table({"text": ["ab", "ac", "zz"]}))
+    table.create_index("text", config=FTS(stem=False, remove_stop_words=False))
+
+    results = table.search(MatchQuery("ab", "text", **options)).to_list()
+
+    assert sorted(row["text"] for row in results) == sorted(expected)
+
+
 def test_fts_query_to_json():
     """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
@@ -1267,7 +1437,10 @@ def test_fts_query_to_json():
     json_str = multi_match.to_json()
     expected = (
         '{"multi_match":{"query":"python","columns":["tags","title"],'
-        '"boost":[1.0,1.0]}}'
+        '"boost":[1.0,1.0],"match_queries":[{"column":"tags","terms":"python",'
+        '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
+        '"prefix_length":0},{"column":"title","terms":"python","boost":1.0,'
+        '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}]}}'
     )
     assert json_str == expected
 
