@@ -1124,7 +1124,8 @@ pub struct VectorQueryRequest {
     pub minimum_nprobes: Option<usize>,
     /// The maximum number of partitions to search.
     ///
-    /// If unset, Lance's default is used.
+    /// If unset, Lance's default is used. Zero represents an explicitly unbounded
+    /// maximum on request and wire representations.
     pub maximum_nprobes: Option<usize>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
@@ -1311,6 +1312,7 @@ impl VectorQuery {
             });
         }
         if let Some(maximum_nprobes) = self.request.maximum_nprobes
+            && maximum_nprobes != 0
             && minimum_nprobes > maximum_nprobes
         {
             return Err(Error::InvalidInput {
@@ -1352,7 +1354,9 @@ impl VectorQuery {
                 });
             }
         }
-        self.request.maximum_nprobes = maximum_nprobes;
+        // Preserve an explicit reset separately from an untouched maximum. The
+        // request protocols already use zero to represent an unbounded maximum.
+        self.request.maximum_nprobes = Some(maximum_nprobes.unwrap_or(0));
         Ok(self)
     }
 
@@ -2462,6 +2466,17 @@ mod tests {
         let maximum_only_query = query.maximum_nprobes(Some(20)).unwrap();
         assert_eq!(maximum_only_query.request.minimum_nprobes, None);
         assert_eq!(maximum_only_query.request.maximum_nprobes, Some(20));
+
+        let explicitly_unbounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .nprobes(20)
+            .unwrap()
+            .maximum_nprobes(None)
+            .unwrap();
+        assert_eq!(explicitly_unbounded_query.request.nprobes, Some(20));
+        assert_eq!(explicitly_unbounded_query.request.maximum_nprobes, Some(0));
 
         let bounded_query = table
             .query()

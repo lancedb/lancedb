@@ -294,12 +294,16 @@ pub async fn create_plan(
         }
 
         if let Some(nprobes) = query.nprobes {
-            scanner.nprobes(nprobes);
+            if query.maximum_nprobes == Some(0) {
+                scanner.minimum_nprobes(nprobes);
+            } else {
+                scanner.nprobes(nprobes);
+            }
         }
         if let Some(minimum_nprobes) = query.minimum_nprobes {
             scanner.minimum_nprobes(minimum_nprobes);
         }
-        if let Some(maximum_nprobes) = query.maximum_nprobes {
+        if let Some(maximum_nprobes) = query.maximum_nprobes.filter(|nprobes| *nprobes != 0) {
             scanner.maximum_nprobes(maximum_nprobes);
         }
     }
@@ -1001,6 +1005,16 @@ mod tests {
         assert_eq!(request.nprobes, Some(8));
         assert_eq!(request.minimum_nprobes, Some(20));
         assert_eq!(request.maximum_nprobes, Some(20));
+
+        let explicitly_unbounded_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            nprobes: Some(8),
+            maximum_nprobes: Some(0),
+            ..Default::default()
+        });
+        let request = convert_to_namespace_query(&explicitly_unbounded_query).unwrap();
+        assert_eq!(request.nprobes, Some(8));
+        assert_eq!(request.maximum_nprobes, Some(0));
     }
 
     #[test]

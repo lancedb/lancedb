@@ -1882,7 +1882,12 @@ mod lsm_tests {
             base_query.clone(),
             base_query.clone().nprobes(8).unwrap(),
             base_query.clone().minimum_nprobes(8).unwrap(),
-            base_query.maximum_nprobes(Some(8)).unwrap(),
+            base_query.clone().maximum_nprobes(Some(8)).unwrap(),
+            base_query
+                .nprobes(1)
+                .unwrap()
+                .maximum_nprobes(None)
+                .unwrap(),
         ] {
             let ids = collect_ids(query.execute().await.unwrap()).await;
             assert_eq!(ids, vec![255]);

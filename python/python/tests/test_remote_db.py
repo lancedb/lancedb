@@ -2469,6 +2469,16 @@ def test_query_sync_nprobes_passthrough():
         table.search([1, 2, 3]).nprobes(20).to_list()
 
 
+def test_query_sync_nprobes_with_unbounded_maximum():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert body["maximum_nprobes"] == 0
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).maximum_nprobes(0).to_list()
+
+
 def test_query_sync_minimum_nprobes_only():
     def handler(body):
         assert body == {

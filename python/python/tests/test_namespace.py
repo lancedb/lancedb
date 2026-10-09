@@ -1127,6 +1127,13 @@ class TestPushdownOperations:
         assert request.minimum_nprobes == 3
         assert request.maximum_nprobes == 10
 
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(vector=[1.0, 2.0], nprobes=5, maximum_nprobes=0),
+        )
+        assert request.nprobes == 5
+        assert request.maximum_nprobes == 0
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
