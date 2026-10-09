@@ -34,7 +34,6 @@ use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 
-#[path = "sql_exchange.rs"]
 mod exchange;
 
 use exchange::{ExchangeQuery, ExchangeQueryHandle};
