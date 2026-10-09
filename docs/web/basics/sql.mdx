@@ -1,7 +1,7 @@
 ---
 title: "SQL"
 sidebarTitle: "SQL"
-description: "The same tables, reached with SQL — the universal access path, and where every operation is formally documented."
+description: "The same tables, reached with SQL from any language with a Flight SQL client, and where the SQL dialect is specified."
 icon: table-list
 keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
 availability:
@@ -31,12 +31,12 @@ waiting on a native binding. See [SDKs](/basics/sdk) for the officially
 supported and community clients, and reach for Flight SQL whenever yours
 isn't among them.
 
-## Every SDK operation, in SQL {#sdk-parity}
+## SDK operations in SQL {#sdk-parity}
 
-Broadly, a public SDK method has a corresponding SQL statement -- creating a
+Many SDK operations have a SQL statement that does the same thing -- creating a
 table is `CREATE TABLE`, inserting rows is `INSERT INTO`, building an index is
-`CREATE INDEX`. The two describe the same operations, so whichever one your
-code speaks, the other is available too.
+`CREATE INDEX`. They are not interchangeable, though: each side has operations
+the other lacks.
 
 | | SDK | SQL |
 | --- | :---: | :---: |
@@ -76,8 +76,8 @@ create one with `CREATE VIEW` or by passing the query to an SDK's
 A connection to a directory or a bucket has no server to plan and execute a
 statement, and asking it to raises `NotImplementedError`. This is the largest
 behavioral difference between the embedded and deployed forms, and the reason
-the SDKs are the portable choice: SDK code moves between the two by changing
-the URI, SQL does not.
+the SDKs are the portable choice: their core table and search code moves
+between the two by changing the URI, while SQL needs the deployment.
 
 ```python
 db = lancedb.connect("./.lancedb")        # no SQL
@@ -117,10 +117,12 @@ SQL for the analysis on top.
 
 ## The complete reference {#reference}
 
-This page is the concept; [SQL Reference](/sql) is the specification. It has
-one page per statement, syntax first -- and since every SDK operation has a
-SQL form, those pages end up defining the precise behavior of the SDK
-operations too, not just the SQL dialect.
+This page is the concept; [SQL Reference](/sql) is the specification of the
+SQL dialect, with one page per statement, syntax first. It does not define the
+SDKs: for a language's methods, their arguments and what they return, see that
+SDK's reference -- [Python](https://lancedb.github.io/lancedb/python/python/),
+[TypeScript](https://lancedb.github.io/lancedb/js/) or
+[Rust](https://docs.rs/lancedb/latest/lancedb/index.html).
 
 <Card title="SQL Reference" icon="table-list" href="/sql">
   DDL by object, then DML, then DQL -- the detailed technical documentation

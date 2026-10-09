@@ -114,9 +114,10 @@ terabytes.
 | Scale bound | your process | the cluster |
 | What you operate | nothing | a deployment |
 
-Both expose the same table API — create, open, mutate, query — so application
-code moves between them by changing the URI. What does not move is code that
-depends on a row in the right-hand column.
+Both expose the same core table API — create, open, mutate, query — so that
+code moves between them by changing the URI. Code that depends on a row in the
+right-hand column does not; [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise)
+lists what changes.
 
 ## Choosing, and changing your mind {#choosing}
 

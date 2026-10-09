@@ -54,9 +54,10 @@ storage and does the work itself. The third talks to a **deployment**.
 
 ![](/static/assets/images/overview/understanding-tables.png)
 
-Both handles expose the same table API -- create, open, mutate, query -- so
-application code moves between them by changing the URI. What differs is where
-resolution and execution happen, and therefore which operations exist at all.
+Both handles expose the same core table API -- create, open, mutate, query --
+so that code moves between them by changing the URI. What differs is where
+resolution and execution happen, and therefore which operations exist at all;
+see [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
 
 ## Connecting to a deployment {#deployment}
 

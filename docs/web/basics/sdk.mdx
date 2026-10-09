@@ -14,10 +14,13 @@ availability:
 ---
 
 A language SDK is the primary way to work with LanceDB: create and manage
-tables, write and query data, build indexes, run feature engineering. The same
-table API works whether you're connected to an embedded database or an
-Enterprise deployment -- application code moves between the two by changing
-the connection URI.
+tables, write and query data, build indexes, run feature engineering.
+
+Start locally, then connect to Enterprise by changing your connection URI. Keep
+the same core table and search code as your application grows: creating a
+table, adding, updating and deleting rows, and searching and filtering it are
+the same calls on either connection. What else changes when you move is in
+[Moving to LanceDB Enterprise](#moving-to-enterprise).
 
 ## Officially supported SDKs {#supported-sdks}
 
@@ -82,6 +85,45 @@ use `spawn` instead. See
 [this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
 for why.
 </Warning>
+
+## Moving to LanceDB Enterprise {#moving-to-enterprise}
+
+The [quickstart](/quickstart)'s core steps -- create a table, add rows, search,
+filter -- run unchanged once the connection points at a deployment. Four things
+around them change:
+
+**Connection settings and credentials.** A deployment takes a `db://` URI, its
+endpoint and an API key, which its administrator gives you; keep the key in the
+environment or a secret manager. See
+[Connect to LanceDB Enterprise](/quickstart#connect-to-lancedb-enterprise), and
+[Authentication](/enterprise/authentication) for OAuth.
+
+**Methods that are missing or behave differently.** A `db://` connection
+returns a remote table, which lacks some local methods and changes others. For
+example, in Python `table_exists` raises, a whole-table `to_arrow()` or
+`to_pandas()` raises -- query the table instead, as in
+`table.search().to_arrow()` -- and listing tables returns one page at a time.
+Some features also have to be enabled on the deployment before they work:
+computed columns, views, materialized views and SQL among them. Each page's
+label says where its feature applies, and
+[OSS and Enterprise](/basics/offerings) compares them all.
+
+**Maintenance.** Embedded, compaction, cleanup and index updates happen when
+you call `optimize()`. On a deployment they are the deployment's work, and its
+configuration decides when they run; calling `optimize()` against it does not
+start them. Synchronous Python warns and returns `None`, while asynchronous
+Python and TypeScript raise. See [Background jobs](/maintenance/background-jobs).
+
+**Long-running work.** On a deployment, building an index, refreshing a
+computed column and similar operations run on the server as
+[jobs](/basics/jobs). The `_async` form submits one and returns the job, which
+you can wait on, check later from another process, or cancel; the blocking form
+of a refresh raises there. Running on the server does not make derived data
+keep itself current: a computed column is filled only when you submit a
+refresh.
+
+The [Enterprise overview](/enterprise) describes how a deployment is put
+together.
 
 ## What stays the same {#invariants}
 
