@@ -39,22 +39,30 @@ table.optimize(cleanup_older_than=timedelta(days=30))
 removed, along with the files only they referenced. On a deployment, the
 retention period comes from its configuration instead.
 
-The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
-everything except it.
+The latest version is never removed, whatever you pass. `timedelta(0)` makes
+every older version eligible for removal, but cleanup still keeps the versions
+that branches and tags protect, as the warning below describes.
 
 <Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite: a
-version outside the retention window is gone, unless something still refers to
-it.
+Pruning is what makes [time travel](/management/table#versioning) finite: an
+eligible version outside the retention window is gone. Cleanup keeps a version,
+whatever its age, when it is:
 
-- A **tag** keeps its version, whatever its age. While a tag points at a
-  version older than the window, cleanup refuses to run and raises an error
-  naming the tag; `optimize()` raises it after compacting, so nothing is
-  pruned and its index update does not run. Delete the tag to let cleanup
-  proceed.
-- A **branch** keeps the version it was forked from, and the files it reads,
-  when its parent is cleaned up; the parent's other old versions are pruned as
-  usual.
+- the **latest** version;
+- a version a **branch** was forked from, along with the files the branch
+  reads; the parent's other old versions are pruned as usual;
+- a **tagged** version.
+
+Under the default policy, a tag can also stop cleanup. When a tagged version is
+older than the window and is not the latest, cleanup refuses to run: it raises
+an error naming the tag and prunes nothing. To let it proceed, move the tag to a
+version inside the window, delete the tag, or widen the window.
+
+A tag on the latest version does not stop cleanup. But `optimize()` compacts
+before it prunes, and compacting commits a new version whenever it merges
+files, so a tag on what was the latest version can become an older one by the
+time cleanup runs. `optimize()` then raises after compacting, and its index
+update does not run.
 
 A deployment's background cleanup follows the same rules. If you rely on
 reading old versions, set the window to cover the range you need before

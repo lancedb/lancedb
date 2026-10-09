@@ -1057,8 +1057,9 @@ Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
 let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
 `"q3-evaluation"`) to specific versions and check those out by name. They are
 conceptually similar to git tags, and unlike numeric versions, **tagged versions
-are never pruned** -- cleanup stops instead while a tag points at a version older
-than its retention window (see the cleanup note at the bottom of this page).
+are never pruned** -- a tagged version that is older than the retention window and
+is not the latest stops cleanup instead (see the cleanup note at the bottom of this
+page).
 
 The tags API supports the standard CRUD operations — create, list, update, delete —
 plus checking out by tag name.
@@ -1159,8 +1160,12 @@ which is when old-version files are removed and disk space is reclaimed. A deplo
 when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 
 **Tagged versions are never pruned.** A version with a tag pointing at it is
-retained regardless of age. Cleanup does not prune around it, though: while a tag points
-at a version older than the retention window, `optimize()` raises an error naming the
-tag, after compacting and before pruning anything or updating indexes. To let cleanup
-proceed, [delete the tag](#versioning-tag-based-versioning) first.
+retained regardless of age. When a tagged version is older than the retention window and
+is not the latest, cleanup refuses to run instead of pruning around it: `optimize()` raises
+an error naming the tag and prunes nothing. A tag on the latest version does not cause
+this, but `optimize()` compacts before it prunes, and compacting commits a new version
+whenever it merges files, so a tag on what was the latest version can become an older
+one by the time cleanup runs; the error then comes after compacting, and the index
+update does not run. To let cleanup proceed, [move the tag](#versioning-tag-based-versioning)
+to a version inside the retention window, delete it, or widen the window.
 </Note>
