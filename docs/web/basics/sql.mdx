@@ -4,10 +4,13 @@ sidebarTitle: "SQL"
 description: "The same tables, reached with SQL — the universal access path, and where every operation is formally documented."
 icon: table-list
 keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
+availability:
+  oss: unavailable
+  enterprise: varies
+  summary: >-
+    SQL runs on an Enterprise deployment whose Flight SQL endpoint is enabled
+    and reachable; embedded connections raise instead.
 ---
-
-<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local
-database has no engine to plan a statement, so `execute_query` raises there.
 
 SQL is a second way to reach the same tables the [SDKs](/basics/sdk) do --
 not a different product, a different interface onto one engine. A table
@@ -39,11 +42,16 @@ code speaks, the other is available too.
 | --- | :---: | :---: |
 | Create and manage catalog objects | yes | partly |
 | Insert, merge, update, delete | yes | yes |
-| Filter, project, aggregate, join | yes | yes |
+| Filter, project | yes | yes |
+| Aggregate, join | no | yes |
 | Vector search | yes | version-dependent |
 | Full-text search | yes | yes |
 | Feature engineering, jobs | yes | yes |
 | Runs against a local database | yes | **no** |
+
+On a deployment, feature engineering must also be enabled by the deployment,
+whether it is declared in SQL or through an SDK -- see
+[Computed columns](/feature-engineering/add-computed-column).
 
 ## Vector search depends on the deployment {#no-vector-sql}
 
@@ -59,9 +67,9 @@ Full-text search is available through the [`fts()`](/sql/functions#fts) table
 function and the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
 predicate.
 
-The reverse gap also exists: a [view](/management/view) is a saved SQL query,
-so SQL is the only way to create one -- there's nothing for an SDK method to
-call.
+A [view](/management/view) is a saved SQL query. On a deployment you can
+create one with `CREATE VIEW` or by passing the query to an SDK's
+`create_view`; an embedded database has no views.
 
 ## SQL needs a deployment {#sql-is-remote}
 
@@ -75,6 +83,12 @@ the URI, SQL does not.
 db = lancedb.connect("./.lancedb")        # no SQL
 db = lancedb.connect("db://my-database")  # SQL
 ```
+
+A deployment serves SQL only when its Flight SQL endpoint is enabled and
+reachable, which is part of the deployment's configuration. The SDK also has to
+know where that endpoint is: pass `sql_host_override` when connecting, or
+connect through an `http://` `host_override`, from which the SDK derives it
+(the next port up, or 10025 when the override names no port).
 
 ## Running SQL from Python {#sql-from-python}
 

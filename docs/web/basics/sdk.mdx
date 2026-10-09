@@ -4,6 +4,13 @@ sidebarTitle: "SDKs"
 description: "The language clients — Python, TypeScript, Rust — and what stays true across all of them."
 icon: code-compare
 keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    The Python, TypeScript and Rust SDKs work with embedded databases and,
+    through `db://`, with Enterprise deployments; the Java SDK reaches
+    deployments only. What each can do differs by language and connection.
 ---
 
 A language SDK is the primary way to work with LanceDB: create and manage
@@ -29,14 +36,15 @@ Not every SDK covers the same surface, though:
 | --- | :---: | :---: |
 | Create and manage catalog objects | yes | yes |
 | Insert, merge, update, delete | yes | yes |
-| Filter, project, aggregate, join | yes | yes |
+| Filter, project | yes | yes |
 | Vector search | yes | yes |
 | Full-text search | yes | yes |
 | Feature engineering, jobs | yes | partly |
 | Runs against a local database | yes | yes |
 
-TypeScript has no methods for [functions](/management/function). Reach the
-gap with SQL instead -- see [SQL](/basics/sql).
+Neither SDK aggregates or joins, and TypeScript has no methods for
+[functions](/management/function). Reach those with SQL on a deployment
+instead -- see [SQL](/basics/sql).
 
 ## REST API {#rest}
 
@@ -62,8 +70,8 @@ and release cadence vary.
 | <Icon icon="R" /> [R](https://github.com/CathalByrneGit/lancedb) | Community-contributed R package |
 | <Icon icon="flutter" /> [Flutter](https://github.com/Alexcn/flutter_lancedb) | Community-contributed Flutter bindings |
 
-For any other language, [SQL](/basics/sql) reaches the same tables without a
-LanceDB-specific SDK at all.
+For any other language, [SQL](/basics/sql) on a deployment reaches the same
+tables without a LanceDB-specific SDK at all.
 
 ## Python multiprocessing {#multiprocessing}
 
