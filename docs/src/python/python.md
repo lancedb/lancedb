@@ -113,6 +113,25 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
+Local and remote tables use the same arguments for index creation, deletion,
+index statistics, and search. For example, `table.delete(where="id = 1")`,
+`table.create_index("cosine", 2)` (the deprecated vector API), and
+`table.search([1.0, 1.0], fast_search=True)` work with either backend.
+`fast_search=True` excludes rows that have not been indexed.
+
+`create_scalar_index` defaults to `replace=True` on both backends. Both scalar
+and full-text index creation accept `wait_timeout`. Remote maintenance methods
+accept the local options but warn that they are no-ops because the service
+manages maintenance. Removed Tantivy options produce the same explanatory
+errors on both backends.
+
+The old remote keyword names `predicate` for `delete`, `index_name` for
+`drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
+remain available with deprecation warnings. Use `where`, `name`, `index_name`,
+and `field_names`, respectively. For positional calls, use the argument order
+documented by `Table` below; specify index options by keyword when migrating
+code that used the former remote-only argument order.
+
 ::: lancedb.table.Table
 
 ::: lancedb.table.FragmentStatistics
