@@ -594,6 +594,13 @@ class Permutation:
         then the first split will be used.
         """
         assert base_table is not None, "base_table is required"
+        # A PyTorch fork worker may construct its Permutation lazily from a
+        # table opened in the parent process. Reopen that table before the
+        # Rust reader clones its object-store clients and connection pools.
+        if hasattr(base_table, "_ensure_open"):
+            base_table._ensure_open()
+        if permutation_table is not None and hasattr(permutation_table, "_ensure_open"):
+            permutation_table._ensure_open()
         if split is not None:
             if permutation_table is None:
                 raise ValueError(
