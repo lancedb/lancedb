@@ -74,9 +74,11 @@ exists.
 <Warning>
 Retention is finite. [Cleanup](/maintenance/cleanup) prunes versions older
 than the retention window — **7 days by default** for `optimize()` in the
-embedded library, while a deployment's configuration sets its own — and a tag or branch
-pointing at a pruned version no longer resolves. If you rely on reading old
-versions, widen the window before running it, not after.
+embedded library, while a deployment's configuration sets its own. A tag keeps
+its version, and while a tag points at a version older than the window, cleanup
+refuses to run until the tag is deleted; a branch keeps the version it was
+forked from. If you rely on reading old versions, widen the window before
+running it, not after.
 </Warning>
 
 **Dropping a table ends its history.** Versioning does not survive

@@ -1057,8 +1057,8 @@ Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
 let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
 `"q3-evaluation"`) to specific versions and check those out by name. They are
 conceptually similar to git tags, and unlike numeric versions, **tagged versions
-are preserved when old versions are pruned** (see the cleanup note at the bottom
-of this page).
+are never pruned** -- cleanup stops instead while a tag points at a version older
+than its retention window (see the cleanup note at the bottom of this page).
 
 The tags API supports the standard CRUD operations — create, list, update, delete —
 plus checking out by tag name.
@@ -1158,7 +1158,9 @@ In LanceDB OSS, `optimize()` can prune older versions based on its retention set
 which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
 when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 
-**Tagged versions are exempt from cleanup.** A version with a tag pointing at it is
-retained regardless of age, and its files are not removed by `optimize()`. To make
-a tagged version eligible for pruning, [delete the tag](#versioning-tag-based-versioning) first.
+**Tagged versions are never pruned.** A version with a tag pointing at it is
+retained regardless of age. Cleanup does not prune around it, though: while a tag points
+at a version older than the retention window, `optimize()` raises an error naming the
+tag, after compacting and before pruning anything or updating indexes. To let cleanup
+proceed, [delete the tag](#versioning-tag-based-versioning) first.
 </Note>

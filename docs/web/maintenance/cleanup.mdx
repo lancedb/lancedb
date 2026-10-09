@@ -43,12 +43,22 @@ The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
 everything except it.
 
 <Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite. A
-version outside the retention window is gone, and a tag or branch pointing at
-it no longer resolves.
+Pruning is what makes [time travel](/management/table#versioning) finite: a
+version outside the retention window is gone, unless something still refers to
+it.
 
-If you rely on reading old versions, set the window to cover the range you
-need before running this, not after.
+- A **tag** keeps its version, whatever its age. While a tag points at a
+  version older than the window, cleanup refuses to run and raises an error
+  naming the tag; `optimize()` raises it after compacting, so nothing is
+  pruned and its index update does not run. Delete the tag to let cleanup
+  proceed.
+- A **branch** keeps the version it was forked from, and the files it reads,
+  when its parent is cleaned up; the parent's other old versions are pruned as
+  usual.
+
+A deployment's background cleanup follows the same rules. If you rely on
+reading old versions, set the window to cover the range you need before
+running this, not after.
 </Warning>
 
 ## Disk usage does not drop immediately {#disk}
