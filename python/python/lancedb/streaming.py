@@ -914,6 +914,22 @@ class StreamingDataset(IterableDataset):
                     "first, or construct StreamingDataset without block_size"
                 )
             self._pinned_version = table.version
+            # Captured once, now, rather than recomputed on every
+            # _open_pinned_table() call: for a memory table, the "pickle
+            # state" below IS the row data (to_arrow()), not just reopen
+            # coordinates, so recomputing it later would silently capture
+            # whatever the live table looks like *then* instead of the
+            # snapshot this pin is supposed to mean.  Not used for a
+            # RemoteTable -- see _open_pinned_table, which deep-copies it
+            # directly instead.
+            from .remote.table import RemoteTable as _RemoteTable
+
+            self._pinned_table_state: Optional[dict] = (
+                _table_to_pickle_state(table)
+                if self._connection_factory is None
+                and not isinstance(table, _RemoteTable)
+                else None
+            )
 
             block_live_offsets: Optional[list[np.ndarray]] = None
             self._all_columns: Optional[list[str]] = None
@@ -1058,37 +1074,87 @@ class StreamingDataset(IterableDataset):
     def _open_pinned_table(self):
         """Open a private table handle checked out to this dataset's pin.
 
-        A fresh handle (via ``connection_factory`` if one was supplied,
-        otherwise the same reopen-by-name state ``__setstate__`` uses for
-        worker reconnects) so checking it out to the pinned version never
+        A fresh handle so checking it out to the pinned version never
         mutates ``self._table``, which the caller may still be using
         elsewhere.  Goes through ``Table.checkout``/``take_offsets``/
         ``search`` -- the same backend-agnostic interface ``RemoteTable``
         implements -- instead of pylance's ``to_lance()``, which only
         works against a local table.
+
+        Three cases, each independent of ``self._table`` by construction:
+
+        - ``connection_factory`` set: call it fresh every time (the
+          documented way to get an unrelated handle; e.g. a worker
+          reconnect).
+        - A ``RemoteTable``: ``_table_to_pickle_state``/
+          ``_table_from_pickle_state`` (used below for the other two cases)
+          special-case "remote" by returning ``self._table`` itself --
+          correct for their original purpose (cross-process pickling, where
+          the unpickled copy necessarily lives in a different process), but
+          wrong here, since this runs in the *same* process: calling
+          ``checkout()`` on that result would pin (and, since LanceDB Cloud
+          rejects writes through a version-pinned handle, effectively make
+          read-only) the caller's own table object.  ``deepcopy`` instead
+          round-trips through ``RemoteTable.__getstate__``/``__setstate__``,
+          which carries only reopen coordinates (connection state, branch,
+          checkout version) and clears the live connection handle, so the
+          copy reconnects independently on first real use.
+        - Local or memory: ``self._pinned_table_state`` (captured once at
+          construction -- see ``__init__``) is replayed here instead of
+          recomputing ``_table_to_pickle_state(self._table)`` fresh each
+          call.  For a local (on-disk) table this would barely matter (the
+          state is just reopen coordinates, not data), but for a memory
+          table the "pickle state" the helper returns *is* the row data
+          (``to_arrow()``); recomputing it on every call would silently
+          capture whatever the live table looks like at that later moment
+          instead of the snapshot construction actually pinned.  A reopened
+          memory table is always a fresh version-1 table, so there is
+          nothing meaningful to additionally ``checkout()`` -- it already
+          is exactly the pinned snapshot by construction.
         """
         if self._connection_factory is not None:
             pinned = self._connection_factory(self._table.name)
-        else:
-            pinned = _table_from_pickle_state(_table_to_pickle_state(self._table))
-        pinned.checkout(self._pinned_version)
+            pinned.checkout(self._pinned_version)
+            return pinned
+
+        if self._pinned_table_state is None:
+            # Only a RemoteTable skips capturing _pinned_table_state (see
+            # __init__) -- anything else reaching here is a construction
+            # bug, not a runtime condition callers can hit.
+            pinned = deepcopy(self._table)
+            pinned.checkout(self._pinned_version)
+            return pinned
+
+        pinned = _table_from_pickle_state(self._pinned_table_state)
+        if self._pinned_table_state["kind"] != "memory":
+            pinned.checkout(self._pinned_version)
         return pinned
 
     def _pinned_lance_dataset(self, pinned_table):
-        """Native pylance handle for ``pinned_table``, if it's a local table.
+        """Native pylance handle for ``pinned_table``, if it's an on-disk table.
 
-        ``to_lance()`` only works against a local table (it raises
-        ``NotImplementedError`` on ``RemoteTable``); cached per dataset
-        instance (keyed by nothing -- there's only ever one pin per
+        ``to_lance()`` raises ``NotImplementedError`` on ``RemoteTable``, and
+        -- for a different reason -- also fails on a reopened ``memory://``
+        table: ``_open_pinned_table`` rebuilds it as an isolated store (see
+        its docstring), which pylance's raw ``lance.dataset()`` open (what
+        ``to_lance()`` uses) cannot resolve; only the table's own connection
+        handle can see its data. Both cases are excluded here up front
+        rather than only via the ``except``, since the memory failure is a
+        ``ValueError`` indistinguishable from a real error. Cached per
+        dataset instance (keyed by nothing -- there's only ever one pin per
         instance) so the conversion runs at most once rather than once per
-        block read. ``None`` means ``pinned_table`` is remote and callers
-        must use the backend-agnostic query builder instead.
+        block read. ``None`` means callers must use the backend-agnostic
+        query builder instead.
         """
         if not hasattr(self, "_pinned_lance_ds_cache"):
-            try:
-                self._pinned_lance_ds_cache = pinned_table.to_lance()
-            except NotImplementedError:
+            conn_uri = getattr(getattr(pinned_table, "_conn", None), "uri", "")
+            if conn_uri.startswith("memory://"):
                 self._pinned_lance_ds_cache = None
+            else:
+                try:
+                    self._pinned_lance_ds_cache = pinned_table.to_lance()
+                except NotImplementedError:
+                    self._pinned_lance_ds_cache = None
         return self._pinned_lance_ds_cache
 
     def _read_block(

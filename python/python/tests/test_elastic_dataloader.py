@@ -3233,6 +3233,29 @@ def test_two_phase_over_remote_table_filtered_and_shuffled():
     assert sorted(ids) == live_ids, "only live rows, each exactly once"
 
 
+def test_two_phase_over_remote_table_does_not_pin_callers_handle():
+    """_open_pinned_table() must not mutate the caller's own RemoteTable.
+
+    Without a connection_factory, the reopen helpers used for local/memory
+    tables return the *same* RemoteTable object for the remote case (correct
+    for their original cross-process pickling purpose, wrong for same-process
+    reuse here).  Checking that object out to the block-mode pin would
+    therefore pin -- and, since checkout_version != None marks a handle
+    version-pinned -- effectively make read-only the caller's own live table,
+    not an unrelated copy.
+    """
+    server = MockPermutationServer(num_rows=8)
+
+    with mock_remote_table(server) as table:
+        assert table._checkout_version is None, "caller's table starts unpinned"
+        ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+        list(ds)  # drive at least one _open_pinned_table() call
+        assert table._checkout_version is None, (
+            "iterating a 2-phase dataset must not pin the caller's own "
+            "table handle to a fixed version"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 2-phase shuffled reads (block_size)
 # ---------------------------------------------------------------------------
@@ -3416,6 +3439,41 @@ def test_two_phase_pinned_version_survives_concurrent_write(tmp_path):
     assert ids == list(range(8)), (
         "must read the version pinned at construction, not the live, since-mutated one"
     )
+
+
+def test_two_phase_pinned_memory_table_survives_concurrent_write():
+    """Same guarantee as the on-disk test above, but for a memory:// table.
+
+    A memory table's "pickle state" is its row data (to_arrow()), not just
+    reopen coordinates, so it must be captured once at construction -- not
+    recomputed from the live table on every _open_pinned_table() call --
+    or a write made after construction would leak into every later read.
+    """
+    db = lancedb.connect("memory://")
+    table = db.create_table("t", pa.table({"id": list(range(8))}))
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    table.delete("id = 0")
+    table.add(pa.table({"id": [8]}))
+
+    ids = [s["id"] for s in ds]
+    assert ids == list(range(8)), (
+        "must read the snapshot captured at construction, not the live, "
+        "since-mutated one"
+    )
+
+
+def test_two_phase_memory_table_already_at_a_later_version():
+    """Constructing over a memory table already past version 1 must not
+    fail: the pin is the snapshot's data, not a version number to replay
+    against a freshly rebuilt (always version-1) in-memory table."""
+    db = lancedb.connect("memory://")
+    table = db.create_table("t", pa.table({"id": list(range(4))}))
+    table.add(pa.table({"id": [4, 5, 6, 7]}))  # now at version 2, 8 live rows
+
+    ds = StreamingDataset(table, num_splits=1, block_size=4, shuffle=False)
+    ids = [s["id"] for s in ds]
+    assert sorted(ids) == list(range(8))
 
 
 def test_two_phase_rejects_lsm_write_spec_table(tmp_path):
