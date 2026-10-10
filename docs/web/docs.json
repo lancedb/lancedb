@@ -495,7 +495,8 @@
               "integrations/ai/genkit",
               "integrations/ai/kiln",
               "integrations/ai/prompttools",
-              "integrations/ai/synthetic-data-kit"
+              "integrations/ai/synthetic-data-kit",
+              "integrations/ai/vscode"
             ]
           }
         ]

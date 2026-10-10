@@ -1,0 +1,297 @@
+---
+title: "VS Code extensions"
+sidebarTitle: "VS Code"
+description: "Embed LanceDB in a VS Code extension to search a workspace by meaning, with no server, and bundle and package its native binaries correctly."
+keywords: ["vscode", "visual studio code", "extension", "electron", "esbuild", "vsix", "semantic search"]
+---
+
+import {
+  TsVscodeChunk,
+  TsVscodeConnect,
+  TsVscodeImports,
+  TsVscodeIndex,
+  TsVscodeSearch,
+} from '/snippets/vscode_search.mdx';
+import { TsVscodeExtension } from '/snippets/vscode_extension.mdx';
+
+A VS Code extension runs in the *extension host*, a Node.js process, so LanceDB's TypeScript SDK
+(`@lancedb/lancedb`) runs inside it like any other npm package. There's no database server to
+start: the extension opens a table on local disk and queries it in-process. That makes LanceDB
+a good fit for features such as semantic search over a workspace, retrieval for an AI assistant,
+or a cache of embeddings that survives restarts.
+
+The extension host differs from a plain Node.js script in three ways that trip people up:
+
+- **Where you can write.** Relative paths resolve against the extension host's working
+  directory, not the workspace, and that directory may be read-only.
+- **Bundling.** The default extension template bundles everything with esbuild, which can't
+  bundle LanceDB's native `.node` binary.
+- **Packaging.** LanceDB installs a native binary for the current platform only, so a VSIX
+  built on one OS doesn't run on another.
+
+This guide builds a small extension that handles all three. It indexes the Markdown files in a
+workspace and searches them by meaning, using a local embedding model, so no API key is needed.
+
+<Info>
+**What you'll build**
+
+- **LanceDB: Index Markdown in Workspace** splits every `*.md` file into paragraphs and stores
+  them in a LanceDB table, with embeddings from `Xenova/all-MiniLM-L6-v2` run locally through
+  Transformers.js.
+- **LanceDB: Search Markdown** embeds your query, shows the five closest paragraphs, and opens
+  the one you pick.
+</Info>
+
+## Create the extension {#create-the-extension}
+
+<Steps>
+<Step title="Scaffold a TypeScript extension">
+Use the official generator. Choose **New Extension (TypeScript)** and **esbuild** as the bundler.
+
+```bash
+npx --package yo --package generator-code -- yo code
+```
+</Step>
+
+<Step title="Install LanceDB">
+```bash
+npm install @lancedb/lancedb apache-arrow@18.1.0
+```
+
+Your code imports Arrow types directly, so add `apache-arrow` as a dependency, pinned inside
+LanceDB's peer dependency range (`>=15.0.0 <=18.1.0`). If the project already depends on a
+newer `apache-arrow`, installing LanceDB fails with `ERESOLVE`.
+
+LanceDB also needs `@types/node` 22 or later. The generator's template already uses a recent
+version; an old one causes `Cannot find module 'node:stream'` errors.
+
+You don't need to install `@huggingface/transformers` yourself. LanceDB pins it as an optional
+dependency, and installing a different version gives your code a copy that LanceDB doesn't use.
+</Step>
+
+<Step title="Skip type checking of dependencies">
+The type declarations of `apache-arrow` and the ONNX runtime used by Transformers.js refer to
+browser types such as `ReadableStreamReadResult` and `HTMLCanvasElement`. The template's
+`tsconfig.json` doesn't include the DOM library, so `tsc` reports errors inside `node_modules`.
+Turn on `skipLibCheck`:
+
+```json tsconfig.json icon="brackets-curly"
+{
+  "compilerOptions": {
+    "skipLibCheck": true
+  }
+}
+```
+</Step>
+</Steps>
+
+## Store the database in extension storage {#store-the-database-in-extension-storage}
+
+Give LanceDB an absolute path inside the storage VS Code reserves for your extension:
+
+- `context.storageUri`: a folder for the current workspace. It's `undefined` when no folder is
+  open. Use it for anything derived from the workspace, such as this index.
+- `context.globalStorageUri`: a folder shared by all workspaces. Use it for things like
+  downloaded models.
+
+Neither folder is guaranteed to exist, so create it before connecting. Both live outside the
+user's project, so the index never shows up in their files or in version control.
+
+Don't pass a relative path such as `lancedb.connect("data")`. It resolves against the extension
+host's working directory, which isn't the workspace and may be read-only: this causes the
+`Read-only file system (os error 30)` error on macOS.
+
+Put the LanceDB code in its own module, `src/search.ts`:
+
+<CodeBlock filename="src/search.ts" language="TypeScript" icon="square-js">
+  {TsVscodeImports}
+</CodeBlock>
+
+<CodeBlock filename="src/search.ts" language="TypeScript" icon="square-js">
+  {TsVscodeConnect}
+</CodeBlock>
+
+## Index and search {#index-and-search}
+
+Split each file into paragraphs, and keep the line each one starts on so a result can open the
+file at the right place:
+
+<CodeBlock filename="src/search.ts" language="TypeScript" icon="square-js">
+  {TsVscodeChunk}
+</CodeBlock>
+
+Create the table with LanceDB's built-in `huggingface` [embedding function](/embedding/quickstart).
+Because the `text` column is declared as the function's source field, LanceDB computes the
+`vector` column for you as the rows are written:
+
+<CodeBlock filename="src/search.ts" language="TypeScript" icon="square-js">
+  {TsVscodeIndex}
+</CodeBlock>
+
+The table remembers its embedding function, so you can search it with plain text after VS Code
+restarts:
+
+<CodeBlock filename="src/search.ts" language="TypeScript" icon="square-js">
+  {TsVscodeSearch}
+</CodeBlock>
+
+`mode: "overwrite"` rebuilds the index each time, which is fine for a few thousand paragraphs.
+For larger workspaces, update only the files that changed with
+[`mergeInsert`](/ingestion/merge-insert).
+
+## Wire up the commands {#wire-up-the-commands}
+
+Declare the two commands in `package.json`:
+
+```json package.json icon="brackets-curly"
+"contributes": {
+  "commands": [
+    {
+      "command": "lancedbSearch.index",
+      "title": "Index Markdown in Workspace",
+      "category": "LanceDB"
+    },
+    {
+      "command": "lancedbSearch.search",
+      "title": "Search Markdown",
+      "category": "LanceDB"
+    }
+  ]
+}
+```
+
+Then register them in `src/extension.ts`:
+
+<CodeBlock filename="src/extension.ts" language="TypeScript" icon="square-js">
+  {TsVscodeExtension}
+</CodeBlock>
+
+A few details in this file are specific to running inside VS Code:
+
+- The index goes in `storageUri`, so each workspace gets its own table.
+- The embedding model (about 90 MB) downloads on first use. By default Transformers.js caches it
+  inside `node_modules` in the installed extension, which is replaced on every update. Setting
+  `env.cacheDir` keeps it in global storage. Load the module with `import()`, not `require()`:
+  LanceDB loads the ES module build of `@huggingface/transformers`, and `require()` returns a
+  separate copy whose settings LanceDB never sees.
+- Each paragraph is stored with its file's URI, not a path relative to a workspace folder. In a
+  multi-root workspace, `findFiles` searches every folder and two folders can hold the same
+  relative path, so only the URI opens the right file. `asRelativePath` turns it back into a
+  short label, which names the folder when there's more than one.
+- When another extension or a test passes a query to `lancedbSearch.search`, it returns the
+  rows instead of opening a picker. That's how the results below were produced, with each URI
+  shown through `asRelativePath`.
+
+## Sample results {#sample-results}
+
+Here are the results of running the extension in VS Code against a small workspace of six
+Markdown files that document a fictional CLI. The columns are the vector distance (lower is
+closer), the file and line, and the paragraph.
+
+```text
+query: my credentials were exposed, what should I do?
+  33.100  docs/auth.md:5  If a token leaks, revoke it on the Tokens page and generate a replacement. Revoked tokens stop working immediately.
+  40.091  docs/troubleshooting.md:5  Run `acme doctor` to print diagnostics you can attach to a bug report.
+  42.334  CONTRIBUTING.md:3  Run `npm test` before opening a pull request. New commands need a page in docs/.
+  43.105  docs/auth.md:3  Acme uses personal access tokens. Create one under Settings > Tokens.
+  45.664  README.md:5  Install it with `npm install -g acme-cli`, then run `acme login`.
+
+query: uploads are stuck behind the company firewall
+  38.420  docs/troubleshooting.md:3  If `acme sync` hangs, check that your proxy allows connections to api.acme.dev on port 443.
+  39.212  docs/sync.md:3  Run `acme sync` to upload changed notes. Only files modified since the last sync are sent.
+  40.859  docs/auth.md:5  If a token leaks, revoke it on the Tokens page and generate a replacement. Revoked tokens stop working immediately.
+  42.537  docs/troubleshooting.md:5  Run `acme doctor` to print diagnostics you can attach to a bug report.
+  45.853  CONTRIBUTING.md:3  Run `npm test` before opening a pull request. New commands need a page in docs/.
+```
+
+Neither top result shares a keyword with its query: "credentials were exposed" matches "a
+token leaks", and "stuck behind the company firewall" matches "hangs … proxy". Picking a result
+in the search box opens the file at that paragraph.
+
+## Bundle with esbuild {#bundle-with-esbuild}
+
+The template bundles your code and its dependencies into `dist/extension.js`. esbuild can't
+bundle native binaries, so building with LanceDB fails with
+`No loader is configured for ".node" files`. Mark the packages that load native code as
+external so they're loaded from `node_modules` at runtime:
+
+```js esbuild.js icon="square-js"
+external: [
+  "vscode",
+  "@lancedb/lancedb",
+  "@huggingface/transformers",
+  // LanceDB loads apache-arrow from node_modules anyway; bundling it ships a second copy.
+  "apache-arrow",
+],
+```
+
+External packages must be in the VSIX, but the template's `.vscodeignore` excludes
+`node_modules/**`. Delete that line. `vsce` then includes your production dependencies and
+leaves out the dev dependencies. If you skip this step, the packaged extension fails to
+activate with `Cannot find module '@lancedb/lancedb'`, and its commands report
+`command 'lancedbSearch.index' not found`.
+
+## Package a VSIX for each platform {#package-a-vsix-for-each-platform}
+
+npm installs LanceDB's native binary only for the machine it runs on, such as
+`@lancedb/lancedb-win32-x64-msvc` on 64-bit Windows. Build one VSIX per platform, each on a
+matching machine or CI runner, and publish them all. The Marketplace serves each user the right one.
+
+```bash
+npx @vscode/vsce package --target win32-x64
+```
+
+| `vsce` target | LanceDB native package |
+|:--|:--|
+| `win32-x64` | `@lancedb/lancedb-win32-x64-msvc` |
+| `win32-arm64` | `@lancedb/lancedb-win32-arm64-msvc` |
+| `linux-x64` | `@lancedb/lancedb-linux-x64-gnu` |
+| `linux-arm64` | `@lancedb/lancedb-linux-arm64-gnu` |
+| `alpine-x64` | `@lancedb/lancedb-linux-x64-musl` |
+| `alpine-arm64` | `@lancedb/lancedb-linux-arm64-musl` |
+| `darwin-arm64` | `@lancedb/lancedb-darwin-arm64` |
+
+LanceDB doesn't publish a binary for Intel Macs (`darwin-x64`).
+
+The table covers LanceDB's own binaries. This sample's local model also needs
+`onnxruntime-node`, which Transformers.js loads when the extension activates. Its Linux binaries
+link against glibc and it publishes no musl build, so the sample as written doesn't run on
+Alpine, whatever `--target` you pass. To ship the `alpine-*` targets, embed with a hosted API or
+use [full-text search](/search/full-text-search) instead, or build ONNX Runtime for musl yourself.
+
+<Tip>
+Native binaries make the VSIX large: the `win32-x64` build of this extension is about 200 MB.
+`onnxruntime-node`, which Transformers.js uses, ships binaries for every platform. Excluding
+the ones a target doesn't need brings the `win32-x64` build to about 150 MB. Keep one ignore
+file per target and pass it with `--ignoreFile`:
+
+```text .vscodeignore.win32-x64
+node_modules/onnxruntime-node/bin/napi-v3/darwin/**
+node_modules/onnxruntime-node/bin/napi-v3/linux/**
+node_modules/onnxruntime-node/bin/napi-v3/win32/arm64/**
+```
+
+If you don't need a local model, embed text with a hosted API instead, or use
+[full-text search](/search/full-text-search), which needs no model at all.
+</Tip>
+
+## Keep the extension host responsive {#keep-the-extension-host-responsive}
+
+All extensions share one extension host, and loading the model and computing embeddings in it
+can stall the others. While the sample indexes, VS Code may briefly report that the extension
+host is unresponsive. That's fine for a handful of files. For a large workspace, move indexing into a
+[worker thread](https://nodejs.org/api/worker_threads.html) or a child process, and index in
+batches as files change instead of all at once.
+
+## Troubleshooting {#troubleshooting}
+
+| Error | Cause | Fix |
+|:--|:--|:--|
+| `Read-only file system (os error 30)` | A relative database path resolved against the extension host's working directory | Connect to an absolute path under `context.storageUri` or `context.globalStorageUri` |
+| `No loader is configured for ".node" files` | esbuild tried to bundle a native binary | Mark `@lancedb/lancedb` and `@huggingface/transformers` as `external` |
+| `Cannot find module '@lancedb/lancedb'`, or `command '…' not found` | The VSIX doesn't contain `node_modules` | Remove `node_modules/**` from `.vscodeignore` |
+| A native module isn't found on another OS | The VSIX was built on a different platform | Package one VSIX per `--target` on a matching machine |
+| `Cannot find module 'node:stream' or its corresponding type declarations` | `@types/node` is too old | Use `@types/node` 22 or later |
+| `Cannot find name 'HTMLCanvasElement'` and similar errors in `node_modules` | Dependency typings refer to DOM types | Set `"skipLibCheck": true` |
+| `ERESOLVE` with `peer apache-arrow@">=15.0.0 <=18.1.0"` | The project depends on a newer `apache-arrow` | Install `apache-arrow@18.1.0` |
+| The model downloads again after an update | Transformers.js caches inside the extension's `node_modules` | Set `env.cacheDir` through `import("@huggingface/transformers")` |
