@@ -714,6 +714,48 @@ impl<S: HttpSend> RemoteTable<S> {
         }
     }
 
+    /// A request to one of the merge insert plan endpoints, carrying the
+    /// merge parameters the same way `/merge_insert/` does.
+    async fn merge_insert_plan_request(
+        &self,
+        endpoint: MergeInsertPlanEndpoint,
+        mut params: MergeInsertBuilder,
+    ) -> Result<RequestBuilder> {
+        params.canonicalize_filters()?;
+        self.check_mutable().await?;
+        let timeout = params.timeout;
+        let query = MergeInsertRequest::try_from(params)?;
+        let mut request = self
+            .client
+            .post(&format!(
+                "/v1/table/{}/merge_insert/{}/",
+                self.identifier,
+                endpoint.path()
+            ))
+            .query(&query.on_query_params())
+            .query(&query)
+            .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
+        if let Some(timeout_ms) = timeout.and_then(|t| u64::try_from(t.as_millis()).ok()) {
+            request = request.header(REQUEST_TIMEOUT_HEADER, timeout_ms);
+        }
+        Ok(self.apply_branch_query(request))
+    }
+
+    async fn send_merge_insert_plan_request(
+        &self,
+        request: RequestBuilder,
+        body: Vec<u8>,
+    ) -> Result<String> {
+        let (request_id, response) = self.send(request.body(body), true).await?;
+        let response = self.check_table_response(&request_id, response).await?;
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse merge insert plan: {e}").into(),
+            request_id,
+            status_code: None,
+        })
+    }
+
     /// Stamp the branch onto a request as a `?branch=` query param (used for
     /// Arrow-body / query-only ops). `None` (main) leaves the request unchanged,
     /// keeping it byte-identical to the non-branch path.
@@ -1495,6 +1537,20 @@ fn resolve_arrow_ipc_framing(
         request_id: request_id.into(),
         status_code: None,
     })
+}
+
+/// An Arrow IPC stream carrying every batch of `source`.
+async fn write_ipc_batches(mut source: Box<dyn Scannable>) -> Result<Vec<u8>> {
+    let schema = source.schema();
+    let mut data = source.scan_as_stream();
+    let mut body = Vec::new();
+    let mut writer = arrow_ipc::writer::StreamWriter::try_new(&mut body, &schema)?;
+    while let Some(batch) = data.try_next().await? {
+        writer.write(&batch)?;
+    }
+    writer.finish()?;
+    drop(writer);
+    Ok(body)
 }
 
 /// An Arrow IPC stream carrying `schema` and no batches.
@@ -3148,6 +3204,38 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
+    async fn explain_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        source_schema: Option<SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        // An empty body asks the server to explain against the table schema.
+        let body = match source_schema {
+            Some(schema) => write_ipc_schema(&schema)?,
+            None => Vec::new(),
+        };
+        let request = self
+            .merge_insert_plan_request(MergeInsertPlanEndpoint::Explain, params)
+            .await?
+            .query(&[("verbose", verbose)]);
+        self.send_merge_insert_plan_request(request, body).await
+    }
+
+    async fn analyze_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn Scannable>,
+    ) -> Result<String> {
+        let request = self
+            .merge_insert_plan_request(MergeInsertPlanEndpoint::Analyze, params)
+            .await?;
+        // Buffered so the request can be retried: analyze never commits, so
+        // re-running it is safe.
+        let body = write_ipc_batches(new_data).await?;
+        self.send_merge_insert_plan_request(request, body).await
+    }
+
     async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
         Err(Error::NotSupported {
             message: "set_unenforced_primary_key is not supported for remote tables.".into(),
@@ -3881,6 +3969,21 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 self.client.read_consistency_interval,
             ),
         ))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MergeInsertPlanEndpoint {
+    Explain,
+    Analyze,
+}
+
+impl MergeInsertPlanEndpoint {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Explain => "explain_plan",
+            Self::Analyze => "analyze_plan",
+        }
     }
 }
 
@@ -4987,6 +5090,94 @@ mod tests {
         assert_eq!(result.num_deleted_rows, num_deleted_rows);
         assert_eq!(result.num_inserted_rows, 0);
         assert_eq!(result.num_updated_rows, 0);
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_explain_plan() {
+        let source_schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let expected_schema = source_schema.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/merge_insert/explain_plan/"
+            );
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "a");
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["verbose"], "true");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let mut reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+            assert_eq!(reader.schema(), expected_schema);
+            assert!(reader.next().is_none());
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""MergeInsert: on=[a]""#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["a"]);
+        merge.when_matched_update_all(None);
+        let plan = merge.explain_plan(Some(source_schema), true).await.unwrap();
+        assert_eq!(plan, "MergeInsert: on=[a]");
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_explain_plan_without_schema() {
+        let table = Table::new_with_handler("my_table", |request| {
+            // An empty body asks the server to use the table schema.
+            assert!(request.body().unwrap().as_bytes().unwrap().is_empty());
+            http::Response::builder()
+                .status(200)
+                .body(r#""plan""#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["a"]);
+        merge.when_not_matched_insert_all();
+        assert_eq!(merge.explain_plan(None, false).await.unwrap(), "plan");
+    }
+
+    #[tokio::test]
+    async fn test_merge_insert_analyze_plan() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let expected = batch.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(
+                request.url().path(),
+                "/v1/table/my_table/merge_insert/analyze_plan/"
+            );
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["when_not_matched_insert_all"], "true");
+            assert_eq!(request.headers()[REQUEST_TIMEOUT_HEADER.as_str()], "5000");
+
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+            let batches = reader.collect::<std::result::Result<Vec<_>, _>>().unwrap();
+            assert_eq!(batches, vec![expected.clone()]);
+
+            http::Response::builder()
+                .status(200)
+                .body(r#""MergeInsert: metrics=[]""#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["a"]);
+        merge
+            .when_not_matched_insert_all()
+            .timeout(Duration::from_secs(5));
+        let analysis = merge.analyze_plan(data).await.unwrap();
+        assert_eq!(analysis, "MergeInsert: metrics=[]");
     }
 
     #[tokio::test]
