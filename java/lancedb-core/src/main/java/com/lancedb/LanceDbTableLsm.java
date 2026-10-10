@@ -117,9 +117,13 @@ public class LanceDbTableLsm {
   /**
    * Read the {@link LsmWriteSpec} currently installed on this table.
    *
-   * <p>Empty when the LSM write path is not enabled. The returned spec mirrors what was installed,
-   * except that {@link LsmWriteSpec#maintainedIndexes()} always reports the concrete list resolved
-   * when the spec was set — a null selection never round-trips.
+   * <p>Empty when the LSM write path is not enabled at all — no spec has been set, or one was
+   * removed with {@link #unsetLsmWriteSpec()}. That is a different answer from a present spec
+   * whose {@link LsmWriteSpec#maintainedIndexes()} is null, which selects indexes automatically.
+   *
+   * <p>The spec read back is the one that was installed, selection included: null maintains every
+   * supported index the table has now or gains later, an empty list maintains none, and a
+   * non-empty list maintains exactly those. All three round-trip.
    */
   public Optional<LsmWriteSpec> getLsmWriteSpec() {
     JsonNode response = client.post(route("get_lsm_write_spec"), null);

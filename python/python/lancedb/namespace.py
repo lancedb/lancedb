@@ -11,7 +11,7 @@ through a namespace abstraction.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Union
 from uuid import UUID
 
 if sys.version_info >= (3, 12):
@@ -19,8 +19,7 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import override
 
-if TYPE_CHECKING:
-    from lancedb.query import Query
+from lancedb.query import Query
 
 from datetime import timedelta
 import pyarrow as pa
@@ -52,8 +51,9 @@ from lancedb.background_loop import LOOP
 from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
+from lancedb.listing import AsyncListing, Listing
 from lancedb.sql import AsyncQuery as AsyncSqlQuery
-from lancedb.sql import QueryDescription
+from lancedb.sql import QueryDescription, QueryParameters
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
@@ -68,6 +68,7 @@ from lance_namespace import (
 from lancedb.materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
+    MaterializedViewSource,
     SelectArg,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
@@ -189,8 +190,12 @@ def _query_to_namespace_request(
         kwargs["with_row_id"] = query.with_row_id
     if query.ef is not None:
         kwargs["ef"] = query.ef
+    if query.nprobes is not None:
+        kwargs["nprobes"] = query.nprobes
     if query.minimum_nprobes is not None:
-        kwargs["nprobes"] = query.minimum_nprobes
+        kwargs["minimum_nprobes"] = query.minimum_nprobes
+    if query.maximum_nprobes is not None:
+        kwargs["maximum_nprobes"] = query.maximum_nprobes
     if query.refine_factor is not None:
         kwargs["refine_factor"] = query.refine_factor
     if query.lower_bound is not None:
@@ -204,6 +209,13 @@ def _query_to_namespace_request(
     if query.distance_type is not None:
         kwargs["distance_type"] = query.distance_type
 
+    if kwargs.get("maximum_nprobes") == 0:
+        # The generated 0.13 model rejects LanceDB's unbounded sentinel;
+        # model_copy preserves direct wire pass-through to the Lance receiver.
+        maximum_nprobes = kwargs.pop("maximum_nprobes")
+        return QueryTableRequest(**kwargs).model_copy(
+            update={"maximum_nprobes": maximum_nprobes}
+        )
     return QueryTableRequest(**kwargs)
 
 
@@ -489,6 +501,14 @@ class LanceNamespaceDBConnection(DBConnection):
         self._uri = self._inner.uri
 
     @override
+    def is_open(self) -> bool:
+        return self._inner.is_open()
+
+    @override
+    def close(self) -> None:
+        self._inner.close()
+
+    @override
     def serialize(self) -> str:
         import json
 
@@ -513,12 +533,14 @@ class LanceNamespaceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the database.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.
@@ -632,7 +654,7 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -662,7 +684,7 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -689,9 +711,20 @@ class LanceNamespaceDBConnection(DBConnection):
         return view
 
     @override
-    def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return LOOP.run(self._inner.list_materialized_views())
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     @override
     def drop_materialized_view(
@@ -1137,12 +1170,14 @@ class AsyncLanceNamespaceDBConnection:
     async def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the namespace.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.
@@ -1242,7 +1277,7 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -1265,7 +1300,7 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view_async(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
@@ -1288,9 +1323,20 @@ class AsyncLanceNamespaceDBConnection:
         await view.definition()
         return view
 
-    async def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return await self._inner.list_materialized_views()
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     async def drop_materialized_view(
         self, name: str, namespace_path: Optional[List[str]] = None
@@ -1553,11 +1599,13 @@ class AsyncLanceNamespaceDBConnection:
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncRecordBatchReader:
         """Execute SQL when supported by the underlying connection."""
         return await self._inner.execute_query(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
 
     async def execute_query_async(
@@ -1565,6 +1613,7 @@ class AsyncLanceNamespaceDBConnection:
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncSqlQuery:
         """Start executing SQL when supported by the underlying connection.
 
@@ -1573,6 +1622,7 @@ class AsyncLanceNamespaceDBConnection:
         return await self._inner.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
 
     async def describe_query(self, query_id: UUID) -> QueryDescription:

@@ -1,0 +1,73 @@
+---
+title: "GenKit"
+sidebarTitle: "GenKit"
+
+---
+
+import {
+  TsFrameworksGenkitCustomIndexer,
+  TsFrameworksGenkitCustomRetriever,
+  TsFrameworksGenkitUsage,
+} from '/snippets/integrations.mdx';
+
+### genkitx-lancedb {#genkitx-lancedb}
+Genkit is an open-source framework for building end-to-end AI and RAG pipelines with a clean, TypeScript-first
+developer experience. The genkitx-lancedb plugin lets you use LanceDB as a high-performance vector store
+inside your Genkit flows, so you can index, search, and retrieve data efficiently as part of your AI
+applications.
+
+### Installation {#installation}
+```bash
+pnpm install genkitx-lancedb
+```
+
+### Usage {#usage}
+
+Adding LanceDB plugin to your genkit instance.
+
+<CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+  {TsFrameworksGenkitUsage}
+</CodeBlock>
+
+You can run this app with the following command:
+```bash
+genkit start -- tsx --watch src/index.ts
+```
+
+This'll add LanceDB as a retriever and indexer to the genkit instance. You can see it in the GUI view
+<img width="1710" alt="Screenshot 2025-05-11 at 7 21 05 PM" src="https://github.com/user-attachments/assets/e752f7f4-785b-4797-a11e-72ab06a531b7" />
+
+**Testing retrieval on a sample table**
+Let's see the raw retrieval results
+
+<img width="1710" alt="Screenshot 2025-05-11 at 7 21 05 PM" src="https://github.com/user-attachments/assets/b8d356ed-8421-4790-8fc0-d6af563b9657" />
+On running this query, you'll get 5 results fetched from the lancedb table, where each result looks something like this:
+<img width="1417" alt="Screenshot 2025-05-11 at 7 21 18 PM" src="https://github.com/user-attachments/assets/77429525-36e2-4da6-a694-e58c1cf9eb83" />
+
+
+
+## Creating a custom RAG flow {#creating-a-custom-rag-flow}
+
+Now that we've seen how you can use LanceDB in a Genkit pipeline, let's refine the flow and create a RAG. A RAG flow will consist of an index and a retriever with its outputs postprocessed and fed into an LLM for final response
+
+### Creating custom indexer flows {#creating-custom-indexer-flows}
+You can also create custom indexer flows, utilizing more options and features provided by LanceDB.
+
+<CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+  {TsFrameworksGenkitCustomIndexer}
+</CodeBlock>
+
+<img width="1316" alt="Screenshot 2025-05-11 at 8 35 56 PM" src="https://github.com/user-attachments/assets/e2a20ce4-d1d0-4fa2-9a84-f2cc26e3a29f" />
+
+In your console, you can see the logs
+
+<img width="511" alt="Screenshot 2025-05-11 at 7 19 14 PM" src="https://github.com/user-attachments/assets/243f26c5-ed38-40b6-b661-002f40f0423a" />
+
+### Creating custom retriever flows {#creating-custom-retriever-flows}
+You can also create custom retriever flows, utilizing more options and features provided by LanceDB.
+<CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+  {TsFrameworksGenkitCustomRetriever}
+</CodeBlock>
+Now using our retrieval flow, we can ask a question about the ingested PDF
+<img width="1306" alt="Screenshot 2025-05-11 at 7 18 45 PM" src="https://github.com/user-attachments/assets/86c66b13-7c12-4d5f-9d81-ae36bfb1c346" />
+

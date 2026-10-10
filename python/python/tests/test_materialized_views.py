@@ -93,26 +93,8 @@ def test_remote_list_uses_namespace_route():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.list_materialized_views() == ["daily_sales"]
+        assert list(db.list_materialized_views()) == ["daily_sales"]
     assert requests == ["/v1/namespace/$/materialized_view/list"]
-
-
-def test_remote_create_async_returns_server_job():
-    with mock_remote_materialized_view_create() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        job = db.create_materialized_view_async("adults", "people", where="age >= 18")
-        assert job.id == "mv-create-123"
-    assert requests == [
-        (
-            "/v1/materialized_view/adults/create",
-            {"query": 'SELECT * FROM "people" WHERE age >= 18', "with_no_data": False},
-        )
-    ]
 
 
 def test_remote_drop_async_returns_server_job():
@@ -208,7 +190,7 @@ def test_create_and_refresh_jobs(tmp_path):
     drop_job = db.drop_materialized_view_async("adults")
     assert drop_job.id is None
     assert drop_job.wait() is None
-    assert "adults" not in db.list_materialized_views()
+    assert "adults" not in list(db.list_materialized_views())
 
 
 def test_definition_round_trips(tmp_path):
@@ -221,29 +203,29 @@ def test_definition_round_trips(tmp_path):
     )
 
 
-def test_incremental_refresh_after_append(tmp_path):
+def test_full_refresh_after_append(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").add([{"name": "alan", "age": 41}])
     result = view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 4
     assert view.table.count_rows() == 4
 
-    assert view.refresh().mode == "no_op"
+    assert view.refresh().mode == "rebuild"
 
 
-def test_incremental_refresh_after_update(tmp_path):
+def test_full_refresh_after_update(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").update(where="name = 'kid'", values={"age": 8})
     result = view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 3
     rows = view.table.search().to_list()
     assert sorted(row["age"] for row in rows) == [8, 36, 85]
 
@@ -264,18 +246,43 @@ def test_legacy_storage_source_update_rebuilds(tmp_path):
     assert sorted(row["age"] for row in rows) == [8, 36]
 
 
+def test_direct_writes_to_a_view_are_refused(tmp_path):
+    db = make_db(tmp_path)
+    view = db.create_materialized_view("copy", "people")
+    table = view.table
+    row = [{"name": "eve", "age": 1}]
+    refused = pytest.raises(NotImplementedError, match="is a materialized view")
+
+    with refused:
+        table.add(row)
+    with refused:
+        table.update(where="name = 'kid'", values={"age": 8})
+    with refused:
+        table.delete("age < 18")
+    with refused:
+        table.merge_insert("name").when_not_matched_insert_all().execute(row)
+    with refused:
+        table.add_columns({"older": "age + 1"})
+    with refused:
+        table.drop_columns(["age"])
+    assert table.count_rows() == 3
+
+    db.open_table("people").add(row)
+    assert view.refresh().rows_written == 4
+
+
 def test_list_and_not_a_view(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")
 
-    assert db.list_materialized_views() == ["adults"]
+    assert list(db.list_materialized_views()) == ["adults"]
     with pytest.raises(ValueError, match="not a materialized view"):
         db.open_materialized_view("people")
     with pytest.raises(ValueError, match="not a materialized view"):
         db.drop_materialized_view("people")
 
     db.drop_materialized_view("adults")
-    assert db.list_materialized_views() == []
+    assert list(db.list_materialized_views()) == []
 
 
 def test_invalid_expression_fails_at_create(tmp_path):
@@ -303,7 +310,7 @@ async def test_async_create_refresh_and_open(tmp_path):
     reopened = await db.open_materialized_view("shouts")
     definition = await reopened.definition()
     assert definition.query == "SELECT upper(name) AS shout FROM people"
-    assert await db.list_materialized_views() == ["shouts"]
+    assert [item async for item in db.list_materialized_views()] == ["shouts"]
 
 
 @pytest.mark.asyncio
@@ -327,12 +334,12 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     drop_job = await db.drop_materialized_view_async("adults")
     assert drop_job.id is None
     assert await drop_job.wait() is None
-    assert "adults" not in await db.list_materialized_views()
+    assert "adults" not in [item async for item in db.list_materialized_views()]
 
 
 @pytest.mark.asyncio
-async def test_async_incremental(tmp_path):
-    db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
+async def test_async_refresh_rebuilds(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
     await db.create_table("people", [{"name": "ada", "age": 36}])
     view = await db.create_materialized_view("copy", "people", with_no_data=True)
     await view.refresh()
@@ -340,15 +347,15 @@ async def test_async_incremental(tmp_path):
     table = await db.open_table("people")
     await table.add([{"name": "alan", "age": 41}])
     result = await view.refresh()
-    assert result.mode == "incremental"
-    assert result.rows_written == 1
+    assert result.mode == "rebuild"
+    assert result.rows_written == 2
 
 
-def test_source_requires_stable_row_ids(tmp_path):
+def test_source_does_not_require_stable_row_ids(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("plain", [{"x": 1}])
-    with pytest.raises(Exception, match="stable row ids"):
-        db.create_materialized_view("v", "plain")
+    view = db.create_materialized_view("v", "plain")
+    assert view.table.count_rows() == 1
 
 
 def test_bare_select_names_are_quoted(tmp_path):
@@ -373,7 +380,7 @@ def test_scalar_select_is_one_column(tmp_path):
     view = db.create_materialized_view("just_name", "people", select="name")
     view.refresh()
     rows = view.table.search().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
     assert sorted(row["name"] for row in rows) == ["ada", "grace", "kid"]
 
 
@@ -384,7 +391,7 @@ async def test_async_scalar_select_is_one_column(tmp_path):
     view = await db.create_materialized_view("just_name", "people", select="name")
     await view.refresh()
     rows = await view.table.query().to_list()
-    assert set(rows[0]) - {"__source_row_id"} == {"name"}
+    assert set(rows[0]) == {"name"}
 
 
 def test_limit_above_i64_max_is_refused(tmp_path):
@@ -417,7 +424,7 @@ def test_namespace_connection_materialized_views(tmp_path):
     view = db.create_materialized_view("adults", "people", where="age >= 18")
     view.refresh()
     assert view.table.count_rows() == 1
-    assert db.list_materialized_views() == ["adults"]
+    assert list(db.list_materialized_views()) == ["adults"]
 
     reopened = db.open_materialized_view("adults")
     assert reopened.definition.query.startswith("SELECT name, age FROM ")
@@ -433,7 +440,7 @@ def test_namespace_connection_materialized_views(tmp_path):
 
     assert db.drop_materialized_view_async("job_view").wait() is None
     db.drop_materialized_view("adults")
-    assert db.list_materialized_views() == []
+    assert list(db.list_materialized_views()) == []
 
 
 @pytest.mark.asyncio
@@ -452,7 +459,7 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     view = await db.create_materialized_view("adults", "people", where="age >= 18")
     await view.refresh()
     assert await view.table.count_rows() == 1
-    assert await db.list_materialized_views() == ["adults"]
+    assert [item async for item in db.list_materialized_views()] == ["adults"]
 
     reopened = await db.open_materialized_view("adults")
     assert (await reopened.definition()).query.startswith("SELECT name, age FROM ")
@@ -478,7 +485,7 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
     drop_job = await db.drop_materialized_view_async("job_view")
     assert await drop_job.wait() is None
     await db.drop_materialized_view("adults")
-    assert await db.list_materialized_views() == []
+    assert [item async for item in db.list_materialized_views()] == []
 
 
 def test_stored_queries_and_legacy_layouts_are_read():
@@ -527,3 +534,19 @@ def test_stored_queries_and_legacy_layouts_are_read():
     ):
         with pytest.raises(NotImplementedError, match="cannot refresh"):
             read(newer)
+
+
+def test_local_materialized_view_listing_pages_and_resume(tmp_path):
+    db = make_db(tmp_path)
+    db.create_materialized_view("a_view", "people", with_no_data=True)
+    db.create_materialized_view("z_view", "people", with_no_data=True)
+    db.create_table("ordinary", [{"id": 1}])
+    names = db.list_materialized_views(page_limit=1)
+    assert names.num_page_results() == 0
+    first = next(names)
+    assert names.num_page_results() == 0
+    assert names.page_token() is not None
+    resumed = db.list_materialized_views(page_token=names.page_token(), page_limit=1)
+    assert sorted([first, *resumed]) == ["a_view", "z_view"]
+    assert resumed.page_token() is None
+    assert list(resumed) == []

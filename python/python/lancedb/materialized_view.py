@@ -6,9 +6,10 @@ maintained by refresh. See ``DBConnection.create_materialized_view``."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
@@ -27,6 +28,9 @@ SelectArg = Union[
     Dict[str, str],
     None,
 ]
+
+
+MaterializedViewSource = str
 
 
 DEFINITION_FORMAT = 2
@@ -175,38 +179,31 @@ class AsyncMaterializedView:
         return _definition_from_json(raw)
 
     async def refresh(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self, *, source_version: Optional[int] = None
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        The refresh is incremental when the source's changes can be
-        reconciled into the view -- rows added, changed or removed since the
-        last one -- and otherwise rebuilds. ``full=True`` forces a rebuild;
+        Every refresh rebuilds the complete view. For local views,
         ``source_version`` refreshes to that source version instead of the
-        latest.
-
-        Concurrent refreshes of one view do not duplicate its rows. Two that
-        plan the same source rows conflict on commit, and the loser raises
-        rather than writing them a second time.
+        latest; remote SQL refreshes do not support source-version pinning.
         """
         return await self._table._inner.refresh_materialized_view(
-            full=full, source_version=source_version
+            source_version=source_version
         )
 
     async def refresh_async(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self, *, source_version: Optional[int] = None
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
-        The job may already be complete for a local view. On LanceDB Cloud
-        and Enterprise, its ``id`` is the server job identifier returned by
-        the refresh endpoint.
+        The job may already be complete for a local view. Remote refreshes are
+        submitted through the SQL service.
         """
         from ._lancedb import RefreshMaterializedViewResult
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                full=full, source_version=source_version
+                source_version=source_version
             ),
             RefreshMaterializedViewResult.from_json,
         )
@@ -238,22 +235,18 @@ class MaterializedView:
         return LOOP.run(self._async.definition())
 
     def refresh(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self, *, source_version: Optional[int] = None
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source. See
         [AsyncMaterializedView.refresh][lancedb.materialized_view.AsyncMaterializedView.refresh]."""
-        return LOOP.run(self._async.refresh(full=full, source_version=source_version))
+        return LOOP.run(self._async.refresh(source_version=source_version))
 
     def refresh_async(
-        self, *, full: bool = False, source_version: Optional[int] = None
+        self, *, source_version: Optional[int] = None
     ) -> "Job[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
         See
         [AsyncMaterializedView.refresh_async][lancedb.materialized_view.AsyncMaterializedView.refresh_async].
         """
-        return Job(
-            LOOP.run(
-                self._async.refresh_async(full=full, source_version=source_version)
-            )
-        )
+        return Job(LOOP.run(self._async.refresh_async(source_version=source_version)))

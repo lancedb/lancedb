@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
@@ -157,6 +158,41 @@ def test_value_to_sql_string(tmp_path):
         assert table.to_pandas().query("search == @value")["replace"].item() == value
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
+
+
 def test_value_to_sql_dict():
     # Simple flat struct
     assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
@@ -211,6 +247,35 @@ def test_value_to_sql_numpy_scalars():
     assert value_to_sql(np.float64(1.5)) == "1.5"
     assert value_to_sql(np.bool_(True)) == "TRUE"
     assert value_to_sql(np.bool_(False)) == "FALSE"
+
+
+def test_value_to_sql_nan_and_infinity(tmp_path):
+    # str(float("nan")) is "nan", which SQL reads as a column named nan, so
+    # table.update(values={"x": float("nan")}) failed with "No field named nan".
+    import math
+
+    import numpy as np
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "f64": [1.0, 2.0, 3.0, 4.0],
+                "f32": pa.array([1.0, 2.0, 3.0, 4.0], pa.float32()),
+            }
+        ),
+    )
+    table.update(where="id = 1", values={"f64": float("nan"), "f32": np.nan})
+    table.update(where="id = 2", values={"f64": math.inf, "f32": np.float32("inf")})
+    table.update(where="id = 3", values={"f64": -math.inf, "f32": -math.inf})
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert math.isnan(rows[1]["f64"]) and math.isnan(rows[1]["f32"])
+    assert rows[2]["f64"] == math.inf and rows[2]["f32"] == math.inf
+    assert rows[3]["f64"] == -math.inf and rows[3]["f32"] == -math.inf
+    assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
 
 
 def test_append_vector_columns():

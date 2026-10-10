@@ -39,8 +39,8 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
-from .util import flatten_columns
+from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
+from .util import _validate_query_vector, flatten_columns
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -51,6 +51,7 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
+    strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -479,7 +480,7 @@ class MatchQuery(FullTextQuery):
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
-    fuzziness : int, optional
+    fuzziness : int or None, default 0
         The maximum edit distance for each term in the match query.
         Defaults to 0 (exact match).
         If None, fuzziness is applied automatically by the rules:
@@ -506,7 +507,7 @@ class MatchQuery(FullTextQuery):
     query: str
     column: str
     boost: float = pydantic.Field(1.0, kw_only=True)
-    fuzziness: int = pydantic.Field(0, kw_only=True)
+    fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
@@ -692,8 +693,9 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The number of IVF partitions to search.  If this is None then a default
-        number of partitions will be used.
+        The legacy number of IVF partitions to search. Lance sets both probe
+        bounds to this value. If this is None then Lance's default probe settings
+        will be used.
 
         - A higher number makes search more accurate but also slower.
 
@@ -772,20 +774,23 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
+    # legacy number of IVF partitions to search
+    #
+    # Lance sets both probe bounds to this value. Explicit bounds can override it.
+    nprobes: Optional[int] = None
+
     # which columns to return in the results (dict values may be str or Expr)
     columns: QueryProjection = None
 
     # minimum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
+    # If None then Lance's default will be used.
     minimum_nprobes: Optional[int] = None
 
     # maximum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
-    #
-    # If 0 then no limit will be applied and all partitions could be searched
-    # if needed to satisfy the limit.
+    # If None then Lance's default will be used. If 0 then no limit will be applied
+    # and all partitions could be searched if needed to satisfy the limit.
     maximum_nprobes: Optional[int] = None
 
     # lower bound for distance search
@@ -846,6 +851,7 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
+        query.nprobes = req.nprobes
         query.minimum_nprobes = req.minimum_nprobes
         query.maximum_nprobes = req.maximum_nprobes
         query.lower_bound = req.lower_bound
@@ -907,6 +913,9 @@ class LanceQueryBuilder(ABC):
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if query_type != "fts":
+            _validate_query_vector(query)
+
         if ordering_field_name is not None:
             import warnings
 
@@ -1619,9 +1628,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         str_query: Optional[str] = None,
         fast_search: bool = None,
     ):
+        _validate_query_vector(query)
         super().__init__(table)
         self._query = query
         self._distance_type = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._lower_bound = None
@@ -1686,22 +1697,23 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets both the minimum and maximum number of probes to the same
-        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
-        control.
+        The value is retained as `nprobes` through client and server request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
 
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
@@ -1843,6 +1855,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
+            nprobes=self._nprobes,
             minimum_nprobes=self._minimum_nprobes,
             maximum_nprobes=self._maximum_nprobes,
             lower_bound=self._lower_bound,
@@ -2201,6 +2214,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._refine_factor = None
@@ -2296,7 +2310,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             norm=self._norm,
             fts_query=self._fts_query._query,
             reranker=self._reranker,
-            limit=self._limit,
+            limit=self._limit or DEFAULT_HYBRID_LIMIT,
             with_row_ids=True,
             offset=self._offset,
         )
@@ -2492,18 +2506,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
+        The value is retained as `nprobes` until Lance sets both probe bounds to it.
+        Explicit minimum or maximum settings can override their respective bounds.
+
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -2748,13 +2766,13 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
 
         # Apply common configurations
-        if self._limit:
-            # The final offset/limit window is sliced out of the combined,
-            # reranked results, so each sub-query must fetch enough rows to
-            # cover the skipped prefix as well as the window itself.
-            sub_query_limit = self._limit + (self._offset or 0)
-            self._vector_query.limit(sub_query_limit)
-            self._fts_query.limit(sub_query_limit)
+        # The final offset/limit window is sliced out of the combined,
+        # reranked results, so each sub-query must fetch enough rows to
+        # cover the skipped prefix as well as the window itself.
+        limit = self._limit or DEFAULT_HYBRID_LIMIT
+        sub_query_limit = limit + (self._offset or 0)
+        self._vector_query.limit(sub_query_limit)
+        self._fts_query.limit(sub_query_limit)
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
         self._pk_fusion = None
         columns = self._columns
@@ -2782,6 +2800,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
+        if self._nprobes is not None:
+            self._vector_query.nprobes(self._nprobes)
         if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
@@ -3065,14 +3085,18 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
-            Vector, FTS, hybrid, and other non-native query shapes keep the
-            existing Arrow conversion path and only support blob descriptions.
+            Controls how blob columns are returned. Remote queries support
+            "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
+        if self._table is not None and not self._table._inner._is_native():
+            return await self._remote_to_pandas(
+                flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
+            )
+
         if hasattr(self._inner, "output_schema"):
             schema = await self.output_schema()
             if _blob_mode_requires_native_pandas(blob_mode, schema):
@@ -3099,6 +3123,31 @@ class AsyncQueryBase(object):
                 "this query shape cannot use Lance native pandas conversion"
             )
         return tbl.to_pandas(**kwargs)
+
+    async def _remote_to_pandas(
+        self,
+        *,
+        flatten: Optional[Union[int, bool]],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        **kwargs,
+    ) -> "pd.DataFrame":
+        # A live remote table can be replaced between query and blob fetch.
+        # Row ids and version numbers do not identify the producing table.
+        tbl = await self.to_arrow(timeout=timeout)
+        projected_blob_paths = set(blob_column_paths(tbl.schema))
+        if not projected_blob_paths:
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, self._blob_paths)
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        raise NotImplementedError(
+            f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+            "blob columns without a stable table snapshot; "
+            "use blob_mode='descriptions'"
+        )
 
     async def _plain_scan_to_pandas(
         self,
@@ -3652,7 +3701,9 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the number of partitions to search (probe)
+        Set the legacy IVF probe parameter
+
+        The number of probes must be greater than 0.
 
         This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
@@ -3662,16 +3713,19 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions should be searched.
+        partitions will be searched.
 
         Increasing this value will increase the recall of your query but will
-        also increase the latency of your query.  The default value is 20.  This
-        default is good for many cases but the best value to use will depend on
-        your data and the recall that you need to achieve.
+        also increase the latency of your query. If this method is not called,
+        Lance's adaptive probe defaults are used.
 
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give
         you the desired recall.
+
+        LanceDB retains this as `nprobes` through local and remote request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
         """
         self._inner.nprobes(nprobes)
         return self
