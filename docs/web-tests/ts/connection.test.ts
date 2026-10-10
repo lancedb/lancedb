@@ -1,22 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
-import * as path from "node:path";
-import { withTempDirectory } from "./util.ts";
-// --8<-- [start:connect]
 import * as lancedb from "@lancedb/lancedb";
-
-async function connectExample(uri: string) {
-  const db = await lancedb.connect(uri);
-  return db;
-}
-// --8<-- [end:connect]
+import { withTempDirectory } from "./util.ts";
 
 test("connect to a local database", async () => {
   await withTempDirectory(async (tempDir) => {
-    const uri = path.join(tempDir, "ex_lancedb");
-    const db = await connectExample(uri);
-    expect(db).toBeDefined();
+    const cwd = process.cwd();
+    process.chdir(tempDir);
+    try {
+      // --8<-- [start:connect]
+      const db = await lancedb.connect("ex_lancedb");
+      // --8<-- [end:connect]
+      await db.createTable("probe", [{ id: 1 }]);
+      expect((await db.listTables()).tables).toEqual(["probe"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    const reopened = await lancedb.connect(`${tempDir}/ex_lancedb`);
+    expect((await reopened.listTables()).tables).toEqual(["probe"]);
   });
 });
 

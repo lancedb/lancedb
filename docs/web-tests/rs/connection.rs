@@ -3,35 +3,59 @@
 
 use std::path::PathBuf;
 
-use lancedb::connect;
+use lancedb::{Connection, connect};
 
-// --8<-- [start:connect]
-async fn connect_example(uri: &str) {
-    let db = connect(uri).execute().await.unwrap();
-    let _ = db;
+async fn connect_local() -> lancedb::Result<Connection> {
+    // --8<-- [start:connect]
+    let db = connect("ex_lancedb").execute().await?;
+    // --8<-- [end:connect]
+    Ok(db)
 }
-// --8<-- [end:connect]
 
 #[tokio::main]
-async fn main() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let uri = temp_dir.path().join("ex_lancedb");
-    connect_example(uri.to_str().unwrap()).await;
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempfile::tempdir()?;
+    std::env::set_current_dir(temp_dir.path())?;
+    let db = connect_local().await?;
+    db.create_empty_table(
+        "probe",
+        std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
+            "id",
+            arrow_schema::DataType::Int64,
+            false,
+        )])),
+    )
+    .execute()
+    .await?;
+    let reopened = connect(temp_dir.path().join("ex_lancedb").to_str().unwrap())
+        .execute()
+        .await?;
+    assert_eq!(reopened.table_names().execute().await?, vec!["probe"]);
 
-    // Keep the enterprise snippet in this file, but don't run it in CI.
-    let _ = connect_enterprise_quickstart_config();
+    // Connects to a deployment only when asked, and only lists its tables.
+    if std::env::var("LANCEDB_DOCS_TEST_DEPLOYMENT").as_deref() == Ok("1") {
+        let db = connect_enterprise_quickstart().await?;
+        println!("{:?}", db.table_names().execute().await?);
+    }
     let _ = connect_object_storage_config();
+    Ok(())
 }
 
-fn connect_enterprise_quickstart_config()
--> Result<(String, String, String, String), std::env::VarError> {
+async fn connect_enterprise_quickstart() -> Result<Connection, Box<dyn std::error::Error>> {
     // --8<-- [start:connect_enterprise_quickstart]
     let uri = std::env::var("LANCEDB_URI")?; // db://your-database
     let api_key = std::env::var("LANCEDB_API_KEY")?;
     let region = std::env::var("LANCEDB_REGION").unwrap_or_else(|_| "us-east-1".to_string());
     let host_override = std::env::var("LANCEDB_HOST_OVERRIDE")?; // https://your-endpoint
+
+    let db = connect(&uri)
+        .api_key(&api_key)
+        .region(&region)
+        .host_override(&host_override)
+        .execute()
+        .await?;
     // --8<-- [end:connect_enterprise_quickstart]
-    Ok((uri, api_key, region, host_override))
+    Ok(db)
 }
 
 fn connect_object_storage_config() -> &'static str {

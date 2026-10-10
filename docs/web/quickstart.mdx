@@ -79,9 +79,26 @@ npm install @lancedb/lancedb
 ```
 
 ```bash Rust icon=Rust
-cargo add lancedb
+cargo add lancedb --features polars,remote
+cargo add tokio --features macros,rt-multi-thread
 ```
 </CodeGroup>
+
+The TypeScript and Rust code of steps 2 to 5 makes one program. In TypeScript,
+put it, in order, in an ES module such as `quickstart.mts` and run
+`node quickstart.mts`; Node.js 22.18 and later run TypeScript directly. In Rust,
+it goes, in order, inside `main` in `src/main.rs`, and `cargo run` runs it. The
+`polars` feature returns results as DataFrames, and `remote` connects to
+LanceDB Enterprise.
+
+```rust src/main.rs icon="rust"
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The Rust code of steps 2 to 5 goes here.
+
+    Ok(())
+}
+```
 
 ### Python pre-release builds {#python-pre-release-builds}
 
@@ -149,6 +166,7 @@ client SDK of choice and point to a local directory path.
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
     {TsConnect}
     </CodeBlock>
 
@@ -213,12 +231,12 @@ endpoint is required: without it the code stops rather than guessing one.
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n\n" }
     {RsConnectEnterpriseQuickstart}
     </CodeBlock>
 </CodeGroup >
 
-In Rust, pass the same settings to the connection builder's `api_key`, `region`
-and `host_override`. A deployment runs some things differently -- maintenance,
+A deployment runs some things differently -- maintenance,
 long-running work, a few unsupported methods; see
 [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise), and the
 [Enterprise overview](/enterprise) for how a deployment is put together.
@@ -371,7 +389,8 @@ deployment.
 ## Optional extensions {#extensions}
 
 Each extension below starts from the `characters` table of step 3 and stands on its own,
-so take any of them, in any order, or none.
+so take any of them, in any order, or none. In TypeScript and Rust, its code goes after
+step 5's.
 
 ### Add a derived feature {#6-add-a-derived-feature}
 
