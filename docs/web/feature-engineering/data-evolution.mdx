@@ -4,6 +4,12 @@ sidebarTitle: "Data Evolution"
 description: "Derive new columns from data already in the table, without rewriting what is already there."
 icon: wand-magic-sparkles
 keywords: ["data evolution", "derived columns", "add_columns", "zero copy", "feature engineering"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Adding columns computed from SQL expressions works in the embedded library
+    and on a deployment.
 ---
 
 import {
@@ -27,7 +33,7 @@ column -- the existing data, which is the expensive part on a multimodal table,
 is never rewritten. See [why that works](/basics/lance#evolution).
 
 <Note>
-In SQL this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl/table#computed-column).
+In SQL, on a deployment that enables computed columns, this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl/table#computed-column).
 </Note>
 
 ## Set up the example table {#set-up-the-example-table}
@@ -104,6 +110,8 @@ exist when that does not fit:
   That is the right default on a large table.
 - A [function](/management/function) fills a column with Python, for values SQL
   cannot express -- an embedding, a model call, an image decode.
+
+On a deployment, both have to be enabled there.
 
 ## What to read next {#next}
 

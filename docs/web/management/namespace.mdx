@@ -4,6 +4,12 @@ sidebarTitle: "Namespace"
 description: "Grouping tables into a hierarchy, and addressing them through it."
 icon: folder-tree
 keywords: ["namespace", "catalog", "hierarchy", "directory namespace", "rest namespace"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Namespaces work in the embedded library, through directory or REST
+    catalogs, and on a deployment.
 ---
 
 import {
@@ -29,7 +35,7 @@ language: Python uses `namespace_path`, Rust uses builder methods like `.namespa
 TypeScript uses `namespacePath` arguments.
 
 <Note>
-In SQL a namespaced table is addressed as a [dotted path](/sql/dql/select#namespaces).
+In SQL on a deployment, a namespaced table is addressed as a [dotted path](/sql/dql/select#namespaces).
 </Note>
 
 ## Namespace hierarchy {#namespace-hierarchy}
@@ -227,7 +233,8 @@ let db = lancedb::connect_namespace("rest", properties)
 ```
 </CodeGroup>
 [LanceDB Enterprise](/enterprise) operates a REST namespace server on top of the Lance format, so any REST client that can speak the REST namespace API
-contract can be used to interact with it. For authentication examples in LanceDB Enterprise, visit
+contract can be used to interact with it. It does not serve the contract's `exists` routes, so checks such as `namespace_exists`
+fail against it. For authentication examples in LanceDB Enterprise, visit
 the [Namespaces in SDKs](#namespaces-in-lancedb-enterprise) page. 
 
 ## Best practices {#best-practices}

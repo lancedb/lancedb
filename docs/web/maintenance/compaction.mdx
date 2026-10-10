@@ -3,13 +3,22 @@ title: "Compaction and cleanup"
 sidebarTitle: "Compaction"
 description: "Merge small files, prune old versions, and fold new rows into existing indexes."
 icon: broom
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Tables are compacted in the embedded library and on a deployment. In the
+    embedded library you call `optimize()`; a deployment compacts tables in the
+    background, and `optimize()` is not available there.
 ---
 
 import { PyStorageRebuildVectorIndex } from '/snippets/doc_storage_examples.mdx';
 
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
-since an index was built. `optimize()` addresses all three.
+since an index was built. In the embedded library, `optimize()` addresses all
+three; a deployment handles them in the background and does not support
+`optimize()`.
 
 It is modelled after `VACUUM` in PostgreSQL — routine housekeeping that a table
 needs periodically rather than a repair for something broken.
@@ -60,7 +69,9 @@ and can help after a large ingest that changed the data distribution.
 
 ## When to run it {#when}
 
-There is no background compactor: `optimize()` runs when you call it.
+In the embedded library there is no background compactor: `optimize()` runs
+when you call it. A deployment compacts a table automatically once enough small
+fragments accumulate, unless its operator turns this off.
 
 Frequent small appends are what make it necessary, because each one commits
 files. A table written in a few large batches needs it rarely; one taking

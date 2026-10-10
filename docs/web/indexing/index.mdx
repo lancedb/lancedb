@@ -3,6 +3,13 @@ title: "Indexing Data"
 sidebarTitle: "Overview"
 description: "Optimize search performance with LanceDB using vector indexes, full-text search, scalar indexes, and more."
 icon: "list"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Indexes are built in the embedded library and on a deployment. A deployment
+    builds them in the background, and builds fewer vector index types than the
+    embedded library.
 ---
 
 An **index** is a data structure that facilitates efficient scans and lookups on an embedded dataset. 
@@ -24,6 +31,10 @@ LanceDB provides a comprehensive suite of indexes to optimize performance across
 | `LabelList` (Scalar) | List columns (e.g., tags, categories, keywords) requiring `array_contains_all` or `array_contains_any` filters. | Scalar index for `List<T>` and `LargeList<T>` columns of primitive values, using an underlying bitmap index structure to enable fast array membership lookups. |
 | `FM` (Scalar) | String or binary columns that need raw substring search. | FM-Index over `Utf8`, `LargeUtf8`, `Binary`, or `LargeBinary` data for filters such as `contains(path, 'needle')`. Use FTS instead for tokenized word search and BM25 ranking. |
 
+A deployment builds the vector indexes `IVF_FLAT`, `IVF_PQ`, `IVF_RQ` and
+`IVF_HNSW_SQ`. `IVF_SQ`, `IVF_HNSW_FLAT` and `IVF_HNSW_PQ` are built only by the
+embedded library.
+
 ## Quantization
 LanceDB also supports several [quantization](/indexing/vector-index) methods, used by vector indexes to compress vectors and reduce storage requirements:
 
@@ -42,12 +53,12 @@ If vector search latency climbs with table size (i.e., queries that ran in milli
 
 | Index | When to use |
 |-------|-------------|
-| `IVF_PQ` | General-purpose default; what Enterprise builds automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
+| `IVF_PQ` | General-purpose default, and what a deployment builds when it is set to index a column automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
 | `IVF_RQ` | Maximum compression on high-dim vectors, faster builds than PQ. |
 | `IVF_HNSW_SQ` | Best recall/latency for unfiltered search; higher latency variance under selective filters. |
 | `IVF_FLAT` | Required for binary vectors with `hamming`. |
 
-The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). If a query explicitly requests a different metric, the index cannot be used and the query falls back to a brute-force scan; LanceDB Enterprise may reject that scan on a large table. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
+The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). If a query explicitly requests a different metric, the index cannot be used and the query falls back to a brute-force scan; a deployment can be configured to reject that scan on a large table. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
 
 #### Scalar indexes {#scalar-indexes}
 

@@ -3,6 +3,13 @@ title: Search
 sidebarTitle: Overview
 description: "Comprehensive guide to all search capabilities in LanceDB including vector search, full-text search, hybrid search, and more."
 icon: "list"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Vector, full-text and hybrid search run in the embedded library and against
+    a deployment. Reading very large results and probe tuning differ between the
+    two.
 ---
 
 | Feature | Description |
@@ -45,7 +52,7 @@ Three knobs materially affect query latency, memory use, and recall. Be delibera
 
     - Quantized indexes (PQ, RQ, SQ): `refine_factor` pulls extra candidates and re-scores them on full vectors.
     - HNSW-backed indexes: `ef` at search time. Start at `1.5 × k`, raise toward `10 × k` if recall is short.
-    - IVF candidate breadth: `nprobes` is auto-tuned; override only when a selective pre-filter leaves too few neighbors.
+    - IVF candidate breadth: `nprobes` is auto-tuned; override only when a selective pre-filter leaves too few neighbors. Whether a deployment widens the search this way depends on its version; one that does not searches exactly `minimum_nprobes` partitions.
   </Step>
 </Steps>
 
@@ -53,7 +60,7 @@ For hybrid search, the default `RRFReranker()` combines vector and FTS results i
 
 #### Avoid materializing the whole table {#avoid-materializing-the-whole-table}
 
-If you need every row in the table (for training, export, or migration), calling `to_pandas()` or `to_arrow()` will run you out of memory on any non-trivial dataset — both materialize the full table at once. The best practice is to iterate via `table.search(...)` or `table.query(...)`, which work the same way in both LanceDB OSS and Enterprise.
+If you need every row in the table (for training, export, or migration), calling `to_pandas()` or `to_arrow()` will run you out of memory on any non-trivial dataset — both materialize the full table at once. Read it through queries instead: `table.search(...)`, or `table.query(...)` in async Python, TypeScript and Rust. Against a deployment, each query returns its whole result in one response, which the SDK holds in memory before the first batch, so read a large table in bounded pieces, for example with `limit` and `offset` or a filter.
 
 In OSS, you can also stream batches through the underlying Lance dataset directly — useful when you need filter pushdown or fragment-level parallelism via `ds.scanner(...)`:
 
@@ -66,7 +73,7 @@ for batch in ds.to_batches(columns=["id", "text"], batch_size=10000):
 <Info>
 **API disparity between OSS and Enterprise.**
 
-LanceDB OSS exposes the `to_pandas()`, `to_arrow()`, and `table.to_lance()` methods for direct Lance dataset access. Enterprise's `RemoteTable` exposes none of these. Only `table.search(...)` and `table.query(...)`. In general, it's always best to go through `search()` and `query()` to keep your code portable across both OSS and Enterprise.
+A local table also gives direct Lance dataset access through `table.to_lance()`. Against a deployment, the synchronous Python table raises for `to_pandas()`, `to_arrow()` and `to_lance()`, while async Python and TypeScript run `to_arrow()` as a query over the whole table. Going through queries keeps your code portable across both OSS and Enterprise.
 </Info>
 
 #### Diagnostics {#diagnostics}

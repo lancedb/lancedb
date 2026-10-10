@@ -1,6 +1,13 @@
 ---
 title: "Polars"
 sidebarTitle: "Polars & Arrow"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Polars data goes into `create_table`, and query results come back as Polars
+    DataFrames, for local and deployment tables alike; a LazyFrame over a whole
+    table is local only.
 
 ---
 
@@ -36,7 +43,7 @@ Run vector search and keep the results as a Polars `DataFrame` for further proce
 
 ## Work with LazyFrames {#work-with-lazyframes}
 
-When you want to operate on the entire table (potentially larger than RAM), convert to a Polars `LazyFrame` so you can chain transformations without loading everything at once.
+When you want to operate on the entire table (potentially larger than RAM), convert to a Polars `LazyFrame` so you can chain transformations without loading everything at once. This works for local tables only; against a deployment, `search(...).to_polars()` returns an eager DataFrame of query results.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyPlatformsPolarsLazyframe}

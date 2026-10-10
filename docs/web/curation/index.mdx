@@ -15,8 +15,8 @@ reach for it, and links to the [SQL reference](/sql) for the complete syntax.
 
 <Note>
 Most curation is analytical -- grouping, joining, ranking -- which the query
-builders do not do. It is therefore SQL, and SQL needs a deployment. See
-[SQL](/basics/sql#sql-is-remote).
+builders do not do. It is therefore SQL, and SQL needs a deployment with its
+SQL endpoint enabled. See [SQL](/basics/sql#sql-is-remote).
 </Note>
 
 ## The four questions {#questions}
@@ -52,3 +52,6 @@ you ended up with.
 A curated result you want to keep is a
 [materialized view](/management/materialized-view) -- stored, refreshed, and
 readable by a [data loader](/training/data-loading) like any other table.
+Keeping a joined or windowed result this way takes SQL's
+`CREATE MATERIALIZED VIEW` on a deployment that enables materialized views; the
+SDK's `create_materialized_view` reads a single table.

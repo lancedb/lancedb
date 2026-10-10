@@ -4,6 +4,12 @@ sidebarTitle: "Overview"
 description: "Getting data into a table: creating one from your data, and the four write operations that follow."
 icon: inbox
 keywords: ["ingest", "create table", "add", "insert", "arrow", "pandas", "polars", "pydantic"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Tables are created and written to in the embedded library and on a
+    deployment. The SQL forms of these writes need a deployment.
 ---
 
 import {
@@ -30,7 +36,8 @@ writing to a table that exists. This page covers the first and introduces the
 second.
 
 <Note>
-Every operation here has a SQL form -- see [DML](/sql#dml).
+On a deployment, every operation here except merge insert also has a SQL form --
+see [DML](/sql#dml).
 </Note>
 
 Start by [creating a table](/ingestion/create-table); the rest of this
@@ -88,6 +95,9 @@ Or, connect to LanceDB Enterprise:
     {RsUpdateConnectEnterprise}
     </CodeBlock>
 </CodeGroup>
+
+For a deployment with its own endpoint, also pass that endpoint as
+`host_override` -- see [Connect to LanceDB](/basics/connect#enterprise).
 
 In the Rust snippets, a `make_users_reader` helper is used  to build Arrow input data.
 

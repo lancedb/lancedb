@@ -4,6 +4,13 @@ sidebarTitle: "Database"
 description: "Connecting to LanceDB: the URI forms, their options, and what each one changes."
 icon: database
 keywords: ["connect", "database", "uri", "api key", "storage options", "consistency"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    The embedded library connects to a local directory or object storage, and
+    a `db://` URI connects to a deployment. Which operations exist depends on
+    the connection.
 ---
 
 A database is the root of a [catalog](/basics/catalog). A connection opens
@@ -40,10 +47,10 @@ storage and does the work itself. The third talks to a **deployment**.
 | --- | --- | --- |
 | Where queries run | in your process | on the server |
 | Table handle | `LanceTable` | `RemoteTable` |
-| [SQL](/basics/sql) | -- | yes |
+| [SQL](/basics/sql) | -- | where enabled |
 | Server-side [jobs](/basics/jobs) | -- | yes |
-| [Functions](/management/function) | -- | yes |
-| [Authorization](/governance/authorization) | storage permissions | granted per object |
+| [Functions](/management/function) | -- | where enabled |
+| [Authorization](/governance/authorization) | storage permissions | granted per object, where configured |
 
 ![](/static/assets/images/overview/understanding-tables.png)
 
@@ -132,9 +139,11 @@ const db = await lancedb.connect(uri, { readConsistencyInterval: 5 });
 ```
 </CodeGroup>
 
-The default reads a snapshot taken when the table was opened, so a long-lived
-connection **will not see other processes' writes** until it reopens the table.
-That is the right default for a batch job and the wrong one for a service.
+In the embedded library, the default reads a snapshot taken when the table was
+opened, so a long-lived connection **will not see other processes' writes**
+until it reopens the table. That is the right default for a batch job and the
+wrong one for a service. On a deployment, reads follow the deployment's own
+freshness setting, which the interval can only tighten.
 
 Set it when several processes write the same table and readers must observe
 those writes. The cost is a metadata check on that interval. See
@@ -146,8 +155,8 @@ those writes. The cost is a metadata check on that interval. See
 | --- | --- | --- | --- |
 | list tables | `table_names`, `list_tables` | `tableNames`, `listTables` | -- |
 | the URI it opened | `uri` | `display()` | -- |
-| drop every table | `drop_all_tables` | `dropAllTables` | -- |
-| drop the database | `drop_database` | -- | -- |
+| drop every table, embedded only | `drop_all_tables` | `dropAllTables` | -- |
+| drop the database, embedded only | `drop_database` | -- | -- |
 | close | -- | `close`, `isOpen` | -- |
 
 <CodeGroup>

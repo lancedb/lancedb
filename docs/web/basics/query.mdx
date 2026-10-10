@@ -83,8 +83,10 @@ return results. They are fast enough not to need a handle. See
 
 Query-builder searches -- [vector](/search/vector-search),
 [full-text](/search/full-text-search), [hybrid](/search/hybrid-search) -- return
-results directly. They are fast enough not to need a handle, and they have no
-SQL form. See [Semantic Search](/search).
+results directly. They are fast enough not to need a handle. In SQL on a
+deployment, full-text search is the [`fts()`](/sql/functions#fts) table
+function and vector search [depends on the deployment](/basics/sql#no-vector-sql);
+hybrid search has no SQL form. See [Semantic Search](/search).
 
 ## When the work outlives the call {#jobs}
 

@@ -94,7 +94,7 @@ what the capability is, and what the embedded form does instead. A separate
 private repository supplies the fuller version of each, which replaces the page
 at the same path when the published site is assembled.
 
-Two things to know before editing:
+Three things to know before editing:
 
 **Code examples are not written into the pages.** They live in real tests under
 `docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
@@ -115,6 +115,27 @@ pull-request CI; that integration remains follow-up work.
 Enterprise pages attach their additions to the right section, so they are
 assigned once and never regenerated. Leave an existing anchor alone even when
 you reword the heading above it; only new headings need a new one.
+
+**A page can declare where it applies.** Its frontmatter says whether LanceDB
+OSS and LanceDB Enterprise have the feature -- `available`, `unavailable`, or
+`varies` when it depends on version or configuration -- and one sentence that
+says how:
+
+```yaml
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Requests to a deployment carry an API key or an OAuth token. Embedded
+    LanceDB has no server to sign in to.
+```
+
+The assembled site renders this as a label above the page's content, as a
+sidebar tag when only one offering has the feature, and as the page's row in
+the comparison on [OSS and Enterprise](docs/web/basics/offerings.mdx). Do not
+also open the page with a badge of its own, and keep a qualification that only
+one section needs in that section's text. A `mint dev` preview of `docs/web`
+alone renders neither the labels nor the comparison.
 
 ## Release process
 

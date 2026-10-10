@@ -17,7 +17,7 @@ versioned, and refreshed like anything else, not a separate system bolted
 alongside.
 
 <Note>
-Every operation here has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
+On a deployment, every operation here also has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
 </Note>
 
 ## The shape everything shares {#the-shape}
@@ -46,9 +46,9 @@ idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
 
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
-| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | everywhere |
-| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | everywhere |
-| [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | embedded, and deployments that enable it |
+| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | embedded, and deployments that enable it |
+| [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> deployments that enable it |
 
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).

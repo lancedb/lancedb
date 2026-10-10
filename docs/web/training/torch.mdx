@@ -3,6 +3,12 @@ title: "PyTorch Integration"
 sidebarTitle: "PyTorch"
 description: Learn how to use LanceDB with PyTorch for training and inference.
 icon: fire
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    The PyTorch integration works with local, object-storage and deployment
+    tables in the Python SDK.
 ---
 
 LanceDB provides a seamless integration with PyTorch for training and inference. This allows you to use LanceDB as a backend for your PyTorch models, and to use PyTorch for training and inference. You can use LanceDB to store your data, and PyTorch to train your models.
@@ -106,7 +112,7 @@ for batch in dataloader:
 
 ## Using multiple DataLoader workers {#using-multiple-dataloader-workers}
 
-Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. LanceDB tables and `Permutation` objects are picklable, so each worker reopens the table after it starts.
+Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. `Permutation` objects and tables on a deployment are picklable, so each worker reopens the table after it starts. A local table is not, so wrap it in a `Permutation`, as below, to read it from several workers.
 
 Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and it is set to become the Python default. See [the performance guide](/search#performance) for more multiprocessing guidance.
 

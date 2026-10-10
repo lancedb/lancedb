@@ -6,9 +6,9 @@ icon: table-list
 keywords: ["sql", "datafusion", "flight sql", "reference", "dialect"]
 ---
 
-<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
-has no engine to plan a statement, so `execute_query` raises there -- see
-[SQL](/basics/sql#sql-is-remote).
+<Badge color="red">Enterprise</Badge> SQL runs on a deployment that enables its
+Flight SQL endpoint. A local database has no SQL endpoint, so `execute_query`
+raises there -- see [SQL](/basics/sql#sql-is-remote).
 
 This is a reference rather than a guide: one page per construct, syntax first.
 The guides elsewhere in these docs show the same operations from the SDKs.
@@ -87,8 +87,8 @@ const result = await client.query("SELECT * FROM flights WHERE origin = 'SFO'");
 
 The endpoint executes one statement per request and is meant for the queries
 and DDL/DML pages below. Reach for the SDKs instead for table-management
-operations that have no SQL form, such as building a vector index or a merge
-insert -- see [What SQL cannot do](#cannot).
+operations that have no SQL form, such as a merge insert -- see
+[What SQL cannot do](#cannot).
 
 ## Reference {#reference}
 
@@ -111,7 +111,7 @@ insert -- see [What SQL cannot do](#cannot).
 | [Insert](/sql/dml/insert) | `INSERT INTO`, including `INSERT ... SELECT` |
 | [Update](/sql/dml/update) | `UPDATE ... SET` |
 | [Delete](/sql/dml/delete) | `DELETE FROM` |
-| [Copy](/sql/dml/copy) | `COPY INTO` / `COPY TO` |
+| [Copy](/sql/dml/copy) | `COPY` -- refused by recent deployment versions |
 | [Refresh](/sql/dml/refresh) | filling computed columns and materialized views |
 
 ### DQL {#dql}
@@ -141,9 +141,10 @@ insert -- see [What SQL cannot do](#cannot).
 
 | | |
 | --- | --- |
-| Vector search | no SQL form -- a query-builder operation |
+| Vector search | [depends on the deployment](/basics/sql#no-vector-sql); the query builder always has it |
 | Merge insert | no SQL form -- needs a source relation and a per-match policy |
 | `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
+| `COPY` | refused by recent deployment versions -- see [Copy](/sql/dml/copy) |
 | `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 

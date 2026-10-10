@@ -3,6 +3,13 @@ title: "Managing Embeddings"
 sidebarTitle: "Managing Embeddings"
 description: "Use the embedding API in LanceDB -- registry, functions, schemas, and multi-language SDK support."
 icon: "bars"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Embedding functions run in your process, whether the table is local or on a
+    deployment, which stores their configuration but never runs them. Python
+    and TypeScript also embed query text; in Rust you embed queries yourself.
 ---
 
 import {
@@ -30,8 +37,9 @@ the data, so vectors that are close to each other are considered similar.
 
 LanceDB provides an embedding function registry in OSS as well as its Enterprise versions
 ([see below](#embeddings-in-lancedb-enterprise))
-that automatically generates vector embeddings during data ingestion. Automatic query-time embedding
-generation is available in LanceDB OSS, with SDK-specific query ergonomics. The API abstracts
+that automatically generates vector embeddings during data ingestion. Query text is embedded
+automatically too, in the client, for local and Enterprise tables alike, with SDK-specific query
+ergonomics. The API abstracts
 embedding generation, allowing you to focus on your application logic.
 
 ## Embedding Registry {#embedding-registry}

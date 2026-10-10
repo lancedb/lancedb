@@ -3,6 +3,12 @@ title: "Loading Data for Model Training"
 sidebarTitle: "Data Loading & Shuffles"
 description: "Stream, shuffle, transform, and resume model training data with LanceDB."
 icon: boxes-stacked
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Streaming, shuffling and resuming training data work with local,
+    object-storage and deployment tables in the Python SDK.
 ---
 
 LanceDB provides an excellent data backend for training machine learning models. For basic use cases, a `Table` can be fed directly into a data loader. For a more complete solution, a `StreamingDataset` adds prefetching, elastic determinism, resumability, multithreaded transformations, and more.
@@ -10,17 +16,18 @@ LanceDB provides an excellent data backend for training machine learning models.
 ## Basic Data Loading
 
 Most model training frameworks feed data into a model by sequencing through successive batches, a process 
-often referred to as **data loading**. The simplest way to perform data loading is to iterate through a LanceDB table in
-a loop.
+often referred to as **data loading**. The simplest way to perform data loading is to read a LanceDB table in batches,
+in the order its rows are stored, through an identity `Permutation`. A table itself is not iterable.
 
 <CodeGroup>
-```py Python icon=Python 
+```py Python icon=Python
 import lancedb
+from lancedb.permutation import Permutation
 
 db = lancedb.connect("file://some/db/path")
 table = db.open_table("some_table")
 
-for batch in table:
+for batch in Permutation.identity(table).with_format("arrow").iter(batch_size=1024):
     print(batch.to_pydict())
 ```
 </CodeGroup>
@@ -88,16 +95,16 @@ ds = StreamingDataset(
 
 ### Shuffling Rows
 
-In model training, model quality can be hurt by unintentionally learning patterns in the ordering of the source data. Shuffling the dataset before training alleviates this problem. However, fetching rows with scattered sparse reads across object storage can be dramatically slower than fetching contiguous batches. `StreamingDataset` offers two different implementations to read data in shuffled order, toggled by the presence of the `block_size` parameter. 
+In model training, model quality can be hurt by unintentionally learning patterns in the ordering of the source data. Shuffling the dataset before training alleviates this problem. However, fetching rows with scattered sparse reads across object storage can be dramatically slower than fetching contiguous batches. `StreamingDataset` shuffles at one of two granularities, selected by the `shuffle_clump_size` parameter.
 
 <Note>
 `StreamingDataset` shuffle seeds combine `shuffle_seed` with `epoch`; each epoch produces a different permutation while runs
 with the same inputs remain reproducible. Set `shuffle_seed = None` to generate a random seed upon pipeline initialization.
 </Note>
 
-#### One-Phase Shuffle
+#### Row-Level Shuffle {#one-phase-shuffle}
 
-Setting `block_size = None` corresponds to the naive $1$-phase shuffled read: the rows of the source dataset are shuffled according to a pseudorandom permutation, then fed in batches to the accelerator. This gives the best possible randomness, but can exhibit low throughput. 
+By default, `shuffle_clump_size` is `None` and rows are shuffled individually: the rows of the source dataset are shuffled according to a pseudorandom permutation, then fed in batches to the accelerator. This gives the best possible randomness, but can exhibit low throughput.
 
 
 <CodeGroup> 
@@ -121,29 +128,26 @@ for sample in eval_ds:
 </CodeGroup>
 
 
-#### Two-Phase Shuffle
+#### Clumped Shuffle {#two-phase-shuffle}
 
-Setting `block_size` to an integer corresponds to selecting $2$-phase shuffled read. In this implementation, the source dataset is first partitioned into fixed-size `blocks`, which are then assigned randomly to splits. Within each split, rows are then further shuffled, with each row moving at most `max_shuffle_distance` distance away from its original position. Reading blocks allows storage I/O to constitute mostly large, contiguous reads rather than single row fetches. This yields much higher throughput while slightly compromising randomness.
- 
+Setting `shuffle_clump_size` to an integer shuffles contiguous groups ("clumps") of that many rows instead of single rows. Each clump keeps its rows in storage order and moves as a unit, so storage I/O consists mostly of contiguous reads rather than single-row fetches. Larger clumps improve I/O locality, which matters most on object storage, at the cost of randomness.
+
 <CodeGroup>
 ```py Python icon=Python
-# 2-phase shuffled read: rows are shuffled block-by-block instead of
-# individually, trading a bit of randomness for much cheaper I/O.
+# Clumped shuffled read: rows are shuffled in groups of contiguous rows
+# instead of individually, trading a bit of randomness for much cheaper I/O.
 for epoch in range(num_epochs):
     ds = StreamingDataset(
         table,
         shuffle_seed=42,
-        epoch=epoch,               
-        block_size=1024,           # enables 2-phase
-        window_blocks=4,           # blocks resident per split at once
-        max_shuffle_distance=256,  # how far a row may move from its
-                                    # original position
+        epoch=epoch,
+        shuffle_clump_size=1024,   # contiguous rows that move together
     )
     for sample in ds:
         train_step(sample)
 
 # Evaluation: deterministic sequential order, no shuffle.
-eval_ds = StreamingDataset(table, shuffle=False, block_size=1024)
+eval_ds = StreamingDataset(table, shuffle=False)
 for sample in eval_ds:
     eval_step(sample)
 ```
@@ -153,8 +157,9 @@ for sample in eval_ds:
 
 When loading data, `StreamingDataset` partitions the the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
 
-If using `shuffle = false`, data is allocated to splits naively in ordered contiguous blocks of equal size. If `shuffle = true`, 
-in one-phase shuffling, the rows of the source dataset are distributed randomly among splits such that each split receives the same number of rows. In two-phase shuffling, the dataset is first partitioned into blocks, which are then distributed randomly among splits such that each split receives the same number of blocks.
+If using `shuffle=False`, data is allocated to splits naively in ordered contiguous blocks of equal size. With `shuffle=True`
+(the default), the rows of the source dataset are shuffled and distributed among splits such that each split receives the same
+number of rows; with `shuffle_clump_size` set, they are shuffled in clumps of that many contiguous rows.
 
 The number of splits defaults to `world_size` if `num_splits` is omitted during initialization. This is not recommended, as a later run using a different world size will then construct a different layout and structure of global batches.
 
@@ -202,7 +207,7 @@ for sample in ds:
 
 Traditional datasets have often been designed to yield a single sample at a time upon iteration. However, in modern use cases,  accessing data on object storage one row at a time introduces too much per-call overhead. Thus, `StreamingDataset` fetches data in read batches, whose size is controlled by the `read_batch_size` parameter (defaults = `64`).
 
-In addition to batching requests, the prefetching mechanism reads ahead in the background. While one batch is being processed, `StreamingDataset` reads several subsequent batches. The `prefetch_batches` parameter specifies the number of batches simultaneously kept in flight per split (default = `4`). A larger value provides more buffering against jittery workloads, but also increases memory use and I/O concurrency.
+In addition to batching requests, the prefetching mechanism reads ahead in the background. While one batch is being processed, `StreamingDataset` reads several subsequent batches. The `io_queue_depth` parameter specifies the number of batches simultaneously kept in flight per split (default = `4`); it replaces `prefetch_batches`, which still works but is deprecated. A larger value provides more buffering against jittery workloads, but also increases memory use and I/O concurrency.
 
 <CodeGroup>
 ```py Python icon=Python
@@ -210,7 +215,7 @@ ds = StreamingDataset(
     table,
     shuffle_seed=42,
     read_batch_size=256,   # rows fetched per LanceDB call per split
-    prefetch_batches=8,    # batches to keep in flight per split
+    io_queue_depth=8,      # batches to keep in flight per split
 )
 ```
 </CodeGroup>

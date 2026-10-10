@@ -69,15 +69,17 @@ REFRESH MATERIALIZED VIEW chunks
 REFRESH MATERIALIZED VIEW chunks WITH (full = true)
 ```
 
-`full = true` asks for every row to be recomputed. Without it, whether a
-refresh rebuilds the whole view -- as every local SDK refresh does -- or
-reconciles only what changed in the source depends on the deployment's LanceDB
-Enterprise version and configuration.
+On earlier deployment versions, `full = true` asks for every row to be
+recomputed, and without it a refresh can reconcile only what changed in the
+source. Recent versions refuse `WITH` options; whether their refresh rebuilds
+the whole view, as every local SDK refresh does, or adds only what changed
+depends on the version and on the view's query.
 
 <Warning>
 `CASCADE` asks for the views this one is built on to be refreshed first, in
-dependency order. Whether a deployment carries it out depends on its version;
-where it does not, refresh each view yourself, its sources first.
+dependency order. Whether a deployment carries it out depends on its version,
+and recent versions refuse it; where it is refused, refresh each view yourself,
+its sources first.
 </Warning>
 
 ## Watching a refresh {#watching}

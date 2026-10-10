@@ -3,6 +3,13 @@ title: "Merge insert"
 sidebarTitle: "Merge Insert"
 description: "Reconcile incoming rows against a key: update what matches, insert what does not."
 icon: code-merge
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Merge insert runs in the embedded library and on a deployment. A deployment
+    can be configured to refuse a merge that would scan too many unindexed
+    rows.
 ---
 
 These examples use the table set up in
@@ -54,7 +61,7 @@ Read more about scalar indices in the [Scalar Index](/indexing/scalar-index/) gu
 </Tip>
 
 <Info>
-If you see this HTTP 400 error from `merge_insert`: `Bad request: Merge insert cannot be performed because the number of unindexed rows exceeds the maximum of 10000`. Verify that the scalar index on the join column is up to date before retrying.
+A deployment can be configured to refuse a merge insert that would scan too many unindexed rows, with an HTTP 400 error such as `Merge insert cannot be performed because the number of un-indexed rows (...) exceeds the maximum of 10000`. Verify that the scalar index on the join column is up to date before retrying.
 </Info>
 
 <Note>

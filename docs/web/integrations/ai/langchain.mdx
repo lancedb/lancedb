@@ -80,6 +80,9 @@ It returns list of ids of the added texts.
   {PyFrameworksLangchainAddTexts}
 </CodeBlock>
 
+Against a deployment, `tbl.to_pandas()` raises in the synchronous Python client;
+read the rows with a query instead, such as `tbl.search().limit(100).to_pandas()`.
+
 ------
 
 

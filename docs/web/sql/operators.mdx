@@ -44,8 +44,8 @@ IN`, which is the usual place this bites. See
 <Warning>
 Arithmetic over a vector column is **list** arithmetic, not scalar arithmetic —
 a vector is a `FixedSizeList<Float32>`. When the operation you want is a
-similarity comparison, use [vector search](/search/vector-search); there is no
-SQL form for it.
+similarity comparison, use [vector search](/search/vector-search); whether SQL
+can express it [depends on the deployment](/basics/sql#no-vector-sql).
 </Warning>
 
 ## Literals {#literals}

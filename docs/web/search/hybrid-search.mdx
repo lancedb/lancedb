@@ -3,6 +3,13 @@ title: Hybrid Search
 sidebarTitle: "Hybrid Search"
 description: Learn how to perform hybrid search in LanceDB by combining vector and full-text search techniques with reranking.
 icon: "search"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Hybrid search runs in the embedded library and against a deployment. With a
+    deployment, the vector and full-text searches run there, and the SDK combines
+    and reranks their results in your application.
 ---
 
 In certain cases, you may want to retrieve documents that are semantically similar to a given  query,
@@ -341,11 +348,11 @@ await table.query()
 ```
 </CodeGroup>
 
-The choice gets baked into both sub-queries, so the vector and FTS halves see the filter applied the same way. Use [`explain_plan`](/search/explain#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
+The choice gets baked into both sub-queries, so the vector and FTS halves see the filter applied the same way. In Python, use [`explain_plan`](/search/explain#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
 
 ## More on Reranking {#more-on-reranking}
 
-You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB comes with [**built-in rerankers**](https://docs.lancedb.com/reranking) and you can implement your own **custom reranker** as well. 
+You can perform hybrid search in LanceDB by combining the results of semantic and full-text search via a reranking algorithm of your choice. LanceDB comes with [**built-in rerankers**](https://docs.lancedb.com/reranking) and you can implement your own **custom reranker** as well. Reranking and score normalization run in your application, whether the table is local or on a deployment.
 
 By default, LanceDB uses `RRFReranker()`, which uses reciprocal rank fusion score, to combine and rerank the results of semantic and full-text search. You can customize the hyperparameters as needed or write your own custom reranker. Here's how you can use any of the available rerankers:
 

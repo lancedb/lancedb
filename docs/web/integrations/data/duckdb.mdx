@@ -6,7 +6,7 @@ description: "Learn how to use the DuckDB-Lance extension to query Lance tables 
 
 LanceDB integrates with [DuckDB](https://duckdb.org/) through the [Lance extension](https://github.com/lance-format/lance-duckdb) for DuckDB. In this page, we'll show how LanceDB manages table lifecycle, and DuckDB provides SQL analytics (including joins) and search over those tables.
 
-Note that earlier versions of LanceDB used to recommend converting Lance tables to Arrow tables via `table.to_arrow()`. Although this method is still available (because DuckDB [natively scans Arrow tables](https://duckdb.org/2021/12/03/duck-arrow)), it is no longer the recommended workflow for working with Lance tables in DuckDB. This page shows how to use the Lance extension with namespace-attached LanceDB tables, allowing you to pushdown SQL queries directly to the Lance layer.
+Note that earlier versions of LanceDB used to recommend converting Lance tables to Arrow tables via `table.to_arrow()`. Although this method is still available for local tables (because DuckDB [natively scans Arrow tables](https://duckdb.org/2021/12/03/duck-arrow)), it is no longer the recommended workflow for working with Lance tables in DuckDB. This page shows how to use the Lance extension with namespace-attached LanceDB tables, allowing you to pushdown SQL queries directly to the Lance layer.
 
 
 ## Install {#install}

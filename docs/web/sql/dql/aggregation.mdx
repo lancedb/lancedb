@@ -112,7 +112,8 @@ estimate -- a 1% sample of a skewed column will miss rare categories entirely.
 
 ## What aggregation does not do {#not}
 
-Aggregates run over rows the query already produced. They cannot combine with
-[vector search](/search/vector-search) in one statement, because similarity
-search has no SQL form. Run the search in an SDK and aggregate its result, or
-materialize the search output first.
+Aggregates run over rows the query already produced. Whether a statement can
+include [vector search](/search/vector-search)
+[depends on the deployment](/basics/sql#no-vector-sql); where it cannot, run the
+search in an SDK and aggregate its result, or materialize the search output
+first.

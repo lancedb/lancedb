@@ -3,6 +3,13 @@ title: "Full-Text Search (FTS) Index"
 sidebarTitle: "FTS Index"
 description: "Create and tune BM25-based full-text search indexes in LanceDB."
 icon: "book"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Full-text indexes are built in the embedded library and on a deployment.
+    The embedded library builds the index before the call returns; a
+    deployment builds it in the background.
 ---
 import { PyFtsIndexAsync as FtsIndexAsync, PyFtsIndexCreate as FtsIndexCreate, PyFtsIndexNested as FtsIndexNested, PyFtsIndexWait as FtsIndexWait } from '/snippets/indexing.mdx';
 
@@ -114,7 +121,7 @@ await async_table.create_index("payload.text", config=FTS(with_position=True))
 - `jieba/*` is for Chinese word segmentation with Jieba.
 - `lindera/*` loads a compiled Lindera dictionary, such as `lindera/ipadic` for Japanese or `lindera/ko-dic` for Korean.
 
-Model-backed tokenizers such as `jieba/default`, `lindera/ipadic`, and `lindera/ko-dic` require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to another model root. For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`.
+Model-backed tokenizers such as `jieba/default`, `lindera/ipadic`, and `lindera/ko-dic` require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to another model root. For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`. For a table on a deployment, the files must be present where the deployment builds and queries the index, so ask its administrator whether they are installed.
 
 `language` is used by token filters, not by the base tokenizer. Stemming supports Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. For other stemming languages, set `remove_stop_words=False` or pass `custom_stop_words`.
 

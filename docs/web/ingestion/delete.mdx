@@ -3,6 +3,13 @@ title: "Delete rows"
 sidebarTitle: "Delete"
 description: "Remove rows by predicate, and reclaim their space."
 icon: trash
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Rows are deleted in the embedded library and on a deployment. In the
+    embedded library you reclaim their space with `optimize()`; a deployment
+    compacts automatically and removes old versions as its configuration sets.
 ---
 
 These examples use the table set up in
@@ -18,7 +25,7 @@ import {
 } from '/snippets/tables.mdx';
 
 <Note>
-In SQL this is [`DELETE`](/sql/dml/delete).
+In SQL on a deployment, this is [`DELETE`](/sql/dml/delete).
 </Note>
 
 ## Delete rows {#delete-rows}
@@ -55,12 +62,12 @@ Expected table contents:
 When rows are deleted, those rows are also excluded from the index segments, so indexed queries will not return them either. If ALL the rows are deleted (i.e., the table is emptied), ensure that you recreate the index after ingesting new data.
 </Warning>
 
-To permanently remove deleted rows, you can optimize the table, which will run compaction and cleans up the soft-deleted rows, which frees up storage space.
+To permanently remove deleted rows, the table has to be compacted and its old versions cleaned up, which frees up storage space.
 
 - In LanceDB OSS, compaction and cleanup are manual. Run `table.optimize()` regularly to free up disk space.
-- In LanceDB Enterprise, files aren't cleaned up by default. You can configure automatic compaction and cleanup behavior at cluster setup time to suit your organization's retention policy.
+- In LanceDB Enterprise, compaction runs automatically, and old versions are removed only when the deployment's configuration enables cleanup, with the retention period it sets. `optimize()` is not available there; see [Cleanup](/maintenance/cleanup).
 
-By default, table cleanup removes data up to 7 days ago. If you need to reclaim space from deleted rows more aggressively, manually call `table.optimize()` use a shorter retention window as follows:
+In OSS, `optimize()` removes versions older than 7 days by default. If you need to reclaim space from deleted rows more aggressively, call `table.optimize()` with a shorter retention window as follows:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">

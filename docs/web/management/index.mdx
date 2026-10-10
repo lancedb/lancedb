@@ -16,7 +16,7 @@ Operations that can take a while have an `_async` form returning a
 ## The surface at a glance {#surface}
 
 <Note>
-SQL requires a deployment -- a local database has no engine to plan a statement.
+SQL requires a deployment that enables its SQL endpoint -- a local database has none.
 See [SQL](/basics/sql#sql-is-remote).
 </Note>
 
@@ -71,11 +71,12 @@ it current.
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
-| create | -- | -- | `CREATE VIEW` |
-| drop | -- | -- | `DROP VIEW` |
+| create | `create_view` | `createView` | `CREATE VIEW` |
+| list | `list_views` | `listViews` | -- |
+| drop | `drop_view`, `drop_view_async` | `dropView`, `dropViewAsync` | `DROP VIEW` |
 
-<Badge color="red">Enterprise</Badge> Views exist only in SQL -- there is no SDK
-method for them, because the thing a view stores *is* a SQL statement. See
+<Badge color="red">Enterprise</Badge> Views exist only on a deployment that
+enables them; the SDK methods send the view's SQL query to the deployment. See
 [Views](/management/view).
 
 ### Functions {#functions}
@@ -87,8 +88,9 @@ method for them, because the thing a view stores *is* a SQL statement. See
 | list | `list_functions` | -- | `SHOW FUNCTIONS` |
 | drop | `drop_function` | -- | -- |
 
-<Badge color="red">Enterprise</Badge> A function runs on the server, so there is
-no local form. The TypeScript SDK has no function methods; use Python or SQL.
+<Badge color="red">Enterprise</Badge> A function runs on the server, and only on
+a deployment that enables functions, so there is no local form. The TypeScript
+SDK has no function methods; use Python or SQL.
 See [Functions](/management/function).
 
 ### Jobs {#jobs}

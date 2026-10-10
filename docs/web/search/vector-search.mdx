@@ -3,6 +3,13 @@ title: "Vector Search"
 sidebarTitle: "Vector Search"
 description: "Learn how to run vector search queries in LanceDB. Includes best practices, tips and examples."
 icon: "arrow-up-right-dots"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Vector search runs in the embedded library and on a deployment. A few query
+    options depend on the SDK or on the deployment's version; their sections
+    say so.
 ---
 
 import {
@@ -50,7 +57,10 @@ Vector search is a technique used to search for similar items based on their vec
 Raw data (e.g. text, images, audio, etc.) is converted into embeddings via an embedding model, which are then stored in a multimodal lakehouse like LanceDB. To perform similarity search at scale, an index is created on the stored embeddings, which can then used to perform fast lookups.
 
 <Note>
-Vector search has **no SQL form**. Run it here and use [SQL](/sql) over the result.
+In [SQL](/sql), vector search depends on the deployment: some versions plan
+`ORDER BY distance(vector, query_vector) LIMIT k` as one -- see
+[SQL](/basics/sql#no-vector-sql). The query builder on this page works with
+every embedded and deployed database.
 </Note>
 
 ## Supported distance metrics
@@ -208,7 +218,7 @@ The supported values are:
 | `normal` | Use the default balance between query latency and recall. This only has an effect for RQ indexes built with `num_bits > 1`. |
 | `accurate` | Prefer higher recall, which can increase query latency. |
 
-You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
+Only the Rust SDK sets `approx_mode`; the Python and TypeScript SDKs do not expose it. You can change `approx_mode` per query without rebuilding the index. For RQ indexes built with `num_bits=1`, `normal` uses the same one-bit scoring path as `fast`. If you also set `refine_factor`, LanceDB first uses `approx_mode` while finding candidates, then reranks the selected candidates on full vectors.
 
 ### Tuning `nprobes`
 
@@ -223,6 +233,8 @@ You can change `approx_mode` per query without rebuilding the index. For RQ inde
 For filtered ANN searches, you can also set `minimum_nprobes` and `maximum_nprobes`. LanceDB starts
 with the minimum and can scan more partitions up to the maximum if the filter leaves too few
 candidates. Calling `nprobes(n)` fixes both values to `n`, which disables that adaptive behavior.
+Whether a deployment honors this range depends on its version; one that does not searches exactly
+`minimum_nprobes` partitions.
 
 ### Vector Search with Prefiltering
 

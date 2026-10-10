@@ -3,6 +3,13 @@ title: "Insert data"
 sidebarTitle: "Insert"
 description: "Append rows to a table, including datasets too large to hold in memory."
 icon: plus
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Rows are appended in the embedded library and on a deployment. Large writes
+    to a deployment are uploaded in parts; see
+    [Bulk ingests into a remote table](#bulk-ingests-into-a-remote-table).
 ---
 
 Rows are appended with `table.add()`. It accepts the same shapes
@@ -20,7 +27,7 @@ import {
 } from '/snippets/tables.mdx';
 
 <Note>
-In SQL this is [`INSERT`](/sql/dml/insert), including `INSERT ... SELECT` to move rows server-side.
+In SQL on a deployment, this is [`INSERT`](/sql/dml/insert), including `INSERT ... SELECT` to move rows server-side.
 </Note>
 
 ## Ingesting large datasets {#large-datasets}

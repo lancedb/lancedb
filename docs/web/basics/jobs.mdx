@@ -4,6 +4,13 @@ sidebarTitle: "Job"
 description: "Work that outlives the call that started it: submitting, waiting, inspecting, cancelling."
 icon: hourglass-half
 keywords: ["job", "async", "background", "events", "cancel", "refresh"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Long-running operations return a job handle in the embedded library and on
+    a deployment. Listing jobs, reopening them by id and reading their events
+    need a deployment, where the work runs on the server.
 ---
 
 Some operations take longer than a request should. Building an index over a
@@ -35,7 +42,9 @@ a **job** immediately.
 <Note>
 The blocking form is not a different operation -- it submits the same job and
 waits. Reach for the `_async` form when you want to do something else meanwhile,
-run several at once, or survive the client going away.
+run several at once, or survive the client going away. On a deployment,
+`create_index` returns once the build is submitted unless you pass
+`wait_timeout`, and `refresh_column` has no blocking form.
 </Note>
 
 ## Submitting and waiting {#waiting}
@@ -155,8 +164,9 @@ in-process.
 
 ## Finding and cancelling jobs {#managing}
 
-The connection lists and reopens jobs, so a handle lost to a restarted process
-is recoverable from its id.
+On a deployment, the connection lists and reopens jobs, so a handle lost to a
+restarted process is recoverable from its id. A local database keeps no jobs to
+list, and these calls raise there.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -189,8 +199,10 @@ parsing it or storing it to resume the job later is not supported.
 
 A local database has no server to run anything, so its operations run in your
 process. They still return a handle, so the same code works against both -- but
-one with nothing behind it: `id` is `None`, `status()` reports `"finished"`,
-`wait()` returns immediately, `cancel()` does nothing, and `events()` raises.
+one with no server behind it: `id` is `None` and `events()` raises. An operation
+still running in your process reports `"running"`, `wait()` waits for it and
+`cancel()` stops it; one that finished before the call returned, such as a local
+`drop_table_async`, reports `"finished"` at once.
 
 This is the difference to expect when moving between embedded and deployed --
 see [SDKs](/basics/sdk).
