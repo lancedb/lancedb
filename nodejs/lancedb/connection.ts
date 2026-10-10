@@ -890,23 +890,24 @@ export class LocalConnection extends Connection {
   private getStorageOptions(
     options?: Partial<CreateTableOptions>,
   ): Record<string, string> | undefined {
+    let storageOptions = options?.storageOptions;
     if (options?.dataStorageVersion !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableDataStorageVersion"] =
-        options.dataStorageVersion;
+      storageOptions = {
+        ...storageOptions,
+        newTableDataStorageVersion: options.dataStorageVersion,
+      };
     }
 
     if (options?.enableV2ManifestPaths !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableEnableV2ManifestPaths"] =
-        options.enableV2ManifestPaths ? "true" : "false";
+      storageOptions = {
+        ...storageOptions,
+        newTableEnableV2ManifestPaths: options.enableV2ManifestPaths
+          ? "true"
+          : "false",
+      };
     }
 
-    return cleanseStorageOptions(options?.storageOptions);
+    return cleanseStorageOptions(storageOptions);
   }
 
   async createTable(

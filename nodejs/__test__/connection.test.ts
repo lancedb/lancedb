@@ -36,6 +36,87 @@ describe("when connecting", () => {
   });
 });
 
+describe.each([
+  [
+    "URI overload",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connect(uri, options),
+  ],
+  [
+    "object overload",
+    async (
+      uri: string,
+      options: { storageOptions?: Record<string, string> },
+    ) => {
+      const input = { uri, ...options };
+      if (Object.isFrozen(options)) {
+        Object.freeze(input);
+      }
+      const db = await connect(input);
+      expect(input).toEqual({ uri, ...options });
+      expect(input.storageOptions).toBe(options.storageOptions);
+      return db;
+    },
+  ],
+  [
+    "namespace",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connectNamespace("dir", { root: uri }, options),
+  ],
+])("%s connection options", (_name, open) => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should accept frozen options without storage options", async () => {
+    const options = Object.freeze({});
+    const db = await open(tmpDir.name, options);
+    try {
+      await db.createTable("frozen", [{ id: 1 }]);
+      await expect(db.tableNames()).resolves.toContain("frozen");
+      expect(options).toEqual({});
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should accept frozen options with storage options", async () => {
+    const storageOptions = Object.freeze({
+      newTableDataStorageVersion: "stable",
+    });
+    const options = Object.freeze({ storageOptions });
+    const db = await open(tmpDir.name, options);
+    try {
+      const table = await db.createTable("frozen", [{ id: 1 }]);
+      await expect(table.countRows()).resolves.toBe(1);
+      expect(options.storageOptions).toBe(storageOptions);
+      expect(storageOptions).toEqual({ newTableDataStorageVersion: "stable" });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should preserve reused options and their storage options", async () => {
+    const storageOptions = { newTableDataStorageVersion: "stable" };
+    const options = { storageOptions };
+    for (let i = 0; i < 2; i++) {
+      const db = await open(tmpDir.name, options);
+      try {
+        const table = await db.createTable(`reused_${i}`, [{ id: i }]);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "stable",
+        });
+      } finally {
+        await db.close();
+      }
+    }
+  });
+});
+
 describe("given a connection", () => {
   let tmpDir: tmp.DirResult;
   let db: Connection;
@@ -292,6 +373,69 @@ describe("given a connection", () => {
         expect(file).toMatch(/^\d{20}\.manifest$/);
       });
   });
+
+  describe.each(["createTable", "createEmptyTable"] as const)(
+    "%s storage options",
+    (method) => {
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      it("should accept frozen creation options without storage options", async () => {
+        const options = Object.freeze({
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_options", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_options", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options).not.toHaveProperty("storageOptions");
+      });
+
+      it("should accept frozen storage options and preserve override precedence", async () => {
+        const storageOptions = Object.freeze({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+        const options = Object.freeze({
+          storageOptions,
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_storage", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_storage", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+
+      it("should not retain a previous override when reusing storage options", async () => {
+        const storageOptions = { newTableEnableV2ManifestPaths: "false" };
+        const create = async (name: string, enableV2ManifestPaths?: boolean) =>
+          method === "createTable"
+            ? db.createTable(name, [{ id: 1 }], {
+                storageOptions,
+                enableV2ManifestPaths,
+              })
+            : db.createEmptyTable(name, schema, {
+                storageOptions,
+                enableV2ManifestPaths,
+              });
+        const first = await create("override", true);
+        expect(await (first as LocalTable).usesV2ManifestPaths()).toBe(true);
+        const second = await create("without_override");
+        expect(await (second as LocalTable).usesV2ManifestPaths()).toBe(false);
+        expect(storageOptions).toEqual({
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+    },
+  );
 
   it("should be able to migrate tables to the V2 manifest paths", async () => {
     const db = await connect(tmpDir.name);
