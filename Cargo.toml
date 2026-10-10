@@ -75,7 +75,7 @@ serde = "1"
 serde_json = "1"
 tempfile = "3.5.0"
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
-tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-aws-lc"] }
 uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
