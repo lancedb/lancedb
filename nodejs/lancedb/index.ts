@@ -210,6 +210,8 @@ export {
   MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
+export { Expr, col, lit, litBool, litInt, func } from "./expr";
+export type { ExprLike } from "./expr";
 
 /**
  * Options for tokenizing a full-text search query without a table index.
