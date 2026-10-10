@@ -1897,29 +1897,21 @@ mod lsm_tests {
         }
     }
 
-    /// The built-in vector plugin, except that it declines a probe (a search
-    /// for no neighbours).
+    /// The built-in vector plugin, except that its index answers no search.
     #[derive(Debug)]
-    struct DeclinesProbes;
+    struct AnswersNothing;
 
     #[derive(Debug)]
-    struct DeclinesProbesIndex(Arc<dyn lance::dataset::mem_wal::index::MemIndex>);
+    struct AnswersNothingIndex(Arc<dyn lance::dataset::mem_wal::index::MemIndex>);
 
     fn vector_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
         Arc::new(lance::dataset::mem_wal::index::HnswMemIndexPlugin)
     }
 
-    fn is_probe(query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
-        query
-            .as_any()
-            .downcast_ref::<lance::dataset::mem_wal::index::VectorMemQuery>()
-            .is_some_and(|query| query.k == 0)
-    }
-
     #[async_trait::async_trait]
-    impl lance::dataset::mem_wal::index::MemIndexPlugin for DeclinesProbes {
+    impl lance::dataset::mem_wal::index::MemIndexPlugin for AnswersNothing {
         fn name(&self) -> &str {
-            "DeclinesProbes"
+            "AnswersNothing"
         }
         fn details_message(&self) -> &str {
             "VectorIndexDetails"
@@ -1946,17 +1938,17 @@ mod lsm_tests {
             &self,
             ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
         ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
-            Ok(Arc::new(DeclinesProbesIndex(vector_plugin().create(ctx)?)))
+            Ok(Arc::new(AnswersNothingIndex(vector_plugin().create(ctx)?)))
         }
     }
 
     #[async_trait::async_trait]
-    impl lance::dataset::mem_wal::index::MemIndex for DeclinesProbesIndex {
+    impl lance::dataset::mem_wal::index::MemIndex for AnswersNothingIndex {
         fn columns(&self) -> &[String] {
             self.0.columns()
         }
-        fn can_answer(&self, query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
-            !is_probe(query) && self.0.can_answer(query)
+        fn can_answer(&self, _query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+            false
         }
         fn insert(&self, batch: &RecordBatch, row_offset: u64) -> lance_core::Result<()> {
             self.0.insert(batch, row_offset)
@@ -1972,13 +1964,10 @@ mod lsm_tests {
         }
         fn search(
             &self,
-            query: &dyn lance::dataset::mem_wal::index::MemQuery,
-            ctx: &lance::dataset::mem_wal::index::SearchContext,
+            _query: &dyn lance::dataset::mem_wal::index::MemQuery,
+            _ctx: &lance::dataset::mem_wal::index::SearchContext,
         ) -> lance_core::Result<Option<lance::dataset::mem_wal::index::MemMatches>> {
-            if is_probe(query) {
-                return Ok(None);
-            }
-            self.0.search(query, ctx)
+            Ok(None)
         }
         async fn flush(
             &self,
@@ -1988,14 +1977,27 @@ mod lsm_tests {
         }
     }
 
-    /// A vector kind that declines only probes still serves an LSM search.
+    /// A resident memtable whose vector index answers nothing still serves an
+    /// LSM vector search: Lance compares every row instead.
     #[tokio::test]
-    async fn lsm_vector_search_asks_resident_indexes_the_search_it_runs() {
+    async fn lsm_vector_search_compares_every_row_when_no_resident_index_answers() {
         let dir = tempdir().unwrap();
         let mut registry = lance::dataset::mem_wal::MemIndexRegistry::default();
-        registry.replace_plugin(Arc::new(DeclinesProbes)).unwrap();
+        registry.replace_plugin(Arc::new(AnswersNothing)).unwrap();
         let table = lsm_vector_table(dir.path(), Some(registry)).await;
         assert_eq!(nearest_ids(&table).await, vec![9999]);
+
+        // The second page starts after the memtable row.
+        let page = table
+            .query()
+            .nearest_to(&[1000.0_f32; 8])
+            .unwrap()
+            .limit(2)
+            .offset(1);
+        assert_eq!(
+            collect_ids(page.execute().await.unwrap()).await,
+            vec![255, 254]
+        );
     }
 
     /// Claims the base table's bitmap index and keeps it as a B-tree, whose
@@ -2039,12 +2041,10 @@ mod lsm_tests {
     }
 
     /// A kind Lance has no memtable index for is refused when named until the
-    /// table's registry maintains it; then it is maintained and flushed with
-    /// each generation.
+    /// table's registry maintains it; then it is maintained, flushed with each
+    /// generation, and answers searches on the flushed generations.
     #[tokio::test]
     async fn lsm_maintains_an_index_kind_from_the_tables_registry() {
-        use lance::index::DatasetIndexExt;
-
         let dir = tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
             .execute()
@@ -2111,18 +2111,12 @@ mod lsm_tests {
             .unwrap();
 
         let fresh = || async {
-            let batches: Vec<RecordBatch> = table
-                .query()
-                .only_if("region = 'fresh'")
-                .execute()
-                .await
-                .unwrap()
-                .try_collect()
-                .await
-                .unwrap();
-            batches.iter().map(RecordBatch::num_rows).sum::<usize>()
+            let query = table.query().only_if("region = 'fresh'");
+            let mut ids = collect_ids(query.execute().await.unwrap()).await;
+            ids.sort_unstable();
+            ids
         };
-        assert_eq!(fresh().await, 2);
+        assert_eq!(fresh().await, vec![10, 11]);
         let (_, _, memtables) = table
             .as_native()
             .unwrap()
@@ -2143,35 +2137,176 @@ mod lsm_tests {
         );
 
         table.close_lsm_writers().await.unwrap();
-        assert_eq!(fresh().await, 2);
+        assert_eq!(fresh().await, vec![10, 11]);
+        assert_generations_answer_through_region_bitmap(&table, vec![10, 11]).await;
+    }
+
+    /// The generations each shard's manifest publishes.
+    async fn published_generations(table: &Table) -> Vec<lance::Dataset> {
+        use lance::dataset::mem_wal::ShardManifestStore;
+
+        let uri = table.uri().await.unwrap();
+        let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
+            .await
+            .unwrap();
+        let mem_wal = std::path::Path::new(&uri).join("_mem_wal");
         let mut generations = Vec::new();
-        let mem_wal = dir.path().join("t.lance").join("_mem_wal");
         for shard in std::fs::read_dir(&mem_wal).unwrap() {
-            for entry in std::fs::read_dir(shard.unwrap().path()).unwrap() {
-                let path = entry.unwrap().path();
-                if path
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .contains("_gen_")
-                {
-                    generations.push(path);
-                }
+            let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
+                continue;
+            };
+            let manifest = ShardManifestStore::new(store.clone(), &base, shard_id, 2)
+                .latest()
+                .await
+                .unwrap()
+                .expect("a shard directory has a manifest");
+            for sstable in manifest.sstables {
+                let path = mem_wal.join(shard_id.to_string()).join(&sstable.path);
+                generations.push(lance::Dataset::open(path.to_str().unwrap()).await.unwrap());
             }
         }
+        generations
+    }
+
+    /// Every published generation carries `region_bitmap` as a bitmap index on
+    /// `region`, and a search for `region = 'fresh'` on it uses that index.
+    async fn assert_generations_answer_through_region_bitmap(table: &Table, fresh: Vec<i64>) {
+        use lance::index::DatasetIndexExt;
+
+        let generations = published_generations(table).await;
         assert!(
             !generations.is_empty(),
             "closing the writer flushed a generation"
         );
-        for path in generations {
-            let generation = lance::Dataset::open(path.to_str().unwrap()).await.unwrap();
+        let mut found = Vec::new();
+        for generation in generations {
+            let region = generation.schema().field("region").unwrap().id;
             let indices = generation.load_indices().await.unwrap();
+            let index = indices
+                .iter()
+                .find(|index| index.name == "region_bitmap")
+                .expect("the generation carries the index the plugin trained");
+            assert_eq!(index.fields, vec![region]);
             assert!(
-                indices.iter().any(|index| index.name == "region_bitmap"),
-                "{} carries the index the plugin trained: {:?}",
-                path.display(),
-                indices.iter().map(|index| &index.name).collect::<Vec<_>>()
+                index
+                    .index_details
+                    .as_ref()
+                    .is_some_and(|details| details.type_url.ends_with("BitmapIndexDetails")),
+                "{:?}",
+                index.index_details
+            );
+
+            let mut scan = generation.scan();
+            scan.filter("region = 'fresh'").unwrap();
+            let plan = scan.explain_plan(false).await.unwrap();
+            assert!(plan.contains("ScalarIndexQuery"), "{plan}");
+            let batch = scan.try_into_batch().await.unwrap();
+            found.extend(
+                batch["id"]
+                    .as_primitive::<Int64Type>()
+                    .values()
+                    .iter()
+                    .copied(),
             );
         }
+        found.sort_unstable();
+        assert_eq!(found, fresh);
+    }
+
+    /// Under the default set, a kind only the registry maintains is picked up
+    /// when its index is created after the writer opened, and the table's
+    /// clones share the registry.
+    #[tokio::test]
+    async fn lsm_default_set_maintains_a_registry_kind_created_while_writing() {
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_region_reader(vec![(1, "us"), (2, "eu")]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        let registry = lance::dataset::mem_wal::MemIndexRegistry::default()
+            .with_plugin(Arc::new(BitmapAsBTree))
+            .unwrap();
+        table.as_native().unwrap().set_mem_index_registry(registry);
+        let clone = table.clone();
+        assert!(
+            clone
+                .as_native()
+                .unwrap()
+                .mem_index_registry()
+                .plugin_for_details_url("/lance.table.BitmapIndexDetails")
+                .is_some(),
+            "a clone shares the handle's registry"
+        );
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let upsert = |rows: Vec<(i64, &'static str)>| {
+            let table = table.clone();
+            async move {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(id_region_reader(rows)).await.unwrap();
+            }
+        };
+        // Opens the writer before the table has a bitmap index.
+        upsert(vec![(3, "us")]).await;
+        table
+            .create_index(&["region"], crate::index::Index::Bitmap(Default::default()))
+            .name("region_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+        upsert(vec![(10, "fresh"), (11, "fresh")]).await;
+
+        let (_, _, memtables) = table
+            .as_native()
+            .unwrap()
+            .dataset
+            .shard_writer()
+            .read_snapshot()
+            .await
+            .unwrap()
+            .expect("the merge opened a writer");
+        let active = memtables.expect("the writer keeps memtables").active;
+        assert!(
+            active
+                .index_store
+                .index_names()
+                .contains(&"region_bitmap".to_string()),
+            "the open writer picked up the new index: {:?}",
+            active.index_store.index_names()
+        );
+
+        table.close_lsm_writers().await.unwrap();
+        // Only the generation written after the index exists carries it.
+        let generations = published_generations(&table).await;
+        let mut carrying = 0;
+        for generation in &generations {
+            use lance::index::DatasetIndexExt;
+            if generation
+                .load_indices()
+                .await
+                .unwrap()
+                .iter()
+                .any(|index| index.name == "region_bitmap")
+            {
+                carrying += 1;
+            }
+        }
+        assert!(
+            carrying >= 1,
+            "{} generations, none carry the index",
+            generations.len()
+        );
     }
 }
