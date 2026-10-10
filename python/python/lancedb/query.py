@@ -39,8 +39,9 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
-from .util import flatten_columns
+from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
+from .util import _validate_query_vector, flatten_columns
+from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
     FetchBlobsAsync,
@@ -50,6 +51,7 @@ from ._blob import (
     finalize_blob_query_table,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
+    strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -478,7 +480,7 @@ class MatchQuery(FullTextQuery):
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
-    fuzziness : int, optional
+    fuzziness : int or None, default 0
         The maximum edit distance for each term in the match query.
         Defaults to 0 (exact match).
         If None, fuzziness is applied automatically by the rules:
@@ -505,7 +507,7 @@ class MatchQuery(FullTextQuery):
     query: str
     column: str
     boost: float = pydantic.Field(1.0, kw_only=True)
-    fuzziness: int = pydantic.Field(0, kw_only=True)
+    fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
@@ -691,8 +693,9 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The number of IVF partitions to search.  If this is None then a default
-        number of partitions will be used.
+        The legacy number of IVF partitions to search. Lance sets both probe
+        bounds to this value. If this is None then Lance's default probe settings
+        will be used.
 
         - A higher number makes search more accurate but also slower.
 
@@ -771,20 +774,23 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
+    # legacy number of IVF partitions to search
+    #
+    # Lance sets both probe bounds to this value. Explicit bounds can override it.
+    nprobes: Optional[int] = None
+
     # which columns to return in the results (dict values may be str or Expr)
     columns: QueryProjection = None
 
     # minimum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
+    # If None then Lance's default will be used.
     minimum_nprobes: Optional[int] = None
 
     # maximum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
-    #
-    # If 0 then no limit will be applied and all partitions could be searched
-    # if needed to satisfy the limit.
+    # If None then Lance's default will be used. If 0 then no limit will be applied
+    # and all partitions could be searched if needed to satisfy the limit.
     maximum_nprobes: Optional[int] = None
 
     # lower bound for distance search
@@ -845,6 +851,7 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
+        query.nprobes = req.nprobes
         query.minimum_nprobes = req.minimum_nprobes
         query.maximum_nprobes = req.maximum_nprobes
         query.lower_bound = req.lower_bound
@@ -906,6 +913,9 @@ class LanceQueryBuilder(ABC):
         fast_search: bool
             Skip flat search of unindexed data.
         """
+        if query_type != "fts":
+            _validate_query_vector(query)
+
         if ordering_field_name is not None:
             import warnings
 
@@ -1618,9 +1628,11 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         str_query: Optional[str] = None,
         fast_search: bool = None,
     ):
+        _validate_query_vector(query)
         super().__init__(table)
         self._query = query
         self._distance_type = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._lower_bound = None
@@ -1685,22 +1697,23 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets both the minimum and maximum number of probes to the same
-        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
-        control.
+        The value is retained as `nprobes` through client and server request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
 
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceVectorQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
@@ -1842,6 +1855,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
+            nprobes=self._nprobes,
             minimum_nprobes=self._minimum_nprobes,
             maximum_nprobes=self._maximum_nprobes,
             lower_bound=self._lower_bound,
@@ -2200,6 +2214,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
         self._refine_factor = None
@@ -2207,6 +2222,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._phrase_query = None
         self._lower_bound = None
         self._upper_bound = None
+        # WAL-PK-FUSION: delete both, and the `with_row_id` override below.
+        # Set by `_create_query_builders` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
+        # `_with_row_id` is also turned on by `rerank(return_score="all")` for
+        # the reranker's own use, so it cannot answer "did the caller ask?".
+        self._caller_requested_row_id = False
 
     def _validate_query(self, query, vector=None, text=None):
         if query is not None and (vector is not None or text is not None):
@@ -2228,6 +2249,16 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         return vector_query, text_query
 
+    def with_row_id(self, with_row_id: bool) -> Self:  # WAL-PK-FUSION: delete.
+        """Set whether to return row ids.
+
+        Recorded separately from `_with_row_id`, which `rerank(return_score=
+        "all")` also sets for its own use — on a MemWAL table only a caller who
+        asked is refused, and the reranker still falls back to the primary key.
+        """
+        self._caller_requested_row_id = with_row_id
+        return super().with_row_id(with_row_id)
+
     def phrase_query(self, phrase_query: bool = True) -> LanceHybridQueryBuilder:
         """Set whether to use phrase query.
 
@@ -2248,16 +2279,30 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
     def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return _wal_hybrid.with_pk_fallback(
+            lambda: self._run_hybrid(timeout=timeout),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._caller_requested_row_id,
+        )
+
+    def _run_hybrid(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
         self._create_query_builders()
+        fts_query, vector_query = self._fts_query, self._vector_query
+        # WAL-PK-FUSION: without the fallback, both legs always ask for row ids.
+        if self._pk_fusion is None:
+            fts_query = fts_query.with_row_id(True)
+            vector_query = vector_query.with_row_id(True)
         with ThreadPoolExecutor() as executor:
-            fts_future = executor.submit(
-                self._fts_query.with_row_id(True).to_arrow, timeout=timeout
-            )
-            vector_future = executor.submit(
-                self._vector_query.with_row_id(True).to_arrow, timeout=timeout
-            )
+            fts_future = executor.submit(fts_query.to_arrow, timeout=timeout)
+            vector_future = executor.submit(vector_query.to_arrow, timeout=timeout)
             fts_results = fts_future.result()
             vector_results = vector_future.result()
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         results = self._combine_hybrid_results(
             fts_results=fts_results,
@@ -2265,13 +2310,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             norm=self._norm,
             fts_query=self._fts_query._query,
             reranker=self._reranker,
-            limit=self._limit,
+            limit=self._limit or DEFAULT_HYBRID_LIMIT,
             with_row_ids=True,
             offset=self._offset,
         )
         return self._finish_hybrid_results(results)
 
     def _finish_hybrid_results(self, results: pa.Table) -> pa.Table:
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            return self._pk_fusion.strip(results)
         if self._user_requested_row_id():
             return results
         if self._blob_auto_row_id_enabled():
@@ -2445,7 +2492,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._norm = normalize
         self._reranker = reranker
         if reranker.score == "all":
-            self.with_row_id(True)
+            # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
+            # Not through `with_row_id`, which records caller intent: the
+            # reranker's need for row ids must not refuse a MemWAL table.
+            self._with_row_id = True
 
         return self
 
@@ -2456,18 +2506,22 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
+        The value is retained as `nprobes` until Lance sets both probe bounds to it.
+        Explicit minimum or maximum settings can override their respective bounds.
+
         Parameters
         ----------
         nprobes: int
-            The number of probes to use.
+            The number of probes to use. Must be greater than 0.
 
         Returns
         -------
         LanceHybridQueryBuilder
             The LanceHybridQueryBuilder object.
         """
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        if nprobes <= 0:
+            raise ValueError("Invalid input, nprobes must be greater than 0")
+        self._nprobes = nprobes
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -2712,20 +2766,31 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
 
         # Apply common configurations
-        if self._limit:
-            # The final offset/limit window is sliced out of the combined,
-            # reranked results, so each sub-query must fetch enough rows to
-            # cover the skipped prefix as well as the window itself.
-            sub_query_limit = self._limit + (self._offset or 0)
-            self._vector_query.limit(sub_query_limit)
-            self._fts_query.limit(sub_query_limit)
-        if self._columns:
-            self._vector_query.select(self._columns)
-            self._fts_query.select(self._columns)
+        # The final offset/limit window is sliced out of the combined,
+        # reranked results, so each sub-query must fetch enough rows to
+        # cover the skipped prefix as well as the window itself.
+        limit = self._limit or DEFAULT_HYBRID_LIMIT
+        sub_query_limit = limit + (self._offset or 0)
+        self._vector_query.limit(sub_query_limit)
+        self._fts_query.limit(sub_query_limit)
+        # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
+        self._pk_fusion = None
+        columns = self._columns
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                self._table.schema,
+                self._columns,
+                caller_requested_row_id=self._caller_requested_row_id,
+            )
+            columns = self._pk_fusion.inject(columns)
+        if columns:
+            self._vector_query.select(columns)
+            self._fts_query.select(columns)
         if self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
-        if self._with_row_id:
+        # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
+        if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
         if self._use_lsm is not None:
@@ -2735,6 +2800,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
+        if self._nprobes is not None:
+            self._vector_query.nprobes(self._nprobes)
         if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
@@ -3018,14 +3085,18 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
-            Vector, FTS, hybrid, and other non-native query shapes keep the
-            existing Arrow conversion path and only support blob descriptions.
+            Controls how blob columns are returned. Remote queries support
+            "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
+        if self._table is not None and not self._table._inner._is_native():
+            return await self._remote_to_pandas(
+                flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
+            )
+
         if hasattr(self._inner, "output_schema"):
             schema = await self.output_schema()
             if _blob_mode_requires_native_pandas(blob_mode, schema):
@@ -3052,6 +3123,31 @@ class AsyncQueryBase(object):
                 "this query shape cannot use Lance native pandas conversion"
             )
         return tbl.to_pandas(**kwargs)
+
+    async def _remote_to_pandas(
+        self,
+        *,
+        flatten: Optional[Union[int, bool]],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        **kwargs,
+    ) -> "pd.DataFrame":
+        # A live remote table can be replaced between query and blob fetch.
+        # Row ids and version numbers do not identify the producing table.
+        tbl = await self.to_arrow(timeout=timeout)
+        projected_blob_paths = set(blob_column_paths(tbl.schema))
+        if not projected_blob_paths:
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, self._blob_paths)
+            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+        raise NotImplementedError(
+            f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+            "blob columns without a stable table snapshot; "
+            "use blob_mode='descriptions'"
+        )
 
     async def _plain_scan_to_pandas(
         self,
@@ -3605,7 +3701,9 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the number of partitions to search (probe)
+        Set the legacy IVF probe parameter
+
+        The number of probes must be greater than 0.
 
         This argument is only used when the vector column has an IVF-based index.
         If there is no index then this value is ignored.
@@ -3615,16 +3713,19 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions should be searched.
+        partitions will be searched.
 
         Increasing this value will increase the recall of your query but will
-        also increase the latency of your query.  The default value is 20.  This
-        default is good for many cases but the best value to use will depend on
-        your data and the recall that you need to achieve.
+        also increase the latency of your query. If this method is not called,
+        Lance's adaptive probe defaults are used.
 
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give
         you the desired recall.
+
+        LanceDB retains this as `nprobes` through local and remote request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
         """
         self._inner.nprobes(nprobes)
         return self
@@ -3866,6 +3967,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._inner = inner
         self._norm = "score"
         self._reranker = RRFReranker()
+        # WAL-PK-FUSION: delete.
+        # Set by `_create_child_queries` when the legs are fused on the key.
+        self._pk_fusion: Optional[_wal_hybrid.PkFusion] = None
 
     def rerank(
         self, reranker: Reranker = RRFReranker(), normalize: str = "score"
@@ -3897,7 +4001,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
 
         return self
 
-    def _create_child_queries(
+    async def _create_child_queries(
         self,
     ) -> Tuple["AsyncFTSQuery", "AsyncVectorQuery", int, int]:
         """Build the sub-queries that make up this hybrid query.
@@ -3906,7 +4010,8 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         the plans that are reported are the plans that actually run.
 
         Returns the two sub-queries along with the effective limit and offset of
-        the hybrid query itself.
+        the hybrid query itself. The key the legs are fused on, if any, is left
+        on `self._pk_fusion`.
         """
         fts_query = AsyncFTSQuery(self._inner.to_fts_query(), self._table)
         vec_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
@@ -3924,8 +4029,27 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             limit = DEFAULT_HYBRID_LIMIT
         offset = fts_req.offset or vec_req.offset or 0
 
-        fts_query.with_row_id()
-        vec_query.with_row_id()
+        # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
+        # calls.
+        self._pk_fusion = None
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_lsm):
+            self._pk_fusion = _wal_hybrid.PkFusion.for_query(
+                await self._table.schema(),
+                _query_request_projection(fts_req),
+                caller_requested_row_id=self._user_requested_row_id(),
+            )
+        if self._pk_fusion is None:
+            fts_query.with_row_id()
+            vec_query.with_row_id()
+        else:
+            # Ask for the key columns instead, and never for `_rowid`.
+            # `select` carries the whole projection; `select_source_columns`
+            # keeps only plain column references, so rebuilding from it would
+            # drop computed ones.
+            columns = self._pk_fusion.inject(fts_req.select)
+            if self._pk_fusion.injected:
+                fts_query.select(columns)
+                vec_query.select(columns)
 
         # offset() pushes the offset down into both sub-queries, which would make
         # each of them skip its own first `offset` rows. The window has to be
@@ -3944,7 +4068,23 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         max_batch_length: Optional[int] = None,
         timeout: Optional[timedelta] = None,
     ) -> AsyncRecordBatchReader:
-        fts_query, vec_query, limit, offset = self._create_child_queries()
+        # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
+        return await _wal_hybrid.with_pk_fallback_async(
+            lambda: self._run_hybrid(
+                max_batch_length=max_batch_length, timeout=timeout
+            ),
+            self._table,
+            fused=lambda: self._pk_fusion is not None,
+            caller_requested_row_id=self._user_requested_row_id(),
+        )
+
+    async def _run_hybrid(
+        self,
+        *,
+        max_batch_length: Optional[int] = None,
+        timeout: Optional[timedelta] = None,
+    ) -> AsyncRecordBatchReader:
+        fts_query, vec_query, limit, offset = await self._create_child_queries()
 
         req = fts_query._inner.to_query_request()
         blob_auto_row_id = False
@@ -3968,6 +4108,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             fts_query.to_arrow(timeout=timeout),
             vec_query.to_arrow(timeout=timeout),
         )
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
+            vector_results, fts_results = self._pk_fusion.stamp(
+                vector_results, fts_results
+            )
 
         result = LanceHybridQueryBuilder._combine_hybrid_results(
             fts_results=fts_results,
@@ -3979,7 +4123,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
             with_row_ids=True,
             offset=offset,
         )
-        if (
+        if self._pk_fusion is not None:  # WAL-PK-FUSION: delete this branch.
+            result = self._pk_fusion.strip(result)
+        elif (
             not self._user_requested_row_id()
             and not blob_auto_row_id
             and "_rowid" in result.column_names
@@ -4028,7 +4174,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         plan : str
         """  # noqa: E501
 
-        fts_query, vec_query, _, _ = self._create_child_queries()
+        fts_query, vec_query, _, _ = await self._create_child_queries()
         vector_plan = await vec_query.explain_plan(verbose)
         fts_plan = await fts_query.explain_plan(verbose)
         # Indent sub-plans under the reranker
@@ -4057,7 +4203,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         -------
         plan : str
         """
-        fts_query, vec_query, _, _ = self._create_child_queries()
+        fts_query, vec_query, _, _ = await self._create_child_queries()
 
         results = ["Vector Search Query:"]
         results.append(await vec_query.analyze_plan(distributed_metrics))

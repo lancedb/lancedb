@@ -1499,7 +1499,7 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
@@ -1539,8 +1539,10 @@ def _mock_remote_function_catalog():
                 else (None, None)
             )
             if function_action[1] == "create":
+                *namespace_path, name = function_action[0].split("$")
                 state["version"] = {
-                    "name": "normalize_score",
+                    "name": name,
+                    **({"namespace_path": namespace_path} if namespace_path else {}),
                     "version": FUNCTION_VERSION,
                     "object_id": "fixture",
                     "location": "memory:///fixture",
@@ -1553,7 +1555,7 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202
@@ -1565,10 +1567,18 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/function/normalize_score/describe":
+            # A namespaced Function's id is its namespace path and name joined
+            # by `$`, so the name is the last segment of it.
+            elif (
+                function_action[1] == "describe"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
                 assert body == {"version": FUNCTION_VERSION}
                 response = state["version"]
-            elif self.path == "/v1/function/normalize_score/drop":
+            elif (
+                function_action[1] == "drop"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
                 assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
             elif secret_action[1] in ("create", "alter"):
@@ -1602,7 +1612,8 @@ def _mock_remote_function_catalog():
                     assert query["page_token"] == "next"
                     self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
                 return
-            if url.path != "/v1/namespace/$/function/list":
+            parts = url.path.strip("/").split("/")
+            if parts[:2] != ["v1", "namespace"] or parts[3:] != ["function", "list"]:
                 self._write_response(404, {"error": "not found"})
                 return
             assert query["include_definition"] == "true"
@@ -1709,7 +1720,7 @@ def test_remote_secret_verbs_round_trip():
         )
         assert db.create_secret("openai-prod", "sk-live-0001") is None
         assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
         assert db.drop_secret("openai-prod") is None
 
     routes = [path for path, _ in state["requests"]]
@@ -1770,7 +1781,7 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         )
         created = db.create_function(normalize_score)
         state["requests"].clear()
-        functions = db.list_functions()
+        functions = list(db.list_functions())
 
     assert functions == [created]
     assert state["requests"] == [
@@ -1794,7 +1805,7 @@ async def test_async_remote_list_functions_returns_typed_versions():
         registration = await db.create_function_async(normalize_score)
         created = await registration.wait()
         state["requests"].clear()
-        functions = await db.list_functions()
+        functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
     assert [path for path, _ in state["requests"]] == [
@@ -1840,3 +1851,102 @@ async def test_async_remote_drop_function_sends_exact_version():
             {"version": FUNCTION_VERSION},
         )
     ]
+
+
+def test_remote_function_verbs_address_a_namespace_in_the_path():
+    """A Function's namespace is part of the identifier each route addresses;
+    no body carries it, so a namespaced request differs only in its path."""
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(normalize_score, namespace_path=namespace)
+        # The returned parts are what the other verbs take, so a created
+        # Function reopens from its own fields.
+        assert created.name == "normalize_score"
+        assert created.namespace_path == tuple(namespace)
+        reopened = db.get_function(
+            created.name,
+            version=created.version,
+            namespace_path=list(created.namespace_path),
+        )
+        assert reopened == created
+        assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
+            namespace
+        )
+        list(db.list_functions(namespace_path=namespace))
+        assert (
+            db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+        dropped, _ = db.drop_function_async(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        assert dropped is True
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        registration = await db.create_function_async(
+            normalize_score, namespace_path=namespace
+        )
+        await registration.wait()
+        await db.get_function(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        [item async for item in db.list_functions(namespace_path=namespace)]
+        assert (
+            await db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+def test_a_function_namespace_path_must_be_a_list_of_segments():
+    """A bare string is refused rather than read as a sequence of one-character
+    segments, and nothing reaches the service."""
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(TypeError):
+            list(db.list_functions(namespace_path="analytics"))
+
+    assert state["requests"] == []

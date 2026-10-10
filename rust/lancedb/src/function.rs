@@ -85,22 +85,25 @@ fn has_unknown_keys(value: &Value, allowed: &[&str]) -> bool {
         .is_some_and(|object| object.keys().any(|key| !allowed.contains(&key.as_str())))
 }
 
+/// Every field a [`FunctionVersionRef`] document may carry. An application or
+/// binding with any other key comes from a newer contract.
+pub(crate) const FUNCTION_VERSION_REF_FIELDS: &[&str] = &[
+    "name",
+    "namespace_path",
+    "object_id",
+    "location",
+    "version",
+    "manifest_digest",
+];
+
 fn application_has_unknown_nested_fields(value: &Value) -> bool {
     let Some(application) = value.as_object() else {
         return false;
     };
-    if application.get("function").is_some_and(|value| {
-        has_unknown_keys(
-            value,
-            &[
-                "name",
-                "object_id",
-                "location",
-                "version",
-                "manifest_digest",
-            ],
-        )
-    }) {
+    if application
+        .get("function")
+        .is_some_and(|value| has_unknown_keys(value, FUNCTION_VERSION_REF_FIELDS))
+    {
         return true;
     }
     if application
@@ -187,6 +190,11 @@ pub struct FunctionOutput {
 pub struct FunctionSignature {
     pub inputs: Vec<FunctionParameter>,
     pub output: FunctionOutput,
+    /// Ordered fields of the single initialization row a Function instance is
+    /// created with. Each binding supplies its own values; they are not part
+    /// of the Function version. Empty when the Function takes none.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub initialization: Vec<FunctionParameter>,
 }
 
 /// One Python environment source.
@@ -426,9 +434,17 @@ fn deserialize_object_version<'de, D: Deserializer<'de>>(
 }
 
 /// One immutable Function object revision and its executable artifact.
+///
+/// The Function is named by its parts, `name` and `namespace_path`, the way a
+/// [`SecretReference`](crate::secrets::SecretReference) names a Secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersion {
     name: String,
+    /// The namespace holding the Function. Empty is the root, and is absent
+    /// from the wire, as a [`SecretReference`](crate::secrets::SecretReference)
+    /// omits it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    namespace_path: Vec<String>,
     object_id: String,
     location: String,
     #[serde(deserialize_with = "deserialize_object_version")]
@@ -437,7 +453,8 @@ pub struct FunctionVersion {
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
-    created_at: String,
+    /// When this version was created, in milliseconds since the epoch.
+    created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
 }
@@ -458,6 +475,7 @@ impl FunctionVersion {
     pub fn reference(&self) -> FunctionVersionRef {
         FunctionVersionRef {
             name: self.name.clone(),
+            namespace_path: self.namespace_path.clone(),
             object_id: self.object_id.clone(),
             location: self.location.clone(),
             version: self.version.clone(),
@@ -466,6 +484,9 @@ impl FunctionVersion {
     }
     pub fn name(&self) -> &str {
         &self.name
+    }
+    pub fn namespace_path(&self) -> &[String] {
+        &self.namespace_path
     }
     pub fn version(&self) -> &str {
         &self.version
@@ -487,8 +508,9 @@ impl FunctionVersion {
         &self.secret_bindings
     }
 
-    pub fn created_at(&self) -> &str {
-        &self.created_at
+    /// When this version was created, in milliseconds since the epoch.
+    pub fn created_at_millis(&self) -> i64 {
+        self.created_at_millis
     }
 }
 
@@ -551,6 +573,10 @@ impl_json!(FunctionRegistrationRequest);
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionVersionRef {
     pub name: String,
+    /// The namespace holding the Function; empty is the root and is absent
+    /// from the wire.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub namespace_path: Vec<String>,
     pub object_id: String,
     pub location: String,
     #[serde(deserialize_with = "deserialize_object_version")]
@@ -579,6 +605,13 @@ pub struct FunctionApplication {
     output: FunctionOutput,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     columns: BTreeMap<String, String>,
+    /// Initialization values for this binding, by initialization field name.
+    /// The service validates them against the Function's initialization
+    /// schema and persists the resulting Arrow row in the binding; this JSON
+    /// is transport only and never hashed into an identity, so floating-point
+    /// values are accepted here.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    initialization: BTreeMap<String, Value>,
     #[serde(default, flatten, skip_serializing)]
     unknown_fields: BTreeMap<String, Value>,
     #[serde(default, skip)]
@@ -600,6 +633,11 @@ impl FunctionApplication {
 
     pub fn columns(&self) -> &BTreeMap<String, String> {
         &self.columns
+    }
+
+    /// Initialization values supplied by this application, by field name.
+    pub fn initialization(&self) -> &BTreeMap<String, Value> {
+        &self.initialization
     }
     /// Whether a newer writer attached application fields this client cannot
     /// validate. Such applications remain readable but must not be declared.
@@ -677,6 +715,11 @@ pub struct FunctionBinding {
     /// Exact physical Arrow schema of the binding's table outputs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
+    /// Standard base64 of the one-row Arrow IPC stream every instance of this
+    /// binding is created with, already validated against the Function's
+    /// initialization schema. Absent when the Function takes none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    initialization: Option<String>,
 }
 
 impl FunctionBinding {
@@ -706,6 +749,11 @@ impl FunctionBinding {
 
     pub fn output_schema(&self) -> Option<&Value> {
         self.output_schema.as_ref()
+    }
+
+    /// Base64 one-row Arrow IPC initialization stream, if the Function takes one.
+    pub fn initialization(&self) -> Option<&str> {
+        self.initialization.as_deref()
     }
 }
 
@@ -927,6 +975,46 @@ mod tests {
         );
     }
 
+    /// A Function is named by its parts, and a root one states no namespace.
+    #[test]
+    fn function_version_carries_its_namespace_as_a_separate_field() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let root = FunctionVersion::from_json(VERSION).unwrap();
+        assert!(root.namespace_path().is_empty());
+        assert_eq!(root.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        document["namespace_path"] = serde_json::json!(["analytics", "features"]);
+        let nested = FunctionVersion::from_json(&document.to_string()).unwrap();
+        assert_eq!(nested.name(), "embed");
+        assert_eq!(nested.namespace_path(), ["analytics", "features"]);
+        let reference = nested.reference();
+        assert_eq!(reference.name, "embed");
+        assert_eq!(reference.namespace_path, ["analytics", "features"]);
+        let reference: Value = serde_json::to_value(&reference).unwrap();
+        assert_eq!(
+            reference["namespace_path"],
+            serde_json::json!(["analytics", "features"])
+        );
+        let root_reference = serde_json::to_value(root.reference()).unwrap();
+        assert!(root_reference.get("namespace_path").is_none());
+
+        // An application carrying the namespace is not from a newer contract.
+        let application = serde_json::json!({
+            "function": reference,
+            "inputs": [],
+            "output": serde_json::to_value(nested.signature().output.clone()).unwrap(),
+        });
+        let application = FunctionApplication::from_json(&application.to_string()).unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.function().namespace_path,
+            ["analytics", "features"]
+        );
+    }
+
     /// Arrays are ordered by the caller, so canonicalization must leave them
     /// alone -- sorting them would change what a signature means.
     #[test]
@@ -962,6 +1050,66 @@ mod tests {
         ] {
             validate_literal(&value).expect("non-float literals are canonical");
         }
+    }
+
+    /// A Function without initialization keeps its pre-initialization wire
+    /// form, so existing signatures and applications encode byte-identically.
+    #[test]
+    fn empty_initialization_is_omitted_from_the_wire() {
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[{"name":"x","arrow_type":"int64","nullable":true}],"output":{"kind":"scalar","arrow_type":"int64","nullable":false}}"#,
+        )
+        .unwrap();
+        assert!(signature.initialization.is_empty());
+        assert!(
+            !canonical_json(&signature)
+                .unwrap()
+                .contains("initialization")
+        );
+
+        let signature: FunctionSignature = serde_json::from_str(
+            r#"{"inputs":[],"output":{"kind":"scalar","arrow_type":"int64","nullable":false},"initialization":[{"name":"factor","arrow_type":"float64","nullable":false}]}"#,
+        )
+        .unwrap();
+        assert_eq!(signature.initialization[0].name, "factor");
+        assert!(
+            canonical_json(&signature)
+                .unwrap()
+                .contains(r#""initialization":[{"#)
+        );
+    }
+
+    /// Initialization values are transport JSON, validated and re-encoded as
+    /// Arrow by the service, so floats are accepted there while column-input
+    /// literals keep the Slice 1 domain.
+    #[test]
+    fn application_initialization_accepts_floats() {
+        let application = FunctionApplication::from_json(
+            r#"{"function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[{"parameter":"x","kind":"column","value":{"path":"x"}}],"output":{"kind":"scalar","arrow_type":"float64","nullable":false},"initialization":{"factor":2.5,"label":"fast"}}"#,
+        )
+        .unwrap();
+        assert!(!application.has_unknown_fields());
+        assert_eq!(
+            application.initialization()["factor"],
+            serde_json::json!(2.5)
+        );
+        let encoded = application.to_canonical_json().unwrap();
+        assert!(encoded.contains(r#""initialization":{"factor":2.5,"label":"fast"}"#));
+    }
+
+    #[test]
+    fn binding_initialization_round_trips() {
+        let binding = FunctionBinding::from_json(
+            r#"{"binding_id":"fb_1","function":{"name":"scale","object_id":"o","location":"l","version":"1","manifest_digest":"sha256:x"},"inputs":[],"outputs":[],"initialization":"QUJD"}"#,
+        )
+        .unwrap();
+        assert_eq!(binding.initialization(), Some("QUJD"));
+        assert!(
+            binding
+                .to_canonical_json()
+                .unwrap()
+                .ends_with(r#""initialization":"QUJD","inputs":[],"outputs":[]}"#)
+        );
     }
 
     /// Unknown keys are how a newer server's payload reaches an older client,

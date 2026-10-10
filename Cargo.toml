@@ -10,23 +10,23 @@ repository = "https://github.com/lancedb/lancedb"
 description = "Serverless, low-latency vector database for AI applications"
 keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 
 [workspace.dependencies]
-lance = { "version" = "=13.0.0-beta.9", default-features = false, "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=13.0.0-beta.9", default-features = false, "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=13.0.0-beta.9", default-features = false, "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=13.0.0-beta.9", "rev" = "68f188b5f34dc461a9660c43cdbe4858f42a6d84", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=14.0.0-beta.10", default-features = false, "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=14.0.0-beta.10", default-features = false, "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=14.0.0-beta.10", default-features = false, "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=14.0.0-beta.10", "rev" = "81bb501f9e959d607e3c3d77eed7a872252f255f", "git" = "https://github.com/lance-format/lance.git" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
@@ -75,7 +75,7 @@ serde = "1"
 serde_json = "1"
 tempfile = "3.5.0"
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
-tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-aws-lc"] }
 uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 

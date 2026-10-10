@@ -26,6 +26,14 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
+Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
+::: lancedb.listing.Listing
+
 ::: lancedb.Session
 
 ## Catalogs (Synchronous)
@@ -37,7 +45,8 @@ are ordinary connections. Dropping a database requires it to be empty.
 
 ::: lancedb.catalog.Catalog
 
-::: lancedb.catalog.ListDatabasesResponse
+::: lancedb.catalog.DatabaseNames
+
 
 ## Remote SQL
 
@@ -76,6 +85,15 @@ print(query.id)
 print(query.describe().status)
 for batch in query.reader():
     print(batch.num_rows)
+
+# Values bind to $1 / $name placeholders and travel as Arrow, so a float32
+# stays a float32 and a vector stays a compact fixed-size list:
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k",
+    parameters={"vector": np.random.rand(768).astype(np.float32), "k": 10},
+)
 
 # The async connection exposes the same lifecycle without blocking:
 # async_db = await lancedb.connect_async(
@@ -192,11 +210,17 @@ listing a storage directory.
 
 ::: lancedb.sql.QueryDescription
 
+::: lancedb.sql.QueryParameters
+
 ## Materialized Views (Synchronous)
 
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
+
+## Views
+
+::: lancedb.view.ViewDescription
 
 ## Expressions
 
@@ -375,6 +399,29 @@ still work. Queries return descriptors. Call
 
 ## Reranking
 
+`TypeSafeReranker` supports opt-in request batching:
+
+```python
+from lancedb.rerankers import TypeSafeReranker
+
+reranker = TypeSafeReranker(batch_size=40, max_concurrency=8)
+```
+
+The default `batch_size=1` keeps the query and document in request state and
+sends one request per non-null candidate. With `batch_size=40`, 80 non-null
+candidates require two requests. `max_concurrency` still limits simultaneous
+requests, and the SDK handles retries.
+
+In batched mode, state contains only `{"query": query}`. Each independent
+question contains `{"question": instructions, "document": document}` in its
+structured instructions, so it sees only its own document and the shared query.
+Custom instructions and criteria are kept verbatim: adapt prompts that explicitly
+reference request-state fields such as `state.document` before enabling batching.
+Null documents retain a zero score without an API call; empty strings are scored.
+API failures, mismatched answer IDs, and invalid probabilities raise errors.
+Batching changes the payload and can affect model scores; compare quality and
+latency on your workload before opting in.
+
 ::: lancedb.rerankers
     options:
       show_root_heading: false
@@ -386,12 +433,16 @@ still work. Queries return descriptors. Call
 
 ::: lancedb.catalog.AsyncCatalog
 
+::: lancedb.catalog.AsyncDatabaseNames
+
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.
 
 ::: lancedb.connect_async
 
 ::: lancedb.db.AsyncConnection
+
+::: lancedb.listing.AsyncListing
 
 ## Namespaces (Asynchronous)
 

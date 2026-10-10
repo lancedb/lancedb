@@ -187,6 +187,7 @@ pub mod index;
 pub mod io;
 pub mod ipc;
 pub mod job;
+pub mod listing;
 pub mod materialized_view;
 #[cfg(feature = "metrics-otel")]
 pub mod metrics_otel;
@@ -202,6 +203,7 @@ pub mod table;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
+pub mod view;
 
 use std::{fmt::Display, str::FromStr};
 

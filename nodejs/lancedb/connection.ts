@@ -8,6 +8,7 @@ import {
   fromTableToStreamBuffer,
   isArrowTable,
   makeArrowTable,
+  resolveBlobInputs,
 } from "./arrow";
 import {
   Table as ArrowTable,
@@ -16,6 +17,7 @@ import {
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Job } from "./job";
+import { Listing, ListingOptions, validateListingOptions } from "./listing";
 import {
   MaterializedView,
   MaterializedViewSelect,
@@ -31,6 +33,7 @@ import type {
   ListNamespacesResponse,
   ListTablesResponse,
 } from "./native";
+import { ViewDescription, viewDescriptionFromNative } from "./view";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
@@ -147,7 +150,7 @@ export interface TableNamesOptions {
    * the last table name from the previous page.
    */
   startAfter?: string;
-  /** An optional limit to the number of results to return. */
+  /** The maximum number of names to return. Omitted returns all names; zero returns none. */
   limit?: number;
 }
 
@@ -161,6 +164,7 @@ export interface ListTablesOptions {
   pageToken?: string;
   /**
    * An upper bound on how many tables to return.
+   * Defaults to 100. Zero returns an empty page without a continuation token.
    *
    * A page may hold fewer than this and still not be the last one, so keep
    * going while the response carries a page token rather than while pages are
@@ -323,10 +327,6 @@ export abstract class Connection {
    * The view is populated before creation returns. Set `withNoData` to create
    * only its definition and empty backing table. The view is a normal table:
    * it can be queried, indexed and searched, and it appears in `tableNames`.
-   * The source table must have stable row ids (create it with
-   * the `newTableEnableStableRowIds` storage option); they keep the view's
-   * provenance valid across source compactions and cannot be enabled after
-   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -349,9 +349,11 @@ export abstract class Connection {
   /**
    * The names of the materialized views in this database.
    *
-   * Found by reading every table's schema, so this costs an open per table.
+   * Iterate lazily with `for await...of`. Local listings inspect table schemas
+   * one page at a time. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
    */
-  abstract listMaterializedViews(): Promise<string[]>;
+  abstract listMaterializedViews(options?: ListingOptions): Listing<string>;
 
   /**
    * Drop the materialized view named `name`.
@@ -376,6 +378,60 @@ export abstract class Connection {
     name: string,
     namespacePath?: string[],
   ): Promise<Job>;
+
+  /**
+   * Create a view: a named query the database plans on every read.
+   *
+   * The query is planned once, at creation, so one that cannot be planned is
+   * rejected now rather than at the first read. A view holds no rows, and its
+   * readers see its sources as they are at read time.
+   *
+   * There is no replace: a name already taken is an error, and changing a
+   * view is a drop followed by a create.
+   */
+  abstract createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * What this database records about the view named `name`: its defining
+   * query and the schema that query resolved to.
+   */
+  abstract describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * Drop the view named `name` and wait for its definition to be deleted.
+   *
+   * The tables it reads are untouched: a view holds no rows of its own. Use
+   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
+   */
+  abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping the view named `name` and return the job deleting its
+   * definition, without waiting for completion.
+   *
+   * The name is free before this resolves. When nothing was bound to it, the
+   * returned job is already finished and has no id.
+   */
+  abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
+
+  /**
+   * The names of the views in one namespace.
+   *
+   * Names only; a definition comes from {@link describeView}.
+   * Iterate lazily with `for await...of`. See {@link Listing} for pagination
+   * state and error behavior; options control page size and the starting token.
+   */
+  abstract listViews(
+    namespacePath?: string[],
+    options?: ListingOptions,
+  ): Listing<string>;
 
   abstract openTable(
     name: string,
@@ -590,8 +646,12 @@ export abstract class Connection {
    */
   abstract openJob(jobId: string): Promise<Job>;
 
-  /** List server-side jobs across the database's tables. */
-  abstract listJobs(): Promise<JobInfo[]>;
+  /**
+   * Iterate lazily over server-side jobs across the database's tables.
+   * Use `for await...of`. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
+   */
+  abstract listJobs(options?: ListingOptions): Listing<JobInfo>;
 
   /**
    * Request cancellation of a server-side job by id.
@@ -600,6 +660,24 @@ export abstract class Connection {
    * such job exists. Cancelling an already-terminal job is a no-op success.
    */
   abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * Pause a server-side job by id.
+   *
+   * The job's workers drain and it stays parked until resumed. Resolves to
+   * "pausing", "already_paused", or "committing" -- a job finalizing its
+   * results cannot be parked; retry shortly.
+   */
+  abstract pauseJob(jobId: string): Promise<string>;
+
+  /**
+   * Resume a paused server-side job by id.
+   *
+   * Its workers pick their work back up from checkpoints. Resolves to
+   * "resumed", "still_pausing" -- the pause's worker drain is not confirmed
+   * yet; retry shortly -- or "not_paused".
+   */
+  abstract resumeJob(jobId: string): Promise<string>;
 }
 
 /** @hideconstructor */
@@ -676,8 +754,11 @@ export class LocalConnection extends Connection {
     return new MaterializedView(new LocalTable(innerTable));
   }
 
-  async listMaterializedViews(): Promise<string[]> {
-    return await this.inner.listMaterializedViews();
+  listMaterializedViews(options: ListingOptions = {}): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listMaterializedViews(options.pageToken, options.pageLimit),
+    );
   }
 
   async dropMaterializedView(
@@ -693,6 +774,47 @@ export class LocalConnection extends Connection {
   ): Promise<Job> {
     return new Job(
       await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
+    );
+  }
+
+  async createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.createView(name, query, namespacePath ?? []),
+    );
+  }
+
+  async describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.describeView(name, namespacePath ?? []),
+    );
+  }
+
+  async dropView(name: string, namespacePath?: string[]): Promise<void> {
+    return this.inner.dropView(name, namespacePath ?? []);
+  }
+
+  async dropViewAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return new Job(await this.inner.dropViewAsync(name, namespacePath ?? []));
+  }
+
+  listViews(
+    namespacePath?: string[],
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listViews(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
     );
   }
 
@@ -961,12 +1083,23 @@ export class LocalConnection extends Connection {
     return new Job(await this.inner.openJob(jobId));
   }
 
-  async listJobs(): Promise<JobInfo[]> {
-    return this.inner.listJobs();
+  listJobs(options: ListingOptions = {}): Listing<JobInfo> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listJobs(options.pageToken, options.pageLimit),
+    );
   }
 
   async cancelJob(jobId: string): Promise<boolean> {
     return this.inner.cancelJob(jobId);
+  }
+
+  async pauseJob(jobId: string): Promise<string> {
+    return this.inner.pauseJob(jobId);
+  }
+
+  async resumeJob(jobId: string): Promise<string> {
+    return this.inner.resumeJob(jobId);
   }
 }
 
@@ -1026,7 +1159,11 @@ async function parseTableData(
   if (isArrowTable(data)) {
     table = sanitizeTable(data);
   } else {
-    table = makeArrowTable(data as Record<string, unknown>[], options);
+    const records = await resolveBlobInputs(
+      data as Record<string, unknown>[],
+      options?.schema,
+    );
+    table = makeArrowTable(records, options);
   }
   if (streaming) {
     const buf = await fromTableToStreamBuffer(

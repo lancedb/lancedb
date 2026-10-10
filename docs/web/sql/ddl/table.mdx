@@ -1,0 +1,178 @@
+---
+title: "Table"
+sidebarTitle: "Table"
+description: "CREATE, DESCRIBE, ALTER, CLONE and DROP TABLE."
+icon: table
+keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+## CREATE TABLE {#create}
+
+```sql
+CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
+CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+```
+
+Column types are Arrow types under SQL names -- see [Data types](/sql/data-types).
+A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
+`prod.events.clicks`.
+
+## DESCRIBE {#describe}
+
+```sql
+DESCRIBE documents
+```
+
+The table's columns and types, without a plan -- the SQL counterpart of
+`table.schema`.
+
+## ALTER TABLE {#alter}
+
+`ALTER TABLE ... ADD COLUMN` covers three different things, distinguished by
+what follows the column name.
+
+### A plain column {#plain-column}
+
+```sql
+ALTER TABLE t ADD COLUMN c INT
+```
+
+Added empty and nullable. Nothing is computed.
+
+### A computed column {#computed-column}
+
+```sql
+ALTER TABLE t ADD COLUMN doubled AS value * 2
+```
+
+`AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
+The column is committed empty and the expression is stored, not evaluated --
+declaring one on a billion-row table costs what declaring one on an empty table
+costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
+
+### A function column {#function-column}
+
+```sql
+ALTER TABLE t ADD COLUMN embedded AS embed(name) WITH (version = 'fv_1')
+```
+
+When the expression calls a [registered function](/sql/ddl/function), the
+column is filled by running that function on workers. `version` pins which
+immutable function version fills it, so a later registration does not silently
+change what the column means.
+
+Several modifiers narrow what gets computed:
+
+| | |
+| --- | --- |
+| `FILTER (WHERE pred)` | only rows matching `pred` are computed |
+| `IGNORE NULLS` | rows with null inputs are skipped |
+| `OVER (PARTITION BY col)` | the function sees rows grouped by `col` |
+
+A function returning several values fills several columns at once:
+
+```sql
+ALTER TABLE t ADD COLUMN (label, score) AS classify(text) WITH (version = 'fv_1')
+```
+
+```sql
+ALTER TABLE t ADD COLUMN c AS f(x) FILTER (WHERE keep) WITH (version = 'fv_1')
+ALTER TABLE t ADD COLUMN c AS f(x) WITH (num_workers = '2')
+```
+
+<Note>
+`WITH` on a plain computed column accepts only `version`. Resource options such
+as `num_workers` apply to function columns, where there are workers to size.
+</Note>
+
+### Table properties {#properties}
+
+```sql
+ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
+```
+
+Records which column identifies a row. **Unenforced** is not a hedge in the
+naming: uniqueness is not checked on write, and declaring it does not make
+duplicates impossible. It tells the planner what to assume.
+
+```sql
+ALTER TABLE t SET WAL
+ALTER TABLE t SET WAL WITH (sharding = 'bucket', buckets = 4)
+ALTER TABLE t SET WAL WITH (maintained_indexes = '')
+ALTER TABLE t UNSET WAL
+```
+
+A write-ahead log makes small frequent writes cheap by batching them out of the
+commit path. `sharding` and `buckets` spread the log so concurrent writers do
+not contend on one place; `maintained_indexes` chooses which indexes are kept
+current against WAL rows. See
+[Background jobs](/maintenance/background-jobs#wal) for how the log gets
+folded back into the table.
+
+<Warning>
+[`TABLESAMPLE`](/sql/dql/sampling) is refused on a WAL-backed table, because
+rows a sample would draw from are not all in the fragments yet.
+</Warning>
+
+**Errors and limits**
+
+| | |
+| --- | --- |
+| `ALTER TABLE ... DROP COLUMN` | not supported |
+
+Dropping, renaming, or retyping a column is an SDK operation --
+[`drop_columns`](/management/table#schema) and
+[`alter_columns`](/management/table#schema) -- not a SQL statement.
+
+## CLONE {#clone}
+
+```sql
+CREATE TABLE docs_snapshot CLONE documents
+CREATE TABLE docs_at_v42 CLONE documents AT 42
+CREATE TABLE docs_at_release CLONE documents AT TAG 'release-1'
+CREATE TABLE docs_yesterday CLONE documents AT TIMESTAMP '2026-09-01T00:00:00Z'
+```
+
+A **shallow clone**: the new table shares the source's data files rather than
+copying them, so it costs one metadata commit regardless of the source's size.
+
+`AT` pins the point in the source's history to clone. A bare integer is a
+version and a bare quoted string is a timestamp; `VERSION`, `TAG` and
+`TIMESTAMP` say so explicitly, and a tag always needs its keyword -- a bare
+quoted string cannot be both a tag name and a timestamp.
+
+<Warning>
+The clone depends on the source's files continuing to exist. If the source is
+[compacted](/maintenance/cleanup) past the retention window, the version the
+clone points at can be pruned. The SDK's
+[`clone_table`](/management/table#rename-clone) also offers a deep clone for
+when the copy has to outlive the source's history.
+</Warning>
+
+## DROP TABLE {#drop}
+
+```sql
+DROP TABLE documents
+```
+
+<Warning>
+Removes the table and every version of it. There is no undrop.
+</Warning>
+
+<Note>
+**Enterprise job type:** `drop_table`. See
+[Background jobs](/maintenance/background-jobs#teardown).
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Table" icon="table" href="/management/table">
+    The SDK equivalent, and what a table carries.
+  </Card>
+  <Card title="Schema evolution" icon="boxes-stacked" href="/management/table#schema">
+    Renaming, retyping and dropping columns from the SDK.
+  </Card>
+</CardGroup>

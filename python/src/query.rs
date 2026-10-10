@@ -180,6 +180,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
+            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
+                "Combined-fields FTS queries are not yet supported in Python",
+            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -333,9 +336,8 @@ pub struct PyQueryRequest {
     pub use_lsm: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
+    pub nprobes: Option<usize>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default should be used (currently 20)
-    // Some(0) means user set it to None and there is no limit
     pub maximum_nprobes: Option<usize>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
@@ -366,6 +368,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 use_lsm: query_request.use_lsm,
                 column: None,
                 query_vector: None,
+                nprobes: None,
                 minimum_nprobes: None,
                 maximum_nprobes: None,
                 lower_bound: None,
@@ -393,11 +396,9 @@ impl From<AnyQuery> for PyQueryRequest {
                 use_lsm: vector_query.base.use_lsm,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                minimum_nprobes: Some(vector_query.minimum_nprobes),
-                maximum_nprobes: match vector_query.maximum_nprobes {
-                    None => Some(0),
-                    Some(value) => Some(value),
-                },
+                nprobes: vector_query.nprobes,
+                minimum_nprobes: vector_query.minimum_nprobes,
+                maximum_nprobes: vector_query.maximum_nprobes,
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
@@ -992,8 +993,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
@@ -1185,8 +1187,8 @@ impl HybridQuery {
         self.inner_vec.refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner_vec.nprobes(nprobe);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner_vec.nprobes(nprobe)
     }
 
     pub fn ef(&mut self, ef: u32) {

@@ -18,8 +18,9 @@
 //! query: fail closed, never materialize it at the wrong cardinality.
 
 use datafusion_sql::sqlparser::ast::{
-    Expr, FunctionArg, FunctionArgExpr, JoinOperator, LimitClause, ObjectName, ObjectNamePart,
-    Query, SelectItem, SetExpr, Statement, TableFactor, TableFunctionArgs, TableWithJoins, Value,
+    Expr, FunctionArg, FunctionArgExpr, GroupByExpr, JoinOperator, LimitClause, ObjectName,
+    ObjectNamePart, Query, SelectItem, SetExpr, Statement, TableFactor, TableFunctionArgs,
+    TableWithJoins, Value,
 };
 use datafusion_sql::sqlparser::dialect::GenericDialect;
 use datafusion_sql::sqlparser::keywords::{
@@ -40,7 +41,8 @@ fn invalid(message: impl Into<String>) -> Error {
 }
 
 const SHAPE: &str = "a materialized view is defined by `SELECT columns FROM table \
-    [, function(args) AS alias | , UNNEST(column) AS alias] [WHERE predicate] [LIMIT n]`";
+    [, function(args) AS alias | , UNNEST(column) AS alias] [WHERE predicate] \
+    [GROUP BY expr, ...] [LIMIT n]`";
 
 /// Whether `name` must be delimited to read back as this identifier: bare,
 /// the parser would take it as a keyword, or a different spelling.
@@ -394,14 +396,59 @@ fn extract(query: &Query) -> Result<MaterializedViewDefinition> {
             Some(_) => return Err(invalid("view limit must be a plain `LIMIT n`")),
         };
 
-    Ok(MaterializedViewDefinition {
+    if select.having.is_some() {
+        return Err(invalid("HAVING is not supported in a view query"));
+    }
+    let group_by = match &select.group_by {
+        GroupByExpr::Expressions(exprs, modifiers)
+            if modifiers.is_empty()
+                && !exprs.iter().any(|e| {
+                    matches!(e, Expr::Rollup(_) | Expr::Cube(_) | Expr::GroupingSets(_))
+                }) =>
+        {
+            exprs.iter().map(|e| e.to_string()).collect()
+        }
+        _ => {
+            return Err(invalid(
+                "a view groups by a plain `GROUP BY expr, ...` list",
+            ));
+        }
+    };
+
+    let definition = MaterializedViewDefinition {
         source_table,
         source_namespace,
         lateral,
         projections,
         filter: select.selection.as_ref().map(|e| e.to_string()),
+        group_by,
         limit,
-    })
+    };
+    check_grouping(&definition)?;
+    Ok(definition)
+}
+
+/// The clauses a grouped view cannot combine with: each would have to be
+/// maintained per group rather than per source row.
+pub fn check_grouping(definition: &MaterializedViewDefinition) -> Result<()> {
+    if !definition.is_grouped() {
+        return Ok(());
+    }
+    if definition.lateral.is_some() {
+        return Err(invalid(
+            "GROUP BY cannot be combined with a FROM-position item; group in one view \
+             and expand in a view over it",
+        ));
+    }
+    if definition.selects_star() {
+        return Err(invalid(
+            "a grouped view selects its keys and aggregates, not `*`",
+        ));
+    }
+    if definition.limit.is_some() {
+        return Err(invalid("LIMIT is not supported together with GROUP BY"));
+    }
+    Ok(())
 }
 
 /// The canonical query for `definition`; [`parse`] reads it back equal.
@@ -451,6 +498,9 @@ pub fn render(definition: &MaterializedViewDefinition) -> String {
     if let Some(filter) = &definition.filter {
         sql.push_str(&format!(" WHERE {filter}"));
     }
+    if definition.is_grouped() {
+        sql.push_str(&format!(" GROUP BY {}", definition.group_by.join(", ")));
+    }
     if let Some(limit) = definition.limit {
         sql.push_str(&format!(" LIMIT {limit}"));
     }
@@ -489,6 +539,10 @@ mod tests {
                 "SELECT id, c.text FROM docs, chunk(upper(body)) AS c",
             ),
             ("SELECT * FROM `select`.t", "SELECT * FROM `select`.t"),
+            (
+                "select k, array_agg(id) as ids, count(*) n from t where x > 1 group by k",
+                "SELECT k, array_agg(id) AS ids, count(*) AS n FROM t WHERE x > 1 GROUP BY k",
+            ),
             (
                 "SELECT meta.title AS title, id AS id FROM t",
                 "SELECT meta.title, id FROM t",
@@ -547,7 +601,6 @@ mod tests {
     #[test]
     fn unsupported_clauses_are_refused() {
         for sql in [
-            "SELECT id FROM t GROUP BY id",
             "SELECT id FROM t ORDER BY id",
             "SELECT DISTINCT id FROM t",
             "SELECT id FROM t LIMIT 5 OFFSET 2",
@@ -567,6 +620,12 @@ mod tests {
             "SELECT *, id FROM t",
             "WITH q AS (SELECT 1) SELECT id FROM t",
             "SELECT id FROM t HAVING id > 1",
+            "SELECT k, count(*) AS n FROM t GROUP BY k HAVING count(*) > 1",
+            "SELECT k FROM t GROUP BY ALL",
+            "SELECT k FROM t GROUP BY ROLLUP (k)",
+            "SELECT * FROM t GROUP BY k",
+            "SELECT k FROM t GROUP BY k LIMIT 5",
+            "SELECT k, c.x FROM t, UNNEST(xs) AS c GROUP BY k",
         ] {
             assert!(parse(sql).is_err(), "{sql}");
         }

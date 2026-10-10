@@ -19,6 +19,7 @@ use crate::catalog::{
     ListDatabasesResponse,
 };
 use crate::database::Database;
+use crate::utils::validate_database_name;
 use crate::{Error, Result};
 
 /// Authentication and client settings shared by a catalog and its databases.
@@ -154,29 +155,6 @@ impl RemoteCatalog {
         })
     }
 
-    fn validate_name(&self, name: &str) -> Result<()> {
-        let delimiter = self
-            .options
-            .client_config
-            .id_delimiter
-            .as_deref()
-            .unwrap_or("$");
-        if name.is_empty()
-            || name.trim() != name
-            || !name.is_ascii()
-            || name.chars().any(char::is_control)
-            || name.contains(delimiter)
-            || matches!(name, "." | "..")
-        {
-            return Err(Error::InvalidInput {
-                message: format!(
-                    "Invalid database name '{name}': expected a nonempty ASCII name without surrounding whitespace, control characters, or namespace delimiter '{delimiter}'"
-                ),
-            });
-        }
-        Ok(())
-    }
-
     fn database(&self, name: &str) -> Result<Arc<dyn Database>> {
         Ok(Arc::new(RemoteDatabase::for_catalog(
             &self.endpoint,
@@ -203,7 +181,7 @@ impl Catalog for RemoteCatalog {
     }
 
     async fn create_database(&self, request: CreateDatabaseRequest) -> Result<Arc<dyn Database>> {
-        self.validate_name(&request.name)?;
+        validate_database_name(&request.name)?;
         self.root
             .create_namespace(CreateNamespaceRequest {
                 id: Some(vec![request.name.clone()]),
@@ -231,7 +209,7 @@ impl Catalog for RemoteCatalog {
     }
 
     async fn drop_database(&self, request: DropDatabaseRequest) -> Result<()> {
-        self.validate_name(&request.name)?;
+        validate_database_name(&request.name)?;
         let result = self
             .root
             .drop_namespace(DropNamespaceRequest {
@@ -286,7 +264,7 @@ impl Catalog for RemoteCatalog {
     }
 
     async fn connect_database(&self, name: &str) -> Result<Arc<dyn Database>> {
-        self.validate_name(name)?;
+        validate_database_name(name)?;
         self.root
             .describe_namespace(DescribeNamespaceRequest {
                 id: Some(vec![name.into()]),
@@ -416,6 +394,7 @@ mod tests {
             RemoteCatalog::try_new(&endpoint, options).unwrap(),
         ));
         let page = catalog
+            .catalog()
             .list_databases(ListDatabasesRequest::default().limit(1).page_token("a/b"))
             .await
             .unwrap();
@@ -443,6 +422,7 @@ mod tests {
             .unwrap();
         assert!(
             catalog
+                .catalog()
                 .list_databases(ListDatabasesRequest::default())
                 .await
                 .unwrap()
@@ -539,6 +519,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn database_names_follow_pages_lazily() {
+        use futures::TryStreamExt;
+
+        let (endpoint, task) = server(vec![
+            (
+                200,
+                json!({"namespaces": ["first", "second"], "page_token": "a/b"}),
+            ),
+            (200, json!({"namespaces": [], "page_token": "next"})),
+            (200, json!({"namespaces": ["last"], "page_token": ""})),
+        ])
+        .await;
+        let catalog = CatalogConnection::new(Arc::new(
+            RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap(),
+        ));
+        let mut names = catalog.list_databases(None, None);
+        drop(catalog);
+        assert_eq!(names.num_page_results(), 0);
+        assert_eq!(names.page_token(), None);
+        assert_eq!(names.try_next().await.unwrap().as_deref(), Some("first"));
+        assert_eq!(names.num_page_results(), 1);
+        assert_eq!(names.page_token(), Some("a/b"));
+        assert_eq!(names.try_next().await.unwrap().as_deref(), Some("second"));
+        assert_eq!(names.num_page_results(), 0);
+        assert_eq!(names.page_token(), Some("a/b"));
+        assert!(!task.is_finished());
+        assert_eq!(names.try_next().await.unwrap().as_deref(), Some("last"));
+        assert_eq!(names.try_next().await.unwrap(), None);
+        assert_eq!(names.try_next().await.unwrap(), None);
+        let requests = task.await.unwrap();
+        assert_eq!(requests[0].line, "GET /v1/namespace/$/list HTTP/1.1");
+        assert_eq!(
+            requests[1].line,
+            "GET /v1/namespace/$/list?page_token=a%2Fb HTTP/1.1"
+        );
+        assert_eq!(
+            requests[2].line,
+            "GET /v1/namespace/$/list?page_token=next HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_names_stop_after_error() {
+        use futures::StreamExt;
+
+        let (endpoint, task) = server(vec![
+            (200, json!({"namespaces": ["first"], "page_token": "next"})),
+            (401, json!({"error": "unauthorized"})),
+        ])
+        .await;
+        let catalog = CatalogConnection::new(Arc::new(
+            RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap(),
+        ));
+        let mut names = catalog.list_databases(None, None);
+        assert_eq!(names.next().await.unwrap().unwrap(), "first");
+        assert!(names.next().await.unwrap().is_err());
+        assert_eq!(names.num_page_results(), 0);
+        assert_eq!(names.page_token(), Some("next"));
+        assert!(names.next().await.is_none());
+        task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn database_names_can_resume_with_page_limit() {
+        use futures::TryStreamExt;
+        let (endpoint, task) = server(vec![
+            (
+                200,
+                json!({"namespaces": ["first", "second"], "page_token": "next/token"}),
+            ),
+            (200, json!({"namespaces": ["third", "fourth"]})),
+        ])
+        .await;
+        let catalog = CatalogConnection::new(Arc::new(
+            RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap(),
+        ));
+        let mut names = catalog.list_databases(Some("start/token".into()), Some(2));
+        assert_eq!(names.page_token(), Some("start/token"));
+        assert_eq!(names.num_page_results(), 0);
+        assert_eq!(names.try_next().await.unwrap().as_deref(), Some("first"));
+        assert_eq!(names.page_token(), Some("next/token"));
+        assert_eq!(names.num_page_results(), 1);
+        assert_eq!(names.try_next().await.unwrap().as_deref(), Some("second"));
+        assert_eq!(names.num_page_results(), 0);
+        let token = names.page_token().map(str::to_owned);
+        drop(names);
+        let mut resumed = catalog.list_databases(token, Some(2));
+        assert_eq!(resumed.try_next().await.unwrap().as_deref(), Some("third"));
+        assert_eq!(resumed.page_token(), None);
+        assert_eq!(resumed.num_page_results(), 1);
+        assert_eq!(resumed.try_next().await.unwrap().as_deref(), Some("fourth"));
+        assert_eq!(resumed.num_page_results(), 0);
+        assert_eq!(resumed.try_next().await.unwrap(), None);
+        let requests = task.await.unwrap();
+        assert_eq!(
+            requests[0].line,
+            "GET /v1/namespace/$/list?limit=2&page_token=start%2Ftoken HTTP/1.1"
+        );
+        assert_eq!(
+            requests[1].line,
+            "GET /v1/namespace/$/list?limit=2&page_token=next%2Ftoken HTTP/1.1"
+        );
+    }
+
+    #[tokio::test]
+    async fn database_names_reject_invalid_page_limit() {
+        use futures::TryStreamExt;
+        let catalog = CatalogConnection::new(Arc::new(
+            RemoteCatalog::try_new("http://127.0.0.1:1", RemoteCatalogOptions::default()).unwrap(),
+        ));
+        for limit in [0, u32::MAX] {
+            let mut names = catalog.list_databases(None, Some(limit));
+            assert!(matches!(
+                names.try_next().await,
+                Err(Error::InvalidInput { .. })
+            ));
+            assert_eq!(names.num_page_results(), 0);
+            assert_eq!(names.try_next().await.unwrap(), None);
+        }
+    }
+
+    #[tokio::test]
     async fn catalog_validates_before_sending_requests() {
         for endpoint in [
             "/tmp/catalog",
@@ -552,7 +654,24 @@ mod tests {
         }
         let catalog =
             RemoteCatalog::try_new("http://127.0.0.1:1", RemoteCatalogOptions::default()).unwrap();
-        for name in ["", "a$b", "\r\ninjected", "..", "café", " padded "] {
+        for name in [
+            "",
+            "/",
+            "//",
+            "a$b",
+            "\r\ninjected",
+            "..",
+            "café",
+            " padded ",
+            "a b",
+            "a?b",
+            "/db",
+            "db/",
+            "a//b",
+            "a/../b",
+            "a/./b",
+            &"a".repeat(65),
+        ] {
             assert!(matches!(
                 catalog.create_database(name.into()).await,
                 Err(Error::InvalidInput { .. })

@@ -41,26 +41,6 @@ export async function* RecordBatchIterator(
   }
 }
 
-class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
-> implements AsyncIterable<RecordBatch>
-{
-  private inner: NativeQueryType;
-  private options?: QueryExecutionOptions;
-
-  constructor(inner: NativeQueryType, options?: QueryExecutionOptions) {
-    this.inner = inner;
-    this.options = options;
-  }
-
-  // biome-ignore lint/suspicious/noExplicitAny: skip
-  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    return RecordBatchIterator(
-      this.inner.execute(this.options?.maxBatchLength, this.options?.timeoutMs),
-    );
-  }
-}
-
 /**
  * Options that control the behavior of a particular query execution
  */
@@ -271,12 +251,19 @@ export class QueryBase<
     return RecordBatchIterator(this.nativeExecute());
   }
 
-  /** Collect the results as an Arrow @see {@link ArrowTable}. */
+  /**
+   * Collect the results as an Arrow @see {@link ArrowTable}.
+   *
+   * Empty results retain the query's output schema.
+   */
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const batches = [];
-    const inner = await this.getInner();
-    for await (const batch of new RecordBatchIterable(inner, options)) {
+    const iterator = this.nativeExecute(options);
+    for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
+    }
+    if (batches.length === 0) {
+      return tableFromIPC((await iterator).schema());
     }
     return new ArrowTable(batches);
   }
@@ -532,6 +519,8 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
   /**
    * Set the number of partitions to search (probe)
    *
+   * The number of probes must be greater than 0.
+   *
    * This argument is only used when the vector column has an IVF PQ index.
    * If there is no index then this value is ignored.
    *
@@ -543,17 +532,16 @@ export class VectorQuery extends StandardQueryBase<NativeVectorQuery> {
    * partitions should be searched.
    *
    * Increasing this value will increase the recall of your query but will
-   * also increase the latency of your query.  The default value is 20.  This
-   * default is good for many cases but the best value to use will depend on
-   * your data and the recall that you need to achieve.
+   * also increase the latency of your query. If this method is not called,
+   * Lance's adaptive probe defaults are used.
    *
    * For best results we recommend tuning this parameter with a benchmark against
    * your actual data to find the smallest possible value that will still give
    * you the desired recall.
    *
-   * For more fine grained control over behavior when you have a very narrow filter
-   * you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-   * the minimum and maximum to the same value.
+   * The value is retained as `nprobes` through client and server request
+   * construction. Lance sets both probe bounds to this value. Explicit minimum
+   * or maximum settings can override their respective bounds.
    */
   nprobes(nprobes: number): VectorQuery {
     this.doVectorCall((inner) => inner.nprobes(nprobes));

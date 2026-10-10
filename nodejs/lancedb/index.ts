@@ -26,6 +26,7 @@ export {
   MaterializedViewDefinition,
   MaterializedViewSelect,
 } from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -83,7 +84,14 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
-export type { BlobOptions } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,
@@ -194,6 +202,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -637,6 +646,8 @@ export async function connectNamespace(
 export {
   Catalog,
   CatalogOptions,
-  ListDatabasesResponse,
+  DatabaseNames,
   connectCatalog,
 } from "./catalog";
+
+export { Listing, ListingOptions } from "./listing";

@@ -17,7 +17,7 @@ import {
   tableFromIPC,
 } from "./arrow";
 
-import { BlobFile } from "./blob";
+import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
 import { Job } from "./job";
@@ -124,6 +124,17 @@ export interface AddDataOptions {
    * ```
    */
   progress: (progress: WriteProgress) => void;
+
+  /**
+   * Whether blob URIs outside registered external bases may be written.
+   *
+   * Defaults to `false`. This option is supported only for local/native
+   * tables; remote tables return an error when it is enabled. An enabled write
+   * stores the absolute URI reference without registering a base or copying
+   * the external object into the database. The object must remain accessible
+   * when the blob is read later.
+   */
+  allowExternalBlobOutsideBases?: boolean;
 }
 
 export interface UpdateOptions {
@@ -214,9 +225,8 @@ export interface LsmWriteSpec {
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
   /**
-   * Indexes the MemWAL keeps up to date. Omit to maintain every supported
-   * index, resolved on install — a snapshot, so indexes created later are not
-   * maintained. Pass `[]` for none.
+   * Indexes the MemWAL keeps up to date. Omit for every index the table has,
+   * including ones created later. Pass `[]` for none.
    */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
@@ -526,10 +536,15 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
    */
   abstract fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]>;
 
   /**
@@ -542,6 +557,7 @@ export abstract class Table {
   abstract fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]>;
 
   /**
@@ -668,7 +684,6 @@ export abstract class Table {
    * @ignore
    */
   abstract refreshMaterializedView(
-    full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult>;
 
@@ -750,8 +765,8 @@ export abstract class Table {
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
    *
-   * Omitting `maintainedIndexes` maintains every index on the table, resolved
-   * here, failing if one cannot be maintained — name them to install anyway.
+   * Omitting `maintainedIndexes` maintains every index the table has,
+   * including ones created later, and skips a kind the MemWAL cannot maintain.
    * Naming them pins an exact set, and a still-building index is rejected
    * rather than quietly omitted.
    * @param {LsmWriteSpec} spec The sharding spec to install.
@@ -781,10 +796,9 @@ export abstract class Table {
    *
    * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
    * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
-   * The returned spec mirrors what was passed to
-   * {@link Table#setLsmWriteSpec}, except that `maintainedIndexes` always
-   * reports the concrete list resolved when the spec was set — `undefined`
-   * never round-trips.
+   * The spec is the one installed, including its maintained-index selection:
+   * an absent `maintainedIndexes` for every index the table has, an empty
+   * array for none.
    * @returns {Promise<LsmWriteSpec | undefined>}
    */
   abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
@@ -1091,7 +1105,12 @@ export class LocalTable extends Table {
           }
         }
       : undefined;
-    return await this.inner.add(buffer, mode, progress);
+    return await this.inner.add(
+      buffer,
+      mode,
+      progress,
+      options?.allowExternalBlobOutsideBases,
+    );
   }
 
   async update(
@@ -1228,8 +1247,11 @@ export class LocalTable extends Table {
   async fetchBlobs(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(Buffer | null)[]> {
-    const values = await this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds));
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
+    );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return values.map((value) => value ?? null);
   }
@@ -1237,10 +1259,10 @@ export class LocalTable extends Table {
   async fetchBlobFiles(
     column: string,
     rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
   ): Promise<(BlobFile | null)[]> {
-    const files = await this.inner.fetchBlobFiles(
-      column,
-      rowIdsToBigInts(rowIds),
+    const files = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobFiles(column, rowIdsToBigInts(rowIds), signal),
     );
     // N-API Option maps missing values to undefined. Collapse those to null.
     return files.map((file) =>
@@ -1395,10 +1417,9 @@ export class LocalTable extends Table {
   }
 
   async refreshMaterializedView(
-    full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(full, sourceVersion);
+    return await this.inner.refreshMaterializedView(sourceVersion);
   }
 
   async materializedViewDefinition(): Promise<string> {

@@ -5,10 +5,12 @@
 import binascii
 import functools
 import importlib
+import math
 import os
 import pathlib
 import warnings
 from datetime import date, datetime
+from decimal import Decimal
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
 from urllib.parse import urlparse
@@ -279,6 +281,14 @@ def infer_vector_column_dim(data_type: pa.DataType) -> Optional[int]:
     return None
 
 
+def _validate_query_vector(query: Any) -> None:
+    """Reject empty vector inputs before vector-column inference or execution."""
+    if (isinstance(query, list) and not query) or (
+        isinstance(query, np.ndarray) and query.size == 0
+    ):
+        raise ValueError("Query vector must not be empty")
+
+
 def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
     if query is None:
         return None
@@ -300,6 +310,9 @@ def infer_vector_column_name(
     query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
 ):
+    if query_type != "fts":
+        _validate_query_vector(query)
+
     if vector_column_name is not None:
         return vector_column_name
 
@@ -351,7 +364,22 @@ def _(value: int):
 
 @value_to_sql.register(float)
 def _(value: float):
+    # str() gives "nan" / "inf", which SQL would read as column names.
+    if math.isnan(value):
+        return "CAST('NaN' AS DOUBLE)"
+    if math.isinf(value):
+        return (
+            "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
+        )
     return str(value)
+
+
+@value_to_sql.register(Decimal)
+def _(value: Decimal):
+    if not value.is_finite():
+        raise ValueError("Non-finite Decimal values cannot be converted to SQL")
+    # Quote exact decimal text so the target-column cast avoids float rounding.
+    return value_to_sql(format(value, "f"))
 
 
 @value_to_sql.register(bool)

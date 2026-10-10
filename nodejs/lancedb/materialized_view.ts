@@ -7,14 +7,17 @@ import { Table } from "./table";
 /** Schema metadata key holding a materialized view's definition. */
 export const DEFINITION_META_KEY = "mv.definition";
 
-/** The stored layout this version reads: `{"format": 1, "query": "<SQL>"}`. */
-export const DEFINITION_FORMAT = 1;
+/**
+ * The newest stored layout this version reads: `{"format": N, "query": "<SQL>"}`,
+ * format 2 being a query with `GROUP BY`.
+ */
+export const DEFINITION_FORMAT = 2;
 
 /**
  * The query that defines a materialized view, as stored:
  * `SELECT columns FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
- * [WHERE predicate] [LIMIT n]`. A Function in `FROM` position yields one row
- * per element it returns.
+ * [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]`. A Function in `FROM`
+ * position yields one row per element it returns.
  */
 export interface MaterializedViewDefinition {
   /** The defining query, in the canonical spelling the server stores. */
@@ -184,23 +187,14 @@ export class MaterializedView {
   /**
    * Recompute the view from its source.
    *
-   * The refresh is incremental when the source's changes can be reconciled
-   * into the view -- rows added, changed or removed since the last one --
-   * and otherwise rebuilds. `full` forces a rebuild; `sourceVersion`
-   * refreshes to that source version instead of the latest.
-   *
-   * Concurrent refreshes of one view do not duplicate its rows. Two that
-   * plan the same source rows conflict on commit, and the loser throws
-   * rather than writing them a second time.
+   * Every refresh rebuilds the complete view. For local views,
+   * `sourceVersion` refreshes to that source version instead of the latest;
+   * remote SQL refreshes do not support source-version pinning.
    */
   async refresh(options?: {
-    full?: boolean;
     sourceVersion?: number;
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
-    return await this.inner.refreshMaterializedView(
-      options?.full,
-      options?.sourceVersion,
-    );
+    return await this.inner.refreshMaterializedView(options?.sourceVersion);
   }
 }

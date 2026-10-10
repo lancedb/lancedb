@@ -19,15 +19,27 @@ use std::pin::Pin;
 use crate::error::{Error, Result};
 use datafusion_physical_plan::SendableRecordBatchStream;
 
-/// The characters any object name may contain: a table, a namespace segment, a
-/// Secret, a materialized view.
-///
-/// No positional rule on top of it -- a name may begin with `_`, `-` or `.`,
-/// as LanceDB namespaces already do. `.` and `..` are excluded separately, by
-/// [`reject_relative_segment`]: that is a property of where a name sits in a
-/// URL, not of the name. Length is the service's to bound.
-static OBJECT_NAME_REGEX: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| regex::Regex::new(r"^[A-Za-z0-9_.\-]+$").unwrap());
+/// The maximum length of a table name. Table names are used in URLs and in the keys used with the
+/// object store.
+const MAX_TABLE_NAME_CHARS: usize = 128;
+
+/// The maximum length of a component of a namespace.
+const MAX_NAMESPACE_NAME_CHARS: usize = 64;
+
+/// The maximum number of namespace components that are allowed.
+const MAX_NAMESPACE_COMPONENTS: usize = 10;
+
+/// The maximum length of a view name.
+const MAX_VIEW_NAME_CHARS: usize = 128;
+
+/// The maximum length of a secret name.
+const MAX_SECRET_NAME_CHARS: usize = 128;
+
+/// The maximum length of a function name.
+const MAX_FUNCTION_NAME_CHARS: usize = 128;
+
+/// The maximum length of a database name.
+const MAX_DB_NAME_CHARS: usize = 64;
 
 pub trait PatchStoreParam {
     fn patch_with_store_wrapper(
@@ -86,108 +98,190 @@ impl PatchReadParam for ReadParams {
     }
 }
 
-/// The reason `.` and `..` are refused wherever a name becomes a path segment.
-const RELATIVE_SEGMENT_REASON: &str =
-    "'.' and '..' are read as relative path segments and cannot address an object";
-
-/// Whether URL parsing would resolve this component away rather than keep it.
-///
-/// Exactly `.` and `..`, and their percent-encoded spellings -- resolution
-/// happens after decoding, so `%2E%2E` collapses as surely as `..` does, and
-/// `drop_table("..")` would reach `/v1/drop/`. No wider than that: `...` is an
-/// ordinary segment that addresses fine.
-fn is_relative_segment(value: &str) -> bool {
-    let decoded = value.replace("%2e", ".").replace("%2E", ".");
-    decoded == "." || decoded == ".."
+/// Translate a string into something that can be safely logged. This involves removing control
+/// characters that could be used in an exploit like CVE-2003-0063.
+fn sanitize(input: &str) -> String {
+    input.chars().filter(|c| !c.is_control()).collect()
 }
 
-/// Refuse a path component that URL parsing resolves as a relative segment.
-///
-/// Reachable on its own for an identifier with no other validator: a Function
-/// name has no client-side grammar, so this is the only rule that applies.
-pub(crate) fn reject_relative_segment(what: &str, value: &str) -> Result<()> {
-    if is_relative_segment(value) {
-        return Err(Error::InvalidInput {
-            message: format!("invalid {what} '{value}': {RELATIVE_SEGMENT_REASON}"),
+pub fn validate_table_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason: "Illegal table name.".to_string(),
+        });
+    }
+    if name.len() > MAX_TABLE_NAME_CHARS {
+        return Err(Error::InvalidTableName {
+            name: sanitize(name),
+            reason: format!(
+                "Table name cannot be more than {MAX_TABLE_NAME_CHARS} characters long."
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(Error::InvalidTableName {
+            name: sanitize(name),
+            reason: "Only alphanumeric characters, dashes, underscores, and\
+                periods are allowed in table names."
+                .to_string(),
         });
     }
     Ok(())
 }
 
-/// Every rule an object name obeys: non-empty, inside [`OBJECT_NAME_REGEX`],
-/// and addressable as a path segment.
-///
-/// Returns the reason rather than an [`Error`], because the error type is each
-/// API's own -- a table reports [`Error::InvalidTableName`], the rest
-/// [`Error::InvalidInput`]. Sharing the rules but not the error keeps a table,
-/// a namespace segment and a Secret from drifting apart.
-fn check_object_name(name: &str) -> std::result::Result<(), &'static str> {
-    if name.is_empty() {
-        return Err("it must not be empty");
+/// Validate that an input string contains alphanumerics, or dashes, underscores, and periods.
+fn validate_view_or_namespace_or_secret(input: &str, kind: &str, max_len: usize) -> Result<()> {
+    if input.is_empty() || input == "." || input == ".." {
+        return Err(Error::InvalidInput {
+            message: format!("Illegal {} '{}'.", kind, input),
+        });
     }
-    if !OBJECT_NAME_REGEX.is_match(name) {
-        return Err(
-            "it may contain only alphanumeric characters, underscores, hyphens and periods",
-        );
+    if input.len() > max_len {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid {} '{}' is more than {} characters long.",
+                kind,
+                sanitize(input),
+                max_len
+            ),
+        });
     }
-    if is_relative_segment(name) {
-        return Err(RELATIVE_SEGMENT_REASON);
+    if !input
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid {} '{}': only alphanumeric characters, \
+                         dashes, underscores, and periods are allowed.",
+                kind,
+                sanitize(input)
+            ),
+        });
     }
     Ok(())
 }
 
-/// Validate a table name.
-pub fn validate_table_name(name: &str) -> Result<()> {
-    check_object_name(name).map_err(|reason| Error::InvalidTableName {
-        name: name.to_string(),
-        reason: reason.to_string(),
-    })
-}
-
 /// Validate one component of a namespace path -- a single segment, not the
 /// whole path. [`validate_namespace`] covers a path.
-pub fn validate_namespace_name(name: &str) -> Result<()> {
-    check_object_name(name).map_err(|reason| Error::InvalidInput {
-        message: format!("invalid namespace name '{name}': {reason}"),
-    })
+pub fn validate_namespace_component(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "namespace component", MAX_NAMESPACE_NAME_CHARS)
 }
 
-/// Validate one component of a Secret identifier: a Secret name, or one segment
-/// of the namespace path holding it.
-///
-/// The join decides identity, and the service only sees what the split
-/// produced. `"a$b"` is not a name the service accepts, but joined and split it
-/// reads as the namespace `a` and the name `b` -- a different Secret that may
-/// already exist. This is not a second opinion on the name; it is what lets the
-/// service have one.
-pub fn validate_secret_component(what: &str, value: &str) -> Result<()> {
-    check_object_name(value).map_err(|reason| Error::InvalidInput {
-        message: format!("invalid {what} '{value}': {reason}"),
-    })
+/// Validate all components of a namespace
+pub fn validate_namespace(namespace: &[String]) -> Result<()> {
+    if namespace.len() > 1 && namespace.first().map(String::as_str) == Some("public") {
+        return Err(Error::InvalidInput {
+            message: "Namespaces that begin with public cannot have multiple namespace components."
+                .to_string(),
+        });
+    }
+    if namespace.len() > MAX_NAMESPACE_COMPONENTS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Cannot have a namespace with more than {MAX_NAMESPACE_COMPONENTS} components."
+            ),
+        });
+    }
+    for component in namespace {
+        validate_namespace_component(component)?;
+    }
+    Ok(())
+}
+
+/// Validate a secret name.
+pub fn validate_secret_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "secret name", MAX_SECRET_NAME_CHARS)
 }
 
 /// Validate a Secret name and every segment of the namespace path holding it.
 pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Result<()> {
-    for segment in namespace_path {
-        validate_secret_component("Secret namespace path segment", segment)?;
-    }
-    validate_secret_component("Secret name", name)
+    validate_namespace(namespace_path)?;
+    validate_secret_name(name)
 }
 
-/// Validate all components of a namespace
-///
-/// Iterates through all namespace components and validates each one.
-/// Returns an error if any component is invalid.
-///
-/// # Arguments
-/// * `namespace` - The namespace components to validate
-///
-/// # Returns
-/// * `Ok(())` if all namespace components are valid
-/// * `Err(Error)` if any component is invalid
-pub fn validate_namespace(namespace: &[String]) -> Result<()> {
-    for component in namespace {
-        validate_namespace_name(component)?;
+pub fn validate_view_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "view name", MAX_VIEW_NAME_CHARS)
+}
+
+/// Validate a view name and every segment of the namespace path holding it.
+pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_view_name(name)
+}
+
+/// Validate a function name. These do not allow dashes or periods.
+pub fn validate_function_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::InvalidInput {
+            message: format!("Invalid function name '{}'.", name),
+        });
+    }
+    if name.len() > MAX_FUNCTION_NAME_CHARS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid function name '{}' is more than {} characters long.",
+                sanitize(name),
+                MAX_FUNCTION_NAME_CHARS
+            ),
+        });
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid function name '{}': only alphanumeric \
+                              characters and underscores are allowed.",
+                sanitize(name)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a database name, including slash-separated components.
+pub fn validate_database_name(name: &str) -> Result<()> {
+    if name.len() > MAX_DB_NAME_CHARS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid database name '{}' is more than {} characters long.",
+                sanitize(name),
+                MAX_DB_NAME_CHARS
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid database name '{}': only alphanumeric characters, dashes, \
+                              underscores, periods, and slashes are allowed.",
+                sanitize(name)
+            ),
+        });
+    }
+    for component in name.split('/') {
+        if component.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Invalid database name '{}': invalid empty path component.",
+                    sanitize(name)
+                ),
+            });
+        }
+        if component == "." || component == ".." {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Invalid database name '{}': illegal path component.",
+                    sanitize(name)
+                ),
+            });
+        }
     }
     Ok(())
 }
@@ -473,6 +567,26 @@ pub fn supported_fts_data_type(dtype: &DataType) -> bool {
     supported_fts_data_type_impl(dtype, false)
 }
 
+/// Validate FTS input without losing the logical type in field metadata.
+pub(crate) fn validate_fts_field(field: &Field) -> Result<()> {
+    if lance_arrow::json::is_json_field(field) || supported_fts_data_type(field.data_type()) {
+        return Ok(());
+    }
+    let logical_type = field
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(|name| format!(" (logical type {name})"))
+        .unwrap_or_default();
+    Err(Error::Schema {
+        message: format!(
+            "A FTS index cannot be created on the field `{}` which has data type {}{}. FTS supports strings, lists of strings, and lance.json fields stored as LargeBinary; raw binary is not supported",
+            field.name(),
+            field.data_type(),
+            logical_type,
+        ),
+    })
+}
+
 fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
     match (dtype, in_list) {
         (DataType::Utf8 | DataType::LargeUtf8, _) => true,
@@ -687,6 +801,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_fts_field_logical_type_validation() {
+        let json = lance_arrow::json::json_field("doc", true);
+        assert!(validate_fts_field(&json).is_ok());
+
+        for dtype in [DataType::Binary, DataType::LargeBinary] {
+            let raw = Field::new("doc", dtype.clone(), true);
+            let err = validate_fts_field(&raw).unwrap_err().to_string();
+            assert!(err.contains("raw binary is not supported"), "{err}");
+            assert!(err.contains("lance.json"), "{err}");
+
+            let other_extension = raw.with_metadata(std::collections::HashMap::from([(
+                "ARROW:extension:name".into(),
+                "other.json".into(),
+            )]));
+            let err = validate_fts_field(&other_extension)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("logical type other.json"), "{err}");
+        }
+
+        // A JSON marker on the wrong binary storage type is insufficient.
+        let wrong_storage =
+            Field::new("doc", DataType::Binary, true).with_metadata(json.metadata().clone());
+        assert!(validate_fts_field(&wrong_storage).is_err());
+        for dtype in [DataType::Utf8, DataType::LargeUtf8] {
+            let text = Field::new("text", dtype, true);
+            assert!(validate_fts_field(&text).is_ok());
+            for list_type in [
+                DataType::List(Arc::new(text.clone())),
+                DataType::LargeList(Arc::new(text.clone())),
+            ] {
+                assert!(validate_fts_field(&Field::new("texts", list_type, true)).is_ok());
+            }
+        }
+    }
+
+    #[test]
     fn test_public_fts_field_path_prefers_exact_case() {
         let text_list = || {
             DataType::List(Arc::new(Field::new(
@@ -850,6 +1001,37 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_database_name() {
+        for name in [
+            "db",
+            "team/search",
+            "Team_1/db-2.3",
+            &"a".repeat(MAX_DB_NAME_CHARS),
+        ] {
+            assert!(validate_database_name(name).is_ok(), "rejected {name:?}");
+        }
+        for name in [
+            "",
+            "/",
+            "//",
+            ".",
+            "..",
+            "/db",
+            "db/",
+            "a//b",
+            "a/./b",
+            "a/../b",
+            "a$b",
+            "a b",
+            "a?b",
+            "café",
+            &"a".repeat(MAX_DB_NAME_CHARS + 1),
+        ] {
+            assert!(validate_database_name(name).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
     fn test_validate_table_name() {
         assert!(validate_table_name("my_table").is_ok());
         assert!(validate_table_name("my_table_1").is_ok());
@@ -869,27 +1051,27 @@ mod tests {
     }
 
     #[test]
-    fn test_validate_namespace_name() {
+    fn test_validate_namespace_component() {
         // Valid namespace names
-        assert!(validate_namespace_name("ns1").is_ok());
-        assert!(validate_namespace_name("namespace_123").is_ok());
-        assert!(validate_namespace_name("my-namespace").is_ok());
-        assert!(validate_namespace_name("my.namespace").is_ok());
-        assert!(validate_namespace_name("NS_1.2.3").is_ok());
-        assert!(validate_namespace_name("a").is_ok());
-        assert!(validate_namespace_name("123").is_ok());
-        assert!(validate_namespace_name("_underscore").is_ok());
-        assert!(validate_namespace_name("-hyphen").is_ok());
-        assert!(validate_namespace_name(".period").is_ok());
+        assert!(validate_namespace_component("ns1").is_ok());
+        assert!(validate_namespace_component("namespace_123").is_ok());
+        assert!(validate_namespace_component("my-namespace").is_ok());
+        assert!(validate_namespace_component("my.namespace").is_ok());
+        assert!(validate_namespace_component("NS_1.2.3").is_ok());
+        assert!(validate_namespace_component("a").is_ok());
+        assert!(validate_namespace_component("123").is_ok());
+        assert!(validate_namespace_component("_underscore").is_ok());
+        assert!(validate_namespace_component("-hyphen").is_ok());
+        assert!(validate_namespace_component(".period").is_ok());
 
         // Invalid namespace names
-        assert!(validate_namespace_name("").is_err());
-        assert!(validate_namespace_name("namespace with spaces").is_err());
-        assert!(validate_namespace_name("namespace/with/slashes").is_err());
-        assert!(validate_namespace_name("namespace\\with\\backslashes").is_err());
-        assert!(validate_namespace_name("namespace$with$delimiter").is_err());
-        assert!(validate_namespace_name("namespace@special").is_err());
-        assert!(validate_namespace_name("namespace#hash").is_err());
+        assert!(validate_namespace_component("").is_err());
+        assert!(validate_namespace_component("namespace with spaces").is_err());
+        assert!(validate_namespace_component("namespace/with/slashes").is_err());
+        assert!(validate_namespace_component("namespace\\with\\backslashes").is_err());
+        assert!(validate_namespace_component("namespace$with$delimiter").is_err());
+        assert!(validate_namespace_component("namespace@special").is_err());
+        assert!(validate_namespace_component("namespace#hash").is_err());
     }
 
     #[test]
@@ -905,6 +1087,9 @@ mod tests {
         // Empty namespace (root) is valid
         assert!(validate_namespace(&[]).is_ok());
 
+        // Valid public namespace (which is equivalent to the root namespace.)
+        assert!(validate_namespace(&["public".to_string()]).is_ok());
+
         // Invalid: contains empty component
         assert!(validate_namespace(&["ns1".to_string(), "".to_string()]).is_err());
 
@@ -915,6 +1100,9 @@ mod tests {
         assert!(validate_namespace(&["ns1".to_string(), "ns@2".to_string()]).is_err());
         assert!(validate_namespace(&["ns1".to_string(), "ns/2".to_string()]).is_err());
         assert!(validate_namespace(&["ns1".to_string(), "ns$2".to_string()]).is_err());
+
+        // Invalid: starts with public but contains other components.
+        assert!(validate_namespace(&["public".to_string(), "foo".to_string()]).is_err());
 
         // Valid: underscores, hyphens, and periods are allowed
         assert!(
