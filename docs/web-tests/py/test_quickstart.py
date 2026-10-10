@@ -187,6 +187,7 @@ def test_quickstart(db_path_factory):
 async def test_quickstart_async_api(db_path_factory):
     db_uri = db_path_factory("quickstart_async_db")
     import lancedb
+
     async_db = await lancedb.connect_async(db_uri)
 
     # --8<-- [start:quickstart_data_async]
@@ -231,9 +232,12 @@ async def test_quickstart_async_api(db_path_factory):
     query_vector = [0.2, 0.8, 0.4, 0.9]
 
     # Ensure you run `pip install polars` beforehand
-    async_result = await (
-        await async_table.search(query_vector)
-    ).select(["name", "role", "description", "_distance"]).limit(2).to_polars()
+    async_result = (
+        await (await async_table.search(query_vector))
+        .select(["name", "role", "description", "_distance"])
+        .limit(2)
+        .to_polars()
+    )
     print(async_result)
     # --8<-- [end:quickstart_vector_search_1_async]
 

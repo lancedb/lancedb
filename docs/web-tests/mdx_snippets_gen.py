@@ -312,9 +312,7 @@ def generate_modules(
         module_content = render_module(target, lang_map)
         if write_if_changed(module_path, module_content):
             modules_written += 1
-    print(
-        f"\nGenerated {total_exports} snippets\n---"
-    )
+    print(f"\nGenerated {total_exports} snippets\n---")
 
 
 def resolve_source_dirs(args_dirs: List[str] | None) -> List[Path]:

@@ -8,10 +8,12 @@ import lancedb
 import pandas as pd
 import polars as pl
 import pyarrow as pa
+
 # --8<-- [end:basic_imports]
 import pytest
 
 data_path = "tests/camelot.json"
+
 
 def test_basic_usage(db_path_factory):
     uri = "./basic_usage_db"
@@ -80,7 +82,7 @@ def test_basic_usage(db_path_factory):
             "role": "Sorceress",
             "description": "A powerful enchantress, Arthur's half-sister, and a complex figure who oscillates between aiding and opposing Camelot.",
             "vector": [0.10, 0.84, 0.25, 0.70],
-            "stats": { "strength": 2, "courage": 3, "magic": 5, "wisdom": 4 }
+            "stats": {"strength": 2, "courage": 3, "magic": 5, "wisdom": 4},
         },
         {
             "id": 10,
@@ -88,8 +90,8 @@ def test_basic_usage(db_path_factory):
             "role": "Mystical Guardian",
             "description": "A mysterious supernatural figure associated with Avalon, known for giving Arthur the sword Excalibur.",
             "vector": [0.00, 0.90, 0.58, 0.88],
-            "stats": { "strength": 2, "courage": 3, "magic": 5, "wisdom": 5 }
-        }
+            "stats": {"strength": 2, "courage": 3, "magic": 5, "wisdom": 5},
+        },
     ]
     table.add(magical_characters)
     # --8<-- [end:basic_add_data]
@@ -150,11 +152,7 @@ def test_basic_usage(db_path_factory):
 
     # --8<-- [start:basic_vector_search_q4]
     # Who are the strongest characters?
-    r4 = (
-        table.search()
-        .select(["name", "role", "description", "power"])
-        .to_polars()
-    )
+    r4 = table.search().select(["name", "role", "description", "power"]).to_polars()
     print(r4)
     # --8<-- [end:basic_vector_search_q4]
 
@@ -196,9 +194,12 @@ async def test_basic_usage_async_api(db_path_factory):
     )
 
     query_vector = [0.03, 0.85, 0.61, 0.90]
-    async_results = await (
-        await async_table.search(query_vector)
-    ).limit(5).select(["name", "role", "description"]).to_polars()
+    async_results = (
+        await (await async_table.search(query_vector))
+        .limit(5)
+        .select(["name", "role", "description"])
+        .to_polars()
+    )
     print(async_results)
     # --8<-- [end:basic_async_api]
 

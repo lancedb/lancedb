@@ -266,8 +266,41 @@ describe("remote catalog", () => {
         "limit",
       );
     }
-    await expect(catalog.connectDatabase("a$b")).rejects.toThrow(
-      "Invalid database name",
-    );
   });
+
+  it.each([
+    "",
+    ".",
+    "..",
+    "/db",
+    "db/",
+    "a//b",
+    "a/./b",
+    "a/../b",
+    "a b",
+    "a:b",
+    "a$b",
+    "a%b",
+    "a?b",
+    "a#b",
+    "a\\b",
+    "café",
+    "a\nb",
+  ])(
+    "rejects invalid database name %j before sending requests",
+    async (name) => {
+      await withCatalog([], async (catalog, requests) => {
+        for (const method of [
+          "createDatabase",
+          "connectDatabase",
+          "dropDatabase",
+        ] as const) {
+          await expect(catalog[method](name)).rejects.toThrow(
+            "Invalid database name",
+          );
+        }
+        expect(requests).toEqual([]);
+      });
+    },
+  );
 });

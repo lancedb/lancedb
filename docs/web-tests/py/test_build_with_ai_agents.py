@@ -25,6 +25,8 @@ class Character(LanceModel):
     stats: Stats
     image_filename: str
     image: bytes
+
+
 # --8<-- [end:camelot_schema]
 
 
@@ -34,9 +36,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 
-def validated_batches(
-    input_path: Path, batch_size: int
-) -> Iterator[list[dict]]:
+def validated_batches(input_path: Path, batch_size: int) -> Iterator[list[dict]]:
     raw_records = json.loads(input_path.read_text())
     asset_root = input_path.parent.parent
     batch: list[dict] = []
@@ -56,6 +56,8 @@ def validated_batches(
 
     if batch:
         yield batch
+
+
 # --8<-- [end:camelot_batches]
 
 

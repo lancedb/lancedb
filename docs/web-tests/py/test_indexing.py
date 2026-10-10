@@ -129,9 +129,7 @@ async def test_vector_index_async_config(tmp_path, monkeypatch):
         ]
 
         db = await lancedb.connect_async("ex_lancedb")
-        table = await db.create_table(
-            "vector_index_async", data=data, mode="overwrite"
-        )
+        table = await db.create_table("vector_index_async", data=data, mode="overwrite")
 
         await table.create_index(
             "vector",
@@ -142,6 +140,7 @@ async def test_vector_index_async_config(tmp_path, monkeypatch):
             ),
         )
         return await table.list_indices()
+
     # --8<-- [end:vector_index_async_config]
 
     assert await main()
@@ -596,7 +595,7 @@ def test_fts_index_wait(tmp_db):
         [{"text": "full text search"}],
         mode="overwrite",
     )
-    
+
     db = tmp_db
     # --8<-- [start:fts_index_wait]
     table_name = "fts-index-wait"
@@ -612,14 +611,18 @@ def test_fts_index_wait(tmp_db):
 
 
 def test_fts_index_nested_field(tmp_db):
-    nested_schema = pa.struct([
-        pa.field("text", pa.string()),
-        pa.field("count", pa.int32()),
-    ])
-    schema = pa.schema([
-        pa.field("id", pa.int64()),
-        pa.field("payload", nested_schema),
-    ])
+    nested_schema = pa.struct(
+        [
+            pa.field("text", pa.string()),
+            pa.field("count", pa.int32()),
+        ]
+    )
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", nested_schema),
+        ]
+    )
     tmp_db.create_table(
         "fts-index-nested",
         pa.table(
@@ -648,14 +651,8 @@ def test_fts_index_nested_field(tmp_db):
     table.create_fts_index("payload.text", with_position=True)
 
     # The same dotted path works in MatchQuery and PhraseQuery.
-    matches = (
-        table.search(MatchQuery("puppy", "payload.text")).limit(5).to_list()
-    )
-    phrases = (
-        table.search(PhraseQuery("puppy runs", "payload.text"))
-        .limit(5)
-        .to_list()
-    )
+    matches = table.search(MatchQuery("puppy", "payload.text")).limit(5).to_list()
+    phrases = table.search(PhraseQuery("puppy runs", "payload.text")).limit(5).to_list()
     # --8<-- [end:fts_index_nested]
 
     assert len(matches) > 0
