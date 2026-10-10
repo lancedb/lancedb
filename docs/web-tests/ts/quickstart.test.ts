@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 import { describe, expect, test } from "@jest/globals";
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as lancedb from "@lancedb/lancedb";
@@ -12,22 +13,81 @@ const IMAGE = path.join(
   "../../web/static/assets/images/quickstart/sir-lancelot.jpg",
 );
 const deployment = ["LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY"];
-const connections = deployment.every((name) => process.env[name])
-  ? ["local", "enterprise"]
-  : ["local"];
+// The connection settings alone never send these tests to a deployment.
+const optIn = "LANCEDB_DOCS_TEST_DEPLOYMENT";
+const connections =
+  process.env[optIn] === "1" ? ["local", "enterprise"] : ["local"];
+
+async function tableNames(db: lancedb.Connection) {
+  const names: string[] = [];
+  let pageToken: string | undefined;
+  do {
+    const page = await db.listTables({ pageToken });
+    names.push(...page.tables);
+    pageToken = page.pageToken;
+  } while (pageToken);
+  return names;
+}
+
+// A deployment connection on which a test creates only tables of its own:
+// each name gets a suffix unique to the test and is claimed only while no
+// table has it; the test drops what it claimed, whether or not it passed.
+async function withOwnedTables(
+  db: lancedb.Connection,
+  fn: (db: lancedb.Connection) => Promise<void>,
+) {
+  const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+  const claimed: string[] = [];
+  const createTable = async (
+    name: string,
+    data: Parameters<lancedb.Connection["createTable"]>[1],
+    options: Partial<lancedb.CreateTableOptions> = {},
+  ) => {
+    const owned = `${name}_${suffix}`;
+    let mode = options.mode;
+    if (!claimed.includes(owned)) {
+      if ((await tableNames(db)).includes(owned)) {
+        throw new Error(`${owned} already exists and is not this test's`);
+      }
+      claimed.push(owned);
+      mode = "create";
+    }
+    return db.createTable(owned, data, { ...options, mode });
+  };
+  try {
+    await fn(
+      new Proxy(db, {
+        get: (target, property, receiver) =>
+          property === "createTable"
+            ? createTable
+            : Reflect.get(target, property, receiver),
+      }),
+    );
+  } finally {
+    const existing = await tableNames(db);
+    for (const name of claimed) {
+      if (existing.includes(name)) {
+        await db.dropTable(name);
+      }
+    }
+  }
+}
 
 async function withDatabase(
   connection: string,
   fn: (db: lancedb.Connection) => Promise<void>,
 ) {
   if (connection === "enterprise") {
-    await fn(
-      await lancedb.connect(process.env.LANCEDB_URI!, {
-        apiKey: process.env.LANCEDB_API_KEY!,
-        region: process.env.LANCEDB_REGION ?? "us-east-1",
-        hostOverride: process.env.LANCEDB_HOST_OVERRIDE!,
-      }),
-    );
+    const missing = deployment.filter((name) => !process.env[name]);
+    if (missing.length) {
+      throw new Error(`${optIn}=1 needs ${missing.join(", ")}`);
+    }
+    const db = await lancedb.connect(process.env.LANCEDB_URI!, {
+      apiKey: process.env.LANCEDB_API_KEY!,
+      region: process.env.LANCEDB_REGION ?? "us-east-1",
+      hostOverride: process.env.LANCEDB_HOST_OVERRIDE!,
+    });
+    await withOwnedTables(db, fn);
     return;
   }
   await withTempDirectory(async (databaseDir) => {

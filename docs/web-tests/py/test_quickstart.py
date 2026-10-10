@@ -3,6 +3,7 @@
 
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 import lancedb
@@ -15,11 +16,16 @@ IMAGE = (
     / "web/static/assets/images/quickstart/sir-lancelot.jpg"
 )
 DEPLOYMENT = ("LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY")
+# The connection settings alone never send these tests to a deployment.
+OPT_IN = "LANCEDB_DOCS_TEST_DEPLOYMENT"
 
 
 def deployment_settings():
-    if not all(os.environ.get(name) for name in DEPLOYMENT):
-        pytest.skip("set " + ", ".join(DEPLOYMENT) + " to run against a deployment")
+    if os.environ.get(OPT_IN) != "1":
+        pytest.skip(f"set {OPT_IN}=1 and {', '.join(DEPLOYMENT)} to use a deployment")
+    missing = [name for name in DEPLOYMENT if not os.environ.get(name)]
+    if missing:
+        pytest.fail(f"{OPT_IN}=1 needs {', '.join(missing)}")
     return dict(
         uri=os.environ["LANCEDB_URI"],
         api_key=os.environ["LANCEDB_API_KEY"],
@@ -28,18 +34,89 @@ def deployment_settings():
     )
 
 
+class OwnedTables:
+    """A deployment connection on which a test creates only tables of its own.
+
+    Each name gets a suffix unique to the test and is claimed only while no
+    table has it; the test drops what it claimed, whether or not it passed.
+    """
+
+    def __init__(self, db):
+        self.db = db
+        self.suffix = uuid.uuid4().hex[:12]
+        self.claimed = []
+
+    def claim(self, name, existing, mode):
+        owned = f"{name}_{self.suffix}"
+        if owned in self.claimed:
+            return owned, mode
+        if owned in existing:
+            raise RuntimeError(f"{owned} already exists and is not this test's")
+        self.claimed.append(owned)
+        return owned, "create"
+
+    def table_names(self):
+        names, token = [], None
+        while True:
+            page = self.db.list_tables(page_token=token)
+            names += page.tables
+            if not (token := page.page_token):
+                return names
+
+    def create_table(self, name, *args, mode="create", **kwargs):
+        owned, mode = self.claim(name, self.table_names(), mode)
+        return self.db.create_table(owned, *args, mode=mode, **kwargs)
+
+    def drop_claimed(self):
+        existing = self.table_names()
+        for name in self.claimed:
+            if name in existing:
+                self.db.drop_table(name)
+
+
+class AsyncOwnedTables(OwnedTables):
+    async def table_names(self):
+        names, token = [], None
+        while True:
+            page = await self.db.list_tables(page_token=token)
+            names += page.tables
+            if not (token := page.page_token):
+                return names
+
+    async def create_table(self, name, *args, mode="create", **kwargs):
+        owned, mode = self.claim(name, await self.table_names(), mode)
+        return await self.db.create_table(owned, *args, mode=mode, **kwargs)
+
+    async def drop_claimed(self):
+        existing = await self.table_names()
+        for name in self.claimed:
+            if name in existing:
+                await self.db.drop_table(name)
+
+
+@pytest.fixture
+def deployment():
+    owned = OwnedTables(lancedb.connect(**deployment_settings()))
+    yield owned
+    owned.drop_claimed()
+
+
 @pytest.fixture(params=["local", "enterprise"])
 def db(request, db_path_factory):
     if request.param == "local":
-        return lancedb.connect(db_path_factory("quickstart_db"))
-    return lancedb.connect(**deployment_settings())
+        yield lancedb.connect(db_path_factory("quickstart_db"))
+    else:
+        yield request.getfixturevalue("deployment")
 
 
 @pytest_asyncio.fixture(params=["local", "enterprise"])
 async def async_db(request, db_path_factory):
     if request.param == "local":
-        return await lancedb.connect_async(db_path_factory("quickstart_async_db"))
-    return await lancedb.connect_async(**deployment_settings())
+        yield await lancedb.connect_async(db_path_factory("quickstart_async_db"))
+        return
+    owned = AsyncOwnedTables(await lancedb.connect_async(**deployment_settings()))
+    yield owned
+    await owned.drop_claimed()
 
 
 def create_characters(db):
@@ -209,8 +286,8 @@ def test_quickstart_computed_column(db_path_factory):
     assert lengths == {text: len(text) for text in lengths}
 
 
-def test_quickstart_computed_column_on_a_deployment():
-    table = create_characters(lancedb.connect(**deployment_settings()))
+def test_quickstart_computed_column_on_a_deployment(deployment):
+    table = create_characters(deployment)
 
     # --8<-- [start:quickstart_computed_feature_enterprise]
     table.add_columns(computed={"description_length": "length(description)"})
