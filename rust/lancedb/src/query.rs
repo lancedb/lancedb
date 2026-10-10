@@ -2358,8 +2358,8 @@ mod tests {
         datatypes::{Int32Type, UInt8Type},
     };
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
-        StringArray, cast::AsArray, types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray, cast::AsArray,
+        types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use datafusion_physical_plan::display::DisplayableExecutionPlan;
@@ -2811,10 +2811,7 @@ mod tests {
         merge.when_not_matched_by_source_delete(Some(r#""PartyAbbrev" = 'D'"#.to_string()));
         let result = table
             .base_table()
-            .merge_insert(
-                merge,
-                Box::new(RecordBatchIterator::new(vec![Ok(source)], schema.clone())),
-            )
+            .merge_insert(merge, Box::new(source))
             .await
             .unwrap();
         assert_eq!(result.num_deleted_rows, 1);
@@ -2830,10 +2827,7 @@ mod tests {
         .unwrap();
         let mut merge = table.merge_insert(&["id"]);
         merge.when_matched_update_all(Some(r#"target."PartyAbbrev" = 'D'"#.to_string()));
-        merge
-            .execute(Box::new(RecordBatchIterator::new(vec![Ok(source)], schema)))
-            .await
-            .unwrap();
+        merge.execute(source).await.unwrap();
         assert_eq!(
             table
                 .count_rows(Some(r#""PartyAbbrev" = 'U'"#.to_string()))

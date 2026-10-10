@@ -3008,13 +3008,7 @@ mod tests {
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all();
-        let err = merge
-            .execute(Box::new(arrow_array::RecordBatchIterator::new(
-                vec![Ok(batch.clone())],
-                batch.schema(),
-            )))
-            .await
-            .unwrap_err();
+        let err = merge.execute(batch.clone()).await.unwrap_err();
         assert!(matches!(err, Error::InvalidInput { .. }));
 
         // The append that omits the column still works.
@@ -3290,7 +3284,7 @@ mod tests {
     #[tokio::test]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
         use crate::table::LsmWriteSpec;
-        use arrow_array::{Int64Array, RecordBatchIterator};
+        use arrow_array::Int64Array;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -3325,10 +3319,7 @@ mod tests {
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
             .use_lsm(true);
-        merge
-            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
-            .await
-            .unwrap();
+        merge.execute(batch).await.unwrap();
         table.unset_lsm_write_spec().await.unwrap();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])

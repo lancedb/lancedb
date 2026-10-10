@@ -5,16 +5,26 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow_array::RecordBatchReader;
+use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Fields};
+use datafusion::prelude::SessionContext;
+use datafusion_catalog::TableProvider;
+use datafusion_common::{Statistics, stats::Precision};
+use datafusion_execution::{SendableRecordBatchStream, TaskContext};
+use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion_physical_plan::{
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
+};
 use futures::future::Either;
-use futures::{FutureExt, TryFutureExt};
+use futures::{FutureExt, StreamExt, TryStreamExt};
 use lance::dataset::{
     MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource,
 };
-use lance_datafusion::utils::StreamingWriteSource;
+use lance_datafusion::spill::spilling_table_provider;
 use serde::{Deserialize, Serialize};
 
+use super::datafusion::scannable_exec::{ScannableExec, ScannableProvider};
+use crate::data::scannable::Scannable;
 use crate::error::{Error, Result};
 
 use super::{BaseTable, NativeTable};
@@ -78,10 +88,15 @@ pub struct MergeInsertBuilder {
     pub(crate) use_index: bool,
     pub(crate) use_lsm: Option<bool>,
     pub(crate) validate_single_shard: bool,
+    pub(crate) source_collect_threshold_bytes: Option<usize>,
 }
 
 impl MergeInsertBuilder {
-    pub(super) fn new(table: Arc<dyn BaseTable>, on: Vec<String>) -> Self {
+    pub(super) fn new(
+        table: Arc<dyn BaseTable>,
+        on: Vec<String>,
+        source_collect_threshold_bytes: Option<usize>,
+    ) -> Self {
         Self {
             table,
             on,
@@ -94,6 +109,7 @@ impl MergeInsertBuilder {
             use_index: true,
             use_lsm: None,
             validate_single_shard: true,
+            source_collect_threshold_bytes,
         }
     }
 
@@ -219,16 +235,44 @@ impl MergeInsertBuilder {
         self
     }
 
+    /// How many bytes of a one-shot source to collect into memory before
+    /// streaming the rest.
+    ///
+    /// The merge join picks its build side from the statistics each input
+    /// reports. A rescannable source (such as a [`RecordBatch`] or
+    /// `Vec<RecordBatch>`) reports its exact row count. A one-shot source (such
+    /// as a [`RecordBatchReader`]) reports nothing, so it is read into memory
+    /// up to this many bytes: if it ends first, it is merged as an in-memory
+    /// source with exact statistics; otherwise the read rows are reported as a
+    /// lower bound and the rest is streamed.
+    ///
+    /// Overrides the connection default set with
+    /// [`ConnectBuilder::merge_insert_source_collect_threshold_bytes`](crate::connection::ConnectBuilder::merge_insert_source_collect_threshold_bytes).
+    /// Defaults to 64MiB. Only applies to local tables.
+    ///
+    /// [`RecordBatch`]: arrow_array::RecordBatch
+    pub fn source_collect_threshold_bytes(&mut self, bytes: usize) -> &mut Self {
+        self.source_collect_threshold_bytes = Some(bytes);
+        self
+    }
+
     /// Executes the merge insert operation
     ///
     /// Returns version and statistics about the merge operation including the number of rows
     /// inserted, updated, and deleted.
-    pub async fn execute(
-        mut self,
-        new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeResult> {
+    ///
+    /// `new_data` can be any [`Scannable`], such as a [`RecordBatch`],
+    /// `Vec<RecordBatch>`, or `Box<dyn RecordBatchReader + Send>`. See
+    /// [`Self::source_collect_threshold_bytes`] for how the source affects the
+    /// merge plan.
+    ///
+    /// [`RecordBatch`]: arrow_array::RecordBatch
+    pub async fn execute(mut self, new_data: impl Scannable + 'static) -> Result<MergeResult> {
         self.canonicalize_filters()?;
-        self.table.clone().merge_insert(self, new_data).await
+        self.table
+            .clone()
+            .merge_insert(self, Box::new(new_data))
+            .await
     }
 
     pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
@@ -310,7 +354,7 @@ fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -
 pub(crate) async fn execute_merge_insert(
     table: &NativeTable,
     mut params: MergeInsertBuilder,
-    new_data: Box<dyn RecordBatchReader + Send>,
+    new_data: Box<dyn Scannable>,
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
     super::computed_columns::ensure_no_function_bindings_for_mutation(
@@ -338,24 +382,19 @@ pub(crate) async fn execute_merge_insert(
     let schema = arrow_schema::Schema::from(dataset.schema());
     // JSON source fields must carry the stored extension metadata just as on
     // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
-    let source = if schema
+    let cast_schema = if schema
         .fields()
         .iter()
         .any(|field| lance_arrow::json::has_json_fields(field))
     {
         validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
-        let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
-            Box::new(new_data),
-            None,
-        ));
-        let plan = super::datafusion::cast::cast_to_table_schema(plan, &schema)?;
-        datafusion_physical_plan::execute_stream(
-            plan,
-            Arc::new(datafusion_execution::TaskContext::default()),
-        )?
+        Some(&schema)
     } else {
-        new_data.into_stream()
+        None
     };
+    let collect_threshold_bytes = params
+        .source_collect_threshold_bytes
+        .unwrap_or(DEFAULT_SOURCE_COLLECT_THRESHOLD_BYTES);
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,
@@ -389,18 +428,28 @@ pub(crate) async fn execute_merge_insert(
     }
     builder.use_index(params.use_index);
 
+    if let Some(timeout) = params.timeout {
+        builder.retry_timeout(timeout);
+    }
+    let job = builder.try_build()?;
+    // Reading the source used to happen inside `execute`, so collecting it
+    // stays under the same timeout.
+    let future = async move {
+        match prepare_merge_source(new_data, cast_schema, collect_threshold_bytes).await? {
+            MergeSource::Provider(provider) => job.execute_provider(provider).await,
+            MergeSource::Batches(batches) => job.execute_batches(batches).await,
+        }
+        .map_err(Error::from)
+    };
     let future = if let Some(timeout) = params.timeout {
-        let future = builder.retry_timeout(timeout).try_build()?.execute(source);
         Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
-            Ok(Ok((new_dataset, stats))) => Ok((new_dataset, stats)),
-            Ok(Err(e)) => Err(e.into()),
+            Ok(result) => result,
             Err(_) => Err(Error::Runtime {
                 message: "merge insert timed out".to_string(),
             }),
         }))
     } else {
-        let job = builder.try_build()?;
-        Either::Right(job.execute(source).map_err(|e| e.into()))
+        Either::Right(future)
     };
     let (new_dataset, stats) = future.await?;
     let version = new_dataset.manifest().version;
@@ -415,6 +464,142 @@ pub(crate) async fn execute_merge_insert(
     })
 }
 
+/// Default for [`MergeInsertBuilder::source_collect_threshold_bytes`].
+pub const DEFAULT_SOURCE_COLLECT_THRESHOLD_BYTES: usize = 64 * 1024 * 1024;
+
+// Matches the memory budget Lance uses when it spills a one-shot source itself.
+const SPILL_MEMORY_LIMIT_BYTES: usize = 100 * 1024 * 1024;
+
+/// A merge source in the form Lance plans with.
+pub(crate) enum MergeSource {
+    /// A rescannable provider. Retries rescan it.
+    Provider(Arc<dyn TableProvider>),
+    /// The whole source, collected into memory.
+    Batches(Vec<RecordBatch>),
+}
+
+/// Prepare a merge source so the merge join can see its statistics.
+///
+/// * A rescannable source becomes a provider reporting its exact row count.
+/// * A one-shot source is read until it ends or exceeds
+///   `collect_threshold_bytes`. If it ends, the collected batches are returned.
+///   Otherwise the read prefix is chained back onto the rest of the stream,
+///   spilled so retries can replay it, and reported with the prefix row count
+///   as a lower bound.
+///
+/// When `cast_schema` is set, the source is cast to it on every scan.
+pub(crate) async fn prepare_merge_source(
+    source: Box<dyn Scannable>,
+    cast_schema: Option<&arrow_schema::Schema>,
+    collect_threshold_bytes: usize,
+) -> Result<MergeSource> {
+    let rescannable = source.rescannable();
+    let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ScannableExec::new(source, None));
+    if let Some(schema) = cast_schema {
+        plan = super::datafusion::cast::cast_to_table_schema(plan, schema)?;
+    }
+    if rescannable {
+        return Ok(MergeSource::Provider(Arc::new(ScannableProvider::new(
+            plan,
+        ))));
+    }
+
+    let schema = plan.schema();
+    let mut stream = execute_stream(plan, Arc::new(TaskContext::default()))?;
+    let mut prefix = Vec::new();
+    let mut prefix_bytes = 0;
+    while prefix_bytes <= collect_threshold_bytes {
+        match stream.try_next().await? {
+            Some(batch) => {
+                prefix_bytes += batch.get_array_memory_size();
+                prefix.push(batch);
+            }
+            None => {
+                // An empty batch keeps the source schema, which Lance would
+                // otherwise replace with the table schema.
+                if prefix.is_empty() {
+                    prefix.push(RecordBatch::new_empty(schema));
+                }
+                return Ok(MergeSource::Batches(prefix));
+            }
+        }
+    }
+
+    let prefix_rows = prefix.iter().map(|batch| batch.num_rows()).sum();
+    let chained = futures::stream::iter(prefix.into_iter().map(Ok)).chain(stream);
+    let chained = Box::pin(RecordBatchStreamAdapter::new(schema, chained));
+    let spilled = spilling_table_provider(chained, SPILL_MEMORY_LIMIT_BYTES).await?;
+    let spilled = spilled
+        .scan(&SessionContext::new().state(), None, &[], None)
+        .await?;
+    let plan = Arc::new(RowCountLowerBoundExec::new(spilled, prefix_rows));
+    Ok(MergeSource::Provider(Arc::new(ScannableProvider::new(
+        plan,
+    ))))
+}
+
+/// Reports an inexact row count for its input, which otherwise reports none.
+#[derive(Debug)]
+struct RowCountLowerBoundExec {
+    input: Arc<dyn ExecutionPlan>,
+    num_rows: usize,
+}
+
+impl RowCountLowerBoundExec {
+    fn new(input: Arc<dyn ExecutionPlan>, num_rows: usize) -> Self {
+        Self { input, num_rows }
+    }
+}
+
+impl DisplayAs for RowCountLowerBoundExec {
+    fn fmt_as(&self, _t: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "RowCountLowerBoundExec: num_rows>={}", self.num_rows)
+    }
+}
+
+impl ExecutionPlan for RowCountLowerBoundExec {
+    fn name(&self) -> &str {
+        "RowCountLowerBoundExec"
+    }
+
+    fn properties(&self) -> &Arc<PlanProperties> {
+        self.input.properties()
+    }
+
+    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
+        vec![&self.input]
+    }
+
+    fn with_new_children(
+        self: Arc<Self>,
+        mut children: Vec<Arc<dyn ExecutionPlan>>,
+    ) -> datafusion_common::Result<Arc<dyn ExecutionPlan>> {
+        if children.len() != 1 {
+            return Err(datafusion_common::DataFusionError::Internal(
+                "RowCountLowerBoundExec expects exactly one child".to_string(),
+            ));
+        }
+        Ok(Arc::new(Self::new(children.remove(0), self.num_rows)))
+    }
+
+    fn execute(
+        &self,
+        partition: usize,
+        context: Arc<TaskContext>,
+    ) -> datafusion_common::Result<SendableRecordBatchStream> {
+        self.input.execute(partition, context)
+    }
+
+    fn partition_statistics(
+        &self,
+        _partition: Option<usize>,
+    ) -> datafusion_common::Result<Arc<Statistics>> {
+        let mut stats = Statistics::new_unknown(&self.schema());
+        stats.num_rows = Precision::Inexact(self.num_rows);
+        Ok(Arc::new(stats))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arrow_array::builder::FixedSizeBinaryBuilder;
@@ -425,6 +610,7 @@ mod tests {
     use arrow_schema::{DataType, Field, Schema};
     use std::sync::Arc;
 
+    use super::*;
     use crate::connect;
 
     #[rstest::rstest]
@@ -501,7 +687,8 @@ mod tests {
         let mut merge = table.merge_insert(&["id"]);
         merge.when_not_matched_insert_all();
         let error = merge
-            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+                as Box<dyn RecordBatchReader + Send>)
             .await
             .expect_err("JSON alignment must not drop source fields");
         let expected = if duplicate {
@@ -566,10 +753,10 @@ mod tests {
             .when_matched_update_all(None)
             .when_not_matched_insert_all();
         let result = merge
-            .execute(Box::new(RecordBatchIterator::new(
-                vec![Ok(batch)],
-                input_schema,
-            )))
+            .execute(
+                Box::new(RecordBatchIterator::new(vec![Ok(batch)], input_schema))
+                    as Box<dyn RecordBatchReader + Send>,
+            )
             .await
             .unwrap();
         assert_eq!(result.num_updated_rows, 1);
@@ -657,6 +844,204 @@ mod tests {
         )
         .unwrap();
         Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    fn id_batch(ids: std::ops::Range<i32>) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("i", DataType::Int32, false),
+            Field::new("age", DataType::Int32, false),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(ids.clone())),
+                Arc::new(Int32Array::from_iter_values(ids)),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn one_shot(batches: Vec<RecordBatch>) -> Box<dyn Scannable> {
+        let schema = batches[0].schema();
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            batches.into_iter().map(Ok),
+            schema,
+        ));
+        Box::new(reader)
+    }
+
+    async fn scan_provider(provider: &Arc<dyn TableProvider>) -> (Precision<usize>, usize) {
+        let plan = provider
+            .scan(&SessionContext::new().state(), None, &[], None)
+            .await
+            .unwrap();
+        let num_rows = plan.partition_statistics(None).unwrap().num_rows;
+        let batches: Vec<RecordBatch> = execute_stream(plan, Arc::new(TaskContext::default()))
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        (num_rows, batches.iter().map(|b| b.num_rows()).sum())
+    }
+
+    #[tokio::test]
+    async fn prepare_source_rescannable_reports_exact_rows() {
+        let source: Box<dyn Scannable> = Box::new(vec![id_batch(0..10), id_batch(10..15)]);
+        let MergeSource::Provider(provider) = prepare_merge_source(source, None, 0).await.unwrap()
+        else {
+            panic!("expected a provider");
+        };
+        // Rescanning replays the whole source each time.
+        for _ in 0..2 {
+            assert_eq!(scan_provider(&provider).await, (Precision::Exact(15), 15));
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_source_one_shot_under_threshold_collects() {
+        let source = one_shot(vec![id_batch(0..10), id_batch(10..15)]);
+        let MergeSource::Batches(batches) = prepare_merge_source(source, None, 1024 * 1024)
+            .await
+            .unwrap()
+        else {
+            panic!("expected collected batches");
+        };
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 15);
+    }
+
+    #[tokio::test]
+    async fn prepare_source_one_shot_empty_keeps_schema() {
+        let empty = RecordBatch::new_empty(id_batch(0..1).schema());
+        let source = one_shot(vec![empty.clone()]);
+        let MergeSource::Batches(batches) = prepare_merge_source(source, None, 1024).await.unwrap()
+        else {
+            panic!("expected collected batches");
+        };
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].schema(), empty.schema());
+    }
+
+    #[tokio::test]
+    async fn prepare_source_one_shot_over_threshold_streams_with_lower_bound() {
+        let first = id_batch(0..10);
+        let threshold = first.get_array_memory_size();
+        let source = one_shot(vec![first, id_batch(10..20), id_batch(20..30)]);
+        let MergeSource::Provider(provider) =
+            prepare_merge_source(source, None, threshold).await.unwrap()
+        else {
+            panic!("expected a provider");
+        };
+        // The threshold is exceeded on the second batch, so 20 rows are known.
+        // The spill lets retries replay the whole source.
+        for _ in 0..2 {
+            assert_eq!(scan_provider(&provider).await, (Precision::Inexact(20), 30));
+        }
+    }
+
+    async fn analyze_merge_plan(table: &crate::Table, source: MergeSource) -> String {
+        let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+        let mut builder =
+            LanceMergeInsertBuilder::try_new(dataset.clone(), vec!["i".to_string()]).unwrap();
+        builder
+            .when_matched(WhenMatched::UpdateAll)
+            .when_not_matched(lance::dataset::WhenNotMatched::InsertAll)
+            .use_index(false);
+        let job = builder.try_build().unwrap();
+        match source {
+            MergeSource::Provider(provider) => job.analyze_plan_provider(provider).await,
+            MergeSource::Batches(batches) => job.analyze_plan_batches(batches).await,
+        }
+        .unwrap()
+    }
+
+    /// The input that DataFusion collects into the hash table: the first child
+    /// of the `HashJoinExec`.
+    fn hash_join_build_side(plan: &str) -> String {
+        let lines = plan.lines().collect::<Vec<_>>();
+        let join = lines
+            .iter()
+            .position(|line| line.contains("HashJoinExec"))
+            .unwrap_or_else(|| panic!("no hash join in plan:\n{plan}"));
+        let indent = |line: &str| line.len() - line.trim_start().len();
+        let child_indent = indent(lines[join]) + 2;
+        let build_start = join + 1;
+        let build_end = lines[build_start + 1..]
+            .iter()
+            .position(|line| indent(line) <= child_indent)
+            .map(|offset| build_start + 1 + offset)
+            .unwrap_or(lines.len());
+        lines[build_start..build_end].join("\n")
+    }
+
+    #[rstest::rstest]
+    #[case::rescannable(Box::new(id_batch(0..10)) as Box<dyn Scannable>, 1024 * 1024)]
+    #[case::one_shot_collected(one_shot(vec![id_batch(0..10)]), 1024 * 1024)]
+    #[tokio::test]
+    async fn small_source_is_hash_join_build_side(
+        #[case] source: Box<dyn Scannable>,
+        #[case] threshold: usize,
+    ) {
+        let conn = connect("memory://").execute().await.unwrap();
+        let target = (0..10)
+            .map(|i| id_batch(i * 10_000..(i + 1) * 10_000))
+            .collect::<Vec<_>>();
+        let table = conn.create_table("target", target).execute().await.unwrap();
+
+        let source = prepare_merge_source(source, None, threshold).await.unwrap();
+        let plan = analyze_merge_plan(&table, source).await;
+        let build_side = hash_join_build_side(&plan);
+        assert!(
+            !build_side.contains("LanceRead") && !build_side.contains("LanceScan"),
+            "target table is the build side:\n{plan}"
+        );
+    }
+
+    #[tokio::test]
+    async fn merge_insert_one_shot_over_threshold() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", id_batch(0..10))
+            .execute()
+            .await
+            .unwrap();
+
+        let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            vec![Ok(id_batch(5..10)), Ok(id_batch(10..20))],
+            id_batch(0..1).schema(),
+        ));
+        let mut merge = table.merge_insert(&["i"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all()
+            .source_collect_threshold_bytes(0);
+        let result = merge.execute(reader).await.unwrap();
+        assert_eq!(result.num_updated_rows, 5);
+        assert_eq!(result.num_inserted_rows, 10);
+        assert_eq!(table.count_rows(None).await.unwrap(), 20);
+    }
+
+    #[tokio::test]
+    async fn merge_insert_threshold_defaults_from_connection() {
+        let conn = connect("memory://")
+            .merge_insert_source_collect_threshold_bytes(123)
+            .execute()
+            .await
+            .unwrap();
+        let created = conn
+            .create_table("my_table", id_batch(0..10))
+            .execute()
+            .await
+            .unwrap();
+        let opened = conn.open_table("my_table").execute().await.unwrap();
+        for table in [&created, &opened] {
+            assert_eq!(
+                table.merge_insert(&["i"]).source_collect_threshold_bytes,
+                Some(123)
+            );
+        }
+        let mut merge = opened.merge_insert(&["i"]);
+        merge.source_collect_threshold_bytes(7);
+        assert_eq!(merge.source_collect_threshold_bytes, Some(7));
     }
 
     #[tokio::test]
@@ -867,10 +1252,7 @@ mod tests {
         merge
             .when_matched_update_all(None)
             .when_not_matched_by_source_delete(None);
-        let result = merge
-            .execute(Box::new(RecordBatchIterator::new([Ok(source)], schema)))
-            .await
-            .unwrap();
+        let result = merge.execute(source).await.unwrap();
 
         assert_eq!(result.num_updated_rows, 1);
         assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
