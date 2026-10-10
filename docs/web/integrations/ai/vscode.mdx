@@ -174,8 +174,13 @@ A few details in this file are specific to running inside VS Code:
   `env.cacheDir` keeps it in global storage. Load the module with `import()`, not `require()`:
   LanceDB loads the ES module build of `@huggingface/transformers`, and `require()` returns a
   separate copy whose settings LanceDB never sees.
+- Each paragraph is stored with its file's URI, not a path relative to a workspace folder. In a
+  multi-root workspace, `findFiles` searches every folder and two folders can hold the same
+  relative path, so only the URI opens the right file. `asRelativePath` turns it back into a
+  short label, which names the folder when there's more than one.
 - When another extension or a test passes a query to `lancedbSearch.search`, it returns the
-  rows instead of opening a picker. That's how the results below were produced.
+  rows instead of opening a picker. That's how the results below were produced, with each URI
+  shown through `asRelativePath`.
 
 ## Sample results {#sample-results}
 
@@ -247,6 +252,12 @@ npx @vscode/vsce package --target win32-x64
 | `darwin-arm64` | `@lancedb/lancedb-darwin-arm64` |
 
 LanceDB doesn't publish a binary for Intel Macs (`darwin-x64`).
+
+The table covers LanceDB's own binaries. This sample's local model also needs
+`onnxruntime-node`, which Transformers.js loads when the extension activates. Its Linux binaries
+link against glibc and it publishes no musl build, so the sample as written doesn't run on
+Alpine, whatever `--target` you pass. To ship the `alpine-*` targets, embed with a hosted API or
+use [full-text search](/search/full-text-search) instead, or build ONNX Runtime for musl yourself.
 
 <Tip>
 Native binaries make the VSIX large: the `win32-x64` build of this extension is about 200 MB.

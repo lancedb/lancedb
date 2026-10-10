@@ -36,9 +36,11 @@ export async function activate(context: vscode.ExtensionContext) {
       const chunks: Chunk[] = [];
       for (const file of files) {
         const bytes = await vscode.workspace.fs.readFile(file);
-        const relativePath = vscode.workspace.asRelativePath(file, false);
+        // Store the file's URI, not a path relative to its folder: in a
+        // multi-root workspace `findFiles` searches every folder, and only the
+        // URI says which one a result came from.
         chunks.push(
-          ...chunkMarkdown(relativePath, new TextDecoder().decode(bytes)),
+          ...chunkMarkdown(file.toString(), new TextDecoder().decode(bytes)),
         );
       }
       if (chunks.length === 0) {
@@ -84,20 +86,21 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         const picked = await vscode.window.showQuickPick(
-          results.map((row) => ({
-            label: `${row.path}:${row.line + 1}`,
-            description: `distance ${row._distance.toFixed(3)}`,
-            detail: row.text,
-            row,
-          })),
+          results.map((row) => {
+            const uri = vscode.Uri.parse(row.path);
+            return {
+              label: `${vscode.workspace.asRelativePath(uri)}:${row.line + 1}`,
+              description: `distance ${row._distance.toFixed(3)}`,
+              detail: row.text,
+              uri,
+              line: row.line,
+            };
+          }),
           { placeHolder: text, matchOnDetail: true },
         );
-        const folder = vscode.workspace.workspaceFolders?.[0];
-        if (picked && folder) {
-          const editor = await vscode.window.showTextDocument(
-            vscode.Uri.joinPath(folder.uri, picked.row.path),
-          );
-          const start = new vscode.Position(picked.row.line, 0);
+        if (picked) {
+          const editor = await vscode.window.showTextDocument(picked.uri);
+          const start = new vscode.Position(picked.line, 0);
           editor.selection = new vscode.Selection(start, start);
           editor.revealRange(
             new vscode.Range(start, start),
