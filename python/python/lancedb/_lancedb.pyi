@@ -619,6 +619,7 @@ async def connect(
     manifest_enabled: bool = False,
     namespace_client_properties: Optional[Dict[str, str]] = None,
     oauth_config: Optional[Any] = None,
+    merge_insert_source_collect_threshold_bytes: Optional[int] = None,
 ) -> Connection: ...
 def connect_namespace(
     namespace_client_impl: str,
