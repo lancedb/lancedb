@@ -1042,7 +1042,7 @@ impl Connection {
 }
 
 #[pyfunction]
-#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, sql_host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None))]
+#[pyo3(signature = (uri, api_key=None, region=None, host_override=None, sql_host_override=None, read_consistency_interval=None, client_config=None, storage_options=None, session=None, manifest_enabled=false, namespace_client_properties=None, oauth_config=None, merge_insert_source_collect_threshold_bytes=None))]
 #[allow(clippy::too_many_arguments)]
 pub fn connect(
     py: Python<'_>,
@@ -1058,9 +1058,13 @@ pub fn connect(
     manifest_enabled: bool,
     namespace_client_properties: Option<HashMap<String, String>>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
+    merge_insert_source_collect_threshold_bytes: Option<usize>,
 ) -> PyResult<Bound<'_, PyAny>> {
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
+        if let Some(bytes) = merge_insert_source_collect_threshold_bytes {
+            builder = builder.merge_insert_source_collect_threshold_bytes(bytes);
+        }
         if let Some(api_key) = api_key {
             builder = builder.api_key(&api_key);
         }

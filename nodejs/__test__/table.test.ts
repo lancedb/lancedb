@@ -1081,6 +1081,16 @@ describe("merge insert", () => {
     expect(res).toEqual(expected);
   });
 
+  test("empty source with delete by source", async () => {
+    const empty = arrow.makeEmptyTable(await table.schema());
+    const res = await table
+      .mergeInsert("a")
+      .whenNotMatchedBySourceDelete()
+      .execute(empty);
+    expect(res.numDeletedRows).toBe(3);
+    expect(await table.countRows()).toBe(0);
+  });
+
   test("timeout", async () => {
     const newData = [
       { a: 2, b: "x" },
