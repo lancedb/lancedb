@@ -656,6 +656,20 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         params: MergeInsertBuilder,
         new_data: Box<dyn Scannable>,
     ) -> Result<MergeResult>;
+    /// Explain the plan for a merge insert. See [`MergeInsertBuilder::explain_plan`].
+    async fn explain_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        source_schema: Option<SchemaRef>,
+        verbose: bool,
+    ) -> Result<String>;
+    /// Run a merge insert without committing and report its plan with
+    /// metrics. See [`MergeInsertBuilder::analyze_plan`].
+    async fn analyze_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn Scannable>,
+    ) -> Result<String>;
     /// Set the unenforced primary key for the table to a single column.
     ///
     /// "Unenforced" means LanceDB does not check uniqueness on writes; the
@@ -3151,6 +3165,15 @@ impl NativeTable {
         )
     }
 
+    /// Refuse a merge insert source this table cannot accept.
+    async fn check_merge_insert_source(&self, source_schema: &Schema) -> Result<()> {
+        self.ensure_not_a_view("merge insert into").await?;
+        computed_columns::ensure_not_written(
+            &Schema::from(self.dataset.get().await?.schema()),
+            source_schema.fields().iter().map(|f| f.name().as_str()),
+        )
+    }
+
     /// Merge new data into this table.
     pub async fn merge(
         &mut self,
@@ -3636,15 +3659,35 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn Scannable>,
     ) -> Result<MergeResult> {
-        let source_schema = new_data.schema();
-        self.ensure_not_a_view("merge insert into").await?;
-        computed_columns::ensure_not_written(
-            &Schema::from(self.dataset.get().await?.schema()),
-            source_schema.fields().iter().map(|f| f.name().as_str()),
-        )?;
+        self.check_merge_insert_source(new_data.schema().as_ref())
+            .await?;
         let result = merge::execute_merge_insert(self, params, new_data).await?;
         self.bump_freshness();
         Ok(result)
+    }
+
+    async fn explain_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        source_schema: Option<SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        if let Some(source_schema) = &source_schema {
+            self.check_merge_insert_source(source_schema).await?;
+        } else {
+            self.ensure_not_a_view("merge insert into").await?;
+        }
+        merge::explain_merge_insert_plan(self, params, source_schema, verbose).await
+    }
+
+    async fn analyze_merge_insert_plan(
+        &self,
+        params: MergeInsertBuilder,
+        new_data: Box<dyn Scannable>,
+    ) -> Result<String> {
+        self.check_merge_insert_source(new_data.schema().as_ref())
+            .await?;
+        merge::analyze_merge_insert_plan(self, params, new_data).await
     }
 
     async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {

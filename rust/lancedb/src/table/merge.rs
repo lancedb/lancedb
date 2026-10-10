@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{DataType, Fields};
+use arrow_schema::{DataType, Fields, SchemaRef};
 use datafusion::prelude::SessionContext;
 use datafusion_catalog::TableProvider;
 use datafusion_common::{Statistics, stats::Precision};
@@ -15,10 +15,10 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execute_stream,
 };
-use futures::future::Either;
-use futures::{FutureExt, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt};
 use lance::dataset::{
-    MergeInsertBuilder as LanceMergeInsertBuilder, WhenMatched, WhenNotMatchedBySource,
+    MergeInsertBuilder as LanceMergeInsertBuilder, MergeInsertJob, WhenMatched,
+    WhenNotMatchedBySource,
 };
 use lance_datafusion::spill::spilling_table_provider;
 use serde::{Deserialize, Serialize};
@@ -275,6 +275,74 @@ impl MergeInsertBuilder {
             .await
     }
 
+    /// Report the physical plan [`Self::execute`] would run, without reading
+    /// any data or writing anything.
+    ///
+    /// `schema` is the schema of the source that would be merged. When `None`,
+    /// the table's schema is used. A schema says nothing about how large the
+    /// source is, so this reports the plan for a source with no statistics; use
+    /// [`Self::analyze_plan`] to see the plan chosen for a particular source.
+    /// `verbose` adds more detail to each plan node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSupported`] when the merge would not run as a single
+    /// plan: on the LSM write path (see [`Self::use_lsm`]), or when the join
+    /// takes the scalar-index path (see [`Self::use_index`]).
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn explain(table: &Table) -> lancedb::Result<()> {
+    /// let mut merge = table.merge_insert(&["id"]);
+    /// merge.when_matched_update_all(None).when_not_matched_insert_all();
+    /// println!("{}", merge.explain_plan(None, false).await?);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn explain_plan(
+        mut self,
+        schema: Option<SchemaRef>,
+        verbose: bool,
+    ) -> Result<String> {
+        self.canonicalize_filters()?;
+        self.table
+            .clone()
+            .explain_merge_insert_plan(self, schema, verbose)
+            .await
+    }
+
+    /// Run the merge with `new_data` and report the plan with execution
+    /// metrics, without committing.
+    ///
+    /// The table is left unchanged, but the data files written while running
+    /// the merge remain in storage, unreferenced, until they are cleaned up as
+    /// orphaned files. The source is prepared as [`Self::execute`] would
+    /// prepare it, so the reported plan is the one `execute` runs for the same
+    /// source.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NotSupported`] in the same cases as
+    /// [`Self::explain_plan`].
+    ///
+    /// ```
+    /// # use arrow_array::RecordBatch;
+    /// # use lancedb::Table;
+    /// # async fn analyze(table: &Table, new_data: RecordBatch) -> lancedb::Result<()> {
+    /// let mut merge = table.merge_insert(&["id"]);
+    /// merge.when_matched_update_all(None).when_not_matched_insert_all();
+    /// println!("{}", merge.analyze_plan(new_data).await?);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn analyze_plan(mut self, new_data: impl Scannable + 'static) -> Result<String> {
+        self.canonicalize_filters()?;
+        self.table
+            .clone()
+            .analyze_merge_insert_plan(self, Box::new(new_data))
+            .await
+    }
+
     pub(crate) fn canonicalize_filters(&mut self) -> Result<()> {
         self.when_matched_update_all_filt =
             canonicalize_merge_filter(self.when_matched_update_all_filt.take())?;
@@ -363,21 +431,141 @@ pub(crate) async fn execute_merge_insert(
     )?;
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
+            let timeout = params.timeout;
             let future =
                 lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
-            return match params.timeout {
-                Some(timeout) => match tokio::time::timeout(timeout, future).await {
-                    Ok(result) => result,
-                    Err(_) => Err(Error::Runtime {
-                        message: "merge insert timed out".to_string(),
-                    }),
-                },
-                None => future.await,
-            };
+            return with_timeout(timeout, future).await;
         }
         lsm::LsmDispatch::Standard => {}
     }
 
+    let StandardMergeJob {
+        job,
+        cast_schema,
+        collect_threshold_bytes,
+        timeout,
+    } = build_standard_merge_job(table, params, new_data.schema().as_ref()).await?;
+    // Reading the source used to happen inside `execute`, so collecting it
+    // stays under the same timeout.
+    let future = async move {
+        match prepare_merge_source(new_data, cast_schema.as_ref(), collect_threshold_bytes).await? {
+            MergeSource::Provider(provider) => job.execute_provider(provider).await,
+            MergeSource::Batches(batches) => job.execute_batches(batches).await,
+        }
+        .map_err(Error::from)
+    };
+    let (new_dataset, stats) = with_timeout(timeout, future).await?;
+    let version = new_dataset.manifest().version;
+    table.dataset.update(new_dataset.as_ref().clone());
+    Ok(MergeResult {
+        version,
+        num_updated_rows: stats.num_updated_rows,
+        num_inserted_rows: stats.num_inserted_rows,
+        num_deleted_rows: stats.num_deleted_rows,
+        num_attempts: stats.num_attempts,
+        num_rows: stats.num_inserted_rows + stats.num_updated_rows,
+    })
+}
+
+/// Report the plan [`execute_merge_insert`] would run for a source with
+/// `source_schema` (the table schema when `None`), without reading data.
+pub(crate) async fn explain_merge_insert_plan(
+    table: &NativeTable,
+    mut params: MergeInsertBuilder,
+    source_schema: Option<SchemaRef>,
+    verbose: bool,
+) -> Result<String> {
+    params.canonicalize_filters()?;
+    ensure_standard_merge_path(table, &params, "explain_plan").await?;
+    let source_schema = match source_schema {
+        Some(schema) => schema,
+        None => table.schema().await?,
+    };
+    let merge = build_standard_merge_job(table, params, source_schema.as_ref()).await?;
+    Ok(merge
+        .job
+        .explain_plan(Some(source_schema.as_ref()), verbose)
+        .await?)
+}
+
+/// Run the plan [`execute_merge_insert`] would run, without committing, and
+/// report it with execution metrics.
+///
+/// The source is prepared exactly as for execution, so the reported join
+/// shape is the one `execute` picks for the same source.
+pub(crate) async fn analyze_merge_insert_plan(
+    table: &NativeTable,
+    mut params: MergeInsertBuilder,
+    new_data: Box<dyn Scannable>,
+) -> Result<String> {
+    params.canonicalize_filters()?;
+    ensure_standard_merge_path(table, &params, "analyze_plan").await?;
+    let StandardMergeJob {
+        job,
+        cast_schema,
+        collect_threshold_bytes,
+        timeout,
+    } = build_standard_merge_job(table, params, new_data.schema().as_ref()).await?;
+    let future = async move {
+        match prepare_merge_source(new_data, cast_schema.as_ref(), collect_threshold_bytes).await? {
+            MergeSource::Provider(provider) => job.analyze_plan_provider(provider).await,
+            MergeSource::Batches(batches) => job.analyze_plan_batches(batches).await,
+        }
+        .map_err(Error::from)
+    };
+    with_timeout(timeout, future).await
+}
+
+/// The LSM write path upserts through the MemWAL shard writer and never builds
+/// a Lance merge plan, so there is no plan to report for it.
+async fn ensure_standard_merge_path(
+    table: &NativeTable,
+    params: &MergeInsertBuilder,
+    operation: &str,
+) -> Result<()> {
+    match lsm::lsm_dispatch_decision(table, params).await? {
+        lsm::LsmDispatch::Standard => Ok(()),
+        lsm::LsmDispatch::Lsm(_) => Err(Error::NotSupported {
+            message: format!(
+                "merge_insert {operation} is not supported on the LSM write path, which does \
+                 not run a merge plan. Call use_lsm(false) to report the plan of the standard \
+                 merge path instead."
+            ),
+        }),
+    }
+}
+
+async fn with_timeout<T>(
+    timeout: Option<Duration>,
+    future: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    match timeout {
+        Some(timeout) => tokio::time::timeout(timeout, future)
+            .await
+            .unwrap_or_else(|_| {
+                Err(Error::Runtime {
+                    message: "merge insert timed out".to_string(),
+                })
+            }),
+        None => future.await,
+    }
+}
+
+/// A Lance merge job for the standard (non-LSM) path, and how to prepare its
+/// source.
+struct StandardMergeJob {
+    job: MergeInsertJob,
+    /// The table schema, when the source must be cast to it.
+    cast_schema: Option<arrow_schema::Schema>,
+    collect_threshold_bytes: usize,
+    timeout: Option<Duration>,
+}
+
+async fn build_standard_merge_job(
+    table: &NativeTable,
+    params: MergeInsertBuilder,
+    source_schema: &arrow_schema::Schema,
+) -> Result<StandardMergeJob> {
     let dataset = table.dataset.get().await?;
     let schema = arrow_schema::Schema::from(dataset.schema());
     // JSON source fields must carry the stored extension metadata just as on
@@ -387,8 +575,8 @@ pub(crate) async fn execute_merge_insert(
         .iter()
         .any(|field| lance_arrow::json::has_json_fields(field))
     {
-        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
-        Some(&schema)
+        validate_merge_source_fields(source_schema.fields(), schema.fields(), "")?;
+        Some(schema)
     } else {
         None
     };
@@ -431,36 +619,11 @@ pub(crate) async fn execute_merge_insert(
     if let Some(timeout) = params.timeout {
         builder.retry_timeout(timeout);
     }
-    let job = builder.try_build()?;
-    // Reading the source used to happen inside `execute`, so collecting it
-    // stays under the same timeout.
-    let future = async move {
-        match prepare_merge_source(new_data, cast_schema, collect_threshold_bytes).await? {
-            MergeSource::Provider(provider) => job.execute_provider(provider).await,
-            MergeSource::Batches(batches) => job.execute_batches(batches).await,
-        }
-        .map_err(Error::from)
-    };
-    let future = if let Some(timeout) = params.timeout {
-        Either::Left(tokio::time::timeout(timeout, future).map(|res| match res {
-            Ok(result) => result,
-            Err(_) => Err(Error::Runtime {
-                message: "merge insert timed out".to_string(),
-            }),
-        }))
-    } else {
-        Either::Right(future)
-    };
-    let (new_dataset, stats) = future.await?;
-    let version = new_dataset.manifest().version;
-    table.dataset.update(new_dataset.as_ref().clone());
-    Ok(MergeResult {
-        version,
-        num_updated_rows: stats.num_updated_rows,
-        num_inserted_rows: stats.num_inserted_rows,
-        num_deleted_rows: stats.num_deleted_rows,
-        num_attempts: stats.num_attempts,
-        num_rows: stats.num_inserted_rows + stats.num_updated_rows,
+    Ok(StandardMergeJob {
+        job: builder.try_build()?,
+        cast_schema,
+        collect_threshold_bytes,
+        timeout: params.timeout,
     })
 }
 
@@ -699,6 +862,39 @@ mod tests {
         assert!(error.to_string().contains(expected), "{error}");
         assert_eq!(table.version().await.unwrap(), version);
         assert_eq!(table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn merge_json_explain_plan_accepts_labelled_source() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            lance_arrow::json::json_field("payload", true),
+        ]));
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_merge_explain", schema)
+            .execute()
+            .await
+            .unwrap();
+        let source_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("payload", DataType::Utf8, true).with_metadata(
+                std::collections::HashMap::from([(
+                    lance_arrow::ARROW_EXT_NAME_KEY.into(),
+                    lance_arrow::json::ARROW_JSON_EXT_NAME.into(),
+                )]),
+            ),
+        ]));
+
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let plan = merge
+            .explain_plan(Some(source_schema), false)
+            .await
+            .unwrap();
+        assert!(plan.contains("MergeInsert"), "{plan}");
     }
 
     #[tokio::test]
@@ -1396,6 +1592,91 @@ mod lsm_tests {
             .await
             .unwrap();
         assert_eq!(result.num_rows, 4);
+    }
+
+    #[tokio::test]
+    async fn merge_insert_explain_plan() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        let version = table.version().await.unwrap();
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let plan = builder.clone().explain_plan(None, false).await.unwrap();
+        assert!(
+            plan.starts_with("MergeInsert: on=[id], when_matched=UpdateAll")
+                && plan.contains("HashJoinExec"),
+            "{plan}"
+        );
+
+        let source_schema = id_value_reader(vec![]).schema();
+        let with_schema = builder
+            .explain_plan(Some(source_schema), false)
+            .await
+            .unwrap();
+        assert_eq!(plan, with_schema);
+        assert_eq!(table.version().await.unwrap(), version);
+    }
+
+    #[tokio::test]
+    async fn merge_insert_analyze_plan_does_not_commit() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        let version = table.version().await.unwrap();
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let analysis = builder
+            .analyze_plan(id_value_reader(vec![3, 4]))
+            .await
+            .unwrap();
+        assert!(
+            analysis.contains("MergeInsert") && analysis.contains("metrics="),
+            "{analysis}"
+        );
+        // The small one-shot source is collected, as `execute` would collect
+        // it, so it is planned as an in-memory source rather than a stream.
+        assert!(
+            analysis.contains("DataSourceExec") && !analysis.contains("StreamingTableExec"),
+            "{analysis}"
+        );
+
+        assert_eq!(table.version().await.unwrap(), version);
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn merge_insert_plan_rejects_lsm_path() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table
+            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let mut builder = table.merge_insert(&["id"]);
+        builder
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let err = builder.clone().explain_plan(None, false).await.unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("use_lsm(false)")),
+            "{err}"
+        );
+        let err = builder
+            .clone()
+            .analyze_plan(id_value_reader(vec![4]))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NotSupported { .. }), "{err}");
+
+        builder.use_lsm(false);
+        let plan = builder.explain_plan(None, false).await.unwrap();
+        assert!(plan.contains("MergeInsert"), "{plan}");
     }
 
     #[tokio::test]
