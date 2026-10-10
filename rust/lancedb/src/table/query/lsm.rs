@@ -25,19 +25,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use arrow_array::Array;
-use arrow_schema::{DataType, Schema as ArrowSchema};
+use arrow_array::{Array, FixedSizeListArray, cast::AsArray};
+use arrow_schema::{DataType, Field, Schema as ArrowSchema};
 use datafusion::common::{DataFusionError, ToDFSchema};
 use datafusion::prelude::SessionContext;
 use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
+use lance::dataset::mem_wal::index::{FtsMemQuery, VectorMemQuery};
 use lance::dataset::mem_wal::scanner::{InMemoryMemTableRef, InMemoryMemTables};
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
 };
 use lance_index::mem_wal::{MemWalIndexDetails, ShardManifest};
+use lance_index::scalar::inverted::DocumentGranularity;
 use uuid::Uuid;
 
 use super::NativeTable;
@@ -474,7 +476,10 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            memtable
+                .index_store
+                .index_answering(column, &FtsMemQuery::probe(DocumentGranularity::Row))
+                .is_some()
         })
     {
         return Err(Error::NotSupported {
@@ -705,6 +710,21 @@ async fn vector_plan(
         None => default_vector_column(&arrow_schema, Some(query_vector.len() as i32))?,
     };
 
+    let mem_query = VectorMemQuery {
+        vector: match query_vector.as_fixed_size_list_opt() {
+            Some(vector) => vector.clone(),
+            None => FixedSizeListArray::try_new(
+                Arc::new(Field::new("item", query_vector.data_type().clone(), true)),
+                query_vector.len() as i32,
+                query_vector.clone(),
+                None,
+            )?,
+        },
+        k: limit.unwrap_or(DEFAULT_TOP_K).max(1),
+        ef: None,
+        distance_type: query.distance_type.map(Into::into),
+    };
+
     // The base arm relies on the column's vector index (`fast_search`). Unmaintained,
     // its catch-up is untracked and exclusion falls back to the compaction watermark,
     // dropping compacted SSTables the lagging base index has not re-indexed; and a
@@ -712,7 +732,10 @@ async fn vector_plan(
     // Reject rather than silently omit rows, mirroring the FTS arm.
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
+            memtable
+                .index_store
+                .index_answering(&column, &mem_query)
+                .is_some()
         })
     {
         return Err(Error::NotSupported {
