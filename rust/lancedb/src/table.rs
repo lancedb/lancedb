@@ -19,6 +19,9 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+pub use lance::dataset::mem_wal::MemIndexRegistry;
+/// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
+pub use lance::dataset::mem_wal::index as mem_index;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::scalar::load_segment_params;
@@ -424,7 +427,8 @@ impl LsmWriteSpec {
     /// changes, so an index created later is maintained too; one of a kind the
     /// MemWAL cannot mirror is skipped rather than failing the table. A list is
     /// verbatim: each name must already exist and be maintainable, and an empty
-    /// list maintains nothing.
+    /// list maintains nothing. The maintainable kinds are Lance's built-ins plus
+    /// any added with [`NativeTable::set_mem_index_registry`].
     ///
     /// ```
     /// # use lancedb::table::LsmWriteSpec;
@@ -2590,6 +2594,9 @@ pub struct NativeTable {
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Read-freshness baseline; `Some` only for namespace-backed tables.
     freshness: Option<TableFreshness>,
+    // Memtable index kinds this handle's LSM writes maintain, shared with its
+    // clones and branch handles.
+    mem_index_registry: Arc<std::sync::RwLock<MemIndexRegistry>>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -2756,7 +2763,49 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Maintain the memtable index kinds in `registry` when this table writes
+    /// through its [`LsmWriteSpec`], and accept them when
+    /// [`LsmWriteSpec::with_maintained_indexes`] names one.
+    ///
+    /// The registry belongs to this handle, its clones and its branch handles,
+    /// and is not stored with the table: a handle opened separately starts from
+    /// Lance's built-ins. Set it before the handle's first LSM write; writers
+    /// already open keep the registry they were opened with. Local tables only,
+    /// reached through [`Table::as_native`].
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use lancedb::Table;
+    /// # use lancedb::table::{LsmWriteSpec, MemIndexRegistry, mem_index::MemIndexPlugin};
+    /// # async fn example(
+    /// #     table: &Table,
+    /// #     plugin: Arc<dyn MemIndexPlugin>,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let registry = MemIndexRegistry::default().with_plugin(plugin)?;
+    /// if let Some(native) = table.as_native() {
+    ///     native.set_mem_index_registry(registry);
+    /// }
+    /// let spec = LsmWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+    /// table.set_lsm_write_spec(spec).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_mem_index_registry(&self, registry: MemIndexRegistry) {
+        *self
+            .mem_index_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = registry;
+    }
+
+    pub(crate) fn mem_index_registry(&self) -> MemIndexRegistry {
+        self.mem_index_registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Set the namespace client for server-side query execution.
@@ -2786,6 +2835,7 @@ impl NativeTable {
             namespace_client: self.namespace_client.clone(),
             pushdown_operations: self.pushdown_operations.clone(),
             freshness: self.freshness.clone(),
+            mem_index_registry: self.mem_index_registry.clone(),
         }
     }
 
@@ -2893,6 +2943,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -2984,6 +3035,7 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -3117,6 +3169,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 

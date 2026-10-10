@@ -474,7 +474,7 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            !memtable.index_store.fts_granularities_on(column).is_empty()
         })
     {
         return Err(Error::NotSupported {
@@ -707,17 +707,14 @@ async fn vector_plan(
 
     // The base arm relies on the column's vector index (`fast_search`). Unmaintained,
     // its catch-up is untracked and exclusion falls back to the compaction watermark,
-    // dropping compacted SSTables the lagging base index has not re-indexed; and a
-    // resident MemTable built before the index joined the set carries none either.
+    // dropping compacted SSTables the lagging base index has not re-indexed.
     // Reject rather than silently omit rows, mirroring the FTS arm.
-    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
-        || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
-        })
-    {
+    // A resident MemTable needs no index of its own: one that cannot answer
+    // compares every row.
+    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await? {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
             ),
         });
     }
