@@ -4,9 +4,16 @@
 use core::fmt;
 use std::sync::{Arc, Mutex};
 
+use arrow_schema::SchemaRef;
+use async_trait::async_trait;
+use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DFResult, Statistics, stats::Precision};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_physical_expr::{EquivalenceProperties, Partitioning};
+use datafusion_expr::{Expr, TableType};
+use datafusion_physical_expr::{
+    EquivalenceProperties, Partitioning, PhysicalExpr, expressions::Column,
+};
+use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execution_plan::EmissionType,
@@ -118,13 +125,65 @@ impl ExecutionPlan for ScannableExec {
     }
 
     fn partition_statistics(&self, _partition: Option<usize>) -> DFResult<Arc<Statistics>> {
-        Ok(Arc::new(Statistics {
-            num_rows: self
-                .num_rows
-                .map(Precision::Exact)
-                .unwrap_or(Precision::Absent),
-            total_byte_size: Precision::Absent,
-            column_statistics: vec![],
-        }))
+        // Projections above this node index into `column_statistics`, so it
+        // needs an (unknown) entry per column.
+        let mut stats = Statistics::new_unknown(&self.schema());
+        if let Some(num_rows) = self.num_rows {
+            stats.num_rows = Precision::Exact(num_rows);
+        }
+        Ok(Arc::new(stats))
+    }
+}
+
+/// A [`TableProvider`] over a source plan that can be executed more than once.
+///
+/// Every scan re-executes the same plan, so wrapping a [`ScannableExec`] over a
+/// rescannable [`Scannable`] yields a provider that replays the source and
+/// reports the statistics of the plan.
+#[derive(Debug)]
+pub(crate) struct ScannableProvider {
+    plan: Arc<dyn ExecutionPlan>,
+}
+
+impl ScannableProvider {
+    pub fn new(plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self { plan }
+    }
+}
+
+#[async_trait]
+impl TableProvider for ScannableProvider {
+    fn schema(&self) -> SchemaRef {
+        self.plan.schema()
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Temporary
+    }
+
+    // Filters are never pushed down, and `limit` is only a hint, so the full
+    // plan is returned with just the projection applied.
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> DFResult<Arc<dyn ExecutionPlan>> {
+        let Some(projection) = projection else {
+            return Ok(self.plan.clone());
+        };
+        let schema = self.plan.schema();
+        let exprs = projection
+            .iter()
+            .map(|&idx| {
+                let name = schema.field(idx).name();
+                (
+                    Arc::new(Column::new(name, idx)) as Arc<dyn PhysicalExpr>,
+                    name.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(Arc::new(ProjectionExec::try_new(exprs, self.plan.clone())?))
     }
 }

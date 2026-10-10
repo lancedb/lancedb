@@ -59,7 +59,7 @@ use crate::{
         merge::MergeInsertBuilder,
     },
 };
-use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
+use arrow_array::{LargeBinaryArray, RecordBatch};
 use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_schema::{ArrowError, DataType, SchemaRef};
 use async_trait::async_trait;
@@ -3064,7 +3064,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn merge_insert(
         &self,
         mut params: MergeInsertBuilder,
-        new_data: Box<dyn RecordBatchReader + Send>,
+        mut new_data: Box<dyn Scannable>,
     ) -> Result<MergeResult> {
         params.canonicalize_filters()?;
         self.check_mutable().await?;
@@ -3079,21 +3079,24 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // body stream fails under HTTP2 (issue #2339). The branch, request
         // timeout header, and merge query params are all applied inside the exec.
         //
-        // The public merge_insert API only accepts a `RecordBatchReader`, which
-        // is not rescannable and so could not be retried directly. To preserve
-        // the previous retry-on-retryable-status behaviour, buffer the reader
-        // into memory first: a `Vec<RecordBatch>` is rescannable, so the outer
-        // loop can re-execute the plan (and re-stream the body) on each retry.
-        // This mirrors the old `send_streaming(with_retry=true)` path, which
-        // likewise buffered the reader to support retries.
-        let schema = RecordBatchReader::schema(new_data.as_ref());
-        let mut batches = new_data.collect::<std::result::Result<Vec<_>, _>>()?;
-        // An empty reader still carries a schema. Keep it in an empty batch so
-        // the buffered source remains scannable and can be replayed on retries.
-        if batches.is_empty() {
-            batches.push(RecordBatch::new_empty(schema));
-        }
-        let source: Box<dyn Scannable> = Box::new(batches);
+        // A one-shot source could not be retried directly. To preserve the
+        // retry-on-retryable-status behaviour, buffer it into memory first: a
+        // `Vec<RecordBatch>` is rescannable, so the outer loop can re-execute
+        // the plan (and re-stream the body) on each retry. This mirrors the old
+        // `send_streaming(with_retry=true)` path, which likewise buffered the
+        // reader to support retries.
+        let source: Box<dyn Scannable> = if new_data.rescannable() {
+            new_data
+        } else {
+            let schema = new_data.schema();
+            let mut batches: Vec<RecordBatch> = new_data.scan_as_stream().try_collect().await?;
+            // An empty reader still carries a schema. Keep it in an empty batch so
+            // the buffered source remains scannable and can be replayed on retries.
+            if batches.is_empty() {
+                batches.push(RecordBatch::new_empty(schema));
+            }
+            Box::new(batches)
+        };
         let rescannable = source.rescannable();
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
@@ -3967,6 +3970,8 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use arrow_array::RecordBatchReader;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
     use std::{collections::HashMap, pin::Pin};
@@ -4809,7 +4814,11 @@ mod tests {
 
         let mut merge = table.merge_insert(&["some_col"]);
         merge.when_matched_update_all(Some(r#"target."A" > 0"#.into()));
-        let result = table.base_table().merge_insert(merge, data).await.unwrap();
+        let result = table
+            .base_table()
+            .merge_insert(merge, Box::new(data))
+            .await
+            .unwrap();
 
         assert_eq!(result.version, if old_server { 0 } else { 43 });
         if !old_server {
@@ -5017,7 +5026,11 @@ mod tests {
         let mut merge = table.merge_insert(&["shard_key", "id"]);
         merge.when_matched_update_all(None);
         merge.when_not_matched_insert_all();
-        let result = table.base_table().merge_insert(merge, data).await.unwrap();
+        let result = table
+            .base_table()
+            .merge_insert(merge, Box::new(data))
+            .await
+            .unwrap();
 
         assert_eq!(result.num_inserted_rows, 3);
     }
@@ -5041,7 +5054,7 @@ mod tests {
         let merge = table.merge_insert(&["id", "id"]);
         let err = table
             .base_table()
-            .merge_insert(merge, data)
+            .merge_insert(merge, Box::new(data))
             .await
             .unwrap_err();
         assert!(
@@ -5050,20 +5063,32 @@ mod tests {
         );
     }
 
+    #[rstest]
+    #[case::one_shot(false)]
+    #[case::rescannable(true)]
     #[tokio::test]
-    async fn test_merge_insert_retries_on_409() {
+    async fn test_merge_insert_retries_on_409(#[case] rescannable: bool) {
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
         )
         .unwrap();
-        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
-            [Ok(batch.clone())],
-            batch.schema(),
-        ));
+        // A one-shot reader is buffered so it can be retried; a rescannable
+        // source is retried directly.
+        let data: Box<dyn Scannable> = if rescannable {
+            Box::new(batch)
+        } else {
+            let reader: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+                [Ok(batch.clone())],
+                batch.schema(),
+            ));
+            Box::new(reader)
+        };
 
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let handler_attempts = attempts.clone();
         // Default parameters
-        let table = Table::new_with_handler("my_table", |request| {
+        let table = Table::new_with_handler("my_table", move |request| {
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
@@ -5075,15 +5100,18 @@ mod tests {
             assert!(!params.contains_key("when_matched_update_all_filt"));
             assert!(!params.contains_key("when_not_matched_by_source_delete_filt"));
 
+            handler_attempts.fetch_add(1, Ordering::SeqCst);
             http::Response::builder().status(409).body("").unwrap()
         });
 
+        let merge = table.merge_insert(&["some_col"]);
         let e = table
-            .merge_insert(&["some_col"])
-            .execute(data)
+            .base_table()
+            .merge_insert(merge, data)
             .await
             .unwrap_err();
         assert!(e.to_string().contains("Hit retry limit"));
+        assert!(attempts.load(Ordering::SeqCst) > 1);
     }
 
     #[rstest]
