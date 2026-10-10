@@ -386,6 +386,7 @@ class StreamingDataset(IterableDataset):
         self,
         table,
         *,
+        plan: Optional[Any] = None,
         num_splits: Optional[int] = None,
         shuffle: bool = True,
         shuffle_seed: Optional[int] = 0,
@@ -574,17 +575,38 @@ class StreamingDataset(IterableDataset):
         # this instance has never iterated have no entry.
         self._resume_positions: dict[int, int] = {}
 
-        # Build the permutation table once, deterministically.
-        builder = permutation_builder(table)
-        if filter is not None:
-            builder = builder.filter(filter)
-        if shuffle:
-            perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
-            self._perm_table = builder.split_random(
-                fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
-            ).execute()
+        # If a plan is provided, use it directly.
+        if plan is not None:
+            self._perm_table = plan
+            # Validate plan metadata if available
+            if getattr(self._perm_table, "schema", None) is not None:
+                metadata = self._perm_table.schema.metadata
+                if metadata is not None:
+                    raw_names = metadata.get(b"split_names")
+                    if raw_names is not None:
+                        import json
+                        try:
+                            split_names = json.loads(raw_names.decode("utf-8"))
+                            plan_splits = len(split_names)
+                            if plan_splits != num_splits:
+                                raise ValueError(
+                                    f"Requested num_splits ({num_splits}) does not match "
+                                    f"plan table metadata split count ({plan_splits})"
+                                )
+                        except json.JSONDecodeError:
+                            pass
         else:
-            self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+            # Build the permutation table once, deterministically.
+            builder = permutation_builder(table)
+            if filter is not None:
+                builder = builder.filter(filter)
+            if shuffle:
+                perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
+                self._perm_table = builder.split_random(
+                    fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size
+                ).execute()
+            else:
+                self._perm_table = builder.split_sequential(fixed=num_splits).execute()
 
         if self._blocks_per_epoch == "auto":
             self._blocks_per_epoch = self._estimate_blocks_per_epoch()
@@ -1298,12 +1320,9 @@ class StreamingDataset(IterableDataset):
             state["_table"] = None
         else:
             state["_table"] = _table_to_pickle_state(self._table)
-        # _perm_table: always in-memory; serialise as Arrow data (mirrors
-        # how Permutation.__getstate__ handles its permutation_table).
-        state["_perm_table"] = (
-            self._perm_table.name,
-            self._perm_table.to_arrow(),
-        )
+        # _perm_table: serialize using table protocol so persisted plans
+        # are re-opened instead of being copied as Arrow data into memory.
+        state["_perm_table_state"] = _table_to_pickle_state(self._perm_table)
         for key in (
             "_raw_batches_ref",
             "_cooked_ref",
@@ -1321,17 +1340,26 @@ class StreamingDataset(IterableDataset):
 
         table_name = state.pop("_table_name")
         table_state = state.pop("_table")
-        perm_name, perm_data = state.pop("_perm_table")
+        perm_state = state.pop("_perm_table_state", None)
+        if perm_state is None:
+            perm_name, perm_data = state.pop("_perm_table")
+        
         self.__dict__.update(state)
         self._consumer_iterator_lock = threading.Lock()
+        
         if self._connection_factory is not None:
             self._table = self._connection_factory(table_name)
         else:
             self._table = _table_from_pickle_state(table_state)
+            
+        if perm_state is not None:
+            if table_state["kind"] == "memory" and perm_state["kind"] == "memory":
+                perm_state["data"] = _drop_base_version(perm_state["data"])
+            self._perm_table = _table_from_pickle_state(perm_state)
+        else:
             if table_state["kind"] == "memory":
-                # Rebuilt from Arrow, so the recorded pin cannot resolve on it.
                 perm_data = _drop_base_version(perm_data)
-        self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
+            self._perm_table = _connect("memory://").create_table(perm_name, perm_data)
 
     def state_dict(self) -> dict:
         """Snapshot the dataset's consumption state.
