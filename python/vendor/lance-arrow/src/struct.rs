@@ -7,7 +7,7 @@
 use arrow_array::{Array, StructArray, cast::AsArray, make_array};
 use arrow_buffer::NullBuffer;
 use arrow_data::{ArrayData, ArrayDataBuilder};
-use arrow_schema::ArrowError;
+use arrow_schema::{ArrowError, DataType};
 
 pub trait StructArrayExt {
     /// Removes the offset / length of the struct array by pushing it into the children
@@ -104,7 +104,11 @@ impl StructArrayExt for StructArray {
             .child_data()
             .iter()
             .map(|c| {
-                if let Some(child_validity) = c.nulls() {
+                if c.data_type() == &DataType::Null {
+                    // A Null array is already null in every slot, and arrow-rs rejects
+                    // a validity buffer on it.
+                    Ok(c.clone())
+                } else if let Some(child_validity) = c.nulls() {
                     let new_validity = child_validity.inner() & validity.inner();
                     c.clone()
                         .into_builder()
@@ -125,7 +129,10 @@ impl StructArrayExt for StructArray {
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Array, Int32Array, StructArray, cast::AsArray, make_array};
+    use arrow_array::{
+        Array, Int32Array, NullArray, StructArray, cast::AsArray, make_array, types::Int32Type,
+    };
+    use arrow_buffer::NullBuffer;
     use arrow_schema::{DataType, Field, Fields};
     use std::sync::Arc;
 
@@ -188,5 +195,33 @@ mod tests {
         let normalized = sliced.as_struct().clone().normalize_slicing().unwrap();
 
         assert_eq!(normalized, struct_array.slice(1, 2));
+    }
+
+    #[test]
+    fn test_pushdown_nulls_with_null_typed_child() {
+        // `pa.Table.from_pylist([{"s": {"a": 1, "b": None}}, {"s": None}])` infers a
+        // struct with a Null-typed child. Arrow forbids a validity buffer on a Null
+        // array, so the struct's nulls must not be pushed into it.
+        let struct_array = StructArray::new(
+            Fields::from(vec![
+                Field::new("a", DataType::Int32, true),
+                Field::new("b", DataType::Null, true),
+            ]),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(NullArray::new(3)),
+            ],
+            Some(NullBuffer::from(vec![true, false, true])),
+        );
+
+        let pushed = struct_array.pushdown_nulls().unwrap();
+
+        assert_eq!(pushed.nulls(), struct_array.nulls());
+        assert_eq!(
+            pushed.column(0).as_primitive::<Int32Type>(),
+            &Int32Array::from(vec![Some(1), None, Some(3)])
+        );
+        assert_eq!(pushed.column(1).data_type(), &DataType::Null);
+        assert_eq!(pushed.column(1).logical_null_count(), 3);
     }
 }
