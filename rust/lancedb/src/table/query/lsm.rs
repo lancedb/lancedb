@@ -33,6 +33,7 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
+use lance::dataset::mem_wal::index::{IndexStore, VectorMemQuery};
 use lance::dataset::mem_wal::scanner::{InMemoryMemTableRef, InMemoryMemTables};
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
@@ -474,7 +475,7 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            !memtable.index_store.fts_granularities_on(column).is_empty()
         })
     {
         return Err(Error::NotSupported {
@@ -712,7 +713,7 @@ async fn vector_plan(
     // Reject rather than silently omit rows, mirroring the FTS arm.
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
+            carries_vector_index(&memtable.index_store, &column)
         })
     {
         return Err(Error::NotSupported {
@@ -760,6 +761,22 @@ async fn vector_plan(
     Ok(scanner.create_plan().await?)
 }
 
+/// Probe for a resident vector index without imposing a distance metric, matching
+/// the presence check used before Lance introduced query-based index lookup.
+fn carries_vector_index(store: &IndexStore, column: &str) -> bool {
+    let probe = VectorMemQuery {
+        vector: arrow_array::FixedSizeListArray::new_null(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float32, true)),
+            1,
+            1,
+        ),
+        k: 1,
+        ef: None,
+        distance_type: None,
+    };
+    store.index_answering(column, &probe).is_some()
+}
+
 /// Whether `column` stores binary (uint8) vectors, which the LSM vector planner
 /// does not support.
 fn is_binary_vector_column(schema: &ArrowSchema, column: &str) -> bool {
@@ -803,6 +820,45 @@ async fn resolve_distance_type(
 mod tests {
     use super::*;
     use lance_index::mem_wal::{CompactedSsTable, IndexCatchupProgress};
+
+    #[test]
+    fn resident_index_checks_distinguish_columns_and_query_types() {
+        use arrow_schema::Field;
+        use lance::dataset::mem_wal::index::MemIndexSpec;
+
+        let schema = ArrowSchema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                true,
+            ),
+        ]);
+        let schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let specs = vec![
+            MemIndexSpec::btree("id_idx", 0, "id"),
+            MemIndexSpec::fts("text_idx", 1, "text"),
+            MemIndexSpec::hnsw(
+                "vector_idx",
+                2,
+                "vector",
+                lance_linalg::distance::DistanceType::Cosine,
+            ),
+        ];
+        let store = IndexStore::from_specs(&specs, &schema, 1_000, 16).unwrap();
+        assert!(carries_vector_index(&store, "vector"));
+        for column in ["id", "text", "missing"] {
+            assert!(!carries_vector_index(&store, column));
+        }
+        assert!(!store.fts_granularities_on("text").is_empty());
+        for column in ["id", "vector", "missing"] {
+            assert!(store.fts_granularities_on(column).is_empty());
+        }
+        let empty = IndexStore::from_specs(&[], &schema, 1_000, 16).unwrap();
+        assert!(!carries_vector_index(&empty, "vector"));
+        assert!(empty.fts_granularities_on("text").is_empty());
+    }
 
     #[test]
     fn exclusion_watermark_gates_on_lagging_index_catchup() {
