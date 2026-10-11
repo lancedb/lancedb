@@ -1209,3 +1209,15 @@ def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
 
     assert table.to_arrow().column("id").to_pylist() == [1, 2]
     assert table.to_pandas()["id"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("effort", [0.0, 0.5, 1.0])
+def test_namespace_request_rejects_search_effort(effort):
+    from lancedb.query import Query
+
+    with pytest.raises(
+        ValueError, match="namespace QueryTable does not support search_effort"
+    ):
+        _query_to_namespace_request(
+            ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
+        )
