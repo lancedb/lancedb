@@ -315,6 +315,11 @@ def _is_non_retryable_error(error: Exception) -> bool:
         if error.status_code in (401, 403):
             return True
 
+    # A missing API key or a missing optional dependency fails the same way on
+    # every attempt
+    if isinstance(error, (MissingApiKeyError, ImportError)):
+        return True
+
     return False
 
 
@@ -332,9 +337,15 @@ def url_retrieve(url: str):
         raise ConnectionError("could not download {} due to {}".format(url, err))
 
 
+class MissingApiKeyError(ValueError):
+    """Raised when an embedding provider's API key is not set."""
+
+
 def api_key_not_found_help(provider):
     logging.error("Could not find API key for %s", provider)
-    raise ValueError(f"Please set the {provider.upper()}_API_KEY environment variable.")
+    raise MissingApiKeyError(
+        f"Please set the {provider.upper()}_API_KEY environment variable."
+    )
 
 
 def is_flash_attn_2_available():
