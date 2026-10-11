@@ -110,4 +110,22 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
+    if isinstance(data[0], dict):
+        data = _fill_missing_dict_keys(data)
     return pa.Table.from_pylist(data)
+
+
+def _fill_missing_dict_keys(data: List[dict]) -> List[dict]:
+    """Fill keys that only appear in later rows of a list of dicts.
+
+    ``pa.Table.from_pylist`` infers the schema from the first row only, so a
+    field that first appears in a later row would otherwise be silently
+    dropped (its value lost, cast to null). Rows are returned unchanged when
+    every row has the same keys.
+    """
+    union: dict = {}
+    for row in data:
+        union.update(dict.fromkeys(row))
+    if len(union) == len(data[0]):
+        return data
+    return [{**union, **row} for row in data]

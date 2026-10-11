@@ -472,6 +472,37 @@ def test_add_dictionary(mem_db: DBConnection):
     )
 
 
+def test_add_dict_rows_keeps_fields_first_seen_in_later_rows(mem_db: DBConnection):
+    """Regression test for https://github.com/lancedb/lancedb/issues/4484."""
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("note", pa.string())])
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.add([{"id": 1}, {"id": 2, "note": "keep me"}])
+    expected = pa.table({"id": [1, 2], "note": [None, "keep me"]}, schema=schema)
+    assert tbl.to_arrow().sort_by("id") == expected
+
+
+def test_merge_insert_dict_rows_keeps_fields_first_seen_in_later_rows(
+    mem_db: DBConnection,
+):
+    """Regression test for https://github.com/lancedb/lancedb/issues/4484."""
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("note", pa.string())])
+    tbl = mem_db.create_table("test", schema=schema)
+    tbl.add([{"id": 1, "note": "seed"}])
+    tbl.merge_insert("id").when_not_matched_insert_all().execute(
+        [{"id": 1}, {"id": 2, "note": "keep me"}]
+    )
+    expected = pa.table({"id": [1, 2], "note": ["seed", "keep me"]}, schema=schema)
+    assert tbl.to_arrow().sort_by("id") == expected
+
+
+def test_create_table_dict_rows_keeps_fields_first_seen_in_later_rows(
+    mem_db: DBConnection,
+):
+    """Regression test for https://github.com/lancedb/lancedb/issues/4484."""
+    tbl = mem_db.create_table("test", data=[{"id": 1}, {"id": 2, "note": "keep me"}])
+    assert tbl.to_arrow().sort_by("id").column("note").to_pylist() == [None, "keep me"]
+
+
 def test_add(mem_db: DBConnection):
     schema = pa.schema(
         [
