@@ -2284,6 +2284,7 @@ def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probe
     data = pa.table(
         {
             "id": np.arange(512),
+            "text": ["dog"] * 512,
             "vector": pa.FixedSizeListArray.from_arrays(pa.array(vectors.ravel()), 16),
         }
     )
@@ -2298,7 +2299,8 @@ def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probe
         return table.search(vector).distance_type(metric).search_effort(value).limit(8)
 
     def partitions(query):
-        values = re.findall(r"partitions_searched=(\d+)", query.analyze_plan())
+        vector_plan = query.analyze_plan().split("FTS Search Plan:", 1)[0]
+        values = re.findall(r"partitions_searched=(\d+)", vector_plan)
         assert values
         return sum(map(int, values))
 
@@ -2334,6 +2336,19 @@ def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probe
     filtered = search(0).maximum_nprobes(2).where("id % 8 = 0", prefilter=True)
     assert partitions(filtered) <= 2
     assert all(row["id"] % 8 == 0 for row in filtered.to_list())
+
+    if metric == "l2" and effort == 0.5:
+        table.create_index("text", config=FTS())
+        hybrid = (
+            table.search(query_type="hybrid")
+            .vector(vector)
+            .text("dog")
+            .nprobes(1)
+            .search_effort(0.5)
+            .limit(8)
+        )
+        assert partitions(hybrid) == 4
+        assert partitions(hybrid.search_effort(None)) == 1
 
 
 @pytest.mark.parametrize(

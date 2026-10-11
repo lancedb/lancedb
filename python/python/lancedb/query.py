@@ -1734,6 +1734,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
 
         Examples
         --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("effort_vectors", [{"vector": [0.1, 0.2]}])
         >>> query = table.search([0.1, 0.2]).search_effort(0.75)
         """
         self._search_effort = search_effort
@@ -2562,11 +2565,17 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
 
         Examples
         --------
-        >>> query = table.search([0.1, 0.2]).search_effort(0.75)
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "effort_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid").vector([0.1, 0.2])
+        ...     .text("dog").search_effort(0.75)
+        ... )
         """
         self._search_effort = search_effort
-        if self._vector_query is not None:
-            self._vector_query.search_effort(search_effort)
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -3790,7 +3799,15 @@ class AsyncVectorQueryBase:
 
         Examples
         --------
-        >>> query = table.vector_search([0.1, 0.2]).search_effort(0.75)
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "effort_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).search_effort(0.75)
+        >>> query = asyncio.run(build_query())
         """
         self._inner.search_effort(search_effort)
         return self
