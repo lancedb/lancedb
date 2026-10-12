@@ -793,7 +793,7 @@ By default (unset), when the table carries a MemWAL write spec (see
 [Table#enableMemWal](Table.md#enablememwal)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key; a table without a spec
+the SSTables), deduplicated by primary key; a table without a spec
 reads the base table.
 
 #### Parameters

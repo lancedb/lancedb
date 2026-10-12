@@ -237,7 +237,7 @@ Converge this table's MemWAL write path into its base table.
 
 Freezes once, then triggers compaction and polls until the SSTables that existed
 at the start is gone. The target set is fixed at the start, so
-generations created *during* the checkpoint are ignored — that is what
+SSTables created *during* the checkpoint are ignored — that is what
 lets it terminate under write load, and what makes it best-effort: it
 converges the fresh tier as of some instant. Idempotent, abandonable at
 any point, and safe to run on a cadence.
@@ -448,6 +448,23 @@ containing the new version number of the table
 
 ***
 
+### disableMemWal()
+
+```ts
+abstract disableMemWal(): Promise<void>
+```
+
+Remove the [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) from this table, reverting to the standard
+`mergeInsert` write path.
+
+Errors if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
 ### display()
 
 ```ts
@@ -510,6 +527,54 @@ Drop an index from the table.
 #### Returns
 
 `Promise`&lt;`void`&gt;
+
+***
+
+### enableMemWal()
+
+```ts
+abstract enableMemWal(spec): Promise<void>
+```
+
+Install an [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) on this table, selecting Lance's MemWAL
+LSM-style write path for future `mergeInsert` calls.
+
+`MemWalWriteSpec` chooses one of three sharding strategies via `specType`:
+
+- `"bucket"` — hash-bucket writes by the single-column unenforced primary
+  key (`column` and `numBuckets` required).
+- `"identity"` — shard by the raw value of a scalar `column`.
+- `"unsharded"` — route every write to a single shard.
+
+All variants require the table to have an unenforced primary key
+([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
+requires it to be the single column being bucketed.
+
+Omitting `maintainedIndexes` maintains every index the table has,
+including ones created later, and skips a kind the MemWAL cannot maintain.
+Naming them pins an exact set, and a still-building index is rejected
+rather than quietly omitted.
+
+#### Parameters
+
+* **spec**: [`MemWalWriteSpec`](../interfaces/MemWalWriteSpec.md)
+    The sharding spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+await table.setUnenforcedPrimaryKey("id");
+await table.enableMemWal({
+  specType: "bucket",
+  column: "id",
+  numBuckets: 16,
+  maintainedIndexes: ["id_idx"],
+});
+```
 
 ***
 
@@ -583,7 +648,7 @@ abstract flushMemWal(): Promise<void>
 
 Freeze every table shard's active memtable into a new SSTable.
 
-Returns once the seal is committed. Sealing an empty memtable is a no-op,
+Returns once the freeze is committed. Freezing an empty memtable is a no-op,
 so this is safe to call repeatedly.
 
 #### Returns
@@ -627,31 +692,6 @@ const { records, truncated } = await table.functionErrors({ column: "embedding" 
 
 ***
 
-### getMemWalStats()
-
-```ts
-abstract getMemWalStats(includeSstableRows?): Promise<undefined | MemWalStats>
-```
-
-Read live per-table-shard MemWAL state.
-
-Answers "how far behind is my fresh tier", "which bucket is hot", and
-"why is my fresh-tier vector search brute-force". Mutates no table state.
-
-Resolves to `undefined` only when the MemWAL write path is not enabled.
-
-#### Parameters
-
-* **includeSstableRows?**: `boolean`
-    Also count rows per SSTable.
-    Off by default because each count opens an uncached Lance dataset.
-
-#### Returns
-
-`Promise`&lt;`undefined` \| [`MemWalStats`](../interfaces/MemWalStats.md)&gt;
-
-***
-
 ### getMemWalSpec()
 
 ```ts
@@ -669,6 +709,31 @@ array for none.
 #### Returns
 
 `Promise`&lt;`undefined` \| [`MemWalWriteSpec`](../interfaces/MemWalWriteSpec.md)&gt;
+
+***
+
+### getMemWalStats()
+
+```ts
+abstract getMemWalStats(includeSstableRows?): Promise<undefined | MemWalStats>
+```
+
+Read live per-table-shard MemWAL state.
+
+Answers "how far behind is my fresh tier", "which table shard is hot", and
+"why is my fresh-tier vector search brute-force". Mutates no table state.
+
+Resolves to `undefined` only when the MemWAL write path is not enabled.
+
+#### Parameters
+
+* **includeSstableRows?**: `boolean`
+    Also count rows per SSTable.
+    Off by default because each count opens an uncached Lance dataset.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`MemWalStats`](../interfaces/MemWalStats.md)&gt;
 
 ***
 
@@ -1086,54 +1151,6 @@ of the given query
 
 ***
 
-### enableMemWal()
-
-```ts
-abstract enableMemWal(spec): Promise<void>
-```
-
-Install an [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) on this table, selecting Lance's MemWAL
-LSM-style write path for future `mergeInsert` calls.
-
-`MemWalWriteSpec` chooses one of three sharding strategies via `specType`:
-
-- `"bucket"` — hash-bucket writes by the single-column unenforced primary
-  key (`column` and `numBuckets` required).
-- `"identity"` — shard by the raw value of a scalar `column`.
-- `"unsharded"` — route every write to a single shard.
-
-All variants require the table to have an unenforced primary key
-([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
-requires it to be the single column being bucketed.
-
-Omitting `maintainedIndexes` maintains every index the table has,
-including ones created later, and skips a kind the MemWAL cannot maintain.
-Naming them pins an exact set, and a still-building index is rejected
-rather than quietly omitted.
-
-#### Parameters
-
-* **spec**: [`MemWalWriteSpec`](../interfaces/MemWalWriteSpec.md)
-    The sharding spec to install.
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
-
-#### Example
-
-```ts
-await table.setUnenforcedPrimaryKey("id");
-await table.enableMemWal({
-  specType: "bucket",
-  column: "id",
-  numBuckets: 16,
-  maintainedIndexes: ["id_idx"],
-});
-```
-
-***
-
 ### setUnenforcedPrimaryKey()
 
 ```ts
@@ -1285,23 +1302,6 @@ same tokenizer model files must also exist locally.
 #### Returns
 
 `Promise`&lt;[`FtsToken`](../interfaces/FtsToken.md)[]&gt;
-
-***
-
-### disableMemWal()
-
-```ts
-abstract disableMemWal(): Promise<void>
-```
-
-Remove the [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) from this table, reverting to the standard
-`mergeInsert` write path.
-
-Errors if no spec is currently set.
-
-#### Returns
-
-`Promise`&lt;`void`&gt;
 
 ***
 

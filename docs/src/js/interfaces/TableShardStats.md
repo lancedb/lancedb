@@ -35,16 +35,6 @@ The generation the active memtable will become.
 
 ***
 
-### sstables
-
-```ts
-sstables: SsTableStats[];
-```
-
-SSTables not yet merged into the base table.
-
-***
-
 ### manifestVersion
 
 ```ts
@@ -82,7 +72,17 @@ WAL position replay resumes from.
 shardId: string;
 ```
 
-The shard this table shard writes.
+The id of this table shard.
+
+***
+
+### sstables
+
+```ts
+sstables: SsTableStats[];
+```
+
+SSTables not yet merged into the base table.
 
 ***
 

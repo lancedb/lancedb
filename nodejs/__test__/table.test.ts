@@ -4854,7 +4854,9 @@ describe("LSM merge insert", () => {
     );
     // No spec: default read and useMemWal(false) both succeed against the base table.
     await expect(table.query().toArray()).resolves.toBeDefined();
-    await expect(table.query().useMemWal(false).toArray()).resolves.toBeDefined();
+    await expect(
+      table.query().useMemWal(false).toArray(),
+    ).resolves.toBeDefined();
     // useMemWal(true) demands MemWAL routing; without a spec it errors.
     await expect(table.query().useMemWal(true).toArray()).rejects.toThrow();
   });
