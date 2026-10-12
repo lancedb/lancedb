@@ -646,6 +646,38 @@ rerank(reranker): VectorQuery
 
 ***
 
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The MemWAL LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
+
+***
+
 ### select()
 
 ```ts

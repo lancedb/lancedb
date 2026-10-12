@@ -174,6 +174,9 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // brute-force search the index-only base arm can't do. (ef / approx_mode are
     // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
+        if query.search_effort.is_some() {
+            return unsupported("search_effort on vector search");
+        }
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
         }
@@ -820,6 +823,19 @@ async fn resolve_distance_type(
 mod tests {
     use super::*;
     use lance_index::mem_wal::{CompactedSsTable, IndexCatchupProgress};
+
+    #[test]
+    fn search_effort_is_not_silently_ignored() {
+        let query = VectorQueryRequest {
+            query_vector: vec![Arc::new(arrow_array::Float32Array::from(vec![1.0, 0.0]))],
+            search_effort: Some(0.5),
+            ..Default::default()
+        };
+        assert!(
+            matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
+            if message.contains("search_effort") && message.contains("un-compacted MemWAL"))
+        );
+    }
 
     #[test]
     fn resident_index_checks_distinguish_columns_and_query_types() {

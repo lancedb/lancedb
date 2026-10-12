@@ -1137,6 +1137,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
+        query.validate_search_effort()?;
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1154,6 +1155,9 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
+        }
+        if let Some(search_effort) = query.search_effort {
+            body["search_effort"] = search_effort.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -6267,6 +6271,77 @@ mod tests {
             result,
             Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
         ));
+    }
+
+    #[rstest]
+    #[case::unset(None)]
+    #[case::minimum(Some(0.0))]
+    #[case::low(Some(0.25))]
+    #[case::auto(Some(0.5))]
+    #[case::high(Some(0.75))]
+    #[case::maximum(Some(1.0))]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_wire(#[case] effort: Option<f64>) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            assert_eq!(body["nprobes"], 7);
+            assert_eq!(body["minimum_nprobes"], 2);
+            assert_eq!(body["maximum_nprobes"], 8);
+            if let Some(effort) = effort {
+                assert_eq!(body["search_effort"], effort);
+            } else {
+                assert!(body.get("search_effort").is_none());
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+        let batches = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort)
+            .unwrap()
+            .nprobes(7)
+            .unwrap()
+            .minimum_nprobes(2)
+            .unwrap()
+            .maximum_nprobes(Some(8))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[rstest]
+    #[case::negative(-0.1)]
+    #[case::too_large(1.1)]
+    #[case::nan(f64::NAN)]
+    #[case::infinity(f64::INFINITY)]
+    #[case::negative_infinity(f64::NEG_INFINITY)]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_invalid(#[case] effort: f64) {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("invalid search_effort must not send a request")
+        });
+        let result = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort);
+        assert!(matches!(result, Err(Error::InvalidInput { message })
+            if message.contains("search_effort must be finite and in [0, 1]")));
     }
 
     #[tokio::test]

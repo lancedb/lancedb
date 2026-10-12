@@ -2265,3 +2265,127 @@ def test_blob_v2_to_batches_row_id(tmp_db):
     assert "_rowid" in hits.column_names
     blobs = table.fetch_blobs("blob", hits)
     assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "dot"])
+@pytest.mark.parametrize(
+    "effort,probes", [(None, 4), (0, 1), (0.25, 2), (0.5, 4), (0.75, 8), (1, 16)]
+)
+def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probes):
+    import re
+    from lancedb.index import IvfFlat
+
+    monkeypatch.setenv("LANCE_AUTO_PROBE_MARGIN", "0")
+    monkeypatch.setenv("LANCE_AUTO_MIN_INITIAL_NPROBES", "4")
+    monkeypatch.setenv("LANCE_AUTO_MAX_INITIAL_NPROBES", "4")
+    rng = np.random.default_rng(42)
+    vectors = np.repeat(np.eye(16, dtype=np.float32), 32, axis=0)
+    vectors += rng.normal(0, 0.001, vectors.shape).astype(np.float32)
+    data = pa.table(
+        {
+            "id": np.arange(512),
+            "text": ["dog"] * 512,
+            "vector": pa.FixedSizeListArray.from_arrays(pa.array(vectors.ravel()), 16),
+        }
+    )
+    table = lancedb.connect(tmp_path).create_table("effort", data.slice(0, 256))
+    table.add(data.slice(256))
+    table.create_index(
+        "vector", config=IvfFlat(distance_type=metric, num_partitions=16)
+    )
+    vector = np.eye(16, dtype=np.float32)[0]
+
+    def search(value=effort):
+        return table.search(vector).distance_type(metric).search_effort(value).limit(8)
+
+    def partitions(query):
+        vector_plan = query.analyze_plan().split("FTS Search Plan:", 1)[0]
+        values = re.findall(r"partitions_searched=(\d+)", vector_plan)
+        assert values
+        return sum(map(int, values))
+
+    assert partitions(search()) == probes
+    exact = set(
+        table.search(vector)
+        .distance_type(metric)
+        .bypass_vector_index()
+        .limit(8)
+        .to_arrow()["id"]
+        .to_pylist()
+    )
+    actual = set(search().to_arrow()["id"].to_pylist())
+    assert len(actual & exact) / 8 >= 0.5
+    expected = 1 if effort is None else probes
+    assert partitions(search().nprobes(1)) == expected
+    assert (
+        partitions(
+            table.search(vector)
+            .distance_type(metric)
+            .nprobes(1)
+            .search_effort(effort)
+            .limit(8)
+        )
+        == expected
+    )
+    assert partitions(search().nprobes(1).search_effort(None)) == 1
+    assert partitions(search().maximum_nprobes(2)) <= 2
+    assert partitions(search().minimum_nprobes(3).maximum_nprobes(3)) == 3
+    assert partitions(search(0).nprobes(16).maximum_nprobes(0)) == 1
+    if effort is None:
+        assert search().to_arrow() == search(0.5).to_arrow()
+    filtered = search(0).maximum_nprobes(2).where("id % 8 = 0", prefilter=True)
+    assert partitions(filtered) <= 2
+    assert all(row["id"] % 8 == 0 for row in filtered.to_list())
+
+    if metric == "l2" and effort == 0.5:
+        table.create_index("text", config=FTS())
+        hybrid = (
+            table.search(query_type="hybrid")
+            .vector(vector)
+            .text("dog")
+            .nprobes(1)
+            .search_effort(0.5)
+            .limit(8)
+        )
+        assert partitions(hybrid) == 4
+        assert partitions(hybrid.search_effort(None)) == 1
+
+
+@pytest.mark.parametrize(
+    "effort", [-0.1, 1.1, float("nan"), float("inf"), -float("inf")]
+)
+def test_search_effort_invalid_sync(table, effort):
+    with pytest.raises(ValueError, match="search_effort must be finite and in"):
+        table.search([0, 0]).search_effort(effort).to_list()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize("effort", [None, 0, 0.25, 0.5, 0.75, 1])
+async def test_search_effort_async_roundtrip(table_async, hybrid, effort):
+    query = table_async.vector_search([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    query = query.nprobes(5).search_effort(effort).minimum_nprobes(2).maximum_nprobes(3)
+    request = query.to_query_object()
+    assert request.search_effort == effort
+    assert request.nprobes == 5
+    assert request.minimum_nprobes == 2
+    assert request.maximum_nprobes == 3
+    assert query.search_effort(None).to_query_object().search_effort is None
+    query.search_effort(effort)
+    if not hybrid:
+        assert len(await query.limit(1).to_list()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize(
+    "effort", [-0.1, 1.1, float("nan"), float("inf"), -float("inf")]
+)
+async def test_search_effort_invalid_async(table_async, hybrid, effort):
+    query = table_async.vector_search([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    with pytest.raises(ValueError, match="search_effort must be finite and in"):
+        query.search_effort(effort)
