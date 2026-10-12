@@ -460,17 +460,16 @@ exhaustiely searched to find matches.  This parameter controls how many
 partitions should be searched.
 
 Increasing this value will increase the recall of your query but will
-also increase the latency of your query.  The default value is 20.  This
-default is good for many cases but the best value to use will depend on
-your data and the recall that you need to achieve.
+also increase the latency of your query. If this method is not called,
+Lance's adaptive probe defaults are used.
 
 For best results we recommend tuning this parameter with a benchmark against
 your actual data to find the smallest possible value that will still give
 you the desired recall.
 
-For more fine grained control over behavior when you have a very narrow filter
-you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-the minimum and maximum to the same value.
+The value is retained as `nprobes` through client and server request
+construction. Lance sets both probe bounds to this value. Explicit minimum
+or maximum settings can override their respective bounds.
 
 #### Parameters
 
@@ -644,6 +643,38 @@ rerank(reranker): VectorQuery
 #### Returns
 
 [`VectorQuery`](VectorQuery.md)
+
+***
+
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The MemWAL LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
 
 ***
 

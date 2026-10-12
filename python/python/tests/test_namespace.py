@@ -15,7 +15,8 @@ import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.listing import AsyncListing, Listing
-from lancedb.namespace import _MAX_QUERY_K
+from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
 
@@ -1111,6 +1112,29 @@ class TestPushdownOperations:
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
+    def test_probe_fields_pass_through_independently(self):
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(
+                vector=[1.0, 2.0],
+                nprobes=20,
+                minimum_nprobes=3,
+                maximum_nprobes=10,
+            ),
+        )
+
+        assert request.nprobes == 20
+        assert request.minimum_nprobes == 3
+        assert request.maximum_nprobes == 10
+
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(vector=[1.0, 2.0], nprobes=5, maximum_nprobes=0),
+        )
+        assert request.nprobes == 5
+        assert request.maximum_nprobes == 0
+        assert request.to_dict()["maximum_nprobes"] == 0
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -1185,3 +1209,15 @@ def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
 
     assert table.to_arrow().column("id").to_pylist() == [1, 2]
     assert table.to_pandas()["id"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("effort", [0.0, 0.5, 1.0])
+def test_namespace_request_rejects_search_effort(effort):
+    from lancedb.query import Query
+
+    with pytest.raises(
+        ValueError, match="namespace QueryTable does not support search_effort"
+    ):
+        _query_to_namespace_request(
+            ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
+        )

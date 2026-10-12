@@ -328,6 +328,7 @@ def _set_blob_column(
                     leaf_name, blobs.type, nullable=field.nullable
                 )
                 return
+        raise KeyError(f"Blob field '{leaf_name}' not found in struct '{parent_path}'")
 
     return _transform_struct_column(tbl, parent_path, replace_blob)
 

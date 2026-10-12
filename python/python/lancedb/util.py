@@ -10,6 +10,7 @@ import os
 import pathlib
 import warnings
 from datetime import date, datetime
+from decimal import Decimal
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
 from urllib.parse import urlparse
@@ -371,6 +372,14 @@ def _(value: float):
             "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
         )
     return str(value)
+
+
+@value_to_sql.register(Decimal)
+def _(value: Decimal):
+    if not value.is_finite():
+        raise ValueError("Non-finite Decimal values cannot be converted to SQL")
+    # Quote exact decimal text so the target-column cast avoids float rounding.
+    return value_to_sql(format(value, "f"))
 
 
 @value_to_sql.register(bool)

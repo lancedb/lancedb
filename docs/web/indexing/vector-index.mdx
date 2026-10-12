@@ -139,9 +139,9 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 | Parameter | Description |
 | :--- | :--- |
 | `limit` | Number of results to return (the `k` in `k-ANN`). |
-| `nprobes` | Shorthand that sets both `minimum_nprobes` and `maximum_nprobes` to the same value. LanceDB defaults this to 20 which is a good default for many cases.  At very high scales you will likely need to experiment to find your preferred recall / latency balance. |
-| `minimum_nprobes` | Minimum number of partitions scanned. |
-| `maximum_nprobes` | Maximum number of partitions scanned. Only scans more than `minimum_nprobes` if an initial pass does not return enough results — useful for narrow filters. Set to `0` to remove the cap. |
+| `nprobes` | Sets both `minimum_nprobes` and `maximum_nprobes` to the same value in Lance. Leave unset to use Lance's adaptive defaults. At very high scales you will likely need to experiment to find your preferred recall / latency balance. |
+| `minimum_nprobes` | Minimum number of partitions scanned. Leave unset to use Lance's default. |
+| `maximum_nprobes` | Maximum number of partitions scanned. Only scans more than `minimum_nprobes` if an initial pass does not return enough results — useful for narrow filters. Leave unset, or set to `0`, to remove the cap. |
 | `ef` | HNSW search-time exploration factor. Start around `1.5 * k` and increase up to `10 * k` for higher recall. |
 | `refine_factor` | Reads and reranks additional candidates in memory to recover recall lost to quantization. Start between `5` and `50` (a factor of `25` reads and reranks the top `25 * k` candidates) and measure the latency cost, typically a few milliseconds, against the recall gained. |
 | `distance_range(lower_bound, upper_bound)` | Return only rows whose distance falls within `[lower_bound, upper_bound)`. Either bound is optional. Useful for near-duplicate detection or "close-enough" matching. |
@@ -165,8 +165,8 @@ older client.
 
 | Index type | Guidance |
 | :--- | :--- |
-| `IVF_HNSW_FLAT`, `IVF_HNSW_SQ` | Keep the default `nprobes`, then tune `ef` first. Expect higher latency variance under filtered search. |
-| `IVF_RQ`, `IVF_PQ` | Keep the default `nprobes` and raise when recall is insufficient.  If using a selective filter you may need to increase `maximum_nprobes` if you do not received enough results. |
+| `IVF_HNSW_FLAT`, `IVF_HNSW_SQ` | Leave the probe settings unset, then tune `ef` first. Expect higher latency variance under filtered search. |
+| `IVF_RQ`, `IVF_PQ` | Leave the probe settings unset and configure them only when recall is insufficient. If using a selective filter you may need to increase `maximum_nprobes` if you do not receive enough results. |
 
 
 <Note>

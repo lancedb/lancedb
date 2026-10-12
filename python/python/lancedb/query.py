@@ -551,8 +551,8 @@ class MatchQuery(FullTextQuery):
     ----------
     query : str
         The query string to match against.
-    column : str
-        The name of the column to match against.
+    column : str, optional
+        The column to match against. None leaves column selection to query planning.
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
@@ -581,7 +581,7 @@ class MatchQuery(FullTextQuery):
     """
 
     query: str
-    column: str
+    column: Optional[str] = None
     boost: float = pydantic.Field(1.0, kw_only=True)
     fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
@@ -769,8 +769,9 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The number of IVF partitions to search.  If this is None then a default
-        number of partitions will be used.
+        The legacy number of IVF partitions to search. Lance sets both probe
+        bounds to this value. If this is None then Lance's default probe settings
+        will be used.
 
         - A higher number makes search more accurate but also slower.
 
@@ -849,21 +850,27 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
+    # legacy number of IVF partitions to search
+    #
+    # Lance sets both probe bounds to this value. Explicit bounds can override it.
+    nprobes: Optional[int] = None
+
     # which columns to return in the results (dict values may be str or Expr)
     columns: QueryProjection = None
 
     # minimum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
+    # If None then Lance's default will be used.
     minimum_nprobes: Optional[int] = None
 
     # maximum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
-    #
-    # If 0 then no limit will be applied and all partitions could be searched
-    # if needed to satisfy the limit.
+    # If None then Lance's default will be used. If 0 then no limit will be applied
+    # and all partitions could be searched if needed to satisfy the limit.
     maximum_nprobes: Optional[int] = None
+
+    # Optional initial IVF effort; None preserves Auto and explicit nprobes.
+    search_effort: Optional[float] = None
 
     # lower bound for distance search
     lower_bound: Optional[float] = None
@@ -923,8 +930,10 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
+        query.nprobes = req.nprobes
         query.minimum_nprobes = req.minimum_nprobes
         query.maximum_nprobes = req.maximum_nprobes
+        query.search_effort = req.search_effort
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
@@ -1715,8 +1724,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._distance_type = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
+        self._search_effort = None
         self._lower_bound = None
         self._upper_bound = None
         self._refine_factor = None
@@ -1779,9 +1790,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets both the minimum and maximum number of probes to the same
-        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
-        control.
+        The value is retained as `nprobes` through client and server request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
 
         Parameters
         ----------
@@ -1795,8 +1806,28 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         """
         if nprobes <= 0:
             raise ValueError("Invalid input, nprobes must be greater than 0")
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> LanceVectorQueryBuilder:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None (the default) uses Auto, internally 0.5. Zero starts at the caller
+        minimum; one searches all partitions within the caller maximum. Later
+        probing may continue when too few candidates are found. Any explicit
+        effort, including 0.5, overrides nprobes in either call order. Explicit
+        minimum and maximum bounds still apply. This is not a recall guarantee
+        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        yet support this option.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("effort_vectors", [{"vector": [0.1, 0.2]}])
+        >>> query = table.search([0.1, 0.2]).search_effort(0.75)
+        """
+        self._search_effort = search_effort
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
@@ -1938,8 +1969,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
+            nprobes=self._nprobes,
             minimum_nprobes=self._minimum_nprobes,
             maximum_nprobes=self._maximum_nprobes,
+            search_effort=self._search_effort,
             lower_bound=self._lower_bound,
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
@@ -2296,8 +2329,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
+        self._search_effort = None
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
@@ -2587,6 +2622,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
+        The value is retained as `nprobes` until Lance sets both probe bounds to it.
+        Explicit minimum or maximum settings can override their respective bounds.
+
         Parameters
         ----------
         nprobes: int
@@ -2599,8 +2637,33 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         if nprobes <= 0:
             raise ValueError("Invalid input, nprobes must be greater than 0")
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> LanceHybridQueryBuilder:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None (the default) uses Auto, internally 0.5. Zero starts at the caller
+        minimum; one searches all partitions within the caller maximum. Later
+        probing may continue when too few candidates are found. Any explicit
+        effort, including 0.5, overrides nprobes in either call order. Explicit
+        minimum and maximum bounds still apply. This is not a recall guarantee
+        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        yet support this option.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "effort_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid").vector([0.1, 0.2])
+        ...     .text("dog").search_effort(0.75)
+        ... )
+        """
+        self._search_effort = search_effort
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -2879,6 +2942,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
+        if self._nprobes is not None:
+            self._vector_query.nprobes(self._nprobes)
+        if self._search_effort is not None:
+            self._vector_query.search_effort(self._search_effort)
         if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
@@ -3782,7 +3849,7 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the number of partitions to search (probe)
+        Set the legacy IVF probe parameter
 
         The number of probes must be greater than 0.
 
@@ -3794,18 +3861,47 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions should be searched.
+        partitions will be searched.
 
         Increasing this value will increase the recall of your query but will
-        also increase the latency of your query.  The default value is 20.  This
-        default is good for many cases but the best value to use will depend on
-        your data and the recall that you need to achieve.
+        also increase the latency of your query. If this method is not called,
+        Lance's adaptive probe defaults are used.
 
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give
         you the desired recall.
+
+        LanceDB retains this as `nprobes` through local and remote request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> Self:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None preserves Auto (internally 0.5) and fixed nprobes. Any explicit
+        effort, including 0.5, overrides nprobes in either call order; explicit
+        minimum and maximum bounds remain effective. Zero starts at the caller
+        minimum and one searches all partitions within the maximum. Later
+        probing may continue to obtain enough candidates. This is not a recall
+        guarantee and does not change refinement or HNSW ef. MemWAL LSM queries
+        do not yet support this option.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "effort_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).search_effort(0.75)
+        >>> query = asyncio.run(build_query())
+        """
+        self._inner.search_effort(search_effort)
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> Self:

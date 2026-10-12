@@ -1410,6 +1410,72 @@ def test_remote_job_wait_raises_on_failure():
             job.wait()
 
 
+@pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
+def test_remote_json_fts_config(server_version):
+    from lancedb.index import FTS
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("phalanx-version", server_version)
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [
+                {
+                    "name": "doc",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                    "metadata": {"ARROW:extension:name": "lance.json"},
+                },
+                {
+                    "name": "raw",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                },
+            ]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.create_index(
+            "doc",
+            config=FTS(
+                with_position=True,
+                base_tokenizer="whitespace",
+                stem=False,
+                remove_stop_words=False,
+                lower_case=False,
+                block_size=256,
+            ),
+            name="doc_fts",
+            replace=False,
+        )
+        with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+            table.create_index("raw", config=FTS())
+
+    assert len(received_requests) == 1
+    request = received_requests[0]
+    assert request["column"] == "doc"
+    assert request["index_type"] == "FTS"
+    assert request["name"] == "doc_fts"
+    assert request["replace"] is False
+    assert request["with_position"] is True
+    assert request["base_tokenizer"] == "whitespace"
+    assert request["stem"] is False
+    assert request["remove_stop_words"] is False
+    assert request["lower_case"] is False
+    assert request["block_size"] == 256
+
+
 def test_remote_create_index_new_api(caplog):
     received_requests = []
 
@@ -2098,9 +2164,6 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "vector_column": "vector",
-            "nprobes": 20,
-            "minimum_nprobes": 20,
-            "maximum_nprobes": 20,
             "version": None,
         }
 
@@ -2272,8 +2335,6 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
-            "minimum_nprobes": 5,
-            "maximum_nprobes": 5,
             "lower_bound": None,
             "upper_bound": None,
             "ef": None,
@@ -2369,7 +2430,7 @@ async def test_query_async_nprobes_zero(hybrid):
     assert requests == ["/v1/table/test/describe/"]
 
 
-def test_query_sync_nprobes():
+def test_query_sync_probe_bounds():
     def handler(body):
         assert body == {
             "k": 10,
@@ -2381,7 +2442,6 @@ def test_query_sync_nprobes():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
-            "nprobes": 5,
             "minimum_nprobes": 5,
             "maximum_nprobes": 15,
             "version": None,
@@ -2398,7 +2458,28 @@ def test_query_sync_nprobes():
         )
 
 
-def test_query_sync_no_max_nprobes():
+def test_query_sync_nprobes_passthrough():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert "minimum_nprobes" not in body
+        assert "maximum_nprobes" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).to_list()
+
+
+def test_query_sync_nprobes_with_unbounded_maximum():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert body["maximum_nprobes"] == 0
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).maximum_nprobes(0).to_list()
+
+
+def test_query_sync_minimum_nprobes_only():
     def handler(body):
         assert body == {
             "k": 10,
@@ -2410,9 +2491,7 @@ def test_query_sync_no_max_nprobes():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
-            "nprobes": 5,
             "minimum_nprobes": 5,
-            "maximum_nprobes": 0,
             "version": None,
         }
 
@@ -2422,7 +2501,6 @@ def test_query_sync_no_max_nprobes():
         (
             table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
             .minimum_nprobes(5)
-            .maximum_nprobes(0)
             .to_list()
         )
 
@@ -2577,9 +2655,6 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "vector_column": "vector",
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": None,
                 "upper_bound": None,
                 "ef": None,
