@@ -10,6 +10,7 @@ import {
   fromRecordBatchToBuffer,
   tableFromIPC,
 } from "./arrow";
+import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
   JsFullTextQuery,
@@ -20,7 +21,6 @@ import {
   VectorQuery as NativeVectorQuery,
 } from "./native";
 import { Reranker } from "./rerankers";
-import { Expr } from "./expr";
 
 export async function* RecordBatchIterator(
   promisedInner: Promise<NativeBatchIterator>,
