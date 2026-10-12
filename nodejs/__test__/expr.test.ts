@@ -99,7 +99,7 @@ describe("expr", () => {
       const e = col("age")
         .gt(lit(18))
         .and(col("status").eq(lit("active")));
-      expect(e.toSql()).toBe("((age > 18) AND (status = 'active'))");
+      expect(e.toSql()).toBe("((age > 18) AND (`status` = 'active'))");
     });
 
     it("or", () => {
@@ -152,7 +152,7 @@ describe("expr", () => {
       expect(col("age").isIn([18, 21]).toSql()).toBe("age IN (18, 21)");
     });
     it("casts to an Arrow type", () => {
-      expect(col("age").cast("Int64").toSql()).toBe("CAST(age AS BIGINT)");
+      expect(col("age").cast("Int64").toSql()).toBe("arrow_cast(age, 'Int64')");
     });
     it("rejects an invalid Arrow type", () => {
       expect(() => col("age").cast("invalid")).toThrow("Invalid data type");
