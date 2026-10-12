@@ -47,7 +47,7 @@ pub struct MergeResult {
     /// Total number of rows written.
     ///
     /// On the standard `merge_insert` path this equals
-    /// `num_inserted_rows + num_updated_rows`. On the MemWAL LSM write path the
+    /// `num_inserted_rows + num_updated_rows`. On the MemWAL write path the
     /// insert/update breakdown is not known until compaction; in that mode
     /// `num_inserted_rows`, `num_updated_rows`, `num_deleted_rows`, `version`
     /// and `num_attempts` are all `0` and this field holds the total number of
@@ -76,7 +76,7 @@ pub struct MergeInsertBuilder {
     pub(crate) when_not_matched_by_source_delete_filt: Option<MergeFilter>,
     pub(crate) timeout: Option<Duration>,
     pub(crate) use_index: bool,
-    pub(crate) use_lsm: Option<bool>,
+    pub(crate) use_memwal: Option<bool>,
     pub(crate) validate_single_shard: bool,
 }
 
@@ -92,7 +92,7 @@ impl MergeInsertBuilder {
             when_not_matched_by_source_delete_filt: None,
             timeout: None,
             use_index: true,
-            use_lsm: None,
+            use_memwal: None,
             validate_single_shard: true,
         }
     }
@@ -193,27 +193,27 @@ impl MergeInsertBuilder {
     /// Control MemWAL routing for this `merge_insert`.
     ///
     /// By default (unset), a `merge_insert` on a table with an
-    /// [`LsmWriteSpec`](super::LsmWriteSpec) installed is routed through Lance's
+    /// [`MemWalWriteSpec`](super::MemWalWriteSpec) installed is routed through Lance's
     /// MemWAL shard writer; a table without one uses the standard path.
     ///
-    /// - `use_lsm(true)` forces MemWAL routing and errors if the table has no
-    ///   LSM write spec.
-    /// - `use_lsm(false)` forces the standard write path even when a spec is set.
-    pub fn use_lsm(&mut self, enable: bool) -> &mut Self {
-        self.use_lsm = Some(enable);
+    /// - `use_memwal(true)` forces MemWAL routing and errors if the table has no
+    ///   MemWAL write spec.
+    /// - `use_memwal(false)` forces the standard write path even when a spec is set.
+    pub fn use_memwal(&mut self, enable: bool) -> &mut Self {
+        self.use_memwal = Some(enable);
         self
     }
 
     /// Controls how an LSM `merge_insert` checks that its input targets a
     /// single shard.
     ///
-    /// When a table has an LSM write spec, every row in a `merge_insert` call
+    /// When a table has a MemWAL write spec, every row in a `merge_insert` call
     /// must route to the same shard. When `true` (the default), every row is
     /// inspected to verify this. When `false`, only the first row is inspected
     /// and the shard it routes to is used for the whole input — a faster path
     /// for callers that have already pre-sharded their input.
     ///
-    /// Has no effect on tables without an LSM write spec.
+    /// Has no effect on tables without a MemWAL write spec.
     pub fn validate_single_shard(&mut self, validate_single_shard: bool) -> &mut Self {
         self.validate_single_shard = validate_single_shard;
         self
@@ -890,7 +890,7 @@ mod lsm_tests {
 
     use crate::connect;
     use crate::error::Error;
-    use crate::table::{LsmWriteSpec, Table};
+    use crate::table::{MemWalWriteSpec, Table};
 
     /// A reader of `[id: Int64, value: Int64]` rows; `value` is `0..n`.
     fn id_value_reader(ids: Vec<i64>) -> Box<dyn RecordBatchReader + Send> {
@@ -974,7 +974,7 @@ mod lsm_tests {
         let table = id_value_table(&dir).await;
         // num_buckets = 1: every row routes to the single bucket.
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1001,7 +1001,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -1030,7 +1030,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_memwal(MemWalWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1047,18 +1047,18 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_false_falls_back() {
+    async fn lsm_merge_insert_use_memwal_false_falls_back() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
-        // use_lsm(false) opts out: the standard path runs and commits even though
+        // use_memwal(false) opts out: the standard path runs and commits even though
         // a spec is installed.
         let mut builder = table.merge_insert(&["id"]);
-        builder.when_not_matched_insert_all().use_lsm(false);
+        builder.when_not_matched_insert_all().use_memwal(false);
         let result = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -1069,17 +1069,17 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_merge_insert_use_lsm_true_without_spec_errors() {
+    async fn lsm_merge_insert_use_memwal_true_without_spec_errors() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
 
-        // use_lsm(true) demands MemWAL routing; without a write spec it errors
+        // use_memwal(true) demands MemWAL routing; without a write spec it errors
         // rather than silently falling back to the standard path.
         let mut builder = table.merge_insert(&["id"]);
         builder
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_lsm(true);
+            .use_memwal(true);
         let err = builder
             .execute(id_value_reader(vec![3, 4, 5]))
             .await
@@ -1092,7 +1092,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1109,7 +1109,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1125,7 +1125,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 1))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 1))
             .await
             .unwrap();
 
@@ -1135,7 +1135,7 @@ mod lsm_tests {
             .when_not_matched_insert_all();
         builder.execute(id_value_reader(vec![7, 8])).await.unwrap();
 
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
 
         // The writer reopens lazily on the next merge_insert.
         let mut builder = table.merge_insert(&[]);
@@ -1160,7 +1160,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_memwal(MemWalWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1197,10 +1197,10 @@ mod lsm_tests {
     #[tokio::test]
     async fn lsm_merge_insert_no_spec_uses_standard_path() {
         let dir = tempdir().unwrap();
-        // id_value_table sets a primary key but no LSM write spec.
+        // id_value_table sets a primary key but no MemWAL write spec.
         let table = id_value_table(&dir).await;
 
-        // Without a spec, a default merge_insert (use_lsm unset) simply uses
+        // Without a spec, a default merge_insert (use_memwal unset) simply uses
         // the standard path and commits — no opt-out required, no error.
         let mut builder = table.merge_insert(&["id"]);
         builder
@@ -1228,7 +1228,7 @@ mod lsm_tests {
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::identity("region"))
+            .enable_memwal(MemWalWriteSpec::identity("region"))
             .await
             .unwrap();
 
@@ -1254,7 +1254,7 @@ mod lsm_tests {
         assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
 
         // After closing the writer, a different shard can be written.
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
         let mut builder = table.merge_insert(&[]);
         builder
             .when_matched_update_all(None)
@@ -1266,7 +1266,7 @@ mod lsm_tests {
     }
 
     // ---------------------------------------------------------------------
-    // LSM read path
+    // MemWAL read path
     // ---------------------------------------------------------------------
 
     use crate::arrow::SendableRecordBatchStream;
@@ -1325,7 +1325,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: ids 1,2,3 (value 0,1,2)
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -1340,8 +1340,8 @@ mod lsm_tests {
             vec![1, 2, 3, 4, 5]
         );
 
-        // use_lsm(false) bypasses the MemWAL and reads the base table only.
-        let base_only = table.query().use_lsm(false).execute().await.unwrap();
+        // use_memwal(false) bypasses the MemWAL and reads the base table only.
+        let base_only = table.query().use_memwal(false).execute().await.unwrap();
         let rows = collect_id_value(base_only).await;
         assert_eq!(
             rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -1354,7 +1354,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         lsm_upsert(&table, vec![4, 5]).await;
@@ -1372,7 +1372,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         lsm_upsert(&table, vec![4]).await;
@@ -1392,7 +1392,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await; // base: id 2 -> value 1
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -1410,7 +1410,7 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         lsm_upsert(&table, vec![2, 3, 4]).await; // id 2 -> value 0 (shadows base)
@@ -1425,14 +1425,14 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .enable_memwal(MemWalWriteSpec::bucket("id", 8))
             .await
             .unwrap();
 
         // Two single-row upserts that route to (likely) different shards; each
         // closes the writer so the next opens a fresh shard.
         lsm_upsert(&table, vec![10]).await;
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
         lsm_upsert(&table, vec![11]).await;
 
         let lsm = table.query().execute().await.unwrap();
@@ -1447,14 +1447,14 @@ mod lsm_tests {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         lsm_upsert(&table, vec![4, 5]).await;
         // close flushes the active memtable to an on-disk generation and drops
         // the cached writer; the read must still see those rows via the shard
         // manifest snapshot.
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
 
         let lsm = table.query().execute().await.unwrap();
         let ids: Vec<i64> = collect_id_value(lsm)
@@ -1468,11 +1468,11 @@ mod lsm_tests {
     #[tokio::test]
     async fn lsm_read_without_spec_reads_base() {
         let dir = tempdir().unwrap();
-        let table = id_value_table(&dir).await; // no LSM write spec
+        let table = id_value_table(&dir).await; // no MemWAL write spec
 
         // With no spec installed there is nothing to route: the default read and
-        // an explicit use_lsm(false) both read the base table without error.
-        for query in [table.query(), table.query().use_lsm(false)] {
+        // an explicit use_memwal(false) both read the base table without error.
+        for query in [table.query(), table.query().use_memwal(false)] {
             let rows = collect_id_value(query.execute().await.unwrap()).await;
             assert_eq!(
                 rows.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
@@ -1482,11 +1482,11 @@ mod lsm_tests {
     }
 
     #[tokio::test]
-    async fn lsm_read_unsupported_shape_errors_without_use_lsm_false() {
+    async fn lsm_read_unsupported_shape_errors_without_use_memwal_false() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         lsm_upsert(&table, vec![4]).await;
@@ -1503,12 +1503,12 @@ mod lsm_tests {
             .expect("unsupported shape on a MemWAL table must error");
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
 
-        // use_lsm(false) is the escape hatch: it reads the base table only.
+        // use_memwal(false) is the escape hatch: it reads the base table only.
         let rows = collect_id_value(
             table
                 .query()
                 .with_row_id()
-                .use_lsm(false)
+                .use_memwal(false)
                 .execute()
                 .await
                 .unwrap(),
@@ -1520,7 +1520,7 @@ mod lsm_tests {
         );
     }
 
-    /// A table with `id`/`text` and a primary key, ready for an LSM write spec.
+    /// A table with `id`/`text` and a primary key, ready for a MemWAL write spec.
     async fn lsm_text_table(dir: &tempfile::TempDir) -> crate::Table {
         let conn = connect(dir.path().to_str().unwrap())
             .execute()
@@ -1535,7 +1535,7 @@ mod lsm_tests {
         table
     }
 
-    /// Upsert `rows` through the LSM write path.
+    /// Upsert `rows` through the MemWAL write path.
     async fn upsert_text(table: &crate::Table, rows: Vec<(i64, &str)>) {
         let mut builder = table.merge_insert(&[]);
         builder
@@ -1579,7 +1579,7 @@ mod lsm_tests {
         let table = lsm_text_table(&dir).await;
         // The default set, on a table with no FTS index yet.
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -1613,7 +1613,7 @@ mod lsm_tests {
 
     /// A spec is replaced by unsetting it and setting the new one.
     ///
-    /// `unset_lsm_write_spec` drains the open writer, so the rows it held
+    /// `disable_memwal` drains the open writer, so the rows it held
     /// survive the replacement, and the writer the next write opens builds its
     /// MemTables from the new set.
     #[tokio::test]
@@ -1633,15 +1633,15 @@ mod lsm_tests {
         // Installed maintaining nothing, then written to: the writer opens with
         // no FTS index.
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .enable_memwal(MemWalWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
             .unwrap();
         upsert_text(&table, vec![(99, "zebra")]).await;
 
         // Setting over an installed spec is refused; unset, then set.
         let err = table
-            .set_lsm_write_spec(
-                LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]),
+            .enable_memwal(
+                MemWalWriteSpec::unsharded().with_maintained_indexes(vec![fts_index.clone()]),
             )
             .await
             .expect_err("an installed spec cannot be set over");
@@ -1649,9 +1649,9 @@ mod lsm_tests {
             err.to_string().contains("already set"),
             "unexpected error: {err}"
         );
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_memwal().await.unwrap();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .enable_memwal(MemWalWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1692,7 +1692,7 @@ mod lsm_tests {
         let table = lsm_text_table(&dir).await;
         // No index yet, and the default set: maintain whatever the table has.
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -1748,7 +1748,7 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
+            .enable_memwal(MemWalWriteSpec::unsharded().with_maintained_indexes(vec![fts_index]))
             .await
             .unwrap();
 
@@ -1843,7 +1843,7 @@ mod lsm_tests {
         }
         let vec_index = table.list_indices().await.unwrap()[0].name.clone();
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
+            .enable_memwal(MemWalWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]))
             .await
             .unwrap();
 
@@ -2062,10 +2062,11 @@ mod lsm_tests {
             .execute()
             .await
             .unwrap();
-        let spec =
-            || LsmWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+        let spec = || {
+            MemWalWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()])
+        };
 
-        let refused = table.set_lsm_write_spec(spec()).await.unwrap_err();
+        let refused = table.enable_memwal(spec()).await.unwrap_err();
         assert!(
             refused.to_string().contains("region_bitmap")
                 && refused
@@ -2078,7 +2079,7 @@ mod lsm_tests {
             .with_plugin(Arc::new(BitmapAsBTree))
             .unwrap();
         table.as_native().unwrap().set_mem_index_registry(registry);
-        table.set_lsm_write_spec(spec()).await.unwrap();
+        table.enable_memwal(spec()).await.unwrap();
 
         // The registry is not stored with the table.
         let other = conn.open_table("t").execute().await.unwrap();
@@ -2136,7 +2137,7 @@ mod lsm_tests {
             active.index_store.index_names()
         );
 
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
         assert_eq!(fresh().await, vec![10, 11]);
         assert_sstables_answer_through_region_bitmap(&table, vec![10, 11]).await;
     }
@@ -2244,7 +2245,7 @@ mod lsm_tests {
             "a clone shares the handle's registry"
         );
         table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_memwal(MemWalWriteSpec::unsharded())
             .await
             .unwrap();
 
@@ -2287,7 +2288,7 @@ mod lsm_tests {
             active.index_store.index_names()
         );
 
-        table.close_lsm_writers().await.unwrap();
+        table.close_memwal_writers().await.unwrap();
         // Only the SSTable written after the index exists carries it.
         let sstables = published_sstables(&table).await;
         let mut carrying = 0;

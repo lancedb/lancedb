@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! MemWAL LSM write path for `merge_insert`.
+//! MemWAL write path for `merge_insert`.
 //!
-//! [`set_lsm_write_spec`] installs an [`LsmWriteSpec`] on a table by creating
-//! Lance's MemWAL index; [`unset_lsm_write_spec`] removes it. Once a spec is
+//! [`enable_memwal`] installs an [`MemWalWriteSpec`] on a table by creating
+//! Lance's MemWAL index; [`disable_memwal`] removes it. Once a spec is
 //! installed, `merge_insert` upsert calls are dispatched through Lance's MemWAL
 //! `ShardWriter` (LSM-style append) instead of the standard merge path — see
 //! [`lsm_dispatch_decision`] and [`execute_lsm_merge_insert`].
@@ -14,7 +14,7 @@
 //! unsharded). [`MergeInsertBuilder::validate_single_shard`] controls whether
 //! every row is checked or only the first. A dataset writes to one shard at a
 //! time; its writer is cached in the [`ShardWriterCache`] held alongside the
-//! dataset, and [`close_lsm_writers`] closes it.
+//! dataset, and [`close_memwal_writers`] closes it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,9 +40,9 @@ use uuid::Uuid;
 use crate::error::{Error, Result};
 use crate::index::IndexConfig;
 use crate::table::merge::{MergeInsertBuilder, MergeResult};
-use crate::table::{BaseTable, LsmWriteSpec, NativeTable};
+use crate::table::{BaseTable, MemWalWriteSpec, NativeTable};
 
-/// Spec id of the sole sharding spec installed by [`set_lsm_write_spec`].
+/// Spec id of the sole sharding spec installed by [`enable_memwal`].
 /// Must match Lance's `InitializeMemWalBuilder` (`SHARDING_SPEC_ID`).
 const SHARDING_SPEC_ID: u32 = 1;
 
@@ -61,23 +61,23 @@ const NUM_BUCKETS_PARAM: &str = "num_buckets";
 const SHARD_NAMESPACE: Uuid = Uuid::from_u128(0x4c53_4d57_5249_5445_5f53_4841_5244_3031);
 
 // =============================================================================
-// set_lsm_write_spec
+// enable_memwal
 // =============================================================================
 
-/// Install an [`LsmWriteSpec`] on the table.
+/// Install an [`MemWalWriteSpec`] on the table.
 ///
 /// The bucket / identity / unsharded sharding spec is constructed and validated
 /// by Lance's
 /// [`InitializeMemWalBuilder`](lance::dataset::mem_wal::InitializeMemWalBuilder).
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) -> Result<()> {
+pub(crate) async fn enable_memwal(table: &NativeTable, spec: MemWalWriteSpec) -> Result<()> {
     table.dataset.ensure_mutable()?;
 
     {
         let dataset = table.dataset.get().await?;
         if dataset.mem_wal_index_details().await?.is_some() {
             return Err(Error::InvalidInput {
-                message: "set_lsm_write_spec: an LSM write spec is already set on this \
+                message: "enable_memwal: a MemWAL write spec is already set on this \
                           table and cannot be changed"
                     .into(),
             });
@@ -115,14 +115,14 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
     let schema = arrow_schema::Schema::from(dataset.schema());
     if !crate::table::computed_columns::computed_columns(&schema).is_empty() {
         return Err(Error::NotSupported {
-            message: "an LSM write spec cannot be installed on a table with computed \
+            message: "a MemWAL write spec cannot be installed on a table with computed \
                       columns: rows in un-compacted tiers are invisible to refresh"
                 .into(),
         });
     }
     if crate::materialized_view::read_definition(&dataset.schema().metadata)?.is_some() {
         return Err(Error::NotSupported {
-            message: "an LSM write spec cannot be installed on a materialized view: \
+            message: "a MemWAL write spec cannot be installed on a materialized view: \
                       rows in un-compacted tiers are invisible to refresh"
                 .into(),
         });
@@ -131,7 +131,7 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
         .initialize_mem_wal()
         .mem_index_registry(table.mem_index_registry());
     let writer_config_defaults = match spec {
-        LsmWriteSpec::Bucket {
+        MemWalWriteSpec::Bucket {
             column,
             num_buckets,
             writer_config_defaults,
@@ -140,7 +140,7 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
             builder = builder.bucket_sharding(column, num_buckets);
             writer_config_defaults
         }
-        LsmWriteSpec::Identity {
+        MemWalWriteSpec::Identity {
             column,
             writer_config_defaults,
             ..
@@ -148,7 +148,7 @@ pub(crate) async fn set_lsm_write_spec(table: &NativeTable, spec: LsmWriteSpec) 
             builder = builder.identity_sharding(column);
             writer_config_defaults
         }
-        LsmWriteSpec::Unsharded {
+        MemWalWriteSpec::Unsharded {
             writer_config_defaults,
             ..
         } => {
@@ -178,22 +178,22 @@ fn index_name_list(indices: &[IndexConfig]) -> String {
 }
 
 // =============================================================================
-// unset_lsm_write_spec
+// disable_memwal
 // =============================================================================
 
-/// Remove the [`LsmWriteSpec`] from the table by dropping the MemWAL index.
+/// Remove the [`MemWalWriteSpec`] from the table by dropping the MemWAL index.
 ///
 /// Any cached shard writers are drained and closed first. Errors if no spec is
 /// currently set.
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn unset_lsm_write_spec(table: &NativeTable) -> Result<()> {
+pub(crate) async fn disable_memwal(table: &NativeTable) -> Result<()> {
     table.dataset.ensure_mutable()?;
 
     {
         let dataset = table.dataset.get().await?;
         if dataset.mem_wal_index_details().await?.is_none() {
             return Err(Error::InvalidInput {
-                message: "unset_lsm_write_spec: no LSM write spec is set on this table".into(),
+                message: "disable_memwal: no MemWAL write spec is set on this table".into(),
             });
         }
     }
@@ -209,46 +209,46 @@ pub(crate) async fn unset_lsm_write_spec(table: &NativeTable) -> Result<()> {
 }
 
 // =============================================================================
-// get_lsm_write_spec
+// get_memwal_spec
 // =============================================================================
 
-/// Read the [`LsmWriteSpec`] currently installed on the table, if any.
+/// Read the [`MemWalWriteSpec`] currently installed on the table, if any.
 ///
 /// Reconstructs the spec from the MemWAL index's stored details — the same
-/// metadata [`set_lsm_write_spec`] writes — read directly via
+/// metadata [`enable_memwal`] writes — read directly via
 /// [`mem_wal_index_details`](DatasetMemWalExt::mem_wal_index_details) (the raw
 /// manifest record, not the `describe_indices` enrichment path, so it is
 /// unaffected by system-index filtering there). Returns `Ok(None)` when no
 /// MemWAL index is installed.
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn get_lsm_write_spec(table: &NativeTable) -> Result<Option<LsmWriteSpec>> {
+pub(crate) async fn get_memwal_spec(table: &NativeTable) -> Result<Option<MemWalWriteSpec>> {
     let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
         return Ok(None);
     };
-    let spec = lsm_write_spec_from_details(&details, dataset.schema())?;
+    let spec = memwal_spec_from_details(&details, dataset.schema())?;
     Ok(Some(spec))
 }
 
-/// Reconstruct the public [`LsmWriteSpec`] from stored MemWAL index details.
+/// Reconstruct the public [`MemWalWriteSpec`] from stored MemWAL index details.
 ///
 /// The sharding transform and its parameters recover the mode; the routing
 /// column is resolved from the sharding field's source id back to its schema
 /// name (only bucket / identity carry a column). `maintained_indexes` and
 /// `writer_config_defaults` are copied verbatim, so the result round-trips
-/// what `set_lsm_write_spec` installed.
-fn lsm_write_spec_from_details(
+/// what `enable_memwal` installed.
+fn memwal_spec_from_details(
     details: &MemWalIndexDetails,
     schema: &LanceSchema,
-) -> Result<LsmWriteSpec> {
+) -> Result<MemWalWriteSpec> {
     let spec = details
         .sharding_specs
         .first()
         .ok_or_else(|| Error::Runtime {
-            message: "get_lsm_write_spec: MemWAL index has no sharding spec".to_string(),
+            message: "get_memwal_spec: MemWAL index has no sharding spec".to_string(),
         })?;
     let field = spec.fields.first().ok_or_else(|| Error::Runtime {
-        message: "get_lsm_write_spec: MemWAL index has an empty sharding spec".to_string(),
+        message: "get_memwal_spec: MemWAL index has an empty sharding spec".to_string(),
     })?;
 
     let base = match field.transform.as_deref() {
@@ -259,16 +259,16 @@ fn lsm_write_spec_from_details(
                 .and_then(|s| s.parse::<u32>().ok())
                 .filter(|n| *n > 0)
                 .ok_or_else(|| Error::Runtime {
-                    message: "get_lsm_write_spec: MemWAL bucket spec has a missing or invalid num_buckets parameter".to_string(),
+                    message: "get_memwal_spec: MemWAL bucket spec has a missing or invalid num_buckets parameter".to_string(),
                 })?;
-            LsmWriteSpec::bucket(sharding_column(field, schema)?, num_buckets)
+            MemWalWriteSpec::bucket(sharding_column(field, schema)?, num_buckets)
         }
-        Some(IDENTITY_TRANSFORM) => LsmWriteSpec::identity(sharding_column(field, schema)?),
-        Some(UNSHARDED_TRANSFORM) => LsmWriteSpec::unsharded(),
+        Some(IDENTITY_TRANSFORM) => MemWalWriteSpec::identity(sharding_column(field, schema)?),
+        Some(UNSHARDED_TRANSFORM) => MemWalWriteSpec::unsharded(),
         other => {
             return Err(Error::Runtime {
                 message: format!(
-                    "get_lsm_write_spec: MemWAL index has an unsupported sharding transform {:?}",
+                    "get_memwal_spec: MemWAL index has an unsupported sharding transform {:?}",
                     other
                 ),
             });
@@ -284,30 +284,30 @@ fn lsm_write_spec_from_details(
 
 /// Resolve the single routing column name from a sharding field's source id.
 ///
-/// `set_lsm_write_spec` records the shard column by its Lance field id, so the
+/// `enable_memwal` records the shard column by its Lance field id, so the
 /// name is recovered by looking that id up in the current schema.
 fn sharding_column(field: &ShardingField, schema: &LanceSchema) -> Result<String> {
     let source_id = *field.source_ids.first().ok_or_else(|| Error::Runtime {
-        message: "get_lsm_write_spec: sharding field has no source column".to_string(),
+        message: "get_memwal_spec: sharding field has no source column".to_string(),
     })?;
     schema
         .field_by_id(source_id)
         .map(|f| f.name.clone())
         .ok_or_else(|| Error::Runtime {
             message: format!(
-                "get_lsm_write_spec: sharding source field id {} not found in schema",
+                "get_memwal_spec: sharding source field id {} not found in schema",
                 source_id
             ),
         })
 }
 
 // =============================================================================
-// close_lsm_writers
+// close_memwal_writers
 // =============================================================================
 
 /// Drain and close every cached MemWAL shard writer for the table.
 #[allow(clippy::redundant_pub_crate)]
-pub(crate) async fn close_lsm_writers(table: &NativeTable) -> Result<()> {
+pub(crate) async fn close_memwal_writers(table: &NativeTable) -> Result<()> {
     table.dataset.shard_writer().drain_and_close().await
 }
 
@@ -321,7 +321,7 @@ pub(crate) async fn close_lsm_writers(table: &NativeTable) -> Result<()> {
 /// so the writer lives where the dataset lives — cached for the session and
 /// reused across `merge_insert` calls. A dataset writes to one shard at a
 /// time; routing a `merge_insert` to a different shard requires closing the
-/// current writer first via [`close_lsm_writers`]. `ShardWriter::put` takes
+/// current writer first via [`close_memwal_writers`]. `ShardWriter::put` takes
 /// `&self`, so concurrent puts on the cached writer are safe; `close` consumes
 /// the writer, so the entry wraps it in `RwLock<Option<ShardWriter>>`.
 #[derive(Default)]
@@ -371,7 +371,7 @@ impl ShardWriterEntry {
 
     /// The cached writer's latest in-memory manifest (current generation +
     /// SSTables). `Ok(None)` if the writer was already closed.
-    /// Used by the LSM read path to snapshot this shard authoritatively
+    /// Used by the MemWAL read path to snapshot this shard authoritatively
     /// without re-reading the on-disk manifest.
     async fn manifest(&self) -> Result<Option<lance_index::mem_wal::ShardManifest>> {
         let guard = self.inner.read().await;
@@ -489,7 +489,7 @@ impl ShardWriterCache {
         }
     }
 
-    /// Snapshot the cached writer's shard for the LSM read path: its shard id,
+    /// Snapshot the cached writer's shard for the MemWAL read path: its shard id,
     /// authoritative in-memory manifest, and active + frozen memtable refs.
     /// Returns `None` when no writer is currently cached (e.g. nothing has been
     /// written this session, or the writer was closed).
@@ -537,7 +537,7 @@ fn check_shard_match(cached: Uuid, wanted: Uuid) -> Result<()> {
     }
     Err(Error::InvalidInput {
         message: format!(
-            "merge_insert: a shard writer is already open for shard {} but this input routes to shard {}; call close_lsm_writers before writing to a different shard",
+            "merge_insert: a shard writer is already open for shard {} but this input routes to shard {}; call close_memwal_writers before writing to a different shard",
             cached, wanted
         ),
     })
@@ -569,7 +569,7 @@ pub(crate) struct LsmPlan {
 /// Outcome of [`lsm_dispatch_decision`].
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) enum LsmDispatch {
-    /// No LSM write spec applies; use the standard `merge_insert` path.
+    /// No MemWAL write spec applies; use the standard `merge_insert` path.
     Standard,
     /// Route the `merge_insert` through the MemWAL shard writer.
     Lsm(LsmPlan),
@@ -583,18 +583,18 @@ pub(crate) async fn lsm_dispatch_decision(
     params: &MergeInsertBuilder,
 ) -> Result<LsmDispatch> {
     // Explicit opt-out: use the standard path regardless of any installed spec.
-    if params.use_lsm == Some(false) {
+    if params.use_memwal == Some(false) {
         return Ok(LsmDispatch::Standard);
     }
 
     let dataset = table.dataset.get().await?;
     let Some(details) = dataset.mem_wal_index_details().await? else {
-        // No write spec installed. `use_lsm(true)` demanded MemWAL routing, so
+        // No write spec installed. `use_memwal(true)` demanded MemWAL routing, so
         // that is an error; otherwise fall back to the standard path.
-        if params.use_lsm == Some(true) {
+        if params.use_memwal == Some(true) {
             return Err(Error::InvalidInput {
-                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
-                    install one with set_lsm_write_spec or leave use_lsm unset"
+                message: "use_memwal(true) was set but the table has no MemWAL write spec; \
+                    install one with enable_memwal or leave use_memwal unset"
                     .to_string(),
             });
         }
@@ -616,7 +616,7 @@ pub(crate) async fn lsm_dispatch_decision(
     if !params.on.is_empty() && params.on != pk_cols {
         return Err(Error::InvalidInput {
             message: format!(
-                "merge_insert: `on` columns {:?} must match the table's unenforced primary key {:?} when an LSM write spec is set; pass an empty `on` to default to the primary key",
+                "merge_insert: `on` columns {:?} must match the table's unenforced primary key {:?} when a MemWAL write spec is set; pass an empty `on` to default to the primary key",
                 params.on, pk_cols
             ),
         });
@@ -624,7 +624,7 @@ pub(crate) async fn lsm_dispatch_decision(
 
     if !is_upsert_only(params) {
         return Err(Error::InvalidInput {
-            message: "merge_insert: when an LSM write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_lsm(false) to use the standard merge_insert path".to_string(),
+            message: "merge_insert: when a MemWAL write spec is set, only the upsert form (when_matched_update_all without a filter + when_not_matched_insert_all, no by-source delete) is supported; call use_memwal(false) to use the standard merge_insert path".to_string(),
         });
     }
 

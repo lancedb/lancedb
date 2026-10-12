@@ -547,22 +547,22 @@ pub trait QueryBase {
     /// Control MemWAL read routing for this query.
     ///
     /// By default (unset), when the table carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
+    /// [`crate::Table::enable_memwal`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
     /// memtables and SSTables); a table without a spec reads the base
     /// table.
     ///
-    /// - `use_lsm(true)` forces LSM routing and errors if the table has no
+    /// - `use_memwal(true)` forces MemWAL routing and errors if the table has no
     ///   MemWAL write spec.
-    /// - `use_lsm(false)` bypasses the MemWAL and reads the base table only,
+    /// - `use_memwal(false)` bypasses the MemWAL and reads the base table only,
     ///   even when a spec is present.
     ///
     /// Note: the LSM scanner does not support every query shape (e.g. reranking,
     /// hybrid search, `order_by`). On a MemWAL table those shapes error unless
-    /// `use_lsm(false)` is set, because a base-only read would silently
+    /// `use_memwal(false)` is set, because a base-only read would silently
     /// exclude un-compacted MemWAL data.
-    fn use_lsm(self, enable: bool) -> Self;
+    fn use_memwal(self, enable: bool) -> Self;
 }
 
 pub trait HasQuery {
@@ -634,8 +634,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn use_lsm(mut self, enable: bool) -> Self {
-        self.mut_query().use_lsm = Some(enable);
+    fn use_memwal(mut self, enable: bool) -> Self {
+        self.mut_query().use_memwal = Some(enable);
         self
     }
 }
@@ -900,17 +900,17 @@ pub struct QueryRequest {
 
     /// Controls MemWAL read routing. When unset (the default), a query against a
     /// table that carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
+    /// [`crate::Table::enable_memwal`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
     /// memtables and the SSTables, deduplicated by primary key
     /// against the base table (newest generation wins); a table without a spec
     /// reads the base table.
     ///
-    /// - `Some(true)` forces LSM routing and errors if the table has no MemWAL
+    /// - `Some(true)` forces MemWAL routing and errors if the table has no MemWAL
     ///   write spec.
     /// - `Some(false)` reads only the base table, bypassing the MemWAL.
-    pub use_lsm: Option<bool>,
+    pub use_memwal: Option<bool>,
 }
 
 impl Default for QueryRequest {
@@ -930,7 +930,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
-            use_lsm: None,
+            use_memwal: None,
         }
     }
 }

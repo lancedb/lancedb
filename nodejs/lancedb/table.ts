@@ -35,7 +35,7 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
-  LsmStats,
+  MemWalStats,
   Branches as NativeBranches,
   OptimizeStats,
   RefreshColumnResult,
@@ -61,7 +61,7 @@ export { IndexConfig } from "./native";
 export {
   TableShardStats,
   SsTableStats,
-  LsmStats,
+  MemWalStats,
   MemtableStats,
 } from "./native";
 
@@ -217,7 +217,7 @@ export type TokenizeTableOptions =
  * `column` value, or upserts of that key can land in different shards and a
  * stale version can win).
  */
-export interface LsmWriteSpec {
+export interface MemWalWriteSpec {
   /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
   specType: "bucket" | "identity" | "unsharded";
   /** Bucket and identity variants: the sharding column. */
@@ -751,10 +751,10 @@ export abstract class Table {
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
   /**
-   * Install an {@link LsmWriteSpec} on this table, selecting Lance's MemWAL
+   * Install an {@link MemWalWriteSpec} on this table, selecting Lance's MemWAL
    * LSM-style write path for future `mergeInsert` calls.
    *
-   * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+   * `MemWalWriteSpec` chooses one of three sharding strategies via `specType`:
    *
    * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
    *   key (`column` and `numBuckets` required).
@@ -769,12 +769,12 @@ export abstract class Table {
    * including ones created later, and skips a kind the MemWAL cannot maintain.
    * Naming them pins an exact set, and a still-building index is rejected
    * rather than quietly omitted.
-   * @param {LsmWriteSpec} spec The sharding spec to install.
+   * @param {MemWalWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
    * ```ts
    * await table.setUnenforcedPrimaryKey("id");
-   * await table.setLsmWriteSpec({
+   * await table.enableMemWal({
    *   specType: "bucket",
    *   column: "id",
    *   numBuckets: 16,
@@ -782,36 +782,36 @@ export abstract class Table {
    * });
    * ```
    */
-  abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
+  abstract enableMemWal(spec: MemWalWriteSpec): Promise<void>;
   /**
-   * Remove the {@link LsmWriteSpec} from this table, reverting to the standard
+   * Remove the {@link MemWalWriteSpec} from this table, reverting to the standard
    * `mergeInsert` write path.
    *
    * Errors if no spec is currently set.
    * @returns {Promise<void>}
    */
-  abstract unsetLsmWriteSpec(): Promise<void>;
+  abstract disableMemWal(): Promise<void>;
   /**
-   * Read the {@link LsmWriteSpec} currently installed on this table.
+   * Read the {@link MemWalWriteSpec} currently installed on this table.
    *
-   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
-   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
+   * Resolves to `undefined` when the MemWAL write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#disableMemWal}).
    * The spec is the one installed, including its maintained-index selection:
    * an absent `maintainedIndexes` for every index the table has, an empty
    * array for none.
-   * @returns {Promise<LsmWriteSpec | undefined>}
+   * @returns {Promise<MemWalWriteSpec | undefined>}
    */
-  abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
+  abstract getMemWalSpec(): Promise<MemWalWriteSpec | undefined>;
   /**
    * Drain and close any cached MemWAL shard writers held for this table.
    *
-   * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * When an {@link MemWalWriteSpec} is installed, `mergeInsert` opens MemWAL
    * shard writers and caches them for reuse across calls. This closes them,
    * flushing pending data; writers reopen lazily on the next `mergeInsert`.
    * It is a no-op when no writers are cached.
    * @returns {Promise<void>}
    */
-  abstract closeLsmWriters(): Promise<void>;
+  abstract closeMemWalWriters(): Promise<void>;
   /**
    * Freeze every table shard's active memtable into a new SSTable.
    *
@@ -819,18 +819,18 @@ export abstract class Table {
    * so this is safe to call repeatedly.
    * @returns {Promise<void>}
    */
-  abstract flushLsm(): Promise<void>;
+  abstract flushMemWal(): Promise<void>;
   /**
    * Trigger a background SSTable compaction pass per table shard.
    *
    * Returns once the passes are *dispatched*, not once they finish — watch
-   * {@link Table#getLsmStats} for progress, or use
-   * {@link Table#checkpointLsm} to wait for convergence.
+   * {@link Table#getMemWalStats} for progress, or use
+   * {@link Table#checkpointMemWal} to wait for convergence.
    * @returns {Promise<void>}
    */
-  abstract compactLsm(): Promise<void>;
+  abstract compactMemWal(): Promise<void>;
   /**
-   * Converge this table's LSM write path into its base table.
+   * Converge this table's MemWAL write path into its base table.
    *
    * Freezes once, then triggers compaction and polls until the SSTables that existed
    * at the start is gone. The target set is fixed at the start, so
@@ -845,26 +845,26 @@ export abstract class Table {
    * @returns {Promise<void>}
    * @example
    * ```ts
-   * const before = await table.getLsmStats();
-   * await table.checkpointLsm();
-   * const after = await table.getLsmStats();
+   * const before = await table.getMemWalStats();
+   * await table.checkpointMemWal();
+   * const after = await table.getMemWalStats();
    * ```
    */
-  abstract checkpointLsm(): Promise<void>;
+  abstract checkpointMemWal(): Promise<void>;
   /**
-   * Read live per-table-shard LSM state.
+   * Read live per-table-shard MemWAL state.
    *
    * Answers "how far behind is my fresh tier", "which table shard is hot", and
    * "why is my fresh-tier vector search brute-force". Mutates no table state.
    *
-   * Resolves to `undefined` only when the LSM write path is not enabled.
+   * Resolves to `undefined` only when the MemWAL write path is not enabled.
    * @param {boolean} includeSstableRows Also count rows per SSTable.
    *   Off by default because each count opens an uncached Lance dataset.
-   * @returns {Promise<LsmStats | undefined>}
+   * @returns {Promise<MemWalStats | undefined>}
    */
-  abstract getLsmStats(
+  abstract getMemWalStats(
     includeSstableRows?: boolean,
-  ): Promise<LsmStats | undefined>;
+  ): Promise<MemWalStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -1467,43 +1467,43 @@ export class LocalTable extends Table {
     return await this.inner.setUnenforcedPrimaryKey(cols);
   }
 
-  async setLsmWriteSpec(spec: LsmWriteSpec): Promise<void> {
-    return await this.inner.setLsmWriteSpec(spec);
+  async enableMemWal(spec: MemWalWriteSpec): Promise<void> {
+    return await this.inner.enableMemWal(spec);
   }
 
-  async unsetLsmWriteSpec(): Promise<void> {
-    return await this.inner.unsetLsmWriteSpec();
+  async disableMemWal(): Promise<void> {
+    return await this.inner.disableMemWal();
   }
 
-  async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
+  async getMemWalSpec(): Promise<MemWalWriteSpec | undefined> {
     // The native binding types `specType` as a plain `string`; narrow it back
     // to the public union. The Rust `From` impl only ever emits one of the
     // three valid values, so the cast is safe.
-    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
-      | LsmWriteSpec
+    return ((await this.inner.getMemWalSpec()) ?? undefined) as
+      | MemWalWriteSpec
       | undefined;
   }
 
-  async closeLsmWriters(): Promise<void> {
-    return await this.inner.closeLsmWriters();
+  async closeMemWalWriters(): Promise<void> {
+    return await this.inner.closeMemWalWriters();
   }
 
-  async flushLsm(): Promise<void> {
-    return await this.inner.flushLsm();
+  async flushMemWal(): Promise<void> {
+    return await this.inner.flushMemWal();
   }
 
-  async compactLsm(): Promise<void> {
-    return await this.inner.compactLsm();
+  async compactMemWal(): Promise<void> {
+    return await this.inner.compactMemWal();
   }
 
-  async checkpointLsm(): Promise<void> {
-    return await this.inner.checkpointLsm();
+  async checkpointMemWal(): Promise<void> {
+    return await this.inner.checkpointMemWal();
   }
 
-  async getLsmStats(
+  async getMemWalStats(
     includeSstableRows: boolean = false,
-  ): Promise<LsmStats | undefined> {
-    return (await this.inner.getLsmStats(includeSstableRows)) ?? undefined;
+  ): Promise<MemWalStats | undefined> {
+    return (await this.inner.getMemWalStats(includeSstableRows)) ?? undefined;
   }
 
   async version(): Promise<number> {

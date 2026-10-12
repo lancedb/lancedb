@@ -168,9 +168,9 @@ impl Query {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi]
@@ -394,9 +394,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi]
@@ -504,9 +504,9 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi(catch_unwind)]

@@ -640,11 +640,11 @@ describe.each(arrowVersions)(
       );
     });
 
-    it("should expose useLsm on takeRowIds as the base-only escape hatch", async () => {
+    it("should expose useMemWal on takeRowIds as the base-only escape hatch", async () => {
       await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
-      // useLsm(false) is reachable on TakeQuery (the escape hatch for MemWAL tables,
+      // useMemWal(false) is reachable on TakeQuery (the escape hatch for MemWAL tables,
       // where take-by-row-id auto-routes to the LSM scanner and is rejected).
-      const res = await table.takeRowIds([0, 2]).useLsm(false).toArray();
+      const res = await table.takeRowIds([0, 2]).useMemWal(false).toArray();
       expect(res.map((r) => r.id)).toEqual([1, 3]);
     });
 
@@ -4606,7 +4606,7 @@ describe("setUnenforcedPrimaryKey", () => {
   });
 });
 
-describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
+describe("enableMemWal / disableMemWal", () => {
   let tmpDir: tmp.DirResult;
 
   beforeEach(() => {
@@ -4626,16 +4626,16 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
     });
-    await table.unsetLsmWriteSpec();
+    await table.disableMemWal();
     // A second unset errors — there is no spec left to remove.
-    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
+    await expect(table.disableMemWal()).rejects.toThrow();
     // A fresh spec can be installed after unset.
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 8,
@@ -4647,8 +4647,8 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "unsharded" });
-    await table.unsetLsmWriteSpec();
+    await table.enableMemWal({ specType: "unsharded" });
+    await table.disableMemWal();
   });
 
   it("installs an identity spec", async () => {
@@ -4656,8 +4656,8 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
-    await table.unsetLsmWriteSpec();
+    await table.enableMemWal({ specType: "identity", column: "id" });
+    await table.disableMemWal();
   });
 
   it("rejects an invalid spec", async () => {
@@ -4667,7 +4667,7 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     await table.setUnenforcedPrimaryKey("id");
     // num_buckets out of range.
     await expect(
-      table.setLsmWriteSpec({
+      table.enableMemWal({
         specType: "bucket",
         column: "id",
         numBuckets: 0,
@@ -4675,7 +4675,7 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     ).rejects.toThrow();
     // Column mismatch.
     await expect(
-      table.setLsmWriteSpec({
+      table.enableMemWal({
         specType: "bucket",
         column: "missing",
         numBuckets: 4,
@@ -4683,13 +4683,13 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     ).rejects.toThrow();
   });
 
-  it("reads back the installed spec via getLsmWriteSpec", async () => {
+  it("reads back the installed spec via getMemWalSpec", async () => {
     const conn = await connect(tmpDir.name);
     const table = await makeTable(conn);
     await table.setUnenforcedPrimaryKey("id");
 
     // Nothing installed yet.
-    expect(await table.getLsmWriteSpec()).toBeUndefined();
+    expect(await table.getMemWalSpec()).toBeUndefined();
 
     // A real scalar index is needed to name it as a maintained index.
     await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
@@ -4700,14 +4700,14 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     // defaults. Lance writer-config keys are canonically snake_case.
     // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
     const writerConfigDefaults = { durable_write: "false" };
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
       maintainedIndexes: [indexName],
       writerConfigDefaults,
     });
-    const spec = await table.getLsmWriteSpec();
+    const spec = await table.getMemWalSpec();
     expect(spec).toBeDefined();
     expect(spec?.specType).toBe("bucket");
     expect(spec?.column).toBe("id");
@@ -4716,19 +4716,19 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
 
     // After unset, undefined again.
-    await table.unsetLsmWriteSpec();
-    expect(await table.getLsmWriteSpec()).toBeUndefined();
+    await table.disableMemWal();
+    expect(await table.getMemWalSpec()).toBeUndefined();
 
     // Identity round-trips (column recovered from the schema).
-    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
-    const identity = await table.getLsmWriteSpec();
+    await table.enableMemWal({ specType: "identity", column: "id" });
+    const identity = await table.getMemWalSpec();
     expect(identity?.specType).toBe("identity");
     expect(identity?.column).toBe("id");
-    await table.unsetLsmWriteSpec();
+    await table.disableMemWal();
 
     // Unsharded round-trips (no routing column).
-    await table.setLsmWriteSpec({ specType: "unsharded" });
-    const unsharded = await table.getLsmWriteSpec();
+    await table.enableMemWal({ specType: "unsharded" });
+    const unsharded = await table.getMemWalSpec();
     expect(unsharded?.specType).toBe("unsharded");
     expect(unsharded?.column).toBeFalsy();
   });
@@ -4757,7 +4757,7 @@ describe("LSM merge insert", () => {
     ]);
     await table.setUnenforcedPrimaryKey("id");
     // numBuckets = 1: every row routes to the single bucket.
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 1,
@@ -4782,17 +4782,17 @@ describe("LSM merge insert", () => {
     expect(res.version).toBe(0);
     expect(res.numInsertedRows).toBe(0);
 
-    await table.closeLsmWriters();
+    await table.closeMemWalWriters();
   });
 
-  it("falls back to the standard path with useLsm(false)", async () => {
+  it("falls back to the standard path with useMemWal(false)", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
     const res = await table
       .mergeInsert("id")
       .whenNotMatchedInsertAll()
-      .useLsm(false)
+      .useMemWal(false)
       .execute([
         { id: "b", value: 9 },
         { id: "e", value: 5 },
@@ -4815,7 +4815,7 @@ describe("LSM merge insert", () => {
     expect(res.numRows).toBe(1);
   });
 
-  it("rejects a non-upsert merge under an LSM spec", async () => {
+  it("rejects a non-upsert merge under a MemWAL spec", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
@@ -4841,22 +4841,22 @@ describe("LSM merge insert", () => {
     const lsm = await table.query().toArray();
     expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
 
-    // useLsm(false) bypasses the MemWAL and reads the base table only.
-    const baseOnly = await table.query().useLsm(false).toArray();
+    // useMemWal(false) bypasses the MemWAL and reads the base table only.
+    const baseOnly = await table.query().useMemWal(false).toArray();
     expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
   });
 
-  it("reads the base table when no LSM spec is installed", async () => {
+  it("reads the base table when no MemWAL spec is installed", async () => {
     const conn = await connect(tmpDir.name);
     const table = await conn.createEmptyTable(
       "plain",
       new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
     );
-    // No spec: default read and useLsm(false) both succeed against the base table.
+    // No spec: default read and useMemWal(false) both succeed against the base table.
     await expect(table.query().toArray()).resolves.toBeDefined();
-    await expect(table.query().useLsm(false).toArray()).resolves.toBeDefined();
-    // useLsm(true) demands MemWAL routing; without a spec it errors.
-    await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
+    await expect(table.query().useMemWal(false).toArray()).resolves.toBeDefined();
+    // useMemWal(true) demands MemWAL routing; without a spec it errors.
+    await expect(table.query().useMemWal(true).toArray()).rejects.toThrow();
   });
 });
 
@@ -4874,7 +4874,7 @@ describe("LSM convergence and stats", () => {
       new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
     );
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "unsharded" });
+    await table.enableMemWal({ specType: "unsharded" });
     return table;
   }
 
@@ -4882,34 +4882,34 @@ describe("LSM convergence and stats", () => {
   // rejects them rather than answering. What is asserted here is that the
   // bindings reach the core at all; the behavior against a real endpoint is
   // covered by the mocked endpoint tests in rust/lancedb/src/remote/table.rs.
-  it("rejects flushLsm on a local table", async () => {
+  it("rejects flushMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.flushLsm()).rejects.toThrow(/not supported/i);
+    await expect(table.flushMemWal()).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects compactLsm on a local table", async () => {
+  it("rejects compactMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.compactLsm()).rejects.toThrow(/not supported/i);
+    await expect(table.compactMemWal()).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects getLsmStats on a local table", async () => {
+  it("rejects getMemWalStats on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.getLsmStats()).rejects.toThrow(/not supported/i);
-    await expect(table.getLsmStats(true)).rejects.toThrow(/not supported/i);
+    await expect(table.getMemWalStats()).rejects.toThrow(/not supported/i);
+    await expect(table.getMemWalStats(true)).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects checkpointLsm on a local table", async () => {
+  it("rejects checkpointMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    // checkpointLsm freezes first, so it surfaces flushLsm's rejection.
-    await expect(table.checkpointLsm()).rejects.toThrow(/not supported/i);
+    // checkpointMemWal freezes first, so it surfaces flushMemWal's rejection.
+    await expect(table.checkpointMemWal()).rejects.toThrow(/not supported/i);
   });
 });
 

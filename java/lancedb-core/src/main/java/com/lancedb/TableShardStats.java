@@ -22,8 +22,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * Live state of one table shard. A table is N table shards on one node; flattening to a single number hides
- * the one hot table shard that is usually why someone opened this endpoint.
+ * Live state of one table shard. A table is N table shards on one node; flattening to a single
+ * number hides the one hot table shard that is usually why someone opened this endpoint.
  */
 public class TableShardStats {
   private static final String CONTEXT = "tableShard stats";
@@ -115,7 +115,9 @@ public class TableShardStats {
     return compacting;
   }
 
-  /** Oldest first, active last. Empty for a {@code "Sealed"} table shard, whose state is torn down. */
+  /**
+   * Oldest first, active last. Empty for a {@code "Sealed"} table shard, whose state is torn down.
+   */
   public Optional<List<MemtableStats>> memtables() {
     return Optional.ofNullable(memtables);
   }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Live per-table-shard LSM state — the shape [`crate::Table::get_lsm_stats`]
+//! Live per-table-shard MemWAL state — the shape [`crate::Table::get_memwal_stats`]
 //! returns and [`super::checkpoint`] polls.
 //!
 //! Nothing here is derived: sums and differences (total SSTable bytes, WAL lag)
@@ -79,18 +79,18 @@ impl TableShardStats {
     }
 }
 
-/// Live LSM state, one entry per table shard.
+/// Live MemWAL state, one entry per table shard.
 #[derive(Debug, Clone, Deserialize)]
-pub struct LsmStats {
+pub struct MemWalStats {
     pub table_shards: Vec<TableShardStats>,
 }
 
-/// Server-side JSON envelope for `get_lsm_stats`. `lsm_stats` is null when
-/// the table has no LSM write path.
+/// Server-side JSON envelope for `get_memwal_stats`. `memwal_stats` is null when
+/// the table has no MemWAL write path.
 #[derive(Debug, Deserialize)]
-pub(crate) struct GetLsmStatsResponse {
+pub(crate) struct GetMemWalStatsResponse {
     #[serde(default)]
-    pub lsm_stats: Option<LsmStats>,
+    pub memwal_stats: Option<MemWalStats>,
 }
 
 #[cfg(test)]

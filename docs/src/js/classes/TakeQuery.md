@@ -275,10 +275,10 @@ Empty results retain the query's output schema.
 
 ***
 
-### useLsm()
+### useMemWal()
 
 ```ts
-useLsm(enable): this
+useMemWal(enable): this
 ```
 
 Control MemWAL read routing for this take query.

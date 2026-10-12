@@ -39,13 +39,13 @@ use pyo3::{
 
 mod scannable;
 
-/// Convert `LsmStats` to a Python dict, preserving the per-table-shard list.
+/// Convert `MemWalStats` to a Python dict, preserving the per-table-shard list.
 ///
 /// Deliberately not flattened to a table-level summary: a table is N
 /// table shards on one node, and the per-shard detail is the reason the
 /// endpoint exists — flattening hides the single hot table shard someone opened
 /// it to find.
-fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
+fn memwal_stats_to_py(py: Python<'_>, stats: &lancedb::table::MemWalStats) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
     let table_shards = PyList::empty(py);
     for b in &stats.table_shards {
@@ -270,17 +270,17 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
-pub struct LsmWriteSpec {
-    inner: lancedb::table::LsmWriteSpec,
+pub struct MemWalWriteSpec {
+    inner: lancedb::table::MemWalWriteSpec,
 }
 
 #[pymethods]
-impl LsmWriteSpec {
+impl MemWalWriteSpec {
     /// Hash-bucket sharding by the unenforced primary key column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::bucket(column, num_buckets),
+            inner: lancedb::table::MemWalWriteSpec::bucket(column, num_buckets),
         }
     }
 
@@ -294,7 +294,7 @@ impl LsmWriteSpec {
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::identity(column),
+            inner: lancedb::table::MemWalWriteSpec::identity(column),
         }
     }
 
@@ -303,7 +303,7 @@ impl LsmWriteSpec {
     #[staticmethod]
     pub fn unsharded() -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::unsharded(),
+            inner: lancedb::table::MemWalWriteSpec::unsharded(),
         }
     }
 
@@ -327,33 +327,33 @@ impl LsmWriteSpec {
 
     pub fn __repr__(&self) -> String {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket {
+            lancedb::table::MemWalWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
+                "MemWalWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 num_buckets,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Identity {
+            lancedb::table::MemWalWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
+                "MemWalWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Unsharded {
+            lancedb::table::MemWalWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
+                "MemWalWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
@@ -365,9 +365,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn spec_type(&self) -> &'static str {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
-            lancedb::table::LsmWriteSpec::Identity { .. } => "identity",
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
+            lancedb::table::MemWalWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::MemWalWriteSpec::Identity { .. } => "identity",
+            lancedb::table::MemWalWriteSpec::Unsharded { .. } => "unsharded",
         }
     }
 
@@ -375,9 +375,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn column(&self) -> Option<String> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { column, .. }
-            | lancedb::table::LsmWriteSpec::Identity { column, .. } => Some(column.clone()),
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => None,
+            lancedb::table::MemWalWriteSpec::Bucket { column, .. }
+            | lancedb::table::MemWalWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::MemWalWriteSpec::Unsharded { .. } => None,
         }
     }
 
@@ -385,7 +385,7 @@ impl LsmWriteSpec {
     #[getter]
     pub fn num_buckets(&self) -> Option<u32> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            lancedb::table::MemWalWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
             _ => None,
         }
     }
@@ -403,14 +403,14 @@ impl LsmWriteSpec {
     }
 }
 
-impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
-    fn from(spec: LsmWriteSpec) -> Self {
+impl From<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
+    fn from(spec: MemWalWriteSpec) -> Self {
         spec.inner
     }
 }
 
-impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
-    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+impl From<lancedb::table::MemWalWriteSpec> for MemWalWriteSpec {
+    fn from(inner: lancedb::table::MemWalWriteSpec) -> Self {
         Self { inner }
     }
 }
@@ -1593,8 +1593,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_lsm) = parameters.use_lsm {
-            builder.use_lsm(use_lsm);
+        if let Some(use_memwal) = parameters.use_memwal {
+            builder.use_memwal(use_memwal);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1619,29 +1619,29 @@ impl Table {
         })
     }
 
-    pub fn set_lsm_write_spec<'a>(
+    pub fn enable_memwal<'a>(
         self_: PyRef<'a, Self>,
-        spec: LsmWriteSpec,
+        spec: MemWalWriteSpec,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let native_spec = lancedb::table::LsmWriteSpec::from(spec);
+        let native_spec = lancedb::table::MemWalWriteSpec::from(spec);
         future_into_py(self_.py(), async move {
-            inner.set_lsm_write_spec(native_spec).await.infer_error()
+            inner.enable_memwal(native_spec).await.infer_error()
         })
     }
 
-    pub fn unset_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn disable_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.unset_lsm_write_spec().await.infer_error()
+            inner.disable_memwal().await.infer_error()
         })
     }
 
-    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn get_memwal_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let spec = inner.get_lsm_write_spec().await.infer_error()?;
-            Ok(spec.map(LsmWriteSpec::from))
+            let spec = inner.get_memwal_spec().await.infer_error()?;
+            Ok(spec.map(MemWalWriteSpec::from))
         })
     }
 
@@ -1660,55 +1660,54 @@ impl Table {
         Ok(())
     }
 
-    /// Converge the table's LSM write path into its base table.
+    /// Converge the table's MemWAL write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
     /// pass. Errors if the table stops making progress.
-    pub fn checkpoint_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkpoint_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.checkpoint_lsm().await.infer_error()
+            inner.checkpoint_memwal().await.infer_error()
         })
     }
 
     /// Freeze every table shard's active memtable into an SSTable.
-    pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.inner_ref()?.clone();
-        future_into_py(
-            self_.py(),
-            async move { inner.flush_lsm().await.infer_error() },
-        )
-    }
-
-    /// Trigger a background SSTable compaction pass per table shard. Returns once the
-    /// passes are dispatched, not once they finish — watch `get_lsm_stats`.
-    pub fn compact_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn flush_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.compact_lsm().await.infer_error()
+            inner.flush_memwal().await.infer_error()
         })
     }
 
-    /// Live LSM state, or `None` when the LSM write path is not enabled.
+    /// Trigger a background SSTable compaction pass per table shard. Returns once the
+    /// passes are dispatched, not once they finish — watch `get_memwal_stats`.
+    pub fn compact_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            inner.compact_memwal().await.infer_error()
+        })
+    }
+
+    /// Live MemWAL state, or `None` when the MemWAL write path is not enabled.
     #[pyo3(signature = (include_sstable_rows=false))]
-    pub fn get_lsm_stats(
+    pub fn get_memwal_stats(
         self_: PyRef<'_, Self>,
         include_sstable_rows: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner
-                .get_lsm_stats(include_sstable_rows)
+                .get_memwal_stats(include_sstable_rows)
                 .await
                 .infer_error()?;
-            Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
+            Python::attach(|py| stats.map(|s| memwal_stats_to_py(py, &s)).transpose())
         })
     }
 
-    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn close_memwal_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.close_lsm_writers().await.infer_error()
+            inner.close_memwal_writers().await.infer_error()
         })
     }
 
@@ -2040,7 +2039,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_lsm: Option<bool>,
+    use_memwal: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

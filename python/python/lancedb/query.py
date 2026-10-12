@@ -828,7 +828,7 @@ class Query(pydantic.BaseModel):
     # MemWAL LSM read routing: None auto-routes when the table carries a write
     # spec, True forces the LSM scanner (errors without a spec), False reads the
     # base table only
-    use_lsm: Optional[bool] = None
+    use_memwal: Optional[bool] = None
 
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
@@ -848,9 +848,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
-        # use_lsm is a genuine tri-state (None / True / False); preserve it as-is
+        # use_memwal is a genuine tri-state (None / True / False); preserve it as-is
         # so a round-tripped query keeps an explicit False.
-        query.use_lsm = req.use_lsm
+        query.use_memwal = req.use_memwal
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -1023,7 +1023,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
-        self._use_lsm = None
+        self._use_memwal = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -1380,10 +1380,10 @@ class LanceQueryBuilder(ABC):
         self._fragment_ids = fragment_ids
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
+    def use_memwal(self, enable: bool) -> Self:
         """Control MemWAL LSM read routing for this query.
 
-        By default (unset), a query against a table with an LSM write spec is
+        By default (unset), a query against a table with a MemWAL write spec is
         routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
         table (active/frozen memtables + SSTables); a table without a
@@ -1392,7 +1392,7 @@ class LanceQueryBuilder(ABC):
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no LSM
+            ``True`` forces the LSM scanner and errors if the table has no MemWAL
             write spec. ``False`` bypasses the MemWAL and reads the base table
             only, even when a spec is present.
 
@@ -1401,7 +1401,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._use_lsm = enable
+        self._use_memwal = enable
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1893,7 +1893,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_memwal=self._use_memwal,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -2118,7 +2118,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_memwal=self._use_memwal,
             full_text_query=FullTextSearchQuery(
                 query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
@@ -2185,7 +2185,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_memwal=self._use_memwal,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2830,7 +2830,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
         self._pk_fusion = None
         columns = self._columns
-        if _wal_hybrid.pk_fusion_learned(self._table, self._use_lsm):
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_memwal):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 self._table.schema,
                 self._columns,
@@ -2847,9 +2847,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
-        if self._use_lsm is not None:
-            self._vector_query.use_lsm(self._use_lsm)
-            self._fts_query.use_lsm(self._use_lsm)
+        if self._use_memwal is not None:
+            self._vector_query.use_memwal(self._use_memwal)
+            self._fts_query.use_memwal(self._use_memwal)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
         if self._distance_type:
@@ -3453,12 +3453,12 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.fast_search()
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
+    def use_memwal(self, enable: bool) -> Self:
         """
         Control MemWAL LSM read routing for this query.
 
-        By default (unset), a query against a table with an LSM write spec (see
-        [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec])
+        By default (unset), a query against a table with a MemWAL write spec (see
+        [AsyncTable.enable_memwal][lancedb.table.AsyncTable.enable_memwal])
         is routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
         table (the active/frozen in-memory memtables and the SSTables),
@@ -3467,11 +3467,11 @@ class AsyncStandardQuery(AsyncQueryBase):
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no LSM
+            ``True`` forces the LSM scanner and errors if the table has no MemWAL
             write spec. ``False`` bypasses the MemWAL and reads the base table
             only, even when a spec is present.
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_memwal(enable)
         return self
 
     def postfilter(self) -> Self:
@@ -4114,7 +4114,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
         # calls.
         self._pk_fusion = None
-        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_lsm):
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_memwal):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 await self._table.schema(),
                 _query_request_projection(fts_req),
@@ -4303,13 +4303,13 @@ class AsyncTakeQuery(AsyncQueryBase):
     def __init__(self, inner: LanceTakeQuery, table: Optional["AsyncTable"] = None):
         super().__init__(inner, table)
 
-    def use_lsm(self, enable: bool) -> "AsyncTakeQuery":
+    def use_memwal(self, enable: bool) -> "AsyncTakeQuery":
         """Control MemWAL LSM read routing for this take query.
 
         ``False`` bypasses the MemWAL and reads the base table only — the escape
         hatch, since take-by-row-id/offset is not supported on the LSM scanner.
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_memwal(enable)
         return self
 
     async def _plain_scan_to_pandas(
@@ -4370,14 +4370,14 @@ class BaseQueryBuilder(object):
         self._inner.with_row_id()
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
+    def use_memwal(self, enable: bool) -> Self:
         """
         Control MemWAL LSM read routing for this query.
 
         ``False`` bypasses the MemWAL and reads the base table only, the escape
         hatch for shapes the LSM scanner cannot honor (e.g. take-by-row-id).
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_memwal(enable)
         return self
 
     def with_row_address(self, with_row_address: bool = True) -> Self:

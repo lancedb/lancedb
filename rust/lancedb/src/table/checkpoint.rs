@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Converging a table's LSM write path into its base table.
+//! Converging a table's MemWAL write path into its base table.
 //!
-//! `checkpoint_lsm` freezes once, then triggers compaction and watches
+//! `checkpoint_memwal` freezes once, then triggers compaction and watches
 //! generation numbers until the SSTables that existed at the start are gone.
 //!
-//! The loop runs in the client, not the server: `compact_lsm` dispatches a
+//! The loop runs in the client, not the server: `compact_memwal` dispatches a
 //! pass and returns, so nothing holds a socket and a client can vanish
 //! mid-operation with nothing to reconcile. Completion is read from
 //! generation numbers in the shard manifest — durable state, unlike a count
@@ -68,7 +68,7 @@ fn is_lost_claim(e: &Error) -> bool {
     status_of(e) == Some(421)
 }
 
-/// Interval between `get_lsm_stats` polls. One interval is roughly one
+/// Interval between `get_memwal_stats` polls. One interval is roughly one
 /// compaction pass, the granularity at which the answer can change.
 ///
 /// Fixed rather than configurable, matching `wait_for_index`. It costs
@@ -149,15 +149,15 @@ where
     }
 }
 
-/// Drive [`Table::checkpoint_lsm`]: freeze once, fix the target watermark
+/// Drive [`Table::checkpoint_memwal`]: freeze once, fix the target watermark
 /// from the resulting SSTables, then trigger and poll until they drain.
-pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
+pub(crate) async fn checkpoint_memwal(table: &Table) -> Result<()> {
     for reissue in 0..=MAX_REISSUES {
         // The freeze turns everything written before this call into an
         // SSTable, so the watermark has to be read after it. Idempotent:
         // freezing an empty memtable is a no-op, so a re-issue does not churn
         // empty SSTables.
-        match issue(|| table.flush_lsm()).await? {
+        match issue(|| table.flush_memwal()).await? {
             Attempt::Ok(()) => {}
             Attempt::ReissueFromFlush => {
                 backoff(reissue).await;
@@ -165,7 +165,7 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
             }
         }
 
-        let stats = match issue(|| table.get_lsm_stats(false)).await? {
+        let stats = match issue(|| table.get_memwal_stats(false)).await? {
             Attempt::Ok(stats) => stats,
             Attempt::ReissueFromFlush => {
                 backoff(reissue).await;
@@ -173,7 +173,7 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
             }
         };
         let Some(stats) = stats else {
-            // Not WAL-backed; `flush_lsm` would have errored first but for a race.
+            // Not WAL-backed; `flush_memwal` would have errored first but for a race.
             return Ok(());
         };
         let targets: HashMap<String, u64> = stats
@@ -194,7 +194,7 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
         }
     }
     Err(Error::Runtime {
-        message: "checkpoint_lsm: the owning node kept losing its claim; \
+        message: "checkpoint_memwal: the owning node kept losing its claim; \
                   re-issued from flush the maximum number of times"
             .into(),
     })
@@ -213,7 +213,7 @@ async fn drain_to_targets(
     targets: &HashMap<String, u64>,
 ) -> Result<CheckpointOutcome> {
     loop {
-        let stats = match issue(|| table.get_lsm_stats(false)).await? {
+        let stats = match issue(|| table.get_memwal_stats(false)).await? {
             Attempt::Ok(stats) => stats,
             Attempt::ReissueFromFlush => return Ok(CheckpointOutcome::ReissueFromFlush),
         };
@@ -241,7 +241,7 @@ async fn drain_to_targets(
         }
 
         if !all_compacting {
-            match table.compact_lsm().await {
+            match table.compact_memwal().await {
                 Ok(()) => {}
                 Err(e) if is_lost_claim(&e) => return Ok(CheckpointOutcome::ReissueFromFlush),
                 Err(e) if !is_retryable(&e) => return Err(e),
