@@ -14,6 +14,7 @@ from lance.blob import BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
+    _set_blob_column,
     blob_v2_projection_sources,
     read_row_ids_from_hits,
     stash_auto_row_ids,
@@ -309,6 +310,21 @@ def test_blob_v2_projection_sources_include_selected_struct():
     assert blob_v2_projection_sources(schema, {"renamed": "info"}) == {
         "renamed.blob": "info.blob"
     }
+
+
+@pytest.mark.parametrize("parent_path", ["info", "outer.info"])
+def test_set_blob_column_missing_nested_field_raises(parent_path):
+    row = {"name": "first"}
+    for name in reversed(parent_path.split(".")):
+        row = {name: row}
+    table = pa.Table.from_pylist([row])
+    blobs = pa.array([b"hello"], type=pa.large_binary())
+
+    with pytest.raises(KeyError) as exc_info:
+        _set_blob_column(table, f"{parent_path}.blob", blobs)
+
+    assert parent_path in str(exc_info.value)
+    assert "'blob'" in str(exc_info.value)
 
 
 def _nested_blob_table(db, name):
