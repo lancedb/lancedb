@@ -1,0 +1,33 @@
+---
+title: "Insert"
+sidebarTitle: "Insert"
+description: "INSERT INTO, including INSERT ... SELECT to move rows server-side."
+icon: plus
+keywords: ["insert", "insert into", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+INSERT INTO documents (id, title) VALUES (1, 'Merlin'), (2, 'Arthur')
+
+INSERT INTO archive SELECT * FROM documents WHERE created_at < '2026-01-01'
+```
+
+`INSERT ... SELECT` is the form worth knowing: it moves rows between tables
+server-side, without a round trip through your process.
+
+Commits a new table version, so [versioning](/management/table#versioning) and
+the [write guarantees](/basics/guarantees#writes) apply -- including that the
+version advances even when the statement affects zero rows.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Insert" icon="plus" href="/ingestion/insert">
+    The SDK equivalent.
+  </Card>
+  <Card title="Merge Insert" icon="code-merge" href="/ingestion/merge-insert">
+    Upsert -- matching incoming rows against existing keys -- has no SQL form.
+  </Card>
+</CardGroup>

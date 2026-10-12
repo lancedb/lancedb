@@ -1,8 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
-use crate::runtime::{block_on, future_into_py};
+use crate::runtime::{block_on, future_into_py, spawn_background};
 use crate::{
     connection::Connection,
     error::PythonErrorExt,
@@ -261,7 +267,7 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
-/// MemWAL supports, resolved on install.
+/// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
 pub struct LsmWriteSpec {
@@ -301,9 +307,9 @@ impl LsmWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default)
-    /// resolves every supported index on install; a list is verbatim,
-    /// and an empty list maintains nothing.
+    /// Set which indexes the MemWAL maintains. `None` (the default) is
+    /// every index the table has, including ones created later; a list is
+    /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
     pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
@@ -441,6 +447,117 @@ impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
     }
 }
 
+/// One row a Function refresh skipped, as the server recorded it.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorRecord {
+    pub job_id: String,
+    pub fragment_id: u64,
+    pub row_offset: Option<u32>,
+    pub column: String,
+    pub function: String,
+    pub function_version: String,
+    pub table_version: u64,
+    pub error_type: String,
+    pub error_message: String,
+    pub created_at_millis: i64,
+}
+
+#[pymethods]
+impl FunctionErrorRecord {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrorRecord(job_id={:?}, fragment_id={}, row_offset={:?}, column={:?}, \
+             error_type={:?}, error_message={:?})",
+            self.job_id,
+            self.fragment_id,
+            self.row_offset,
+            self.column,
+            self.error_type,
+            self.error_message
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
+    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+        Self {
+            job_id: record.job_id,
+            fragment_id: record.fragment_id,
+            row_offset: record.row_offset,
+            column: record.column,
+            function: record.function,
+            function_version: record.function_version,
+            table_version: record.table_version,
+            error_type: record.error_type,
+            error_message: record.error_message,
+            created_at_millis: record.created_at_millis,
+        }
+    }
+}
+
+/// A fragment whose per-row error detail was capped.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorFragment {
+    pub job_id: String,
+    pub fragment_id: u64,
+    pub rows_skipped: u64,
+    pub rows_recorded: u64,
+}
+
+#[pymethods]
+impl FunctionErrorFragment {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrorFragment(job_id={:?}, fragment_id={}, rows_skipped={}, rows_recorded={})",
+            self.job_id, self.fragment_id, self.rows_skipped, self.rows_recorded
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
+    fn from(fragment: lancedb::function::FunctionErrorFragment) -> Self {
+        Self {
+            job_id: fragment.job_id,
+            fragment_id: fragment.fragment_id,
+            rows_skipped: fragment.rows_skipped,
+            rows_recorded: fragment.rows_recorded,
+        }
+    }
+}
+
+/// A table's per-row Function errors.
+#[pyclass(module = "lancedb._lancedb", get_all, from_py_object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrors {
+    pub records: Vec<FunctionErrorRecord>,
+    pub fragments: Vec<FunctionErrorFragment>,
+    pub truncated: bool,
+}
+
+#[pymethods]
+impl FunctionErrors {
+    pub fn __repr__(&self) -> String {
+        format!(
+            "FunctionErrors(records={}, fragments={}, truncated={})",
+            self.records.len(),
+            self.fragments.len(),
+            self.truncated
+        )
+    }
+}
+
+impl From<lancedb::function::FunctionErrors> for FunctionErrors {
+    fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        Self {
+            records: errors.records.into_iter().map(Into::into).collect(),
+            fragments: errors.fragments.into_iter().map(Into::into).collect(),
+            truncated: errors.truncated,
+        }
+    }
+}
+
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RefreshMaterializedViewResult {
@@ -452,6 +569,17 @@ pub struct RefreshMaterializedViewResult {
 
 #[pymethods]
 impl RefreshMaterializedViewResult {
+    #[staticmethod]
+    pub fn from_json(value: &str) -> PyResult<Self> {
+        let result: lancedb::RefreshMaterializedViewResult =
+            serde_json::from_str(value).map_err(|err| {
+                PyValueError::new_err(format!(
+                    "failed to decode materialized-view refresh result: {err}"
+                ))
+            })?;
+        Ok(Self::from(result))
+    }
+
     pub fn __repr__(&self) -> String {
         format!(
             "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
@@ -464,8 +592,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match result.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),
@@ -558,11 +684,23 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
 #[pyclass(name = "BlobFile")]
 pub struct PyBlobFile {
     inner: Arc<BlobFile>,
+    closed: AtomicBool,
+}
+
+impl PyBlobFile {
+    fn ensure_open(&self) -> PyResult<()> {
+        if self.closed.load(Ordering::Acquire) {
+            Err(PyRuntimeError::new_err("blob file is already closed"))
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -572,6 +710,7 @@ impl PyBlobFile {
     }
 
     pub fn read(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
             let bytes = inner
@@ -583,7 +722,20 @@ impl PyBlobFile {
     }
 
     fn close(self_: PyRef<'_, Self>) -> PyResult<()> {
+        if self_.closed.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
         let inner = self_.inner.clone();
+        if tokio::runtime::Handle::try_current().is_ok() {
+            // IOBase.__del__ can call close while cyclic GC runs on a worker.
+            // The status changes immediately; release Lance's async state there.
+            spawn_background(async move {
+                if let Err(error) = inner.close().await {
+                    log::warn!("blob close failed: {error}");
+                }
+            });
+            return Ok(());
+        }
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
@@ -591,13 +743,11 @@ impl PyBlobFile {
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
-        let inner = self_.inner.clone();
-        self_
-            .py()
-            .detach(move || block_on(async move { inner.is_closed().await }))
+        self_.closed.load(Ordering::Acquire)
     }
 
     fn seek(self_: PyRef<'_, Self>, position: u64) -> PyResult<()> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -606,6 +756,7 @@ impl PyBlobFile {
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         self_
             .py()
@@ -619,6 +770,7 @@ impl PyBlobFile {
 
     /// Read a blob-local byte range without moving the cursor.
     fn read_range(self_: PyRef<'_, Self>, offset: u64, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let end = offset
             .checked_add(length as u64)
             .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))?;
@@ -631,6 +783,7 @@ impl PyBlobFile {
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
+        self_.ensure_open()?;
         let inner = self_.inner.clone();
         let py = self_.py();
         let bytes = py
@@ -670,8 +823,8 @@ impl From<LanceDbFtsToken> for FtsToken {
     language = "English".to_string(),
     max_token_length = Some(40),
     lower_case = true,
-    stem = true,
-    remove_stop_words = true,
+    stem = None,
+    remove_stop_words = None,
     custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
@@ -685,15 +838,15 @@ pub fn tokenize(
     language: String,
     max_token_length: Option<u32>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
 ) -> PyResult<Vec<FtsToken>> {
-    let params = FtsIndexBuilder::default()
+    let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
         .map_err(|_| {
@@ -704,13 +857,17 @@ pub fn tokenize(
         })?
         .max_token_length(max_token_length.map(|value| value as usize))
         .lower_case(lower_case)
-        .stem(stem)
-        .remove_stop_words(remove_stop_words)
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
         .ngram_prefix_only(prefix_only)
         .custom_stop_words(custom_stop_words);
+    if let Some(stem) = stem {
+        params = params.stem(stem);
+    }
+    if let Some(remove_stop_words) = remove_stop_words {
+        params = params.remove_stop_words(remove_stop_words);
+    }
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -758,6 +915,11 @@ impl Table {
     /// Returns True if the table is open, False if it is closed.
     pub fn is_open(&self) -> bool {
         self.inner.is_some()
+    }
+
+    /// Whether this table has a local Lance dataset that the client may open.
+    pub fn _is_native(&self) -> PyResult<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
     }
 
     /// Closes the table, releasing any resources associated with it.
@@ -1113,6 +1275,7 @@ impl Table {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
                 dict.set_item("num_indices", stats.num_indices)?;
 
                 let fragment_stats = PyDict::new(py);
@@ -1333,6 +1496,7 @@ impl Table {
                 .map(|handle| {
                     handle.map(|file| PyBlobFile {
                         inner: Arc::new(file),
+                        closed: AtomicBool::new(false),
                     })
                 })
                 .collect::<Vec<_>>())
@@ -1481,6 +1645,21 @@ impl Table {
         })
     }
 
+    /// Whether a hybrid query on this table has already been refused `_rowid`.
+    /// Learned from a previous refusal, never probed, so this is free.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    pub fn hybrid_pk_fusion_learned(self_: PyRef<'_, Self>) -> PyResult<bool> {
+        Ok(self_.inner_ref()?.base_table().hybrid_pk_fusion_learned())
+    }
+
+    /// Remember that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion.
+    pub fn note_hybrid_pk_fusion(self_: PyRef<'_, Self>) -> PyResult<()> {
+        self_.inner_ref()?.base_table().note_hybrid_pk_fusion();
+        Ok(())
+    }
+
     /// Converge the table's LSM write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
@@ -1538,7 +1717,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .uses_v2_manifest_paths()
                 .await
                 .infer_error()
@@ -1550,7 +1732,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
@@ -1627,10 +1812,28 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (job_id=None, column=None, limit=None))]
+    pub fn function_errors(
+        self_: PyRef<'_, Self>,
+        job_id: Option<String>,
+        column: Option<String>,
+        limit: Option<usize>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        let request = lancedb::function::FunctionErrorsRequest {
+            job_id,
+            column,
+            limit,
+        };
+        future_into_py(self_.py(), async move {
+            let errors = inner.function_errors(request).await.infer_error()?;
+            Ok(FunctionErrors::from(errors))
+        })
+    }
+
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1638,12 +1841,43 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
             let result = builder.execute().await.infer_error()?;
             Ok(RefreshMaterializedViewResult::from(result))
+        })
+    }
+
+    #[pyo3(signature = (source_version=None))]
+    pub fn refresh_materialized_view_async(
+        self_: PyRef<'_, Self>,
+        source_version: Option<u64>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            let mut builder = view.refresh();
+            if let Some(version) = source_version {
+                builder = builder.source_version(version);
+            }
+            let job = builder.execute_async().await.infer_error()?;
+            Ok(crate::job::Job::new_typed(job))
+        })
+    }
+
+    pub fn materialized_view_definition(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let view = lancedb::MaterializedView::from_table(inner)
+                .await
+                .infer_error()?;
+            Ok(lancedb::materialized_view::definition_metadata_from_sql(
+                view.definition_sql(),
+            ))
         })
     }
 
@@ -1673,6 +1907,17 @@ impl Table {
         let alterations = alterations
             .iter()
             .map(|alteration| {
+                for key in alteration.keys().iter() {
+                    let key = key.extract::<String>()?;
+                    if !matches!(
+                        key.as_str(),
+                        "path" | "rename" | "name" | "nullable" | "data_type"
+                    ) {
+                        return Err(PyValueError::new_err(format!(
+                            "Unknown column alteration key '{key}'"
+                        )));
+                    }
+                }
                 let path = alteration
                     .get_item("path")?
                     .ok_or_else(|| PyValueError::new_err("Missing path"))?

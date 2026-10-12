@@ -1,0 +1,46 @@
+---
+title: "Pandas and PyArrow"
+sidebarTitle: "Pandas & PyArrow"
+
+---
+
+import {
+  PyPlatformsPandasAsyncExample,
+  PyPlatformsPandasCreateTable,
+  PyPlatformsPandasImports,
+  PyPlatformsPandasVectorSearch,
+} from '/snippets/integrations.mdx';
+
+Because Lance is built on top of [Apache Arrow](https://arrow.apache.org/),
+LanceDB fits naturally into Pandas-first workflows. You can ingest a `DataFrame`,
+query it with LanceDB's vector operators, and keep working in Pandas without any glue code.
+
+## Create a dataset {#create-a-dataset}
+
+Start by importing LanceDB alongside your usual Pandas utilities and connect to a temporary database.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPandasImports}
+</CodeBlock>
+
+Use the familiar `pd.DataFrame` API to prepare your rows, then pass the entire frame to `db.create_table`.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPandasCreateTable}
+</CodeBlock>
+
+## Vector search {#vector-search}
+
+Queries can return Pandas frames as well, so you can immediately inspect the results or pipe them into downstream analytics.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPandasVectorSearch}
+</CodeBlock>
+
+## Async API {#async-api}
+
+For web services or background jobs that already rely on `asyncio`, use the asynchronous helpers to keep everything non-blocking.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyPlatformsPandasAsyncExample}
+</CodeBlock>

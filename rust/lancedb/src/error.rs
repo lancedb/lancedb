@@ -102,6 +102,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
+    #[snafu(display("Job '{job_id}' was not found"))]
+    JobNotFound { job_id: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]

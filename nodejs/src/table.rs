@@ -7,14 +7,16 @@ use chrono::{DateTime, Utc};
 
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration,
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use napi::Env;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -73,13 +75,14 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
     )]
     pub async fn add(
         &self,
         buf: Buffer,
         mode: String,
         progress_callback: Option<ProgressFn>,
+        allow_external_blob_outside_bases: Option<bool>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -103,6 +106,9 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        op = op
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases.unwrap_or(false));
 
         if let Some(tsfn) = progress_callback {
             op = op.progress(move |p| {
@@ -330,6 +336,52 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn blob_columns(&self) -> napi::Result<Vec<String>> {
+        self.inner_ref()?.blob_columns().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blobs<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        row_ids: Vec<BigInt>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(copy_blob_buffers(array))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_files<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        row_ids: Vec<BigInt>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<BlobFile>>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let files = table
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(files
+                .into_iter()
+                .map(|file| file.map(BlobFile::new))
+                .collect())
+        })
+    }
+
+    #[napi(catch_unwind)]
     pub fn vector_search(&self, vector: Float32Array) -> napi::Result<VectorQuery> {
         self.query()?.nearest_to(vector)
     }
@@ -389,15 +441,40 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn function_errors(
+        &self,
+        options: Option<FunctionErrorsOptions>,
+    ) -> napi::Result<FunctionErrors> {
+        let options = options.unwrap_or_default();
+        let limit = options
+            .limit
+            .map(|limit| {
+                usize::try_from(limit)
+                    .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))
+            })
+            .transpose()?;
+        let request = lancedb::function::FunctionErrorsRequest {
+            job_id: options.job_id,
+            column: options.column,
+            limit,
+        };
+        let errors = self
+            .inner_ref()?
+            .function_errors(request)
+            .await
+            .default_error()?;
+        Ok(errors.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn refresh_materialized_view(
         &self,
-        full: Option<bool>,
         source_version: Option<i64>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh().full(full.unwrap_or(false));
+        let mut builder = view.refresh();
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -406,6 +483,17 @@ impl Table {
         }
         let result = builder.execute().await.default_error()?;
         Ok(result.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn materialized_view_definition(&self) -> napi::Result<String> {
+        let inner = self.inner_ref()?.clone();
+        let view = lancedb::MaterializedView::from_table(inner)
+            .await
+            .default_error()?;
+        Ok(lancedb::materialized_view::definition_metadata_from_sql(
+            view.definition_sql(),
+        ))
     }
 
     #[napi(catch_unwind)]
@@ -638,22 +726,20 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
-        older_than_ms: Option<i64>,
+        before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
-        let older_than = if let Some(ms) = older_than_ms {
-            if ms == i64::MIN {
-                return Err(napi::Error::from_reason(format!(
-                    "older_than_ms can not be {}",
-                    i32::MIN,
-                )));
-            }
-            Duration::try_milliseconds(ms)
-        } else {
-            None
-        };
+        let before_timestamp = before_timestamp_ms
+            .map(|ms| {
+                DateTime::from_timestamp_millis(ms).ok_or_else(|| {
+                    napi::Error::from_reason(format!(
+                        "cleanupOlderThan timestamp is out of range: {ms}"
+                    ))
+                })
+            })
+            .transpose()?;
 
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {
@@ -664,16 +750,22 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let prune_stats = inner
-            .optimize(OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions: None,
-            })
-            .await
-            .default_error()?
-            .prune
-            .unwrap();
+        let prune_stats = if let Some(before_timestamp) = before_timestamp {
+            inner
+                .optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await
+        } else {
+            inner
+                .optimize(OptimizeAction::Prune {
+                    older_than: None,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
+                })
+                .await
+        }
+        .default_error()?
+        .prune
+        .unwrap();
         inner
             .optimize(lancedb::table::OptimizeAction::Index(
                 OptimizeOptions::default(),
@@ -744,7 +836,10 @@ impl Table {
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .uses_v2_manifest_paths()
             .await
             .default_error()
@@ -754,7 +849,10 @@ impl Table {
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .migrate_manifest_paths_v2()
             .await
             .default_error()
@@ -1270,6 +1368,16 @@ pub struct TableStatistics {
     /// The number of rows in the table
     pub num_rows: i64,
 
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// These rows are not included in `numRows`, but still occupy space on disk
+    /// until the table is compacted, so a large value here indicates that the
+    /// table should be optimized. Fragments in which every row was deleted are
+    /// dropped outright, so their rows are not counted here.
+    ///
+    /// Absent (`undefined`) when the backend does not report deletion counts.
+    pub num_deleted_rows: Option<i64>,
+
     /// The number of indices in the table
     pub num_indices: i64,
 
@@ -1318,6 +1426,7 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
         Self {
             total_bytes: v.total_bytes as i64,
             num_rows: v.num_rows as i64,
+            num_deleted_rows: v.num_deleted_rows.map(|n| n as i64),
             num_indices: v.num_indices as i64,
             fragment_stats: FragmentStatistics {
                 num_fragments: v.fragment_stats.num_fragments as i64,
@@ -1420,9 +1529,100 @@ pub struct RefreshColumnResult {
     pub version: i64,
 }
 
+/// Which per-row Function errors to list; every filter is optional.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionErrorsOptions {
+    /// Only errors recorded by this job.
+    pub job_id: Option<String>,
+    /// Only errors on this column.
+    pub column: Option<String>,
+    /// At most this many records (server default 10000, cap 100000).
+    pub limit: Option<i64>,
+}
+
+/// One row a Function refresh skipped, as the server recorded it.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorRecord {
+    pub job_id: String,
+    pub fragment_id: i64,
+    /// The row's offset within the fragment; absent when the fragment's
+    /// detail was capped.
+    pub row_offset: Option<i64>,
+    pub column: String,
+    pub function: String,
+    pub function_version: String,
+    pub table_version: i64,
+    pub error_type: String,
+    pub error_message: String,
+    pub created_at_millis: i64,
+}
+
+impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
+    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+        Self {
+            job_id: record.job_id,
+            fragment_id: record.fragment_id as i64,
+            row_offset: record.row_offset.map(i64::from),
+            column: record.column,
+            function: record.function,
+            function_version: record.function_version,
+            table_version: record.table_version as i64,
+            error_type: record.error_type,
+            error_message: record.error_message,
+            created_at_millis: record.created_at_millis,
+        }
+    }
+}
+
+/// A fragment whose per-row error detail was capped: `rowsSkipped` rows
+/// failed, of which only `rowsRecorded` have a record of their own.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorFragment {
+    pub job_id: String,
+    pub fragment_id: i64,
+    pub rows_skipped: i64,
+    pub rows_recorded: i64,
+}
+
+impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
+    fn from(fragment: lancedb::function::FunctionErrorFragment) -> Self {
+        Self {
+            job_id: fragment.job_id,
+            fragment_id: fragment.fragment_id as i64,
+            rows_skipped: fragment.rows_skipped as i64,
+            rows_recorded: fragment.rows_recorded as i64,
+        }
+    }
+}
+
+/// A table's per-row Function errors.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrors {
+    /// The recorded rows, newest job first.
+    pub records: Vec<FunctionErrorRecord>,
+    /// Fragments whose detail was capped.
+    pub fragments: Vec<FunctionErrorFragment>,
+    /// Whether the listing stopped at its limit.
+    pub truncated: bool,
+}
+
+impl From<lancedb::function::FunctionErrors> for FunctionErrors {
+    fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        Self {
+            records: errors.records.into_iter().map(Into::into).collect(),
+            fragments: errors.fragments.into_iter().map(Into::into).collect(),
+            truncated: errors.truncated,
+        }
+    }
+}
+
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    /// How the view was brought up to date: "rebuild".
     pub mode: String,
     pub rows_written: i64,
     pub source_version: i64,
@@ -1433,8 +1633,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match value.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),

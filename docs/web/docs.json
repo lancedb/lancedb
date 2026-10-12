@@ -1,0 +1,605 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "appearance": {
+    "strict": false
+  },
+  "theme": "mint",
+  "name": "LanceDB",
+  "banner": {
+    "content": "[Why Multimodal Data Needs a Better Lakehouse? \u2014 Download the Research Study](https://lancedb.com/download/)",
+    "dismissible": true
+  },
+  "colors": {
+    "primary": "#FF6B35",
+    "light": "#FF8A5C",
+    "dark": "#E55A2B"
+  },
+  "fonts": {
+    "family": "Inter"
+  },
+  "styling": {
+    "codeblocks": {
+      "theme": {
+        "light": "vitesse-light",
+        "dark": "catppuccin-mocha"
+      }
+    }
+  },
+  "favicon": "/static/favicon.ico",
+  "redirects": [
+    {
+      "source": "/tables/update",
+      "destination": "/ingestion/update"
+    },
+    {
+      "source": "/search/fts-examples",
+      "destination": "/search/full-text-search"
+    },
+    {
+      "source": "/search/optimize-queries",
+      "destination": "/search/explain"
+    },
+    {
+      "source": "/lance",
+      "destination": "/basics/lance"
+    },
+    {
+      "source": "/tables-and-namespaces",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/catalog",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/catalog/database",
+      "destination": "/basics/catalog"
+    },
+    {
+      "source": "/api-reference",
+      "destination": "/basics/apis"
+    },
+    {
+      "source": "/feature-engineering/computed-columns",
+      "destination": "/feature-engineering/add-computed-column"
+    },
+    {
+      "source": "/feature-engineering/functions",
+      "destination": "/management/function"
+    },
+    {
+      "source": "/tables/create",
+      "destination": "/ingestion"
+    },
+    {
+      "source": "/tables/multimodal",
+      "destination": "/management/table#multimodal"
+    },
+    {
+      "source": "/search/select",
+      "destination": "/sql/select"
+    },
+    {
+      "source": "/tutorials/search",
+      "destination": "/tutorials/search/hybrid-search-beir"
+    },
+    {
+      "source": "/tutorials/agents",
+      "destination": "/tutorials/agents/contextual-rag"
+    },
+    {
+      "source": "/tutorials/feature-engineering",
+      "destination": "/tutorials/feature-engineering/feature-engineering-101"
+    },
+    {
+      "source": "/tables",
+      "destination": "/management/table"
+    },
+    {
+      "source": "/namespaces",
+      "destination": "/management/namespace"
+    },
+    {
+      "source": "/namespaces/usage",
+      "destination": "/management/namespace"
+    },
+    {
+      "source": "/basics/data-types",
+      "destination": "/sql/data-types"
+    },
+    {
+      "source": "/tables/schema",
+      "destination": "/management/table#schema"
+    },
+    {
+      "source": "/tables/versioning",
+      "destination": "/management/table#versioning"
+    },
+    {
+      "source": "/search/multivector-search",
+      "destination": "/search/vector-search"
+    },
+    {
+      "source": "/search/explain-analyze",
+      "destination": "/search/explain"
+    },
+    {
+      "source": "/indexing/quantization",
+      "destination": "/indexing/vector-index"
+    },
+    {
+      "source": "/performance",
+      "destination": "/search#performance"
+    },
+    {
+      "source": "/reranking/:slug*",
+      "destination": "/reranking"
+    },
+    {
+      "source": "/training",
+      "destination": "/training/data-loading"
+    },
+    {
+      "source": "/training/lerobot",
+      "destination": "/integrations/lerobotdataset"
+    },
+    {
+      "source": "/build-with-ai-agents",
+      "destination": "/basics/agentic-skills"
+    },
+    {
+      "source": "/core/update",
+      "destination": "/ingestion/update"
+    },
+    {
+      "source": "/storage",
+      "destination": "/deployment/storage"
+    },
+    {
+      "source": "/storage/configuration",
+      "destination": "/deployment/storage"
+    },
+    {
+      "source": "/storage/monitoring",
+      "destination": "/deployment/monitoring"
+    },
+    {
+      "source": "/enterprise/deployment",
+      "destination": "/enterprise/deployment/index"
+    },
+    {
+      "source": "/search/sql",
+      "destination": "/sql"
+    },
+    {
+      "source": "/search/sql/index",
+      "destination": "/sql"
+    },
+    {
+      "source": "/search/sql/fts-sql",
+      "destination": "/sql/dql/fts"
+    },
+    {
+      "source": "/sql/select",
+      "destination": "/sql/dql/select"
+    },
+    {
+      "source": "/sql/subqueries",
+      "destination": "/sql/dql/subqueries"
+    },
+    {
+      "source": "/sql/join",
+      "destination": "/sql/dql/join"
+    },
+    {
+      "source": "/sql/aggregation",
+      "destination": "/sql/dql/aggregation"
+    },
+    {
+      "source": "/sql/window",
+      "destination": "/sql/dql/window"
+    },
+    {
+      "source": "/sql/sampling",
+      "destination": "/sql/dql/sampling"
+    },
+    {
+      "source": "/sql/explain",
+      "destination": "/sql/dql/explain"
+    },
+    {
+      "source": "/sql/ddl",
+      "destination": "/sql/ddl/table"
+    },
+    {
+      "source": "/sql/dml",
+      "destination": "/sql/dml/insert"
+    },
+    {
+      "source": "/sql/refresh",
+      "destination": "/sql/dml/refresh"
+    },
+    {
+      "source": "/sql/show",
+      "destination": "/sql/ddl/job"
+    },
+    {
+      "source": "/faq",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/faq/faq-oss",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/faq/faq-enterprise",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/troubleshooting",
+      "destination": "/deployment/support"
+    },
+    {
+      "source": "/basics/apis",
+      "destination": "/basics/sdk"
+    }
+  ],
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Getting Started",
+            "pages": [
+              "index",
+              "quickstart",
+              "architecture",
+              "basics/sdk",
+              "basics/sql",
+              "basics/agentic-skills"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "basics/lance",
+              "basics/catalog",
+              "basics/lakehouse",
+              "basics/query",
+              "basics/jobs",
+              "tables/consistency",
+              "basics/guarantees",
+              "basics/limits"
+            ]
+          },
+          {
+            "group": "Data Ingestion",
+            "pages": [
+              "ingestion/index",
+              "ingestion/create-table",
+              "ingestion/insert",
+              "ingestion/merge-insert",
+              "ingestion/update",
+              "ingestion/delete"
+            ]
+          },
+          {
+            "group": "Semantic Search",
+            "pages": [
+              "search/index",
+              "search/vector-search",
+              "search/full-text-search",
+              "search/hybrid-search",
+              "search/filtering",
+              "reranking/index",
+              "search/explain"
+            ]
+          },
+          {
+            "group": "Data Curation",
+            "pages": [
+              "curation/index",
+              "curation/aggregate",
+              "curation/sampling",
+              "curation/join",
+              "curation/windowing"
+            ]
+          },
+          {
+            "group": "Feature Engineering",
+            "pages": [
+              "feature-engineering/index",
+              "feature-engineering/data-evolution",
+              "feature-engineering/add-computed-column",
+              "feature-engineering/refresh-column",
+              "feature-engineering/materialized-views"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "training/why-lancedb",
+              "training/data-loading",
+              "training/torch"
+            ]
+          },
+          {
+            "group": "Management",
+            "pages": [
+              "management/index",
+              "management/database",
+              "management/namespace",
+              "management/table",
+              "tables/branching",
+              "management/materialized-view",
+              "management/view",
+              "management/function"
+            ]
+          },
+          {
+            "group": "Maintenance",
+            "pages": [
+              "indexing/index",
+              "indexing/vector-index",
+              "indexing/fts-index",
+              "indexing/scalar-index",
+              "indexing/reindexing",
+              "maintenance/compaction",
+              "maintenance/cleanup",
+              "maintenance/background-jobs"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "enterprise/index",
+              "enterprise/architecture",
+              "enterprise/deployment/index",
+              "deployment/storage",
+              "deployment/monitoring",
+              "enterprise/deployment/azure",
+              "enterprise/benchmarks",
+              "deployment/support"
+            ]
+          },
+          {
+            "group": "Security",
+            "pages": [
+              "enterprise/authentication",
+              "governance/authorization",
+              "enterprise/security"
+            ]
+          },
+          {
+            "group": "SQL Reference",
+            "pages": [
+              "sql/index",
+              "sql/data-types",
+              {
+                "group": "DDL",
+                "pages": [
+                  "sql/ddl/namespace",
+                  "sql/ddl/table",
+                  "sql/ddl/view",
+                  "sql/ddl/materialized-view",
+                  "sql/ddl/index",
+                  "sql/ddl/function",
+                  "sql/ddl/job"
+                ],
+                "icon": "sitemap"
+              },
+              {
+                "group": "DML",
+                "pages": [
+                  "sql/dml/insert",
+                  "sql/dml/update",
+                  "sql/dml/delete",
+                  "sql/dml/copy",
+                  "sql/dml/refresh"
+                ],
+                "icon": "database"
+              },
+              {
+                "group": "DQL",
+                "pages": [
+                  "sql/dql/select",
+                  "sql/dql/subqueries",
+                  "sql/dql/join",
+                  "sql/dql/aggregation",
+                  "sql/dql/window",
+                  "sql/dql/sampling",
+                  "sql/dql/fts",
+                  "sql/dql/explain"
+                ],
+                "icon": "filter"
+              },
+              {
+                "group": "Expressions",
+                "pages": [
+                  "sql/operators",
+                  "sql/functions",
+                  "sql/scalar-functions",
+                  "sql/prepared-statements"
+                ],
+                "icon": "code"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Integrations",
+        "pages": [
+          "integrations/index",
+          {
+            "group": "Embedding Registry",
+            "pages": [
+              "embedding/index",
+              "embedding/quickstart"
+            ]
+          },
+          {
+            "group": "Embedding Providers",
+            "pages": [
+              "integrations/embedding/huggingface",
+              "integrations/embedding/aws",
+              "integrations/embedding/cohere",
+              "integrations/embedding/colpali",
+              "integrations/embedding/gemini",
+              "integrations/embedding/ibm",
+              "integrations/embedding/imagebind",
+              "integrations/embedding/instructor",
+              "integrations/embedding/jina",
+              "integrations/embedding/ollama",
+              "integrations/embedding/openai",
+              "integrations/embedding/openclip",
+              "integrations/embedding/sentence-transformers",
+              "integrations/embedding/voyageai",
+              "integrations/embedding/superlinked"
+            ]
+          },
+          {
+            "group": "Rerankers",
+            "pages": [
+              "integrations/reranking/answerdotai",
+              "integrations/reranking/cohere",
+              "integrations/reranking/colbert",
+              "integrations/reranking/jina",
+              "integrations/reranking/openai",
+              "integrations/reranking/voyageai",
+              "integrations/reranking/watsonx"
+            ]
+          },
+          {
+            "group": "Data Platforms & Frameworks",
+            "expanded": true,
+            "pages": [
+              "integrations/data/pydantic",
+              "integrations/data/duckdb",
+              "integrations/data/pandas_and_pyarrow",
+              "integrations/data/polars_arrow",
+              "integrations/data/dlt",
+              "integrations/data/voxel51"
+            ]
+          },
+          {
+            "group": "AI Platforms & Frameworks",
+            "expanded": true,
+            "pages": [
+              "integrations/ai/agno",
+              "integrations/ai/hermes-agent",
+              "integrations/ai/huggingface",
+              "integrations/ai/langchain",
+              "integrations/ai/llamaIndex",
+              "integrations/ai/genkit",
+              "integrations/ai/kiln",
+              "integrations/ai/prompttools",
+              "integrations/ai/synthetic-data-kit"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Tutorials",
+        "pages": [
+          "tutorials/index",
+          {
+            "group": "Search",
+            "pages": [
+              "tutorials/search/hybrid-search-beir",
+              "tutorials/search/multivector-xtr",
+              "tutorials/search/multivector-needle-in-a-haystack",
+              "tutorials/search/video-search",
+              "tutorials/search/vector-arithmetic",
+              "tutorials/search/ner-search",
+              "tutorials/search/reddit-summarizer"
+            ]
+          },
+          {
+            "group": "RAG",
+            "pages": [
+              "tutorials/agents/contextual-rag",
+              "tutorials/agents/nvidia-rag-blueprint/index",
+              "tutorials/agents/time-travel-rag/index",
+              "tutorials/agents/multimodal-agent/index",
+              "tutorials/agents/matryoshka-embeddings",
+              "tutorials/agents/hyde",
+              "tutorials/agents/late-chunking",
+              "tutorials/agents/agentic-rag"
+            ]
+          },
+          {
+            "group": "Feature Engineering",
+            "pages": [
+              "tutorials/feature-engineering/feature-engineering-101",
+              "tutorials/feature-engineering/materialized-views",
+              "agent-branch-experiments"
+            ]
+          },
+          {
+            "group": "Training",
+            "pages": [
+              "training/object-detection",
+              "training/vlm-finetuning",
+              "integrations/stable-worldmodel"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Demos",
+        "pages": [
+          "demos/index",
+          "demos/semantic-art",
+          "demos/wikipedia-search",
+          "demos/video-search",
+          "demos/fineweb-edu-search",
+          "demos/robot-data-curation"
+        ]
+      }
+    ]
+  },
+  "logo": {
+    "light": "/static/assets/logo/dark-lancedb-logo.svg",
+    "dark": "/static/assets/logo/light-lancedb-logo.svg",
+    "href": "https://lancedb.com"
+  },
+  "background": {
+    "color": {
+      "light": "#FAF5F0",
+      "dark": "#000000"
+    }
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Support",
+        "href": "https://www.lancedb.com/contact"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/lancedb",
+      "linkedin": "https://www.linkedin.com/company/lancedb",
+      "x": "https://x.com/lancedb",
+      "discord": "https://discord.gg/AUEWnJ7Txb"
+    },
+    "links": [
+      {
+        "items": [
+          {
+            "label": "Cookie settings",
+            "href": "#cookie-settings"
+          }
+        ]
+      }
+    ]
+  },
+  "integrations": {
+    "ga4": {
+      "measurementId": "G-1TMC2PR69E"
+    }
+  }
+}

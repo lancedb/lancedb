@@ -1,0 +1,138 @@
+---
+title: "Refresh a column"
+sidebarTitle: "Column Refresh"
+description: "Fill the rows of a computed column that lack values — in process, or as a server-side job."
+icon: arrows-rotate
+keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
+---
+
+A [declared column](/feature-engineering/add-computed-column) starts empty. A
+refresh gives values to the rows that lack them.
+
+<CodeGroup>
+```python Python icon="python"
+table.refresh_column("doubled")
+# RefreshColumnResult(rows_filled=2, version=4)
+
+table.to_arrow().sort_by("x").to_pandas()
+#    x  doubled
+# 0  1        2
+# 1  2        4
+```
+
+```sql SQL
+REFRESH COLUMN doubled ON my_table
+```
+</CodeGroup>
+
+The refresh commits ordinary table versions -- the values, then a
+metadata-only record of the inputs they were computed from -- so
+[versioning](/management/table#versioning) applies to it like any other write.
+
+<Note>
+The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same resource options.
+</Note>
+
+## What a refresh recomputes {#idempotent}
+
+A refresh fills rows that have no value and recomputes rows whose inputs
+changed since they were computed. Every other row is left alone, so a second
+refresh with nothing changed does nothing. Two consequences follow, and both
+are load-bearing.
+
+**Appending is cheap.** Rows added since the last refresh are filled by the
+next one; filled rows whose inputs are unchanged are skipped. Backfilling a
+column and then ingesting more data does not mean recomputing the backfill.
+
+**A filled value catches up with its input at the next refresh.** If `doubled`
+derives from `x` and a row's `x` is later updated, `doubled` keeps its old value
+until the next refresh recomputes it.
+
+That is what makes the call idempotent and safe to retry -- but unlike a
+spreadsheet formula, nothing is recomputed until you refresh, so a derived
+column is stale between an update and the next refresh.
+
+## Refreshing part of a table {#partial}
+
+<Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a
+predicate, which is useful for filling a slice first and checking it before
+committing to the whole table:
+
+```sql
+REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
+```
+
+<Note>
+**Enterprise job type:** `computed_refresh` for a SQL-expression column,
+`function_refresh` for one filled by a registered
+[function](/management/function).
+</Note>
+
+## As a job {#async}
+
+<Badge color="red">Enterprise</Badge>
+
+Against a deployment the refresh runs on the cluster. `refresh_column` raises
+there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
+wait on or poll instead of holding a connection open:
+
+```python
+job = table.refresh_column_async("doubled")
+result = job.wait()
+result.rows_assigned
+# 2
+job.status()
+# 'finished'
+```
+
+Poll with `status()`, resolve with `wait()`. `status()` is a point snapshot and
+does not raise, which is what makes it safe in a loop; `wait()` raises
+`JobFailedError`, `JobCancelledError` or `TimeoutError`.
+
+A long backfill can therefore be started, left, and checked on from a different
+process.
+
+### Resourcing the job {#resources}
+
+SQL exposes the worker budget directly, which is the lever when a backfill is
+too slow or too expensive:
+
+```sql
+REFRESH COLUMN embedding ON documents
+  WITH (cpu_millis = 8000, memory_bytes = 17179869184, gpu_count = 2)
+```
+
+`num_workers` sets the count instead of a per-worker budget; the two are
+alternatives rather than a pair. `batch_size` controls how many rows a worker
+takes at a time, and `error_policy = 'skip'` continues past rows that fail
+rather than failing the job.
+
+## When a refresh fails {#failures}
+
+What a failure keeps depends on where the refresh ran. `refresh_column` in your
+process writes the column in one commit, so a failure leaves the column as it
+was. A refresh job on a deployment commits finished batches as it goes, so some
+values can remain after a failure.
+
+Either way, recover by fixing the cause and refreshing again. The new refresh
+fills rows that are still empty or whose inputs changed, and normally skips
+values that were kept. That is not guaranteed: a refresh can recompute values
+that were already written -- for example when the record of the inputs they
+were computed from was not saved -- so do not count on a retry costing only the
+rows that did not complete.
+
+For a column filled by a [function](/management/function), the usual cause is
+the worker environment rather than the data. See
+[environment mismatches](/management/function#mismatch-symptoms) for the
+symptoms, which rarely name their cause.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Jobs" icon="hourglass-half" href="/basics/jobs">
+    Waiting on, inspecting, and cancelling server-side work.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    The same idea, for a whole derived table.
+  </Card>
+</CardGroup>

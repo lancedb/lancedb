@@ -131,18 +131,13 @@ allow = [
     "BSD-3-Clause",
     "ISC",
     "Unicode-3.0",
-    "Unicode-DFS-2016",
     "Zlib",
     "CC0-1.0",
     "MPL-2.0",
     "BSL-1.0",
-    "OpenSSL",
     # 0BSD ("BSD Zero Clause") is effectively public domain — no attribution
     # required. Pulled in by `mock_instant`.
     "0BSD",
-    # bzip2-1.0.6 is the permissive upstream bzip2 license (BSD-like). Pulled
-    # in by `libbz2-rs-sys`, the pure-Rust bzip2 implementation.
-    "bzip2-1.0.6",
     # CDLA-Permissive-2.0 is a permissive data license used by `webpki-roots`
     # for the Mozilla CA root bundle. Data-only, distribution-compatible.
     "CDLA-Permissive-2.0",
@@ -150,12 +145,7 @@ allow = [
 confidence-threshold = 0.8
 # Per-crate license exceptions: allow a license for a specific crate only,
 # rather than globally via the `allow` list above.
-exceptions = [
-    # CDDL-1.0 (copyleft) is pulled in only as a dev/profiling dependency via
-    # `inferno` -> `pprof` -> `lance-testing`; it is a test dependency that we
-    # do not distribute, so scope the allowance to `inferno` alone.
-    { allow = ["CDDL-1.0"], crate = "inferno" },
-]
+exceptions = []
 # Crates whose license cannot be determined from Cargo metadata but whose
 # license we've manually confirmed from upstream. Keep this list minimal.
 [[licenses.clarify]]

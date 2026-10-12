@@ -1,0 +1,124 @@
+---
+title: "Refresh a materialized view"
+sidebarTitle: "Materialized View Refresh"
+description: "A lakehouse object: a table defined by a query over another table, brought up to date by each refresh."
+icon: table
+keywords: ["materialized view", "create_materialized_view", "refresh", "full refresh"]
+---
+
+import {
+    PyMaterializedViewCreate as MaterializedViewCreate,
+    PyMaterializedViewRefresh as MaterializedViewRefresh,
+} from '/snippets/materialized_view.mdx';
+
+A materialized view is a lakehouse object: a table whose contents are defined by
+a query over another table. The query is recorded in the view's schema;
+creating the view computes its rows, and a refresh brings them up to date.
+
+The result is an ordinary table. It can be queried, indexed, and searched, and
+it appears in `table_names()` — nothing about reading it is special.
+
+<Note>
+In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/refresh#refresh-materialized-view).
+</Note>
+
+## Create and refresh {#create-and-refresh}
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{MaterializedViewCreate}
+</CodeBlock>
+
+Creating the view computes its rows, so it is ready to read. Pass
+`with_no_data=True` to create it empty instead. Later changes to the source
+reach the view through a refresh:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{MaterializedViewRefresh}
+</CodeBlock>
+
+<Note>
+These results were verified with the development SDK 0.40.0b13, built from
+lancedb main. The published 0.39.0 differs: the source must be created with
+stable row ids (the `new_table_enable_stable_row_ids` storage option),
+`create_materialized_view` creates the view empty and has no `with_no_data`,
+and `refresh()` still accepts `full`. Its first `refresh()` writes every
+matching row, two in this example.
+</Note>
+
+`select` takes column names, `(alias, expression)` pairs, or a dict of the same.
+Omitting it selects every source column, expanded against the schema as it was
+at creation time. `where` filters source rows; `limit` caps the view.
+
+## Local sources no longer need stable row ids {#stable-row-ids}
+
+A local refresh does not track which source rows the view came from, so a local
+view's source does not need stable row ids (`new_table_enable_stable_row_ids`):
+the example above creates its source with the defaults. Earlier development
+builds and the published 0.39.0 required them, and a deployment may still
+require them; see [Against a deployment](#availability).
+
+The source is still checked, when the view is created and on every refresh: one
+with an LSM write spec, or with retained write-ahead-log rows not yet compacted,
+is refused.
+
+## Every local refresh rebuilds the view {#incremental}
+
+Locally, `refresh()` runs the view's query against the source and replaces
+everything the view holds with the result, in one commit. It does not reconcile
+changes: `rows_written` is the size of the whole result — two after adding Bea,
+not one — and a refresh with nothing new to read still rewrites the view and
+commits a new table version.
+
+`source_version=N` refreshes against that source version instead of the latest,
+which is how a view reproduces a known point in time. There is no `full`
+argument; every local refresh is a full one.
+
+## Against a deployment {#availability}
+
+<Badge color="red">Enterprise</Badge>
+
+`create_materialized_view` and `refresh` also work on a `db://` connection.
+There the SDK sends them to the deployment as SQL -- `CREATE MATERIALIZED VIEW`
+and `REFRESH MATERIALIZED VIEW` -- and the work runs on the cluster rather than
+in your process. `source_version` is for local views only; the SDK refuses it
+on a remote refresh.
+
+Materialized views are off by default on a deployment and have to be enabled
+there. How a deployment refreshes a view -- rebuilding the whole view, as above,
+or reconciling what changed in the source -- depends on its LanceDB Enterprise
+version and configuration, and so do the options
+[`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view)
+accepts and whether the source table needs stable row ids.
+
+Stable row ids are set up on the deployment, not by the SDK: a `db://`
+connection does not send `new_table_enable_stable_row_ids`, and no SDK call adds
+them to an existing table. Depending on its version and configuration, a
+deployment may give new tables stable row ids, may refuse a view created through
+SQL -- as the SDK creates one -- over a source without them, or may convert an
+existing source when a view is created through its REST API. Check with the
+deployment's administrator what it requires before relying on a source.
+
+`SHOW MATERIALIZED VIEWS` lists them, which is cheaper than
+`list_materialized_views` -- that method finds views by reading every table's
+schema, so it costs one open per table.
+
+## Working with the view {#working-with-the-view}
+
+`view.table` is the underlying table, for querying, indexing, or search.
+`view.definition` is the recorded query — the select list, predicate, and
+limit — which is how you check what a view actually contains without inferring
+it from the rows. Both are properties; on an async view, the definition is read
+with `await view.definition()`.
+
+An existing view is reopened with `db.open_materialized_view(name)`.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Derive a column instead of a whole table.
+  </Card>
+  <Card title="Versioning" icon="clock-rotate-left" href="/management/table#versioning">
+    Every refresh commits a table version.
+  </Card>
+</CardGroup>

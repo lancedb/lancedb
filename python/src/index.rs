@@ -54,8 +54,6 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .with_position(params.with_position)
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
-                    .remove_stop_words(params.remove_stop_words)
-                    .stem(params.stem)
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
@@ -65,6 +63,12 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                         DocumentGranularity::try_from(params.document_granularity.as_str())
                             .map_err(|err| PyValueError::new_err(err.to_string()))?,
                     );
+                if let Some(stem) = params.stem {
+                    inner_opts = inner_opts.stem(stem);
+                }
+                if let Some(remove_stop_words) = params.remove_stop_words {
+                    inner_opts = inner_opts.remove_stop_words(remove_stop_words);
+                }
                 if let Some(memory_limit) = params.memory_limit {
                     inner_opts = inner_opts.memory_limit_mb(memory_limit);
                 }
@@ -215,8 +219,8 @@ struct FtsParams {
     language: String,
     max_token_length: Option<usize>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
@@ -104,7 +105,12 @@ from .util import (
     value_to_sql,
 )
 from .index import lang_mapping
-from .schema import blob_v2_column_paths, schema_has_blob_field
+from .schema import (
+    blob_v2_column_paths,
+    is_blob_v2_field,
+    row_addressable_blob_v2_paths,
+    schema_has_blob_field,
+)
 
 
 def _should_push_down_query_table(
@@ -126,6 +132,34 @@ _MODEL_BACKED_TOKENIZER_ERRORS = (
     "Failed to load tokenizer config",
     "Failed to initialize default tokenizer",
 )
+
+
+def _optimize_cleanup_since_ms(
+    cleanup_older_than: Optional[timedelta], retrain: bool
+) -> Optional[int]:
+    # Called directly by both the sync and async optimize so stacklevel=3
+    # names the user's call site rather than the background event loop.
+    cleanup_since_ms: Optional[int] = None
+    if cleanup_older_than is not None:
+        cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+        if cleanup_since_ms <= 0:
+            warnings.warn(
+                "optimize(cleanup_older_than=0) removes every version except "
+                "the latest. Any concurrent reader or writer still using an "
+                "older version will fail. Use a longer cleanup_older_than "
+                "unless no other process is working on this table.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+    if retrain:
+        warnings.warn(
+            "The 'retrain' parameter is deprecated and will be removed in a "
+            "future version.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+    return cleanup_since_ms
 
 
 def _add_unique_note(exception: BaseException, note: str) -> None:
@@ -181,6 +215,7 @@ if TYPE_CHECKING:
         CompactionStats,
         Tag,
         AddColumnsResult,
+        FunctionErrors,
         RefreshColumnResult,
         AddResult,
         AlterColumnsResult,
@@ -226,6 +261,101 @@ IndexConfigType = Union[
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
 
 
+def _blob_value_to_storage(value: Any) -> Optional[dict]:
+    """Keep a Python blob's inline data or external URI before Arrow infers it."""
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return {"data": bytes(value)}
+    if isinstance(value, str):
+        if not value:
+            raise ValueError("Blob uri cannot be empty")
+        return {"uri": value}
+    if isinstance(value, dict):
+        unknown = value.keys() - {"data", "uri", "position", "size"}
+        if unknown:
+            raise ValueError(f"Unknown blob fields: {sorted(unknown)}")
+        return value
+
+    try:
+        from lance.blob import Blob
+    except ModuleNotFoundError as err:
+        if err.name not in ("lance", "lance.blob"):
+            raise
+    else:
+        if isinstance(value, Blob):
+            return {
+                "data": value.data,
+                "uri": value.uri,
+                "position": value.position,
+                "size": value.size,
+            }
+    raise TypeError(f"Unsupported blob value: {type(value).__name__}")
+
+
+def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.Table]:
+    """Convert Python rows with blob fields before Arrow loses their value types."""
+    if schema is None:
+        return None
+
+    if isinstance(data, list) and data and isinstance(data[0], dict):
+        names = {
+            field.name
+            for field in schema
+            if is_blob_v2_field(field)
+            and any(isinstance(row, dict) and field.name in row for row in data)
+        }
+        if not names:
+            return None
+        values = {name: [row.get(name) for row in data] for name in names}
+        rows = [{**row, **{name: None for name in names}} for row in data]
+        table = pa.Table.from_pylist(rows)
+    elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
+        names = {
+            field.name
+            for field in schema
+            if is_blob_v2_field(field) and field.name in data.columns
+        }
+        if not names:
+            return None
+        values = {
+            name: [
+                None
+                if value is pd.NA or isinstance(value, float) and np.isnan(value)
+                else value
+                for value in data[name]
+            ]
+            for name in names
+        }
+        table = pa.Table.from_pandas(
+            data.assign(**{name: None for name in names}), preserve_index=False
+        ).replace_schema_metadata(None)
+    else:
+        return None
+
+    for field in schema:
+        if field.name not in names:
+            continue
+        storage_type = (
+            field.type.storage_type
+            if isinstance(field.type, pa.ExtensionType)
+            else field.type
+        )
+        storage = pa.array(
+            [_blob_value_to_storage(value) for value in values[field.name]],
+            type=storage_type,
+        )
+        column = (
+            pa.ExtensionArray.from_storage(field.type, storage)
+            if isinstance(field.type, pa.ExtensionType)
+            else storage
+        )
+        table = table.set_column(
+            table.schema.get_field_index(field.name), field, column
+        )
+    return table
+
+
 def _into_pyarrow_reader(
     data, schema: Optional[pa.Schema] = None
 ) -> pa.RecordBatchReader:
@@ -260,15 +390,22 @@ def _into_pyarrow_reader(
 
         # convert to list of dict if data is a bunch of LanceModels
         if isinstance(data[0], LanceModel):
-            schema = data[0].__class__.to_arrow_schema()
+            model_schema = data[0].__class__.to_arrow_schema()
             data = [model_to_dict(d) for d in data]
-            return pa.Table.from_pylist(data, schema=schema).to_reader()
+            data = _serialize_json_values(data, schema or model_schema)
+            return pa.Table.from_pylist(data, schema=model_schema).to_reader()
         elif isinstance(data[0], pa.RecordBatch):
             return pa.Table.from_batches(data).to_reader()
         else:
-            return pa.Table.from_pylist(data).to_reader()
+            data = _serialize_json_values(data, schema)
+            table = _blob_input_to_arrow(data, schema)
+            return (
+                table if table is not None else pa.Table.from_pylist(data)
+            ).to_reader()
     elif _check_for_pandas(data) and isinstance(data, pd.DataFrame):
-        table = pa.Table.from_pandas(data, preserve_index=False)
+        table = _blob_input_to_arrow(data, schema)
+        if table is None:
+            table = pa.Table.from_pandas(data, preserve_index=False)
         # Do not serialize Pandas metadata
         meta = table.schema.metadata if table.schema.metadata is not None else {}
         meta = {k: v for k, v in meta.items() if k != b"pandas"}
@@ -426,6 +563,7 @@ def _cast_to_target_schema(
 
     def gen():
         for batch in reader:
+            batch = _coerce_blob_write_columns(batch, reordered_schema)
             # Table but not RecordBatch has cast.
             cast_batches = (
                 pa.Table.from_batches([batch]).cast(reordered_schema).to_batches()
@@ -436,6 +574,166 @@ def _cast_to_target_schema(
                 )
 
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
+
+
+def _coerce_blob_write_columns(
+    batch: pa.RecordBatch, target_schema: pa.Schema
+) -> pa.RecordBatch:
+    """Materialize blob storage structs before the stream leaves Python.
+
+    merge_insert requires its source reader to already match the table's
+    physical schema. Unlike add and insert, it does not pass through
+    LanceDB's Rust blob coercion, so preserving binary input here would
+    reach Lance as binary and fail the schema check.
+    """
+    columns = []
+    fields = []
+    changed = False
+    for field, column in zip(batch.schema, batch.columns):
+        target_field = target_schema.field(field.name)
+        coerced = _coerce_blob_value(column, target_field)
+        if coerced is not column:
+            column = coerced
+            field = pa.field(
+                field.name,
+                coerced.type,
+                field.nullable,
+                target_field.metadata,
+            )
+            changed = True
+        columns.append(column)
+        fields.append(field)
+    if not changed:
+        return batch
+    return pa.RecordBatch.from_arrays(
+        columns, schema=pa.schema(fields, metadata=batch.schema.metadata)
+    )
+
+
+def _coerce_blob_value(column: pa.Array, target_field: pa.Field) -> pa.Array:
+    if is_blob_v2_field(target_field) and _can_coerce_to_blob(column.type):
+        return _coerce_value_to_blob(column, target_field)
+
+    target_type = target_field.type
+    if pa.types.is_struct(target_type) and pa.types.is_struct(column.type):
+        children = []
+        fields = []
+        changed = False
+        for source_field in column.type:
+            source_column = column.field(source_field.name)
+            nested_target = next(
+                (field for field in target_type if field.name == source_field.name),
+                None,
+            )
+            if nested_target is None:
+                children.append(source_column)
+                fields.append(source_field)
+                continue
+            coerced = _coerce_blob_value(source_column, nested_target)
+            if coerced is not source_column:
+                changed = True
+            child_array, child_type = _physical_array_and_type(coerced)
+            children.append(child_array)
+            fields.append(
+                pa.field(
+                    source_field.name,
+                    child_type,
+                    source_field.nullable,
+                    nested_target.metadata,
+                )
+            )
+        if not changed:
+            return column
+        return pa.StructArray.from_arrays(
+            children,
+            fields=fields,
+            mask=column.is_null() if column.null_count else None,
+        )
+
+    if _is_list_like(target_type) and _is_list_like(column.type):
+        return _coerce_blob_list_values(column, target_type.value_field)
+
+    return column
+
+
+def _coerce_blob_list_values(
+    column: pa.Array, target_value_field: pa.Field
+) -> pa.Array:
+    """Coerce blob values inside a list column, preserving offsets and nulls.
+
+    Works on the raw child values window instead of ``pc.list_flatten`` because
+    flatten drops values spanned by null slots, which would misalign offsets.
+    """
+    mask = column.is_null() if column.null_count else None
+    if pa.types.is_fixed_size_list(column.type):
+        list_size = column.type.list_size
+        values = column.values.slice(column.offset * list_size, len(column) * list_size)
+        coerced = _coerce_blob_value(values, target_value_field)
+        if coerced is values:
+            return column
+        physical_values, _ = _physical_array_and_type(coerced)
+        return pa.FixedSizeListArray.from_arrays(physical_values, list_size, mask=mask)
+    offsets = column.offsets
+    first_offset = offsets[0].as_py()
+    values = column.values.slice(
+        first_offset,
+        offsets[-1].as_py() - first_offset,
+    )
+    coerced = _coerce_blob_value(values, target_value_field)
+    if coerced is values:
+        return column
+    physical_values, _ = _physical_array_and_type(coerced)
+    if first_offset:
+        offsets = pc.subtract(offsets, pa.scalar(first_offset, offsets.type))
+    if pa.types.is_large_list(column.type):
+        return pa.LargeListArray.from_arrays(offsets, physical_values, mask=mask)
+    return pa.ListArray.from_arrays(offsets, physical_values, mask=mask)
+
+
+def _coerce_value_to_blob(values: pa.Array, target_field: pa.Field) -> pa.Array:
+    if pa.types.is_null(values.type):
+        data = pa.nulls(len(values), type=pa.large_binary())
+    elif pa.types.is_large_binary(values.type):
+        data = values
+    else:
+        data = values.cast(pa.large_binary())
+    length = len(values)
+    storage_type = target_field.type
+    if isinstance(storage_type, pa.ExtensionType):
+        storage_type = storage_type.storage_type
+    storage_fields = list(storage_type)
+    children = []
+    for storage_field in storage_fields:
+        if storage_field.name == "data":
+            children.append(data)
+        else:
+            children.append(pa.nulls(length, type=storage_field.type))
+    storage = pa.StructArray.from_arrays(
+        children,
+        fields=storage_fields,
+        mask=values.is_null() if values.null_count else None,
+    )
+    if isinstance(target_field.type, pa.ExtensionType):
+        return pa.ExtensionArray.from_storage(target_field.type, storage)
+    return storage
+
+
+def _physical_array_and_type(array: pa.Array) -> tuple[pa.Array, pa.DataType]:
+    if isinstance(array.type, pa.ExtensionType):
+        return array.storage, array.type.storage_type
+    return array, array.type
+
+
+def _can_coerce_to_blob(data_type: pa.DataType) -> bool:
+    return _is_binary_like(data_type) or pa.types.is_null(data_type)
+
+
+def _is_binary_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_binary(data_type)
+        or pa.types.is_large_binary(data_type)
+        or pa.types.is_binary_view(data_type)
+    )
 
 
 def _field_extension_name(field: pa.Field) -> Optional[str]:
@@ -452,6 +750,108 @@ def _field_extension_name(field: pa.Field) -> Optional[str]:
     return extension_name
 
 
+def _is_json_field(field: pa.Field) -> bool:
+    return _field_extension_name(field) in ("arrow.json", "lance.json")
+
+
+@dataclass(frozen=True)
+class _JsonSerializationPlan:
+    arrow_field: pa.Field
+    children: Optional[Dict[str, "_JsonSerializationPlan"]] = None
+    item: Optional["_JsonSerializationPlan"] = None
+
+
+def _json_serialization_plan(field: pa.Field) -> Optional[_JsonSerializationPlan]:
+    if _is_json_field(field):
+        return _JsonSerializationPlan(field)
+
+    if pa.types.is_struct(field.type):
+        children: Dict[str, _JsonSerializationPlan] = {}
+        for child_field in field.type:
+            child_plan = _json_serialization_plan(child_field)
+            if child_plan is not None:
+                children[child_field.name] = child_plan
+        if children:
+            return _JsonSerializationPlan(field, children=children)
+
+    if _is_list_like(field.type):
+        item_plan = _json_serialization_plan(field.type.value_field)
+        if item_plan is not None:
+            return _JsonSerializationPlan(field, item=item_plan)
+
+    return None
+
+
+def _json_serialization_plans(
+    schema: pa.Schema,
+) -> Dict[str, _JsonSerializationPlan]:
+    plans: Dict[str, _JsonSerializationPlan] = {}
+    for field in schema:
+        plan = _json_serialization_plan(field)
+        if plan is not None:
+            plans[field.name] = plan
+    return plans
+
+
+def _serialize_json_value(value: Any, plan: _JsonSerializationPlan) -> Any:
+    if value is None or isinstance(value, str):
+        return value
+    if _is_json_field(plan.arrow_field):
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
+    if plan.children is not None and isinstance(value, dict):
+        serialized = None
+        for child_name, child_plan in plan.children.items():
+            if child_name not in value:
+                continue
+            child_value = _serialize_json_value(value[child_name], child_plan)
+            if child_value is not value[child_name]:
+                if serialized is None:
+                    serialized = dict(value)
+                serialized[child_name] = child_value
+        return serialized if serialized is not None else value
+
+    if plan.item is not None and isinstance(value, list):
+        serialized = None
+        for index, item in enumerate(value):
+            serialized_item = _serialize_json_value(item, plan.item)
+            if serialized_item is not item:
+                if serialized is None:
+                    serialized = list(value)
+                serialized[index] = serialized_item
+        return serialized if serialized is not None else value
+
+    return value
+
+
+def _serialize_json_values(data: Any, target_schema: Optional[pa.Schema]) -> Any:
+    if target_schema is None or not isinstance(data, list):
+        return data
+
+    plans = _json_serialization_plans(target_schema)
+    if not plans:
+        return data
+
+    serialized_rows = []
+    for row in data:
+        if not isinstance(row, dict):
+            serialized_rows.append(row)
+            continue
+        serialized_row = None
+        for field_name, plan in plans.items():
+            if field_name not in row:
+                continue
+            value = _serialize_json_value(row[field_name], plan)
+            if value is not row[field_name]:
+                if serialized_row is None:
+                    serialized_row = dict(row)
+                serialized_row[field_name] = value
+        serialized_rows.append(serialized_row if serialized_row is not None else row)
+    return serialized_rows
+
+
 def _align_field_types(
     fields: List[pa.Field],
     target_fields: List[pa.Field],
@@ -464,63 +864,104 @@ def _align_field_types(
         target_field = next((f for f in target_fields if f.name == field.name), None)
         if target_field is None:
             raise ValueError(f"Field '{field.name}' not found in target schema")
-        # Preserve arrow.json input until it reaches Lance. LanceDB exposes stored
-        # JSON columns as lance.json (JSONB-backed LargeBinary), but casting the
-        # input to that storage type here merely relabels the raw JSON bytes as
-        # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
-        if (
-            _field_extension_name(field) == "arrow.json"
-            and _field_extension_name(target_field) == "lance.json"
-        ):
-            new_fields.append(field)
-            continue
-        if pa.types.is_struct(target_field.type):
-            if pa.types.is_struct(field.type):
-                new_type = pa.struct(
-                    _align_field_types(
-                        field.type.fields,
-                        target_field.type.fields,
-                    )
+        new_fields.append(_align_field(field, target_field))
+    return new_fields
+
+
+def _align_container_child(child: pa.Field, target_child: pa.Field) -> pa.Field:
+    # A list has one child, a map one key and one item, so an inferred child name
+    # ("item") aligns positionally and adopts the table's; pa.Table.cast renames it.
+    return _align_field(child, target_child).with_name(target_child.name)
+
+
+def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
+    """The storage type arrow.json would use for ``input_type``.
+
+    Returns None if the type cannot hold JSON text.
+    """
+    if pa.types.is_string(input_type) or pa.types.is_string_view(input_type):
+        return pa.string()
+    if pa.types.is_large_string(input_type):
+        return pa.large_string()
+    return None
+
+
+def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
+    # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
+    # casting the input to that storage type here merely relabels the raw JSON bytes as
+    # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
+    if _field_extension_name(target_field) == "lance.json":
+        if _field_extension_name(field) == "arrow.json":
+            return field
+        # Plain JSON text, which is what pyarrow infers for a column of `str`, only
+        # needs the arrow.json label.
+        json_storage = _arrow_json_storage_type(field.type)
+        if json_storage is not None:
+            # Labelled through metadata rather than pa.json_(), which only exists on
+            # newer PyArrow; Lance reads the extension name off the field either way.
+            # The other metadata keys mirror the table field's: Lance swaps the name
+            # back to lance.json on write and then requires the field to match the
+            # stored one exactly, including the empty ``ARROW:extension:metadata``
+            # that pyarrow records for a ``pa.json_()`` column.
+            metadata = dict(target_field.metadata or {})
+            metadata[b"ARROW:extension:name"] = b"arrow.json"
+            return pa.field(field.name, json_storage, field.nullable, metadata)
+    if pa.types.is_struct(target_field.type):
+        if pa.types.is_struct(field.type):
+            new_type = pa.struct(
+                _align_field_types(
+                    field.type.fields,
+                    target_field.type.fields,
                 )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_large_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.large_list(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0]
-                )
-            else:
-                new_type = target_field.type
-        elif pa.types.is_fixed_size_list(target_field.type):
-            if _is_list_like(field.type):
-                new_type = pa.list_(
-                    _align_field_types(
-                        [field.type.value_field],
-                        [target_field.type.value_field],
-                    )[0],
-                    target_field.type.list_size,
-                )
-            else:
-                new_type = target_field.type
+            )
         else:
             new_type = target_field.type
-        new_fields.append(
-            pa.field(field.name, new_type, field.nullable, target_field.metadata)
-        )
-    return new_fields
+    elif pa.types.is_list(target_field.type):
+        if _is_list_like(field.type):
+            new_type = pa.list_(
+                _align_container_child(
+                    field.type.value_field, target_field.type.value_field
+                )
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_large_list(target_field.type):
+        if _is_list_like(field.type):
+            new_type = pa.large_list(
+                _align_container_child(
+                    field.type.value_field, target_field.type.value_field
+                )
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_fixed_size_list(target_field.type):
+        if _is_list_like(field.type):
+            new_type = pa.list_(
+                _align_container_child(
+                    field.type.value_field, target_field.type.value_field
+                ),
+                target_field.type.list_size,
+            )
+        else:
+            new_type = target_field.type
+    elif pa.types.is_map(target_field.type):
+        if pa.types.is_map(field.type):
+            # A map has exactly one key and one item field, so like a list's child they
+            # align positionally and adopt the table's names.
+            new_type = pa.map_(
+                _align_container_child(
+                    field.type.key_field, target_field.type.key_field
+                ),
+                _align_container_child(
+                    field.type.item_field, target_field.type.item_field
+                ),
+                keys_sorted=target_field.type.keys_sorted,
+            )
+        else:
+            new_type = target_field.type
+    else:
+        new_type = target_field.type
+    return pa.field(field.name, new_type, field.nullable, target_field.metadata)
 
 
 def _infer_subschema(
@@ -589,7 +1030,7 @@ def sanitize_create_table(
         schema = data.schema
     else:
         if schema is not None:
-            data = pa.Table.from_pylist([], schema)
+            data = pa.Table.from_batches([], schema=schema)
     if schema is None:
         if data is None:
             raise ValueError("Either data or schema must be provided")
@@ -1161,8 +1602,8 @@ class Table(ABC):
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
+        stem: Optional[bool] = None,
+        remove_stop_words: Optional[bool] = None,
         custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
@@ -1212,6 +1653,7 @@ class Table(ABC):
             - "simple": Splits text by whitespace and punctuation.
             - "whitespace": Split text by whitespace, but not punctuation.
             - "raw": No tokenization. The entire text is treated as a single token.
+            - "code": Tokenizes source code and identifiers.
             - "ngram": N-Gram tokenizer.
             - "icu": ICU dictionary-based word segmentation.
             - "icu/split": ICU segmentation with simple-style delimiter splitting.
@@ -1226,12 +1668,16 @@ class Table(ABC):
         lower_case : bool, default True
             Whether to convert the token to lower case. This makes queries
             case-insensitive.
-        stem : bool, default True
+        stem : bool, optional
             Whether to stem the token. Stemming reduces words to their root form.
             For example, in English "running" and "runs" would both be reduced to "run".
-        remove_stop_words : bool, default True
+            ``None`` uses the base tokenizer's default: False for ``code`` and
+            ``ngram``, True otherwise.
+        remove_stop_words : bool, optional
             Whether to remove stop words. Stop words are common words that are often
             removed from text before indexing. For example, in English "the" and "and".
+            ``None`` uses the base tokenizer's default: False for ``code`` and
+            ``ngram``, True otherwise.
         custom_stop_words : list of str, optional
             Custom words that replace the built-in language stop words. ``None``
             uses the built-in list; an empty list explicitly uses no stop words.
@@ -1373,7 +1819,9 @@ class Table(ABC):
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -1443,7 +1891,7 @@ class Table(ABC):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -1504,9 +1952,9 @@ class Table(ABC):
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
 
-        No guarantees are made regarding the order in which results are returned.  If
-        you desire an output order that matches the order of the given offsets, you will
-        need to add the row offset column to the output and align it yourself.
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows, which makes this method suitable for
+        sampling with replacement.
 
         Parameters
         ----------
@@ -1617,8 +2065,13 @@ class Table(ABC):
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
-        Convenience for small payloads. For large values use
-        :meth:`fetch_blob_files`.
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
+
+        Remote servers limit each request to 1024 row IDs and 64 MiB of blob
+        bytes. The client splits requests automatically and reads an individual
+        larger blob through the Range route. This method still materializes all
+        bytes in memory; for large values use :meth:`fetch_blob_files`.
         """
 
     @abstractmethod
@@ -1633,6 +2086,9 @@ class Table(ABC):
         repeated or reordered, including multiple ranges for the same blob.
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
+
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
@@ -1649,6 +2105,9 @@ class Table(ABC):
         ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
         rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
         newer.
+
+        ``_rowid`` values stay valid after compaction when the table has stable
+        row ids.
         """
 
     @abstractmethod
@@ -1893,6 +2352,13 @@ class Table(ABC):
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -1991,9 +2457,11 @@ class Table(ABC):
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression, so no
-            data type is supplied.
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
@@ -2001,10 +2469,10 @@ class Table(ABC):
             Declaring one therefore costs the same on a large table as on an
             empty one.
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time; recomputing means
-            dropping the column and declaring it again. While a declaration
-            reads a column, that column cannot be renamed, retyped or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by the
             server, and the refresh runs as a server job -- see
@@ -2024,7 +2492,7 @@ class Table(ABC):
         >>> table.add_columns(computed={"doubled": "x * 2"})
         AddColumnsResult(version=2)
         >>> table.refresh_column("doubled")
-        RefreshColumnResult(rows_filled=2, version=3)
+        RefreshColumnResult(rows_filled=2, version=4)
         >>> table.to_arrow().sort_by("x").to_pandas()
            x  doubled
         0  1        2
@@ -2038,8 +2506,8 @@ class Table(ABC):
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -2090,6 +2558,47 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
+        """
+
+    @abstractmethod
     def alter_columns(self, *alterations: Iterable[Dict[str, str]]):
         """
         Alter column names and nullability.
@@ -2112,6 +2621,10 @@ class Table(ABC):
                 nullability is not changed. Only non-nullable columns can be changed
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
+
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
 
         Returns
         -------
@@ -2279,6 +2792,18 @@ class Table(ABC):
         [Table.uses_v2_manifest_paths][lancedb.table.Table.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
+
+    # WAL-PK-FUSION: delete both hooks, here and on AsyncTable and RemoteTable.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """Whether a hybrid query here has already been refused ``_rowid``.
+
+        Learned from a refusal, never probed, so asking is free. ``False`` for
+        table types that never refuse.
+        """
+        return False
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """Remember a ``_rowid`` refusal, so later hybrid queries skip it."""
 
 
 class LanceTable(Table):
@@ -2698,7 +3223,7 @@ class LanceTable(Table):
             arrow_tbl = self.to_arrow()
             if blob_mode == "descriptions":
                 arrow_tbl = strip_auto_row_ids(
-                    arrow_tbl, blob_v2_column_paths(self.schema)
+                    arrow_tbl, row_addressable_blob_v2_paths(self.schema)
                 )
             return arrow_tbl.to_pandas(**kwargs)
 
@@ -3288,8 +3813,8 @@ class LanceTable(Table):
         language: str = "English",
         max_token_length: Optional[int] = 40,
         lower_case: bool = True,
-        stem: bool = True,
-        remove_stop_words: bool = True,
+        stem: Optional[bool] = None,
+        remove_stop_words: Optional[bool] = None,
         custom_stop_words: Optional[List[str]] = None,
         ascii_folding: bool = True,
         ngram_min_length: int = 3,
@@ -3654,7 +4179,7 @@ class LanceTable(Table):
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
@@ -3816,9 +4341,9 @@ class LanceTable(Table):
             )
             if storage_options is None:
                 storage_options = {}
-            storage_options["new_table_enable_v2_manifest_paths"] = (
+            storage_options["new_table_enable_v2_manifest_paths"] = str(
                 enable_v2_manifest_paths
-            )
+            ).lower()
 
         self._table = LOOP.run(
             self._conn._conn.create_table(
@@ -3914,6 +4439,8 @@ class LanceTable(Table):
             )
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
+            and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -4043,6 +4570,13 @@ class LanceTable(Table):
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -4067,10 +4601,9 @@ class LanceTable(Table):
         modification operations.
         """
         LOOP.run(
-            self._table.optimize(
-                cleanup_older_than=cleanup_older_than,
-                delete_unverified=delete_unverified,
-                retrain=retrain,
+            self._table._do_optimize(
+                _optimize_cleanup_since_ms(cleanup_older_than, retrain),
+                delete_unverified,
             )
         )
 
@@ -4130,16 +4663,29 @@ class LanceTable(Table):
         return LOOP.run(self._table.add_columns(transforms, computed=computed))
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
-        """Fill a computed column's unfilled rows. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed. See
         [`AsyncTable.refresh_column`][lancedb.AsyncTable.refresh_column]."""
         return LOOP.run(self._table.refresh_column(column))
 
     def refresh_column_async(self, column: str) -> Job[RefreshColumnJobResult]:
-        """Fill a computed column's unfilled rows, returning a handle to the
-        refresh job. See
+        """Fill a computed column's unfilled rows and recompute those whose
+        inputs changed, returning a handle to the refresh job. See
         [`Table.refresh_column_async`][lancedb.table.Table.refresh_column_async].
         """
         return Job(LOOP.run(self._table.refresh_column_async(column)))
+
+    def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """The per-row errors Function refreshes recorded on this table. See
+        [`Table.function_errors`][lancedb.table.Table.function_errors]."""
+        return LOOP.run(
+            self._table.function_errors(job_id=job_id, column=column, limit=limit)
+        )
 
     def alter_columns(
         self, *alterations: Iterable[Dict[str, str]]
@@ -4230,7 +4776,7 @@ class LanceTable(Table):
         [LanceTable.uses_v2_manifest_paths][lancedb.table.LanceTable.uses_v2_manifest_paths]
         to check if the table is already using the new path style.
         """
-        LOOP.run(self._table.migrate_v2_manifest_paths())
+        LOOP.run(self._table.migrate_manifest_paths_v2())
 
     @deprecation.deprecated(
         deprecated_in="0.33.1",
@@ -4905,13 +5451,27 @@ class AsyncTable:
     async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
         """Read the LsmWriteSpec currently installed on this table.
 
-        Returns ``None`` when the MemWAL LSM write path is not enabled (no
-        spec has been set, or it was removed with `unset_lsm_write_spec`).
-        The returned spec mirrors what was passed to `set_lsm_write_spec`,
-        except that ``maintained_indexes`` always reports the concrete list
-        resolved when the spec was set — ``None`` never round-trips.
+        Returns ``None`` when the LSM write path is not enabled at all — no
+        spec has been set, or one was removed with `unset_lsm_write_spec`.
+        That is a different answer from a spec whose ``maintained_indexes``
+        is ``None``, which is an installed spec selecting indexes
+        automatically.
+
+        The spec read back is the one that was installed, selection
+        included: ``None`` maintains every supported index the table has now
+        or gains later, ``[]`` maintains none, and a non-empty list maintains
+        exactly those. All three round-trip.
         """
         return await self._inner.get_lsm_write_spec()
+
+    # WAL-PK-FUSION: delete both hooks.
+    def _hybrid_pk_fusion_learned(self) -> bool:
+        """See [`Table._hybrid_pk_fusion_learned`][lancedb.table.Table]."""
+        return self._inner.hybrid_pk_fusion_learned()
+
+    def _note_hybrid_pk_fusion(self) -> None:
+        """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
+        self._inner.note_hybrid_pk_fusion()
 
     async def checkpoint_lsm(self) -> None:
         """Converge this table's LSM write path into its base table.
@@ -5043,7 +5603,11 @@ class AsyncTable:
         return AsyncQuery(self._inner.query(), self)
 
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the Lance dataset backing this table.
+        """Return the Lance dataset backing a local table.
+
+        Remote tables cannot be opened as Lance datasets by the client. Use
+        [to_arrow][lancedb.table.AsyncTable.to_arrow] or
+        [query][lancedb.table.AsyncTable.query] to read them through the server.
 
         Parameters
         ----------
@@ -5060,6 +5624,12 @@ class AsyncTable:
         >>> async def get_lance_dataset(table):
         ...     return await table.to_lance()
         """
+        if not self._inner._is_native():
+            raise NotImplementedError(
+                "to_lance() is not supported for remote tables; "
+                "query the server instead"
+            )
+
         try:
             import lance
         except ImportError:
@@ -5089,7 +5659,8 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned.
+            Controls how Lance blob columns are returned. Remote tables support
+            "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
 
@@ -5102,8 +5673,13 @@ class AsyncTable:
         if blob_mode == "descriptions" or not schema_has_blob_field(schema):
             arrow_tbl = await self.to_arrow()
             if blob_mode == "descriptions":
-                arrow_tbl = strip_auto_row_ids(arrow_tbl, blob_v2_column_paths(schema))
+                arrow_tbl = strip_auto_row_ids(
+                    arrow_tbl, row_addressable_blob_v2_paths(schema)
+                )
             return arrow_tbl.to_pandas(**kwargs)
+
+        if not self._inner._is_native():
+            return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
 
         if blob_mode == "lazy" and get_uri_scheme(await self.uri()) == "memory":
             return (await self.to_arrow()).to_pandas(**kwargs)
@@ -5443,12 +6019,16 @@ class AsyncTable:
 
         """
         schema = await self.schema()
+        data = _serialize_json_values(data, schema)
+        blob_table = _blob_input_to_arrow(data, schema)
+        if blob_table is not None:
+            data = blob_table
         if on_bad_vectors is None:
             on_bad_vectors = "error"
         if fill_value is None:
             fill_value = 0.0
 
-        # _santitize_data is an old code path, but we will use it until the
+        # _sanitize_data is an old code path, but we will use it until the
         # new code path is ready.
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
@@ -5522,7 +6102,9 @@ class AsyncTable:
         on: Union[str, Iterable[str]]
             A column (or columns) to join on.  This is how records from the
             source table and target table are matched.  Typically this is some
-            kind of key or id column.
+            kind of key or id column.  Passing several columns matches on the
+            composite key: a source row updates a target row only when it
+            agrees on every one of them.
 
         Examples
         --------
@@ -5554,7 +6136,17 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: None = None,
+        vector_column_name: Optional[str] = None,
+        query_type: QueryType = "auto",
+        ordering_field_name: Optional[str] = None,
+        fts_columns: Optional[Union[str, List[str]]] = None,
+    ) -> AsyncQuery: ...
+
+    @overload
+    async def search(
+        self,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -5564,7 +6156,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["hybrid"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -5574,7 +6166,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[Union[VEC, "PIL.Image.Image", Tuple]] = None,
+        query: Union[VEC, "PIL.Image.Image", Tuple],
         vector_column_name: Optional[str] = None,
         query_type: Literal["auto"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -5584,7 +6176,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[str] = None,
+        query: str,
         vector_column_name: Optional[str] = None,
         query_type: Literal["fts"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -5594,9 +6186,7 @@ class AsyncTable:
     @overload
     async def search(
         self,
-        query: Optional[
-            Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery]
-        ] = None,
+        query: Union[VEC, str, "PIL.Image.Image", Tuple, FullTextQuery],
         vector_column_name: Optional[str] = None,
         query_type: Literal["vector"] = ...,
         ordering_field_name: Optional[str] = None,
@@ -5612,7 +6202,7 @@ class AsyncTable:
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
-    ) -> Union[AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
+    ) -> Union[AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, AsyncVectorQuery]:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
         and [full-text search](https://lancedb.com/docs/search/full-text-search/).
@@ -5622,13 +6212,14 @@ class AsyncTable:
         Parameters
         ----------
         query: list/np.ndarray/str/PIL.Image.Image, default None
-            The targetted vector to search for.
+            The targeted vector to search for.
 
             - *default None*.
             Acceptable types are: list, np.ndarray, PIL.Image.Image
 
-            - If None then the select/where/limit clauses are applied to filter
-            the table
+            - If None then a plain [AsyncQuery][lancedb.query.AsyncQuery] is
+            returned, equivalent to calling [query][lancedb.table.AsyncTable.query].
+            The select/where/limit clauses are applied to filter the table.
         vector_column_name: str, optional
             The name of the vector column to search.
 
@@ -5656,9 +6247,12 @@ class AsyncTable:
 
         Returns
         -------
-        LanceQueryBuilder
+        AsyncQuery, AsyncHybridQuery, AsyncFTSQuery, or AsyncVectorQuery
             A query builder object representing the query.
         """
+
+        if query is None:
+            return self.query()
 
         def is_embedding(query):
             return isinstance(query, (list, np.ndarray, pa.Array, pa.ChunkedArray))
@@ -5805,7 +6399,23 @@ class AsyncTable:
 
     def _sync_query_to_async(
         self, query: Query
-    ) -> AsyncHybridQuery | AsyncFTSQuery | AsyncVectorQuery | AsyncQuery:
+    ) -> (
+        AsyncHybridQuery
+        | AsyncFTSQuery
+        | AsyncVectorQuery
+        | AsyncQuery
+        | AsyncTakeQuery
+    ):
+        if query.take_offsets is not None:
+            take_query = self.take_offsets(query.take_offsets)
+            if query.columns:
+                take_query = take_query.select(query.columns)
+            if query.use_lsm is not None:
+                take_query = take_query.use_lsm(query.use_lsm)
+            if query.with_row_id:
+                take_query = take_query.with_row_id()
+            return take_query
+
         async_query = self.query()
         if query.limit is not None:
             async_query = async_query.limit(query.limit)
@@ -5830,9 +6440,12 @@ class AsyncTable:
             )
             if query.distance_type is not None:
                 async_query = async_query.distance_type(query.distance_type)
+            if query.nprobes is not None:
+                async_query = async_query.nprobes(query.nprobes)
+            if query.search_effort is not None:
+                async_query = async_query.search_effort(query.search_effort)
             if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
-                # Set both to the minimum first to avoid min > max error.
-                async_query = async_query.nprobes(
+                async_query = async_query.minimum_nprobes(
                     query.minimum_nprobes
                 ).maximum_nprobes(query.maximum_nprobes)
             elif query.minimum_nprobes is not None:
@@ -5870,6 +6483,8 @@ class AsyncTable:
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
+            and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -6092,18 +6707,21 @@ class AsyncTable:
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
-            A map of column name to a SQL expression defining the column. The
-            column's type and inputs are derived from the expression.
+            A mapping from output column names to SQL expressions derives each
+            output field from its expression. A direct projection of a Blob v2
+            field inherits Blob v2 semantics; other expressions derive their
+            ordinary Arrow type. Mapping order is declaration and dependency
+            order.
 
             Unlike ``transforms``, the expression is stored rather than
             evaluated now: the column is committed with no values, and rows get
             them from
             [`refresh_column`][lancedb.table.AsyncTable.refresh_column].
 
-            A refresh does not revisit rows it has already filled, so mutating
-            an input leaves the value computed at fill time. While a
-            declaration reads a column, that column cannot be renamed, retyped
-            or dropped.
+            A refresh also recomputes the rows whose inputs changed since they
+            were computed, so a mutated input is reflected by the next refresh.
+            While a declaration reads a column, that column cannot be renamed,
+            retyped or dropped.
 
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
@@ -6165,8 +6783,8 @@ class AsyncTable:
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
-        by the next one; rows already filled are left as they are, so the call
-        is idempotent and does not observe a mutated input.
+        by the next one, and rows whose inputs changed since they were computed
+        are recomputed; everything else is left as it is.
 
         Local tables only: a remote refresh runs as a server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
@@ -6182,6 +6800,49 @@ class AsyncTable:
             The number of rows filled and the new version of the table.
         """
         return await self._inner.refresh_column(column)
+
+    async def function_errors(
+        self,
+        job_id: Optional[str] = None,
+        column: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> "FunctionErrors":
+        """
+        The per-row errors Function refreshes recorded on this table.
+
+        A refresh running under a skip policy records each row it skipped
+        with the input that failed and the error. This lists those records,
+        newest job first, plus a summary for any fragment whose per-row
+        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        needs read access to the table, since a message carries the value
+        that failed.
+
+        Parameters
+        ----------
+        job_id: str, optional
+            Only errors recorded by this job.
+        column: str, optional
+            Only errors on this column.
+        limit: int, optional
+            At most this many records (server default 10000, cap 100000).
+
+        Returns
+        -------
+        FunctionErrors
+            ``records``, ``fragments`` and ``truncated``, the last saying
+            whether the listing stopped at its limit.
+
+        Examples
+        --------
+        >>> errors = await table.function_errors(column="embedding")  # doctest: +SKIP
+        >>> for record in errors.records:  # doctest: +SKIP
+        ...     print(record.job_id, record.row_offset, record.error_message)
+        >>> if errors.truncated:  # doctest: +SKIP
+        ...     print("listing stopped at the limit")
+        """
+        return await self._inner.function_errors(
+            job_id=job_id, column=column, limit=limit
+        )
 
     async def refresh_column_async(
         self, column: str
@@ -6246,6 +6907,10 @@ class AsyncTable:
                 to nullable. Currently, you cannot change a nullable column to
                 non-nullable.
 
+            Each alteration must specify at least one of "rename", "data_type",
+            or "nullable". The legacy key "name" is also accepted for renaming.
+            Unknown keys raise ValueError before any alterations are applied.
+
         Returns
         -------
         AlterColumnsResult
@@ -6289,9 +6954,11 @@ class AsyncTable:
         """
         versions = await self._inner.list_versions()
         for v in versions:
-            ts_nanos = v["timestamp"]
-            v["timestamp"] = datetime.fromtimestamp(ts_nanos // 1e9) + timedelta(
-                microseconds=(ts_nanos % 1e9) // 1e3
+            # Use integer math: float division on ~1e18 nanosecond
+            # values loses sub-millisecond precision.
+            seconds, nanos = divmod(v["timestamp"], 1_000_000_000)
+            v["timestamp"] = datetime.fromtimestamp(seconds) + timedelta(
+                microseconds=nanos // 1000
             )
 
         return versions
@@ -6363,6 +7030,9 @@ class AsyncTable:
 
         Offsets are mostly useful for sampling as the set of all valid offsets is easily
         known in advance to be [0, len(table)).
+
+        No guarantees are made regarding the order in which results are returned.
+        Repeated offsets produce repeated rows.
 
         Parameters
         ----------
@@ -6485,6 +7155,13 @@ class AsyncTable:
             All files belonging to versions older than this will be removed.  Set
             to 0 days to remove all versions except the latest.  The latest version
             is never removed.
+
+            .. warning::
+
+                Setting this to 0 deletes the data files of every older
+                version, so any other reader or writer still using an older
+                version of the table will fail. Only set it to 0 if no other
+                process is working on this dataset.
         delete_unverified: bool, default False
             Files leftover from a failed transaction may appear to be part of an
             in-progress operation (e.g. appending new data) and these files will not
@@ -6508,20 +7185,14 @@ class AsyncTable:
         you have added or modified 100,000 or more records or run more than 20 data
         modification operations.
         """
-        cleanup_since_ms: Optional[int] = None
-        if cleanup_older_than is not None:
-            cleanup_since_ms = round(cleanup_older_than.total_seconds() * 1000)
+        return await self._do_optimize(
+            _optimize_cleanup_since_ms(cleanup_older_than, retrain),
+            delete_unverified,
+        )
 
-        if retrain:
-            import warnings
-
-            warnings.warn(
-                "The 'retrain' parameter is deprecated and will be removed in a "
-                "future version.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
+    async def _do_optimize(
+        self, cleanup_since_ms: Optional[int], delete_unverified: bool
+    ) -> OptimizeStats:
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
@@ -6682,6 +7353,13 @@ class TableStatistics:
         and manifests.
     num_rows: int
         The total number of rows in the table.
+    num_deleted_rows: Optional[int]
+        The total number of rows marked as deleted across all fragments of the
+        table. These rows are not counted in ``num_rows``, but still occupy space
+        on disk until the table is compacted, so a large value here indicates
+        that the table should be optimized. Fragments in which every row was
+        deleted are dropped outright, so their rows are not counted here.
+        ``None`` when the backend does not report deletion counts.
     num_indices: int
         The total number of indices in the table.
     fragment_stats: FragmentStatistics
@@ -6690,6 +7368,7 @@ class TableStatistics:
 
     total_bytes: int
     num_rows: int
+    num_deleted_rows: Optional[int]
     num_indices: int
     fragment_stats: FragmentStatistics
 

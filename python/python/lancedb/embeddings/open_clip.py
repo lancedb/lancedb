@@ -7,6 +7,7 @@ import io
 import os
 import urllib.parse as urlparse
 from typing import TYPE_CHECKING, List, Union
+from urllib.request import url2pathname
 
 import numpy as np
 import pyarrow as pa
@@ -154,7 +155,7 @@ class OpenClipEmbeddings(EmbeddingFunction):
             parsed = urlparse.urlparse(image)
             # TODO handle drive letter on windows.
             if parsed.scheme == "file":
-                return PIL_Image.open(parsed.path)
+                return PIL_Image.open(url2pathname(parsed.path))
             elif parsed.scheme == "":
                 return PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):

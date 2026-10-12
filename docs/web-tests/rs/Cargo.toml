@@ -1,0 +1,43 @@
+[package]
+name = "rs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow-array = "58.3.0"
+arrow-json = "58.3.0"
+arrow-schema = "58.3.0"
+futures = "0.3.31"
+futures-util = "0.3.31"
+lance-namespace = "7.0.0"
+lancedb = { version = "0.31.0", features = ["polars"] }
+polars = ">=0.37,<0.40.0"
+polars-arrow = ">=0.37,<0.40.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.145"
+tempfile = "3.23.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "basic_usage"
+path = "basic_usage.rs"
+
+[[example]]
+name = "connection"
+path = "connection.rs"
+
+[[example]]
+name = "quickstart"
+path = "quickstart.rs"
+
+[[example]]
+name = "tables"
+path = "tables.rs"
+
+[[example]]
+name = "multimodal"
+path = "multimodal.rs"
+
+[[example]]
+name = "search"
+path = "search.rs"

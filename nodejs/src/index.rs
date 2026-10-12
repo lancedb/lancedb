@@ -239,7 +239,12 @@ impl Index {
             opts = opts.base_tokenizer(base_tokenizer);
         }
         if let Some(language) = language {
-            opts = opts.language(&language).unwrap();
+            opts = opts.language(&language).map_err(|_| {
+                napi::Error::from_reason(format!(
+                    "LanceDB does not support the requested language: '{}'",
+                    language
+                ))
+            })?;
         }
         if let Some(max_token_length) = max_token_length {
             opts = opts.max_token_length(Some(max_token_length as usize));

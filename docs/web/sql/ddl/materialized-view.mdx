@@ -1,0 +1,73 @@
+---
+title: "Materialized View"
+sidebarTitle: "Materialized View"
+description: "CREATE MATERIALIZED VIEW and SHOW MATERIALIZED VIEWS; refreshing is a REFRESH statement."
+icon: table
+keywords: ["materialized view", "create materialized view", "show materialized views", "sql"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+A materialized view stores a query's result as rows, kept current by a refresh
+-- the counterpart to a [view](/sql/ddl/view), which stores only the query.
+
+<Note>
+Materialized views are off by default on a deployment and have to be enabled
+there. Which statements and query shapes a deployment accepts, whether it needs
+the source table to have stable row ids, and how it refreshes a view depend on
+its LanceDB Enterprise version and configuration.
+</Note>
+
+## CREATE MATERIALIZED VIEW {#create}
+
+```sql
+CREATE MATERIALIZED VIEW <name> AS SELECT ...
+```
+
+On a `db://` connection, the SDK's
+[`create_materialized_view`](/management/materialized-view#create) sends this
+statement. Once created, a view is queried like a table, refreshed with SQL and
+listed with SQL.
+
+## SHOW MATERIALIZED VIEWS {#show}
+
+```sql
+SHOW MATERIALIZED VIEWS
+```
+
+<Note>
+Cheaper than the SDK equivalent. `list_materialized_views` finds views by
+reading every table's schema, costing one open per table; this asks the server.
+</Note>
+
+## Refreshing one {#refresh}
+
+```sql
+REFRESH MATERIALIZED VIEW chunks
+```
+
+See [REFRESH](/sql/dml/refresh#refresh-materialized-view) for the full syntax,
+including `CASCADE` and `full = true`.
+
+## Dropping one {#drop}
+
+A materialized view **is** a table, so it is dropped with
+[`DROP TABLE`](/sql/ddl/table#drop) -- which is also why dropping one removes
+stored rows, unlike dropping a [view](/sql/ddl/view#drop).
+
+<Note>
+**Enterprise job type:** `mat_view_refresh` for a refresh, or `sql` on a
+deployment that rebuilds views through SQL; `drop_table` for dropping one, same
+as any table.
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Materialized View" icon="table" href="/management/materialized-view">
+    Creating one from the SDK.
+  </Card>
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+    How a refresh works, locally and on a deployment.
+  </Card>
+</CardGroup>

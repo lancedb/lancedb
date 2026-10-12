@@ -19,6 +19,7 @@ use lancedb::{
     connect, connect_namespace,
     database::listing::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+        OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
     table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
@@ -41,6 +42,21 @@ fn binary_input_batch(ids: &[i64], payloads: &[Option<&[u8]>]) -> RecordBatch {
         vec![
             Arc::new(Int64Array::from(ids.to_vec())),
             Arc::new(LargeBinaryArray::from_iter(payloads.iter().copied())),
+        ],
+    )
+    .unwrap()
+}
+
+/// What pyarrow infers for a batch of dicts whose blob values are all `None`.
+fn null_typed_input_batch(ids: &[i64]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Null, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            new_null_array(&DataType::Null, ids.len()),
         ],
     )
     .unwrap()
@@ -111,7 +127,7 @@ async fn query_image_struct(table: &Table) -> StructArray {
 }
 
 #[tokio::test]
-async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Result<()> {
+async fn declaring_blob_column_uses_v2_2_and_default_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = db
@@ -120,12 +136,12 @@ async fn declaring_blob_column_bumps_format_and_enables_stable_row_ids() -> Resu
         .await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
 
 #[tokio::test]
-async fn explicit_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
+async fn blob_create_honors_disabled_stable_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = db
@@ -146,7 +162,10 @@ async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> 
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let table = db.create_empty_table("t", schema).execute().await?;
 
-    assert!(!supports_blob_v2(storage_format_version(&table).await));
+    assert_eq!(
+        storage_format_version(&table).await,
+        LanceFileVersion::Stable.resolve()
+    );
     assert!(!uses_stable_row_ids(&table).await);
     Ok(())
 }
@@ -179,7 +198,7 @@ async fn creating_with_blob_data_bumps_format() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
     assert_eq!(table.count_rows(None).await?, 1);
     Ok(())
 }
@@ -251,6 +270,38 @@ async fn add_accepts_null_blob_rows() -> Result<()> {
     Ok(())
 }
 
+/// A batch whose blob values are all null carries no type information — pyarrow infers
+/// `DataType::Null` for it, which is what a row-at-a-time insert of an optional blob column
+/// looks like. Such a batch must be accepted, both as the first write and after bytes have
+/// already been written.
+#[tokio::test]
+async fn add_accepts_all_null_typed_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table.add(null_typed_input_batch(&[1])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 1);
+    assert!(query_image_struct(&table).await.is_null(0));
+
+    table
+        .add(binary_input_batch(&[2], &[Some(b"bytes".as_slice())]))
+        .execute()
+        .await?;
+    table.add(null_typed_input_batch(&[3])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 3);
+
+    let row_ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert!(bytes.is_null(0));
+    assert_eq!(bytes.value(1), b"bytes");
+    assert!(bytes.is_null(2));
+    Ok(())
+}
+
 #[tokio::test]
 async fn add_rejects_uncoercible_blob_input() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -277,7 +328,7 @@ async fn add_rejects_uncoercible_blob_input() -> Result<()> {
 }
 
 #[tokio::test]
-async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Result<()> {
+async fn connection_disables_stable_row_ids_on_blob_create() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap())
         .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
@@ -294,13 +345,30 @@ async fn connection_level_stable_row_id_setting_wins_over_blob_default() -> Resu
 }
 
 #[tokio::test]
-async fn namespace_create_applies_blob_defaults() -> Result<()> {
+async fn namespace_blob_create_uses_v2_2_and_default_row_ids() -> Result<()> {
     let tmp = tempdir().unwrap();
     let mut properties = std::collections::HashMap::new();
     properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
     let db = connect_namespace("dir", properties).execute().await?;
     let table = db
         .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn namespace_create_honors_enabled_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let mut properties = std::collections::HashMap::new();
+    properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+    let db = connect_namespace("dir", properties).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
         .execute()
         .await?;
 
@@ -430,6 +498,35 @@ async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
         .collect())
 }
 
+fn assert_missing_blob_row_ids(err: &Error) {
+    assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    let message = err.to_string();
+    assert!(message.contains("row ids"), "{message}");
+    assert!(!message.contains("rowaddr"), "{message}");
+    assert!(!message.contains("fragment"), "{message}");
+}
+
+async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+
+    let err = table
+        .fetch_blob_ranges(
+            "image",
+            row_ids
+                .iter()
+                .copied()
+                .map(|row_id| BlobRangeRequest::new(row_id, 0, 1)),
+        )
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
 #[tokio::test]
 async fn fetch_blobs_round_trips_bytes() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -482,7 +579,7 @@ async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
     let table = db.create_table("t", batch).execute().await?;
 
     assert!(supports_blob_v2(storage_format_version(&table).await));
-    assert!(uses_stable_row_ids(&table).await);
+    assert!(!uses_stable_row_ids(&table).await);
 
     let ids = collect_row_ids(&table).await?;
     let bytes = table.fetch_blobs("info.blob", &ids).await?;
@@ -656,8 +753,7 @@ async fn fetch_blob_ranges_validates_requests() -> Result<()> {
         .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
         .await
         .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -690,7 +786,21 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
 
     let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
-    assert!(err.to_string().contains("row IDs"));
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table
+        .fetch_blob_files("image", &[1u64 << 32])
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
     Ok(())
 }
 
@@ -700,24 +810,25 @@ async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> 
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
     let row_id = collect_row_ids(&table).await?[0];
-    let row_ids = [u64::MAX, row_id];
+    let missing_row_addr = 1u64 << 32;
+    let row_ids = [missing_row_addr, row_id];
+    assert_fetch_apis_reject_missing_row_ids(&table, &row_ids).await
+}
 
-    let err = table.fetch_blobs("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one".as_slice()), Some(b"two")])
+            .await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_addr = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_addr = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
 
-    let err = table.fetch_blob_files("image", &row_ids).await.unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
+    table.delete("id = 2").await?;
 
-    let requests = row_ids.map(|row_id| BlobRangeRequest::new(row_id, 0, 1));
-    let err = table
-        .fetch_blob_ranges("image", requests)
-        .await
-        .unwrap_err();
-    assert!(matches!(&err, Error::InvalidInput { .. }), "got {err:?}");
-    assert!(err.to_string().contains("row IDs"));
-    Ok(())
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
 }
 
 #[tokio::test]
@@ -749,7 +860,11 @@ async fn fetch_blobs_rejects_unknown_column() -> Result<()> {
 #[tokio::test]
 async fn fetch_blobs_rejects_legacy_v1_blob_column() -> Result<()> {
     let tmp = tempdir().unwrap();
-    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    // Legacy v1 blob columns are only writable at file version <= 2.1.
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, "2.1")])
+        .execute()
+        .await?;
     let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
         std::collections::HashMap::from([("lance-encoding:blob".to_string(), "true".to_string())]),
     );
@@ -920,7 +1035,10 @@ async fn fetch_blobs_after_delete() -> Result<()> {
 #[tokio::test]
 async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
     let tmp = tempdir().unwrap();
-    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
     let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
     table
         .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))

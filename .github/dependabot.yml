@@ -44,3 +44,27 @@ updates:
       python-deps:
         patterns:
           - "*"
+
+  # The npm ecosystem covers pnpm lockfiles. There are two separate installs:
+  # the bindings themselves and the examples, which have their own lockfile.
+  # As with cargo and pip above, only bump the lockfile — the version ranges
+  # in package.json are our consumers' constraints, not ours.
+  - package-ecosystem: npm
+    directory: /nodejs
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      nodejs-deps:
+        patterns:
+          - "*"
+
+  - package-ecosystem: npm
+    directory: /nodejs/examples
+    schedule:
+      interval: weekly
+    versioning-strategy: lockfile-only
+    groups:
+      nodejs-examples-deps:
+        patterns:
+          - "*"

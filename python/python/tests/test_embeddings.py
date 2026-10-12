@@ -327,8 +327,8 @@ def test_embedding_function_with_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func = registery.get("mock-embedding").create()
+    registry = get_registry()
+    func = registry.get("mock-embedding").create()
 
     class TestSchema(LanceModel):
         text: str = func.SourceField()
@@ -394,9 +394,9 @@ def test_multiple_embeddings_for_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func1 = registery.get("mock-embedding").create()
-    func2 = registery.get("mock-embedding2").create()
+    registry = get_registry()
+    func1 = registry.get("mock-embedding").create()
+    func2 = registry.get("mock-embedding2").create()
 
     class TestSchema(LanceModel):
         text: str = func1.SourceField()
@@ -631,6 +631,18 @@ def test_url_retrieve_downloads_image():
     image_bytes = url_retrieve(image_url)
     img = Image.open(io.BytesIO(image_bytes))
     assert img.size[0] > 0 and img.size[1] > 0
+
+
+def test_open_clip_opens_percent_encoded_file_uri(tmp_path):
+    """OpenCLIP should decode local file URIs before opening them."""
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.open_clip import OpenClipEmbeddings
+
+    image_path = tmp_path / "test image.png"
+    Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
+
+    with OpenClipEmbeddings._to_pil(None, image_path.as_uri()) as image:
+        assert image.size == (4, 4)
 
 
 def test_jina_generate_image_input_dict_local_path(tmp_path):
