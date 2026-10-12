@@ -184,6 +184,7 @@ def _resolve_blob_type():
 def blob(
     name: str,
     nullable: bool = True,
+    *,
     inline_size_threshold: Optional[int] = None,
     dedicated_size_threshold: Optional[int] = None,
     pack_file_size_threshold: Optional[int] = None,
@@ -221,12 +222,13 @@ def blob(
         blob_type = _resolve_blob_type()
         return pa.field(name, blob_type(), nullable=nullable)
     try:
-        from lance import blob_field
+        lance = importlib.import_module("lance")
     except ModuleNotFoundError as err:
         raise ValueError(
             "Setting blob tier thresholds requires pylance to be installed"
         ) from err
-    return blob_field(
+    _resolve_blob_type()
+    return lance.blob_field(
         name,
         nullable=nullable,
         inline_size_threshold=inline_size_threshold,
