@@ -64,7 +64,9 @@ class EmbeddingFunctionRegistry:
                 raise KeyError(f"{cls.__name__} was already registered")
             key = alias or cls.__name__
             self._functions[key] = cls
-            cls.__embedding_function_registry_alias__ = alias
+            # Store the name the class is registered under, so the table
+            # metadata written for it can be looked up again when reading.
+            cls.__embedding_function_registry_alias__ = key
             return cls
 
         return decorator
