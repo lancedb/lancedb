@@ -127,7 +127,11 @@ def Vector(
                 core_schema.list_schema(
                     min_length=dim,
                     max_length=dim,
-                    items_schema=core_schema.float_schema(),
+                    items_schema=(
+                        core_schema.int_schema()
+                        if pa.types.is_integer(value_type)
+                        else core_schema.float_schema()
+                    ),
                 ),
             )
 
@@ -208,7 +212,11 @@ def MultiVector(
                     items_schema=core_schema.list_schema(
                         min_length=dim,
                         max_length=dim,
-                        items_schema=core_schema.float_schema(),
+                        items_schema=(
+                            core_schema.int_schema()
+                            if pa.types.is_integer(value_type)
+                            else core_schema.float_schema()
+                        ),
                     ),
                 ),
             )
