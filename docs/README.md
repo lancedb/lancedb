@@ -15,18 +15,21 @@ unreleased features.
 
 ### Preview the docs
 
+Run these commands from the LanceDB repository root. The subshell changes into
+`docs` to load `mkdocs.yml`, while leaving your shell in the repository root.
+
 ```shell
-cd docs
-mkdocs serve
+(cd docs && PYTHONPATH=. mkdocs serve)
 ```
 
 If you want to just generate the HTML files:
 
 ```shell
-PYTHONPATH=. mkdocs build -f docs/mkdocs.yml
+(cd docs && PYTHONPATH=. mkdocs build)
 ```
 
-If successful, you should see a `docs/site` directory that you can verify locally.
+If successful, you should see a `docs/site` directory in the repository root that
+you can verify locally.
 
 ## Adding examples
 
