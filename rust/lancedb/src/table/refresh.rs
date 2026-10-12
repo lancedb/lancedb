@@ -1847,8 +1847,8 @@ mod tests {
         assert_eq!(
             layouts,
             vec![
-                (1, Some(BlobKind::Dedicated)),
-                (2, Some(BlobKind::Packed)),
+                (1, Some(BlobKind::Managed)),
+                (2, Some(BlobKind::Managed)),
                 (3, Some(BlobKind::Inline)),
                 (4, None),
             ]

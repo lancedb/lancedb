@@ -836,7 +836,10 @@ impl Table {
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .uses_v2_manifest_paths()
             .await
             .default_error()
@@ -846,7 +849,10 @@ impl Table {
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .migrate_manifest_paths_v2()
             .await
             .default_error()

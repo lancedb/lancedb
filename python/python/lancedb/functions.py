@@ -372,7 +372,7 @@ class FunctionVersion(_RemoteValue):
     image: FunctionImage
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
-    created_at: str
+    created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
 

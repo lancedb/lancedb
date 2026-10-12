@@ -33,6 +33,7 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
+use lance::dataset::mem_wal::index::{IndexStore, VectorMemQuery};
 use lance::dataset::mem_wal::scanner::{InMemoryMemTableRef, InMemoryMemTables};
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
@@ -170,10 +171,12 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // Vector-only knobs the LSM scanner cannot honor. Both change results rather
     // than just recall, so error instead of silently ignoring them: distance_range
     // would return rows outside the bound, and use_index(false) asks for a
-    // brute-force search the index-only base arm can't do. (ef / approx_mode /
-    // maximum_nprobes are recall/speed knobs and are left to no-op — and
-    // maximum_nprobes defaults to Some, so it cannot be rejected on presence.)
+    // brute-force search the index-only base arm can't do. (ef / approx_mode are
+    // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
+        if query.search_effort.is_some() {
+            return unsupported("search_effort on vector search");
+        }
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
         }
@@ -475,7 +478,7 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            !memtable.index_store.fts_granularities_on(column).is_empty()
         })
     {
         return Err(Error::NotSupported {
@@ -713,7 +716,7 @@ async fn vector_plan(
     // Reject rather than silently omit rows, mirroring the FTS arm.
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
+            carries_vector_index(&memtable.index_store, &column)
         })
     {
         return Err(Error::NotSupported {
@@ -740,13 +743,41 @@ async fn vector_plan(
     let mut scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
         .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
         .nearest(&column, query_vector.as_ref(), k)?
-        .nprobes(query.minimum_nprobes)
         .distance_metric(distance_type.into());
+    if let Some(nprobes) = query.nprobes {
+        scanner = if query.maximum_nprobes == Some(0) {
+            scanner.minimum_nprobes(nprobes)
+        } else {
+            scanner.nprobes(nprobes)
+        };
+    }
+    if let Some(minimum_nprobes) = query.minimum_nprobes {
+        scanner = scanner.minimum_nprobes(minimum_nprobes);
+    }
+    if let Some(maximum_nprobes) = query.maximum_nprobes.filter(|nprobes| *nprobes != 0) {
+        scanner = scanner.maximum_nprobes(maximum_nprobes);
+    }
     if let Some(refine_factor) = query.refine_factor {
         scanner = scanner.refine(refine_factor);
     }
     scanner = scanner.limit(as_i64(limit), as_i64(offset))?;
     Ok(scanner.create_plan().await?)
+}
+
+/// Probe for a resident vector index without imposing a distance metric, matching
+/// the presence check used before Lance introduced query-based index lookup.
+fn carries_vector_index(store: &IndexStore, column: &str) -> bool {
+    let probe = VectorMemQuery {
+        vector: arrow_array::FixedSizeListArray::new_null(
+            Arc::new(arrow_schema::Field::new("item", DataType::Float32, true)),
+            1,
+            1,
+        ),
+        k: 1,
+        ef: None,
+        distance_type: None,
+    };
+    store.index_answering(column, &probe).is_some()
 }
 
 /// Whether `column` stores binary (uint8) vectors, which the LSM vector planner
@@ -792,6 +823,58 @@ async fn resolve_distance_type(
 mod tests {
     use super::*;
     use lance_index::mem_wal::{CompactedSsTable, IndexCatchupProgress};
+
+    #[test]
+    fn search_effort_is_not_silently_ignored() {
+        let query = VectorQueryRequest {
+            query_vector: vec![Arc::new(arrow_array::Float32Array::from(vec![1.0, 0.0]))],
+            search_effort: Some(0.5),
+            ..Default::default()
+        };
+        assert!(
+            matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
+            if message.contains("search_effort") && message.contains("un-compacted MemWAL"))
+        );
+    }
+
+    #[test]
+    fn resident_index_checks_distinguish_columns_and_query_types() {
+        use arrow_schema::Field;
+        use lance::dataset::mem_wal::index::MemIndexSpec;
+
+        let schema = ArrowSchema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                true,
+            ),
+        ]);
+        let schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let specs = vec![
+            MemIndexSpec::btree("id_idx", 0, "id"),
+            MemIndexSpec::fts("text_idx", 1, "text"),
+            MemIndexSpec::hnsw(
+                "vector_idx",
+                2,
+                "vector",
+                lance_linalg::distance::DistanceType::Cosine,
+            ),
+        ];
+        let store = IndexStore::from_specs(&specs, &schema, 1_000, 16).unwrap();
+        assert!(carries_vector_index(&store, "vector"));
+        for column in ["id", "text", "missing"] {
+            assert!(!carries_vector_index(&store, column));
+        }
+        assert!(!store.fts_granularities_on("text").is_empty());
+        for column in ["id", "vector", "missing"] {
+            assert!(store.fts_granularities_on(column).is_empty());
+        }
+        let empty = IndexStore::from_specs(&[], &schema, 1_000, 16).unwrap();
+        assert!(!carries_vector_index(&empty, "vector"));
+        assert!(empty.fts_granularities_on("text").is_empty());
+    }
 
     #[test]
     fn exclusion_watermark_gates_on_lagging_index_catchup() {

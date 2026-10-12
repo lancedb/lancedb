@@ -86,6 +86,15 @@ print(query.describe().status)
 for batch in query.reader():
     print(batch.num_rows)
 
+# Values bind to $1 / $name placeholders and travel as Arrow, so a float32
+# stays a float32 and a vector stays a compact fixed-size list:
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k",
+    parameters={"vector": np.random.rand(768).astype(np.float32), "k": 10},
+)
+
 # The async connection exposes the same lifecycle without blocking:
 # async_db = await lancedb.connect_async(
 #     "db://analytics",
@@ -200,6 +209,8 @@ listing a storage directory.
 ::: lancedb.sql.AsyncQuery
 
 ::: lancedb.sql.QueryDescription
+
+::: lancedb.sql.QueryParameters
 
 ## Materialized Views (Synchronous)
 
