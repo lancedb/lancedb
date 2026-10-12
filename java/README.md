@@ -55,9 +55,9 @@ lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
 // Converge the fresh tier into the base table.
 lsm.checkpointLsm();
 
-// Inspect live per-bucket state.
-lsm.getLsmStats().ifPresent(stats -> stats.buckets().forEach(bucket ->
-    System.out.println(bucket.shardId() + ": " + bucket.generations().size() + " L0 generations")));
+// Inspect live per-table-shard state.
+lsm.getLsmStats().ifPresent(stats -> stats.tableShards().forEach(tableShard ->
+    System.out.println(tableShard.shardId() + ": " + tableShard.sstables().size() + " SSTables")));
 
 client.close();
 ```

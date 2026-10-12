@@ -370,7 +370,7 @@ impl ShardWriterEntry {
     }
 
     /// The cached writer's latest in-memory manifest (current generation +
-    /// flushed generations). `Ok(None)` if the writer was already closed.
+    /// SSTables). `Ok(None)` if the writer was already closed.
     /// Used by the LSM read path to snapshot this shard authoritatively
     /// without re-reading the on-disk manifest.
     async fn manifest(&self) -> Result<Option<lance_index::mem_wal::ShardManifest>> {
@@ -449,7 +449,7 @@ impl ShardWriterCache {
     /// writer opened afterwards reads the committed set.
     ///
     /// Holds the entry's read lock across the refresh, so a concurrent close
-    /// waits rather than retiring the writer mid-seal. Writes take the same
+    /// waits rather than retiring the writer mid-freeze. Writes take the same
     /// lock first, so the order matches theirs.
     pub(crate) async fn refresh_maintained_indexes(&self, dataset: &Dataset) {
         let entry = {
@@ -463,13 +463,13 @@ impl ShardWriterCache {
         let Some(writer) = guard.as_ref() else {
             return;
         };
-        // Replacing the configs seals the active memtable so the next one carries
+        // Replacing the configs freezes the active memtable so the next one carries
         // the new indexes. The outgoing one keeps the set it was built with, so
         // its flush has to land before a read: while it is still frozen, an
         // indexed read sees a resident memtable that cannot answer and is
         // refused.
-        let sealed = match dataset.refresh_mem_wal_index_configs(writer).await {
-            Ok(sealed) => sealed,
+        let frozen = match dataset.refresh_mem_wal_index_configs(writer).await {
+            Ok(frozen) => frozen,
             Err(error) => {
                 log::warn!(
                     "the maintained index set changed but the open shard writer could \
@@ -478,12 +478,12 @@ impl ShardWriterCache {
                 return;
             }
         };
-        if let Some(fence) = sealed
+        if let Some(fence) = frozen
             && let Err(error) = fence.wait().await
         {
             log::warn!(
                 "the shard writer took the new maintained index set, but the memtable \
-                 it sealed was not flushed, so an indexed read stays refused until \
+                 it froze was not flushed, so an indexed read stays refused until \
                  it is: {error}"
             );
         }

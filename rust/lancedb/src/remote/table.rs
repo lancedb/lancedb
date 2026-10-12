@@ -9968,19 +9968,19 @@ mod tests {
         assert!(table.get_lsm_write_spec().await.unwrap().is_none());
     }
 
-    /// Build a `get_lsm_stats` body for one bucket holding `generations`.
-    fn stats_body(generations: &[u64], compacting: bool) -> String {
+    /// Build a `get_lsm_stats` body for one table shard holding `sstables`.
+    fn stats_body(sstables: &[u64], compacting: bool) -> String {
         serde_json::json!({
             "lsm_stats": {
-                "buckets": [{
+                "table_shards": [{
                     "shard_id": "b0",
                     "status": "Active",
                     "writer_epoch": 1,
                     "manifest_version": 1,
-                    "current_generation": generations.iter().max().copied().unwrap_or(0) + 1,
+                    "current_generation": sstables.iter().max().copied().unwrap_or(0) + 1,
                     "replay_after_wal_entry_position": 0,
                     "wal_entry_position_last_seen": 0,
-                    "generations": generations.iter()
+                    "sstables": sstables.iter()
                         .map(|g| serde_json::json!({ "generation": g, "bytes": 1 }))
                         .collect::<Vec<_>>(),
                     "compacting": compacting,
@@ -10086,7 +10086,7 @@ mod tests {
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the loop must not chase generations written after it started"
+            "the loop must not chase SSTables written after it started"
         );
     }
 
@@ -10103,7 +10103,7 @@ mod tests {
                 return accepted();
             }
             if path.contains("compact_lsm") {
-                // First two triggers: every bucket already latched.
+                // First two triggers: every table shard already latched.
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
                     return http::Response::builder()
                         .status(429)
@@ -10201,7 +10201,7 @@ mod tests {
         assert_eq!(
             flushes.load(std::sync::atomic::Ordering::SeqCst),
             6,
-            "five retries against one seal, then it lands"
+            "five retries against one freeze, then it lands"
         );
     }
 
@@ -10270,7 +10270,7 @@ mod tests {
     /// A long stall with nothing compacting must keep waiting, not fail. The
     /// client cannot judge this: a checkpoint queued behind unrelated tables
     /// on the pod-wide compactor pool reports exactly these numbers — flat
-    /// generations, an idle latch — as one whose merges are failing. The
+    /// SSTable counts, an idle latch — as one whose merges are failing. The
     /// deadline is the caller's.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_waits_out_a_long_stall_rather_than_failing() {
@@ -10297,7 +10297,7 @@ mod tests {
         );
     }
 
-    /// A pass already owns the latch on every outstanding bucket, so the loop
+    /// A pass already owns the latch on every outstanding table shard, so the loop
     /// waits rather than piling on triggers it would only refuse. This is the
     /// sole thing `compacting` is read for.
     #[tokio::test(start_paused = true)]
@@ -10331,7 +10331,7 @@ mod tests {
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "never trigger against a bucket already compacting"
+            "never trigger against a table shard already compacting"
         );
     }
 
@@ -10350,7 +10350,7 @@ mod tests {
             );
             let response = serde_json::json!({
                 "lsm_stats": {
-                    "buckets": [{
+                    "table_shards": [{
                         "shard_id": "b0",
                         "status": "Active",
                         "writer_epoch": 3,
@@ -10358,7 +10358,7 @@ mod tests {
                         "current_generation": 9,
                         "replay_after_wal_entry_position": 100,
                         "wal_entry_position_last_seen": 140,
-                        "generations": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
+                        "sstables": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
                         "compacting": false,
                         "memtables": [
                             { "generation": 9, "rows": 12, "bytes": 900, "batches": 2,
@@ -10378,15 +10378,15 @@ mod tests {
             .await
             .unwrap()
             .expect("a WAL-backed table reports Some");
-        let bucket = &stats.buckets[0];
-        assert_eq!(bucket.replay_after_wal_entry_position, 100);
-        assert_eq!(bucket.wal_entry_position_last_seen, 140);
-        assert!(!bucket.compacting);
-        assert_eq!(bucket.generations[0].generation, 8);
-        assert_eq!(bucket.generations[0].rows, Some(30));
+        let table_shard = &stats.table_shards[0];
+        assert_eq!(table_shard.replay_after_wal_entry_position, 100);
+        assert_eq!(table_shard.wal_entry_position_last_seen, 140);
+        assert!(!table_shard.compacting);
+        assert_eq!(table_shard.sstables[0].generation, 8);
+        assert_eq!(table_shard.sstables[0].rows, Some(30));
         // The line that answers "why is my fresh-tier vector search
         // brute-force" — an absent index name is the whole explanation.
-        let memtables = bucket.memtables.as_ref().unwrap();
+        let memtables = table_shard.memtables.as_ref().unwrap();
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 

@@ -1386,7 +1386,7 @@ class LanceQueryBuilder(ABC):
         By default (unset), a query against a table with an LSM write spec is
         routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
-        table (active/frozen memtables + flushed generations); a table without a
+        table (active/frozen memtables + SSTables); a table without a
         spec reads the base table.
 
         Parameters
@@ -3461,7 +3461,7 @@ class AsyncStandardQuery(AsyncQueryBase):
         [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec])
         is routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
-        table (the active/frozen in-memory memtables and the flushed generations),
+        table (the active/frozen in-memory memtables and the SSTables),
         deduplicated by primary key; a table without a spec reads the base table.
 
         Parameters

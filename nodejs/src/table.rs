@@ -1106,7 +1106,7 @@ impl From<lancedb::table::MemtableStats> for MemtableStats {
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct TableShardStats {
-    /// The shard this table shard writes.
+    /// The id of this table shard.
     pub shard_id: String,
     /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
     pub status: String,

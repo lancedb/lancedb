@@ -8,7 +8,7 @@
 //! base-table scan unless the query sets
 //! [`use_lsm(false)`](crate::query::QueryBase::use_lsm). This makes data
 //! written via the LSM `merge_insert` path — which lives in the active/frozen
-//! in-memory memtables and the flushed SSTable generations until an external
+//! in-memory memtables and the SSTables until an external
 //! compaction merges it into the base table — visible to queries, deduplicated by
 //! primary key (newest generation wins).
 //!
@@ -275,7 +275,7 @@ fn exclusion_watermarks(
     exclude
 }
 
-/// Assemble the per-shard snapshots (flushed SSTable generations) and the
+/// Assemble the per-shard snapshots (SSTables) and the
 /// in-memory memtables (active + frozen) for the table.
 ///
 /// Snapshots for all shards come from their on-disk manifests; for the shard
@@ -855,7 +855,7 @@ mod tests {
     fn exclusion_watermark_gates_on_lagging_index_catchup() {
         let shard = Uuid::from_u128(1);
         let details = MemWalIndexDetails {
-            // Compaction has drained generations through 5 into the base table...
+            // Compaction has drained SSTables through generation 5 into the base table...
             compacted_sstables: vec![CompactedSsTable::new(shard, 5)],
             // ...but the FTS index has only caught up through generation 2.
             index_catchup: vec![IndexCatchupProgress::new(

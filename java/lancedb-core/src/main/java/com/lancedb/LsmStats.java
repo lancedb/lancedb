@@ -20,7 +20,7 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Live per-tableShard LSM state, as returned by {@link LanceDbTableLsm#getLsmStats()}.
+ * Live per-table-shard LSM state, as returned by {@link LanceDbTableLsm#getLsmStats()}.
  *
  * <p>Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are the caller's to
  * compute. There is no "LSM is off" shape — that case is an empty {@link java.util.Optional},
@@ -35,7 +35,7 @@ public class LsmStats {
     this.tableShards = Collections.unmodifiableList(tableShards);
   }
 
-  /** One entry per tableShard. */
+  /** One entry per table shard. */
   public List<TableShardStats> tableShards() {
     return tableShards;
   }

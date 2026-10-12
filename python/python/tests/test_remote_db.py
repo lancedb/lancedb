@@ -1882,7 +1882,7 @@ def send_json(request, payload, status=200):
 
 def test_get_lsm_stats_sync():
     """The sync wrapper round-trips the server payload into a dict."""
-    bucket = {
+    table_shard = {
         "shard_id": "b0",
         "status": "Active",
         "writer_epoch": 3,
@@ -1890,7 +1890,7 @@ def test_get_lsm_stats_sync():
         "current_generation": 6,
         "replay_after_wal_entry_position": 40,
         "wal_entry_position_last_seen": 42,
-        "generations": [{"generation": 5, "bytes": 1024, "rows": 7}],
+        "sstables": [{"generation": 5, "bytes": 1024, "rows": 7}],
         "compacting": False,
         "memtables": [
             {
@@ -1907,10 +1907,10 @@ def test_get_lsm_stats_sync():
     def lsm_handler(request, route):
         assert route == "get_lsm_stats"
         seen_bodies.append(read_json_body(request))
-        send_json(request, {"lsm_stats": {"buckets": [bucket]}})
+        send_json(request, {"lsm_stats": {"table_shards": [table_shard]}})
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.get_lsm_stats() == {"buckets": [bucket]}
+        assert table.get_lsm_stats() == {"table_shards": [table_shard]}
         # Off by default, and forwarded when asked for.
         assert seen_bodies == [{"include_sstable_rows": False}]
         table.get_lsm_stats(include_sstable_rows=True)
@@ -1954,8 +1954,8 @@ def test_checkpoint_lsm_sync():
         called.append(route)
         if route == "get_lsm_stats":
             # An empty SSTable tier yields no target watermark, so the loop is done
-            # after the seal without ever polling compaction.
-            send_json(request, {"lsm_stats": {"buckets": []}})
+            # after the freeze without ever polling compaction.
+            send_json(request, {"lsm_stats": {"table_shards": []}})
         else:
             request.send_response(202)
             request.end_headers()

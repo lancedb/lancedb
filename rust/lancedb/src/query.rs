@@ -550,7 +550,7 @@ pub trait QueryBase {
     /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
-    /// memtables and flushed generations); a table without a spec reads the base
+    /// memtables and SSTables); a table without a spec reads the base
     /// table.
     ///
     /// - `use_lsm(true)` forces LSM routing and errors if the table has no

@@ -401,7 +401,7 @@ impl LsmWriteSpec {
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
     /// `column` value. MemWAL dedups upserts by primary key but tracks
-    /// generations per shard, so if the same key is written with two
+    /// SSTables per shard, so if the same key is written with two
     /// different `column` values its versions land in different shards and a
     /// stale value can win. Typically `column` is the primary key itself, or
     /// a stable attribute of it (e.g. a tenant id).
@@ -2008,7 +2008,7 @@ impl Table {
     /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
     ///
     /// A table carries one spec: this fails while one is installed, since the
-    /// generations already written were homed under it.
+    /// SSTables already written were homed under it.
     /// [`Table::unset_lsm_write_spec`] removes one.
     ///
     /// # Example
@@ -2078,7 +2078,7 @@ impl Table {
     /// already-converged table costs two round trips and triggers nothing.
     ///
     /// **No deadline, and the caller owns that.** It returns when the target
-    /// generations are gone, propagates a terminal server fault, and
+    /// SSTables are gone, propagates a terminal server fault, and
     /// otherwise waits however long the server takes. A slow table and a
     /// stuck one are the same picture from here: the compactor pool is shared
     /// across every table on the node, so a checkpoint queued behind
@@ -2121,9 +2121,9 @@ impl Table {
         self.inner.compact_lsm().await
     }
 
-    /// Read live per-bucket LSM state.
+    /// Read live per-table-shard LSM state.
     ///
-    /// Answers "how far behind is my fresh tier", "which bucket is hot", and
+    /// Answers "how far behind is my fresh tier", "which table shard is hot", and
     /// "why is my fresh-tier vector search brute-force". Mutates no table
     /// state, though on a node that has not claimed this table it claims it,
     /// exactly as a read would.

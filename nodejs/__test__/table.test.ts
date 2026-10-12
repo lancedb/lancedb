@@ -4908,7 +4908,7 @@ describe("LSM convergence and stats", () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    // checkpointLsm seals first, so it surfaces flushLsm's rejection.
+    // checkpointLsm freezes first, so it surfaces flushLsm's rejection.
     await expect(table.checkpointLsm()).rejects.toThrow(/not supported/i);
   });
 });

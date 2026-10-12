@@ -22,8 +22,8 @@ import java.util.Optional;
 import java.util.OptionalLong;
 
 /**
- * Live state of one tableShard. A table is N tableShards on one node; flattening to a single number hides
- * the one hot tableShard that is usually why someone opened this endpoint.
+ * Live state of one table shard. A table is N table shards on one node; flattening to a single number hides
+ * the one hot table shard that is usually why someone opened this endpoint.
  */
 public class TableShardStats {
   private static final String CONTEXT = "tableShard stats";
@@ -62,7 +62,7 @@ public class TableShardStats {
     this.memtables = memtables == null ? null : Collections.unmodifiableList(memtables);
   }
 
-  /** The shard this tableShard writes. */
+  /** The id of this table shard. */
   public String shardId() {
     return shardId;
   }
@@ -106,7 +106,7 @@ public class TableShardStats {
   }
 
   /**
-   * Whether a pass owns this tableShard's compaction latch right now. Says <em>a</em> driver is
+   * Whether a pass owns this table shard's compaction latch right now. Says <em>a</em> driver is
    * running, not <em>whose</em>, and the latch is held from dispatch — including while the pass
    * queues for a pod-wide compactor permit. Read it as "do not pile on", never as "mine is
    * progressing".
@@ -115,7 +115,7 @@ public class TableShardStats {
     return compacting;
   }
 
-  /** Oldest first, active last. Empty for a {@code "Sealed"} tableShard, whose state is torn down. */
+  /** Oldest first, active last. Empty for a {@code "Sealed"} table shard, whose state is torn down. */
   public Optional<List<MemtableStats>> memtables() {
     return Optional.ofNullable(memtables);
   }

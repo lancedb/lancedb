@@ -1429,7 +1429,7 @@ mod lsm_tests {
             .await
             .unwrap();
 
-        // Two single-row upserts that route to (likely) different buckets; each
+        // Two single-row upserts that route to (likely) different shards; each
         // closes the writer so the next opens a fresh shard.
         lsm_upsert(&table, vec![10]).await;
         table.close_lsm_writers().await.unwrap();
@@ -1681,7 +1681,7 @@ mod lsm_tests {
     /// A row written before the index exists is searchable once it does.
     ///
     /// The MemTable holding it was built without the index. Creating the index
-    /// replaces the writer's configs, which seals that MemTable and waits for
+    /// replaces the writer's configs, which freezes that MemTable and waits for
     /// its flush, so no resident MemTable is left that cannot answer the read.
     #[tokio::test]
     async fn lsm_a_row_written_before_the_index_is_searchable_after_it() {
@@ -2041,8 +2041,8 @@ mod lsm_tests {
     }
 
     /// A kind Lance has no memtable index for is refused when named until the
-    /// table's registry maintains it; then it is maintained, flushed with each
-    /// generation, and answers searches on the flushed generations.
+    /// table's registry maintains it; then it is maintained, flushed into each
+    /// SSTable, and answers searches on the SSTables.
     #[tokio::test]
     async fn lsm_maintains_an_index_kind_from_the_tables_registry() {
         let dir = tempdir().unwrap();
@@ -2138,11 +2138,11 @@ mod lsm_tests {
 
         table.close_lsm_writers().await.unwrap();
         assert_eq!(fresh().await, vec![10, 11]);
-        assert_generations_answer_through_region_bitmap(&table, vec![10, 11]).await;
+        assert_sstables_answer_through_region_bitmap(&table, vec![10, 11]).await;
     }
 
-    /// The generations each shard's manifest publishes.
-    async fn published_generations(table: &Table) -> Vec<lance::Dataset> {
+    /// The SSTables each shard's manifest publishes.
+    async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
         use lance::dataset::mem_wal::ShardManifestStore;
 
         let uri = table.uri().await.unwrap();
@@ -2150,7 +2150,7 @@ mod lsm_tests {
             .await
             .unwrap();
         let mem_wal = std::path::Path::new(&uri).join("_mem_wal");
-        let mut generations = Vec::new();
+        let mut sstables = Vec::new();
         for shard in std::fs::read_dir(&mem_wal).unwrap() {
             let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
                 continue;
@@ -2162,30 +2162,30 @@ mod lsm_tests {
                 .expect("a shard directory has a manifest");
             for sstable in manifest.sstables {
                 let path = mem_wal.join(shard_id.to_string()).join(&sstable.path);
-                generations.push(lance::Dataset::open(path.to_str().unwrap()).await.unwrap());
+                sstables.push(lance::Dataset::open(path.to_str().unwrap()).await.unwrap());
             }
         }
-        generations
+        sstables
     }
 
-    /// Every published generation carries `region_bitmap` as a bitmap index on
+    /// Every published SSTable carries `region_bitmap` as a bitmap index on
     /// `region`, and a search for `region = 'fresh'` on it uses that index.
-    async fn assert_generations_answer_through_region_bitmap(table: &Table, fresh: Vec<i64>) {
+    async fn assert_sstables_answer_through_region_bitmap(table: &Table, fresh: Vec<i64>) {
         use lance::index::DatasetIndexExt;
 
-        let generations = published_generations(table).await;
+        let sstables = published_sstables(table).await;
         assert!(
-            !generations.is_empty(),
-            "closing the writer flushed a generation"
+            !sstables.is_empty(),
+            "closing the writer flushed an SSTable"
         );
         let mut found = Vec::new();
-        for generation in generations {
-            let region = generation.schema().field("region").unwrap().id;
-            let indices = generation.load_indices().await.unwrap();
+        for sstable in sstables {
+            let region = sstable.schema().field("region").unwrap().id;
+            let indices = sstable.load_indices().await.unwrap();
             let index = indices
                 .iter()
                 .find(|index| index.name == "region_bitmap")
-                .expect("the generation carries the index the plugin trained");
+                .expect("the SSTable carries the index the plugin trained");
             assert_eq!(index.fields, vec![region]);
             assert!(
                 index
@@ -2196,7 +2196,7 @@ mod lsm_tests {
                 index.index_details
             );
 
-            let mut scan = generation.scan();
+            let mut scan = sstable.scan();
             scan.filter("region = 'fresh'").unwrap();
             let plan = scan.explain_plan(false).await.unwrap();
             assert!(plan.contains("ScalarIndexQuery"), "{plan}");
@@ -2288,12 +2288,12 @@ mod lsm_tests {
         );
 
         table.close_lsm_writers().await.unwrap();
-        // Only the generation written after the index exists carries it.
-        let generations = published_generations(&table).await;
+        // Only the SSTable written after the index exists carries it.
+        let sstables = published_sstables(&table).await;
         let mut carrying = 0;
-        for generation in &generations {
+        for sstable in &sstables {
             use lance::index::DatasetIndexExt;
-            if generation
+            if sstable
                 .load_indices()
                 .await
                 .unwrap()
@@ -2305,8 +2305,8 @@ mod lsm_tests {
         }
         assert!(
             carrying >= 1,
-            "{} generations, none carry the index",
-            generations.len()
+            "{} SSTables, none carry the index",
+            sstables.len()
         );
     }
 }

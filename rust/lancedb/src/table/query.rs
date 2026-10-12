@@ -172,7 +172,7 @@ pub async fn create_plan(
     //   * Some(true)  — force LSM routing; error if the table has no write spec
     //   * Some(false) — read the base table only, bypassing the MemWAL
     // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
-    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    // memtables + SSTables); validation and dispatch live in `lsm`.
     let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
     let use_lsm = match query.base.use_lsm {
         Some(true) if !has_spec => {

@@ -3,7 +3,7 @@
 
 //! Converging a table's LSM write path into its base table.
 //!
-//! `checkpoint_lsm` seals once, then triggers compaction and watches
+//! `checkpoint_lsm` freezes once, then triggers compaction and watches
 //! generation numbers until the SSTables that existed at the start are gone.
 //!
 //! The loop runs in the client, not the server: `compact_lsm` dispatches a
@@ -12,7 +12,7 @@
 //! generation numbers in the shard manifest — durable state, unlike a count
 //! in a compact response, which a concurrent write invalidates.
 //!
-//! The target set is fixed at the start, so generations created *during* the
+//! The target set is fixed at the start, so SSTables created *during* the
 //! checkpoint are ignored. That is what lets it terminate under write load,
 //! and what makes it best-effort: it converges the fresh tier as of some
 //! instant. Idempotent, abandonable at any point, safe on a cadence.
@@ -149,14 +149,14 @@ where
     }
 }
 
-/// Drive [`Table::checkpoint_lsm`]: seal once, fix the target watermark
+/// Drive [`Table::checkpoint_lsm`]: freeze once, fix the target watermark
 /// from the resulting SSTables, then trigger and poll until they drain.
 pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
     for reissue in 0..=MAX_REISSUES {
-        // The seal turns everything written before this call into a
-        // generation, so the watermark has to be read after it. Idempotent:
-        // sealing an empty memtable is a no-op, so a re-issue does not churn
-        // empty generations.
+        // The freeze turns everything written before this call into an
+        // SSTable, so the watermark has to be read after it. Idempotent:
+        // freezing an empty memtable is a no-op, so a re-issue does not churn
+        // empty SSTables.
         match issue(|| table.flush_lsm()).await? {
             Attempt::Ok(()) => {}
             Attempt::ReissueFromFlush => {
@@ -200,12 +200,12 @@ pub(crate) async fn checkpoint_lsm(table: &Table) -> Result<()> {
     })
 }
 
-/// Trigger and poll until no bucket holds a generation at or below its
+/// Trigger and poll until no table shard holds an SSTable generation at or below its
 /// target.
 ///
 /// No liveness bound, deliberately. The pod-wide compactor pool (a semaphore
 /// of 2 by default, shared across every table on the node) is taken *inside*
-/// the pass, after the bucket latch, so a checkpoint queued behind unrelated
+/// the pass, after the table shard latch, so a checkpoint queued behind unrelated
 /// tables is indistinguishable from one that is merging. An idle-poll counter
 /// here could only ever have fired on a table that would have finished.
 async fn drain_to_targets(
@@ -220,10 +220,10 @@ async fn drain_to_targets(
         let Some(stats) = stats else {
             return Ok(CheckpointOutcome::Done);
         };
-        // `compacting` is the bucket's compaction latch, held from dispatch
+        // `compacting` is the table shard's compaction latch, held from dispatch
         // until the pass ends — including while it waits on the pod-wide
-        // permit. So it answers one question only: do not pile on. Buckets
-        // with nothing outstanding are skipped, not counted as idle.
+        // permit. So it answers one question only: do not pile on. Table
+        // shards with nothing outstanding are skipped, not counted as idle.
         let mut outstanding = 0;
         let mut all_compacting = true;
         for b in &stats.table_shards {
@@ -245,7 +245,7 @@ async fn drain_to_targets(
                 Ok(()) => {}
                 Err(e) if is_lost_claim(&e) => return Ok(CheckpointOutcome::ReissueFromFlush),
                 Err(e) if !is_retryable(&e) => return Err(e),
-                // A 429 here means the server could latch no bucket at all,
+                // A 429 here means the server could latch no table shard at all,
                 // which the poll above already handles. Not retried in place:
                 // the latch it would contend for is the one doing the work, so
                 // fall through and re-read — `POLL_INTERVAL` is the backoff.

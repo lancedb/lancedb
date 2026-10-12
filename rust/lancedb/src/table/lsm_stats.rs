@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Live per-table_shard LSM state — the shape [`crate::Table::get_lsm_stats`]
+//! Live per-table-shard LSM state — the shape [`crate::Table::get_lsm_stats`]
 //! returns and [`super::checkpoint`] polls.
 //!
 //! Nothing here is derived: sums and differences (total SSTable bytes, WAL lag)
@@ -34,8 +34,8 @@ pub struct MemtableStats {
     pub indexes: Vec<String>,
 }
 
-/// Live state of one table_shard. A table is N table_shards on one node; flattening to
-/// a single number hides the one hot table_shard that is usually why someone
+/// Live state of one table shard. A table is N table shards on one node; flattening to
+/// a single number hides the one hot table shard that is usually why someone
 /// opened this endpoint.
 #[derive(Debug, Clone, Deserialize)]
 pub struct TableShardStats {
@@ -48,12 +48,12 @@ pub struct TableShardStats {
     pub replay_after_wal_entry_position: u64,
     pub wal_entry_position_last_seen: u64,
     pub sstables: Vec<SsTableStats>,
-    /// Whether a pass owns this table_shard's compaction latch right now. Says *a*
+    /// Whether a pass owns this table shard's compaction latch right now. Says *a*
     /// driver is running, not *whose*, and the latch is held from dispatch —
     /// including while the pass queues for a pod-wide compactor permit. Read
     /// it as "do not pile on", never as "mine is progressing".
     pub compacting: bool,
-    /// Oldest first, active last. Absent for a `Sealed` table_shard, whose
+    /// Oldest first, active last. Absent for a `Sealed` table shard, whose
     /// in-memory state is torn down.
     #[serde(default)]
     pub memtables: Option<Vec<MemtableStats>>,
@@ -79,7 +79,7 @@ impl TableShardStats {
     }
 }
 
-/// Live LSM state, one entry per table_shard.
+/// Live LSM state, one entry per table shard.
 #[derive(Debug, Clone, Deserialize)]
 pub struct LsmStats {
     pub table_shards: Vec<TableShardStats>,
@@ -146,7 +146,7 @@ mod tests {
     }
 
     /// The metric counts SSTables, not table shards: a pass drains a bounded
-    /// prefix, so one table_shard going 3 → 2 → 1 → 0 is three steps.
+    /// prefix, so one table shard going 3 → 2 → 1 → 0 is three steps.
     #[test]
     fn progress_is_measured_in_sstables() {
         let target = 3;

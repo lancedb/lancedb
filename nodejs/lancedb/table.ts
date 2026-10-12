@@ -815,7 +815,7 @@ export abstract class Table {
   /**
    * Freeze every table shard's active memtable into a new SSTable.
    *
-   * Returns once the seal is committed. Sealing an empty memtable is a no-op,
+   * Returns once the freeze is committed. Freezing an empty memtable is a no-op,
    * so this is safe to call repeatedly.
    * @returns {Promise<void>}
    */
@@ -852,9 +852,9 @@ export abstract class Table {
    */
   abstract checkpointLsm(): Promise<void>;
   /**
-   * Read live per-bucket LSM state.
+   * Read live per-table-shard LSM state.
    *
-   * Answers "how far behind is my fresh tier", "which bucket is hot", and
+   * Answers "how far behind is my fresh tier", "which table shard is hot", and
    * "why is my fresh-tier vector search brute-force". Mutates no table state.
    *
    * Resolves to `undefined` only when the LSM write path is not enabled.

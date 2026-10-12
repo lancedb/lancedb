@@ -5477,7 +5477,7 @@ class AsyncTable:
         """Converge this table's LSM write path into its base table.
 
         One flush, freezing every memtable into an SSTable, then compaction triggers
-        until every generation that existed at that moment has reached base.
+        until every SSTable that existed at that moment has reached base.
         The loop runs client-side, reading progress from ``get_lsm_stats``.
 
         Best-effort: SSTables created *while* it runs are deliberately not
@@ -5516,9 +5516,9 @@ class AsyncTable:
     async def get_lsm_stats(
         self, *, include_sstable_rows: bool = False
     ) -> Optional[dict]:
-        """Read live per-bucket LSM state.
+        """Read live per-table-shard LSM state.
 
-        Answers "how far behind is my fresh tier", "which bucket is hot", and
+        Answers "how far behind is my fresh tier", "which table shard is hot", and
         "why is my fresh-tier vector search brute-force". Mutates no table
         state, though on a node that has not claimed this table it claims it,
         exactly as a read would.

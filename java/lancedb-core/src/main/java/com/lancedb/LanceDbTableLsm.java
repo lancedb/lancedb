@@ -38,7 +38,7 @@ import java.util.OptionalLong;
  *     .buildRestClient();
  *
  * LanceDbTableLsm lsm = new LanceDbTableLsm(client, "my_table");
- * lsm.setLsmWriteSpec(LsmWriteSpec.tableShard("id", 16));
+ * lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
  * // ... merge_insert traffic ...
  * lsm.checkpointLsm();
  * }</pre>
@@ -94,7 +94,7 @@ public class LanceDbTableLsm {
    * Install an {@link LsmWriteSpec} on this table, selecting the MemWAL LSM write path for future
    * {@code mergeInsert} calls.
    *
-   * <p>All variants require the table to have an unenforced primary key; tableShard sharding
+   * <p>All variants require the table to have an unenforced primary key; bucket sharding
    * additionally requires it to be the single column being bucketed.
    */
   public void setLsmWriteSpec(LsmWriteSpec spec) {
@@ -136,7 +136,7 @@ public class LanceDbTableLsm {
   /**
    * Freeze every table shard's active memtable into a new SSTable.
    *
-   * <p>Returns once the seal is committed. Sealing an empty memtable is a no-op, so this is safe to
+   * <p>Returns once the freeze is committed. Freezing an empty memtable is a no-op, so this is safe to
    * call repeatedly.
    */
   public void flushLsm() {
@@ -154,9 +154,9 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Read live per-tableShard LSM state.
+   * Read live per-table-shard LSM state.
    *
-   * <p>Answers "how far behind is my fresh tier", "which tableShard is hot", and "why is my fresh-tier
+   * <p>Answers "how far behind is my fresh tier", "which table shard is hot", and "why is my fresh-tier
    * vector search brute-force". Mutates no table state.
    *
    * <p>Empty only when the LSM write path is not enabled — that is, when the server sends an absent
@@ -206,8 +206,8 @@ public class LanceDbTableLsm {
    */
   public void checkpointLsm() {
     for (int reissue = 0; reissue <= MAX_REISSUES; reissue++) {
-      // The seal turns everything written before this call into a generation, so the
-      // watermark has to be read after it. Idempotent: sealing an empty memtable is a
+      // The freeze turns everything written before this call into an SSTable, so the
+      // watermark has to be read after it. Idempotent: freezing an empty memtable is a
       // no-op, so a re-issue does not churn empty sstables.
       if (issueVoid(this::flushLsm)) {
         backoff(reissue);
@@ -240,7 +240,7 @@ public class LanceDbTableLsm {
   }
 
   /**
-   * Trigger and poll until no tableShard holds a generation at or below its target.
+   * Trigger and poll until no table shard holds an SSTable generation at or below its target.
    *
    * @return true when the drain finished, false when the table needs re-claiming from flush.
    */
@@ -254,9 +254,9 @@ public class LanceDbTableLsm {
         return true;
       }
 
-      // `compacting` is the tableShard's compaction latch, held from dispatch until the pass
+      // `compacting` is the table shard's compaction latch, held from dispatch until the pass
       // ends — including while it waits on a pod-wide permit. So it answers one question
-      // only: do not pile on. Buckets with nothing outstanding are skipped, not counted
+      // only: do not pile on. Table shards with nothing outstanding are skipped, not counted
       // as idle.
       long outstanding = 0;
       boolean allCompacting = true;
@@ -285,7 +285,7 @@ public class LanceDbTableLsm {
           if (!isRetryable(e)) {
             throw e;
           }
-          // A 429 here means the server could latch no tableShard at all, which the poll
+          // A 429 here means the server could latch no table shard at all, which the poll
           // above already handles. Not retried in place: the latch it would contend for
           // is the one doing the work, so fall through and re-read — POLL_INTERVAL_MS is
           // the backoff.
@@ -295,7 +295,7 @@ public class LanceDbTableLsm {
     }
   }
 
-  /** The newest generation held by each tableShard, skipping tableShards holding none. */
+  /** The newest SSTable generation held by each table shard, skipping table shards holding none. */
   private static Map<String, Long> newestSstableGenerations(LsmStats stats) {
     Map<String, Long> targets = new HashMap<String, Long>();
     for (TableShardStats tableShard : stats.tableShards()) {
