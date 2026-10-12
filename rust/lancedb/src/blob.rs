@@ -289,11 +289,7 @@ pub use lance::blob::BlobFieldOptions as BlobOptions;
 /// let field = lancedb::blob::blob_with_options("payload", true, options);
 /// assert!(lancedb::blob::is_blob(&field));
 /// ```
-pub fn blob_with_options(
-    name: impl AsRef<str>,
-    nullable: bool,
-    options: BlobOptions,
-) -> Field {
+pub fn blob_with_options(name: impl AsRef<str>, nullable: bool, options: BlobOptions) -> Field {
     lance::blob::blob_field_with_options(name.as_ref(), nullable, options)
 }
 
