@@ -21,96 +21,132 @@ pub struct Expr {
 impl Expr {
     #[napi]
     pub fn eq(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().eq(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().eq(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn ne(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().not_eq(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().not_eq(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn lt(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().lt(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().lt(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn lte(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().lt_eq(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().lt_eq(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn gt(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().gt(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().gt(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn gte(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().gt_eq(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().gt_eq(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn and(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().and(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().and(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn or(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().or(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().or(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn not(&self) -> Self {
-        Self(self.inner.clone().not())
+        Self {
+            inner: self.inner.clone().not(),
+        }
     }
 
     #[napi]
     pub fn add(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().add(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().add(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn sub(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().sub(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().sub(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn mul(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().mul(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().mul(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn div(&self, other: &Expr) -> Self {
-        Self(self.inner.clone().div(other.inner.clone()))
+        Self {
+            inner: self.inner.clone().div(other.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn lower(&self) -> Self {
-        Self(lower(self.inner.clone()))
+        Self {
+            inner: lower(self.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn upper(&self) -> Self {
-        Self(upper(self.inner.clone()))
+        Self {
+            inner: upper(self.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn contains(&self, substr: &Expr) -> Self {
-        Self(contains(self.inner.clone(), substr.inner.clone()))
+        Self {
+            inner: contains(self.inner.clone(), substr.inner.clone()),
+        }
     }
 
     #[napi]
     pub fn is_in(&self, list: Vec<&Expr>) -> Self {
         let items: Vec<DfExpr> = list.into_iter().map(|e| e.inner.clone()).collect();
-        Self(is_in(self.inner.clone(), items))
+        Self {
+            inner: is_in(self.inner.clone(), items),
+        }
     }
 
     #[napi]
     pub fn cast(&self, data_type: String) -> napi::Result<Self> {
         let arrow_type = data_type
-            .parse::<lancedb::arrow::datatypes::DataType>()
+            .parse::<arrow_schema::DataType>()
             .map_err(|e| napi::Error::from_reason(format!("Invalid data type: {}", e)))?;
-        Ok(Self(expr_cast(self.inner.clone(), arrow_type)))
+        Ok(Self {
+            inner: expr_cast(self.inner.clone(), arrow_type),
+        })
     }
 
     #[napi]
@@ -135,12 +171,8 @@ pub fn col(name: String) -> Expr {
 #[napi]
 pub fn lit(value: napi::bindgen_prelude::Either<String, f64>) -> napi::Result<Expr> {
     match value {
-        Either::A(s) => Ok(Expr {
-            inner: df_lit(s),
-        }),
-        Either::B(f) => Ok(Expr {
-            inner: df_lit(f),
-        }),
+        Either::A(s) => Ok(Expr { inner: df_lit(s) }),
+        Either::B(f) => Ok(Expr { inner: df_lit(f) }),
     }
 }
 
