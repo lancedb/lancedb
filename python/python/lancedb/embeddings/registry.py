@@ -88,6 +88,25 @@ class EmbeddingFunctionRegistry:
         """
         return self._functions[name]
 
+    def list_functions(self) -> list[str]:
+        """List the names of registered embedding functions.
+
+        Returns
+        -------
+        list[str]
+            Registered aliases, or class names for functions registered without
+            an alias, in registration order. Each name can be passed to
+            :meth:`get`. The returned list is a copy; changing it does not
+            change the registry.
+
+        Examples
+        --------
+        >>> registry = get_registry()
+        >>> "openai" in registry.list_functions()
+        True
+        """
+        return list(self._functions)
+
     def parse_functions(
         self, metadata: Optional[Dict[bytes, bytes]]
     ) -> Dict[str, "EmbeddingFunctionConfig"]:
