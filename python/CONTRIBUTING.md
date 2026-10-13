@@ -82,3 +82,18 @@ To see all commands, run:
 ```shell
 make help
 ```
+
+### Optional Intel macOS wheel
+
+Intel macOS wheels are not part of the default PyPI release matrix. Maintainers
+or downstream forks can run the **Optional Intel macOS wheel** workflow manually
+on a selected branch. It builds a release wheel on `macos-15-intel`, installs it
+in an isolated environment outside the checkout, checks the Mach-O architecture,
+and exercises table creation, schema extension, filtered vector search, update,
+reopen, and deletion. A successful run uploads the wheel, source commit, Rust
+version, Cargo lockfile, and SHA-256 checksum as a short-lived Actions artifact.
+
+This does not publish to PyPI or reinstate general Intel platform support. The
+deployment target is a wheel compatibility tag, not a claim that every older
+macOS version or Intel CPU has been tested; runtime verification uses the runner's
+actual OS and CPU. Consumers must still validate their own dependency stack.
