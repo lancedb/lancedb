@@ -144,7 +144,6 @@ void [
   namespaceAdminOpsExample,
 ];
 
-
 test("enterprise placeholders use an explicit endpoint", async () => {
   const mockDb = {} as Awaited<ReturnType<typeof lancedb.connect>>;
   const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
