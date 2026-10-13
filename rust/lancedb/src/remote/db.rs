@@ -1665,12 +1665,21 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         })
     }
 
+    #[allow(deprecated)]
     async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
-        // TODO: Implement namespace-aware drop_all_tables
-        let _namespace_path = namespace_path; // Suppress unused warning for now
-        Err(crate::Error::NotSupported {
-            message: "Dropping all tables is not currently supported in the remote API".to_string(),
-        })
+        let tables = self
+            .table_names(TableNamesRequest {
+                namespace_path: namespace_path.to_vec(),
+                start_after: None,
+                limit: None,
+            })
+            .await?;
+
+        for table in tables {
+            self.drop_table(&table, namespace_path).await?;
+        }
+
+        Ok(())
     }
 
     async fn list_namespaces(
@@ -1874,7 +1883,7 @@ mod tests {
     use futures::TryStreamExt;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock};
 
     use arrow_array::{Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
@@ -2839,6 +2848,174 @@ mod tests {
         });
         conn.drop_table("table1", &[]).await.unwrap();
         // NOTE: the API will return 200 even if the table does not exist. So we shouldn't expect 404.
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables() {
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/table/" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().query(), None);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables":["table1","table2"]}"#.to_string())
+                    .unwrap()
+            }
+            "/v1/table/table1/drop/" | "/v1/table/table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().query(), None);
+                assert!(request.body().is_none());
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
+
+        let mut actual = dropped_paths.lock().unwrap().clone();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec!["/v1/table/table1/drop/", "/v1/table/table2/drop/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_with_namespace() {
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/namespace/ns1$ns2/table/list" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                assert_eq!(request.url().query(), None);
+                http::Response::builder()
+                    .status(200)
+                    .body(r#"{"tables":["table1","table2"]}"#.to_string())
+                    .unwrap()
+            }
+            "/v1/table/ns1$ns2$table1/drop/" | "/v1/table/ns1$ns2$table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                assert_eq!(request.url().query(), None);
+                assert!(request.body().is_none());
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&["ns1".to_string(), "ns2".to_string()])
+            .await
+            .unwrap();
+
+        let mut actual = dropped_paths.lock().unwrap().clone();
+        actual.sort();
+        assert_eq!(
+            actual,
+            vec![
+                "/v1/table/ns1$ns2$table1/drop/",
+                "/v1/table/ns1$ns2$table2/drop/"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_follows_server_pages() {
+        let listing_page = Arc::new(AtomicUsize::new(0));
+        let listing_page_in_handler = Arc::clone(&listing_page);
+        let dropped_paths = Arc::new(Mutex::new(Vec::new()));
+        let dropped_paths_in_handler = Arc::clone(&dropped_paths);
+        let conn = Connection::new_with_handler(move |request| match request.url().path() {
+            "/v1/table/" => {
+                assert_eq!(request.method(), &reqwest::Method::GET);
+                match listing_page_in_handler.fetch_add(1, Ordering::SeqCst) {
+                    0 => {
+                        assert_eq!(request.url().query(), None);
+                        http::Response::builder()
+                            .status(200)
+                            .body(
+                                r#"{"tables":["table1"],"page_token":"opaque-token"}"#.to_string(),
+                            )
+                            .unwrap()
+                    }
+                    1 => {
+                        let query: HashMap<_, _> = request.url().query_pairs().collect();
+                        assert_eq!(
+                            query.get("page_token").map(|token| token.as_ref()),
+                            Some("opaque-token")
+                        );
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"tables":["table2"]}"#.to_string())
+                            .unwrap()
+                    }
+                    _ => panic!("table listing requested too many pages"),
+                }
+            }
+            "/v1/table/table1/drop/" | "/v1/table/table2/drop/" => {
+                assert_eq!(request.method(), &reqwest::Method::POST);
+                dropped_paths_in_handler
+                    .lock()
+                    .unwrap()
+                    .push(request.url().path().to_string());
+                http::Response::builder()
+                    .status(200)
+                    .body(String::new())
+                    .unwrap()
+            }
+            path => panic!("unexpected request path: {path}"),
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
+
+        assert_eq!(listing_page.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *dropped_paths.lock().unwrap(),
+            vec!["/v1/table/table1/drop/", "/v1/table/table2/drop/"]
+        );
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_propagates_listing_error() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            http::Response::builder()
+                .status(500)
+                .body("internal server error".to_string())
+                .unwrap()
+        });
+
+        let error = conn.drop_all_tables(&[]).await.unwrap_err();
+        assert!(matches!(error, Error::Retry { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_drop_all_tables_with_no_tables() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/table/");
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"tables":[]}"#.to_string())
+                .unwrap()
+        });
+
+        conn.drop_all_tables(&[]).await.unwrap();
     }
 
     #[tokio::test]
