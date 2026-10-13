@@ -153,3 +153,17 @@ async fn namespace_admin_ops_example() -> lancedb::Result<()> {
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
 }
+
+// Compiled as documentation, never called by the example runner.
+#[allow(dead_code)]
+async fn connect_enterprise_placeholders() -> Result<Connection, Box<dyn std::error::Error>> {
+    // --8<-- [start:connect_enterprise_placeholders]
+    let db = connect("db://your-database")
+        .api_key("your-api-key")
+        .region("us-east-1")
+        .host_override("https://your-endpoint")
+        .execute()
+        .await?;
+    // --8<-- [end:connect_enterprise_placeholders]
+    Ok(db)
+}

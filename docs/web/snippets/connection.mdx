@@ -4,6 +4,8 @@ export const PyConnect = "import lancedb\n\nuri = \"ex_lancedb\"\ndb = lancedb.c
 
 export const PyConnectAsync = "import lancedb\n\nuri = \"ex_lancedb\"\nasync_db = await lancedb.connect_async(uri)\n";
 
+export const PyConnectEnterprisePlaceholders = "import lancedb\n\ndb = lancedb.connect(\n    uri=\"db://your-database\",\n    api_key=\"your-api-key\",\n    region=\"us-east-1\",\n    host_override=\"https://your-endpoint\",\n)\n";
+
 export const PyConnectEnterpriseQuickstart = "import os\n\nimport lancedb\n\ndb = lancedb.connect(\n    uri=os.environ[\"LANCEDB_URI\"],  # db://your-database\n    api_key=os.environ[\"LANCEDB_API_KEY\"],\n    region=os.environ.get(\"LANCEDB_REGION\", \"us-east-1\"),\n    host_override=os.environ[\"LANCEDB_HOST_OVERRIDE\"],  # https://your-endpoint\n)\n";
 
 export const PyConnectObjectStorage = "import lancedb\n\nuri = \"s3://your-bucket/path\"\n# You can also use \"gs://your-bucket/path\" or \"az://your-container/path\".\ndb = lancedb.connect(uri)\n";
@@ -16,6 +18,8 @@ export const PyNamespaceTableOps = "import lancedb\n\ndb = lancedb.connect_names
 
 export const TsConnect = "const db = await lancedb.connect(\"ex_lancedb\");\n";
 
+export const TsConnectEnterprisePlaceholders = "const db = await lancedb.connect(\"db://your-database\", {\n  apiKey: \"your-api-key\",\n  region: \"us-east-1\",\n  hostOverride: \"https://your-endpoint\",\n});\n";
+
 export const TsConnectEnterpriseQuickstart = "const setting = (name: string) => {\n  const value = process.env[name];\n  if (!value) throw new Error(`Set ${name}`);\n  return value;\n};\n\nconst db = await lancedb.connect(setting(\"LANCEDB_URI\"), {\n  apiKey: setting(\"LANCEDB_API_KEY\"),\n  region: process.env.LANCEDB_REGION ?? \"us-east-1\",\n  hostOverride: setting(\"LANCEDB_HOST_OVERRIDE\"),\n});\n";
 
 export const TsConnectObjectStorage = "const uri = \"s3://your-bucket/path\";\n// You can also use \"gs://your-bucket/path\" or \"az://your-container/path\".\nconst db = await lancedb.connect(uri);\n";
@@ -25,6 +29,8 @@ export const TsNamespaceAdminOps = "const db = await lancedb.connectNamespace(\"
 export const TsNamespaceTableOps = "const db = await lancedb.connectNamespace(\"dir\", { root: \"./local_lancedb\" });\n\n// Create namespace tree: prod/search and prod/recommendations\nawait db.createNamespace([\"prod\"], { mode: \"exist_ok\" });\nawait db.createNamespace([\"prod\", \"search\"], { mode: \"exist_ok\" });\nawait db.createNamespace([\"prod\", \"recommendations\"], { mode: \"exist_ok\" });\n\nawait db.createTable(\n  \"user\",\n  [{ id: 1, vector: [0.1, 0.2], name: \"alice\" }],\n  [\"prod\", \"search\"],\n  { mode: \"create\" }, // use \"overwrite\" only if you want to replace existing table\n);\n\nawait db.createTable(\n  \"user\",\n  [{ id: 2, vector: [0.3, 0.4], name: \"bob\" }],\n  [\"prod\", \"recommendations\"],\n  { mode: \"create\" },\n);\n\n// Verify\nconsole.log((await db.listNamespaces()).namespaces); // [\"prod\"]\nconsole.log((await db.listNamespaces([\"prod\"])).namespaces); // [\"recommendations\", \"search\"]\nconsole.log(await db.tableNames([\"prod\", \"search\"])); // [\"user\"]\nconsole.log(await db.tableNames([\"prod\", \"recommendations\"])); // [\"user\"]\n";
 
 export const RsConnect = "let db = connect(\"ex_lancedb\").execute().await?;\n";
+
+export const RsConnectEnterprisePlaceholders = "let db = connect(\"db://your-database\")\n    .api_key(\"your-api-key\")\n    .region(\"us-east-1\")\n    .host_override(\"https://your-endpoint\")\n    .execute()\n    .await?;\n";
 
 export const RsConnectEnterpriseQuickstart = "let uri = std::env::var(\"LANCEDB_URI\")?; // db://your-database\nlet api_key = std::env::var(\"LANCEDB_API_KEY\")?;\nlet region = std::env::var(\"LANCEDB_REGION\").unwrap_or_else(|_| \"us-east-1\".to_string());\nlet host_override = std::env::var(\"LANCEDB_HOST_OVERRIDE\")?; // https://your-endpoint\n\nlet db = connect(&uri)\n    .api_key(&api_key)\n    .region(&region)\n    .host_override(&host_override)\n    .execute()\n    .await?;\n";
 

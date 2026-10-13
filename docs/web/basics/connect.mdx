@@ -1,7 +1,7 @@
 ---
 title: "Connect to LanceDB"
 sidebarTitle: "Connect"
-description: "Connect to an embedded database in a local directory or in object storage, or to a LanceDB Enterprise deployment."
+description: "Use the embedded LanceDB OSS library with tables in a local directory or object storage, or connect to a LanceDB Enterprise deployment."
 icon: plug
 keywords: ["connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
 ---
@@ -9,11 +9,13 @@ keywords: ["connect", "uri", "embedded", "object storage", "s3", "enterprise", "
 import {
     PyConnect,
     PyConnectAsync,
+    PyConnectEnterprisePlaceholders,
     PyConnectEnterpriseQuickstart,
     PyConnectObjectStorage,
     PyConnectObjectStorageAsync,
     RsConnect,
     TsConnect,
+    TsConnectEnterprisePlaceholders,
     TsConnectEnterpriseQuickstart,
     TsConnectObjectStorage,
 } from '/snippets/connection.mdx';
@@ -82,18 +84,18 @@ In Rust, pass the same URI to `connect`.
 
 A `db://` URI connects to a deployment, which runs each operation for you. Get
 the database URI, API key, region and endpoint from the deployment's
-administrator. These examples read them from `LANCEDB_URI`, `LANCEDB_API_KEY`,
-`LANCEDB_REGION` and `LANCEDB_HOST_OVERRIDE`, which keeps the API key out of
-source, and pass the endpoint as `host_override`.
+administrator, then replace the placeholders below. Use your deployment's region
+in place of `us-east-1`. In application code, load credentials from environment
+variables or a secrets manager.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {PyConnectEnterpriseQuickstart}
+    {PyConnectEnterprisePlaceholders}
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
     { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
-    {TsConnectEnterpriseQuickstart}
+    {TsConnectEnterprisePlaceholders}
     </CodeBlock>
 </CodeGroup>
 
@@ -101,3 +103,29 @@ In Rust, the connection builder takes the same settings through `api_key`,
 `region` and `host_override`. To use OAuth instead of an API key, see
 [Authentication](/enterprise/authentication); for every connection option, see
 [Database](/management/database#deployment).
+
+
+<Accordion title="Load production credentials from your environment">
+
+Set these values in the shell that starts your application. Replace the URI, API
+key, region and endpoint with your deployment details. In production, a secrets
+manager can supply these environment variables for you.
+
+```shell
+export LANCEDB_URI="db://your-database"
+export LANCEDB_API_KEY="your-api-key"
+export LANCEDB_REGION="us-east-1"
+export LANCEDB_HOST_OVERRIDE="https://your-endpoint"
+```
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterpriseQuickstart}
+  </CodeBlock>
+  <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterpriseQuickstart}
+  </CodeBlock>
+</CodeGroup>
+
+</Accordion>

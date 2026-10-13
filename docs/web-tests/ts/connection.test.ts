@@ -143,3 +143,26 @@ void [
   namespaceTableOpsExample,
   namespaceAdminOpsExample,
 ];
+
+
+test("enterprise placeholders use an explicit endpoint", async () => {
+  const mockDb = {} as Awaited<ReturnType<typeof lancedb.connect>>;
+  const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
+  try {
+    // --8<-- [start:connect_enterprise_placeholders]
+    const db = await lancedb.connect("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+    // --8<-- [end:connect_enterprise_placeholders]
+    expect(db).toBe(mockDb);
+    expect(spy).toHaveBeenCalledWith("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+  } finally {
+    spy.mockRestore();
+  }
+});
