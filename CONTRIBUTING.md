@@ -117,9 +117,16 @@ assigned once and never regenerated. Leave an existing anchor alone even when
 you reword the heading above it; only new headings need a new one.
 
 **A page can declare where it applies.** Its frontmatter says whether LanceDB
-OSS and LanceDB Enterprise have the feature -- `available`, `unavailable`, or
-`varies` when it depends on version or configuration -- and one sentence that
-says how:
+OSS and LanceDB Enterprise support the feature: use only `available` or
+`unavailable`, and one sentence that explains its scope. Availability describes
+product support, not whether a particular deployment has enabled or configured
+the feature. A supported feature stays `available` when it requires setup, a
+supported SDK or server version, or has differences between offerings. State
+those requirements in the summary or the relevant section, including unsupported
+subfeatures. Do not use `varies`, infer support from an unknown status, or mark an
+absent capability available. Narrow a page to the capability it actually covers
+when necessary. Publication of unlaunched features is controlled separately by
+`launch`, not by an availability status:
 
 ```yaml
 availability:
