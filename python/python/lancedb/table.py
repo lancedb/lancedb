@@ -4440,6 +4440,7 @@ class LanceTable(Table):
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
             and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -6441,6 +6442,8 @@ class AsyncTable:
                 async_query = async_query.distance_type(query.distance_type)
             if query.nprobes is not None:
                 async_query = async_query.nprobes(query.nprobes)
+            if query.search_effort is not None:
+                async_query = async_query.search_effort(query.search_effort)
             if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
                 async_query = async_query.minimum_nprobes(
                     query.minimum_nprobes
@@ -6481,6 +6484,7 @@ class AsyncTable:
             )
             and not self._route_pushdown_to_rust
             and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 

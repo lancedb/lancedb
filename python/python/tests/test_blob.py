@@ -15,6 +15,7 @@ from lance.blob import Blob, BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
+    _set_blob_column,
     blob_v2_projection_sources,
     read_row_ids_from_hits,
     stash_auto_row_ids,
@@ -295,6 +296,121 @@ def test_blob_v2_projection_sources_use_typed_column_name():
     assert blob_v2_projection_sources(schema, {"blob_alias": col("blob")}) == {
         "blob_alias": "blob"
     }
+
+
+def test_blob_v2_projection_sources_include_selected_struct():
+    schema = pa.schema(
+        [
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            )
+        ]
+    )
+
+    assert blob_v2_projection_sources(schema, ["info"]) == {"info.blob": "info.blob"}
+    assert blob_v2_projection_sources(schema, {"renamed": "info"}) == {
+        "renamed.blob": "info.blob"
+    }
+
+
+@pytest.mark.parametrize("parent_path", ["info", "outer.info"])
+def test_set_blob_column_missing_nested_field_raises(parent_path):
+    row = {"name": "first"}
+    for name in reversed(parent_path.split(".")):
+        row = {name: row}
+    table = pa.Table.from_pylist([row])
+    blobs = pa.array([b"hello"], type=pa.large_binary())
+
+    with pytest.raises(KeyError) as exc_info:
+        _set_blob_column(table, f"{parent_path}.blob", blobs)
+
+    assert parent_path in str(exc_info.value)
+    assert "'blob'" in str(exc_info.value)
+
+
+def _nested_blob_table(db, name):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            ),
+        ]
+    )
+    table = db.create_table(name, schema=schema)
+    info = pa.StructArray.from_arrays(
+        [
+            pa.array(["first", "second", "third"]),
+            pa.array([b"hello", None, b"hidden"], type=pa.large_binary()),
+        ],
+        names=["name", "blob"],
+        mask=pa.array([False, False, True]),
+    )
+    table.add(pa.table({"id": pa.array([0, 1, 2]), "info": info}))
+    return table
+
+
+def test_nested_blob_to_pandas_bytes(tmp_path):
+    table = _nested_blob_table(lancedb.connect(tmp_path), "nested_pandas_bytes")
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+        None,
+    ]
+
+    assert table.to_pandas(blob_mode="bytes")["info"].tolist() == expected
+    assert table.search().to_pandas(blob_mode="bytes")["info"].tolist() == expected
+    assert (
+        table.search().select(["info"]).to_pandas(blob_mode="bytes")["info"].tolist()
+        == expected
+    )
+    assert (
+        table.search()
+        .select({"renamed": "info"})
+        .to_pandas(blob_mode="bytes")["renamed"]
+        .tolist()
+        == expected
+    )
+    assert table.search().select({"b": "info.blob"}).to_pandas(blob_mode="bytes")[
+        "b"
+    ].tolist() == [b"hello", None, None]
+
+
+@pytest.mark.asyncio
+async def test_nested_blob_to_pandas_bytes_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            ),
+        ]
+    )
+    table = await db.create_table("nested_pandas_bytes_async", schema=schema)
+    await table.add(
+        pa.table(
+            {
+                "id": pa.array([0, 1]),
+                "info": pa.StructArray.from_arrays(
+                    [
+                        pa.array(["first", "second"]),
+                        pa.array([b"hello", None], type=pa.large_binary()),
+                    ],
+                    names=["name", "blob"],
+                ),
+            }
+        )
+    )
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+    ]
+
+    assert (await table.to_pandas(blob_mode="bytes"))["info"].tolist() == expected
+    assert (await table.query().to_pandas(blob_mode="bytes"))[
+        "info"
+    ].tolist() == expected
 
 
 def _legacy_v1_table(name):

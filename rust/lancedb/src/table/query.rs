@@ -106,7 +106,7 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode or use_lsm.
+    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_lsm.
     // For use_lsm that is worse than a tuning miss: MemWAL read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
     if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
@@ -115,7 +115,7 @@ fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
     matches!(
         query,
         AnyQuery::VectorQuery(vector_query)
-            if vector_query.approx_mode.is_some()
+            if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
     )
 }
 
@@ -163,6 +163,7 @@ pub async fn create_plan(
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
+    query.validate_search_effort()?;
 
     let ds_ref = table.dataset.get().await?;
 
@@ -293,7 +294,9 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
-        if let Some(nprobes) = query.nprobes {
+        if query.search_effort.is_none()
+            && let Some(nprobes) = query.nprobes
+        {
             if query.maximum_nprobes == Some(0) {
                 scanner.minimum_nprobes(nprobes);
             } else {
@@ -305,6 +308,9 @@ pub async fn create_plan(
         }
         if let Some(maximum_nprobes) = query.maximum_nprobes.filter(|nprobes| *nprobes != 0) {
             scanner.maximum_nprobes(maximum_nprobes);
+        }
+        if let Some(search_effort) = query.search_effort {
+            scanner.search_effort(search_effort)?;
         }
     }
 
@@ -604,6 +610,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Check for unsupported features
+            if vq.search_effort.is_some() {
+                return Err(Error::NotSupported {
+                    message: "namespace QueryTable does not support search_effort; execute the query locally".to_string(),
+                });
+            }
             if vq.base.reranker.is_some() {
                 return Err(Error::NotSupported {
                     message: "Reranker is not supported for server-side queries".to_string(),
@@ -961,6 +972,19 @@ mod tests {
     fn test_namespace_query_probe_pushdown_compatibility() {
         let default_query = AnyQuery::VectorQuery(VectorQueryRequest::default());
         assert!(!requires_local_namespace_execution(&default_query));
+
+        for effort in [0.0, 0.5, 1.0] {
+            let effort_query = AnyQuery::VectorQuery(VectorQueryRequest {
+                query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+                search_effort: Some(effort),
+                ..Default::default()
+            });
+            assert!(requires_local_namespace_execution(&effort_query));
+            assert!(matches!(
+                convert_to_namespace_query(&effort_query),
+                Err(Error::NotSupported { message }) if message.contains("search_effort")
+            ));
+        }
 
         let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
             query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],

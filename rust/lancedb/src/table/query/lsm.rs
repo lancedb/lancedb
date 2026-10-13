@@ -33,7 +33,6 @@ use datafusion_physical_plan::expressions::Column;
 use datafusion_physical_plan::projection::ProjectionExec;
 use datafusion_physical_plan::{ExecutionPlan, PhysicalExpr};
 use lance::Dataset;
-use lance::dataset::mem_wal::index::{IndexStore, VectorMemQuery};
 use lance::dataset::mem_wal::scanner::{InMemoryMemTableRef, InMemoryMemTables};
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, LsmScanner, ShardManifestStore, ShardSnapshot, ShardWriterConfig,
@@ -174,6 +173,9 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // brute-force search the index-only base arm can't do. (ef / approx_mode are
     // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
+        if query.search_effort.is_some() {
+            return unsupported("search_effort on vector search");
+        }
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
         }
@@ -708,17 +710,14 @@ async fn vector_plan(
 
     // The base arm relies on the column's vector index (`fast_search`). Unmaintained,
     // its catch-up is untracked and exclusion falls back to the compaction watermark,
-    // dropping compacted SSTables the lagging base index has not re-indexed; and a
-    // resident MemTable built before the index joined the set carries none either.
+    // dropping compacted SSTables the lagging base index has not re-indexed.
     // Reject rather than silently omit rows, mirroring the FTS arm.
-    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
-        || !resident_memtables_carry(&in_memory, |memtable| {
-            carries_vector_index(&memtable.index_store, &column)
-        })
-    {
+    // A resident MemTable needs no index of its own: one that cannot answer
+    // compares every row.
+    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await? {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
             ),
         });
     }
@@ -759,22 +758,6 @@ async fn vector_plan(
     }
     scanner = scanner.limit(as_i64(limit), as_i64(offset))?;
     Ok(scanner.create_plan().await?)
-}
-
-/// Probe for a resident vector index without imposing a distance metric, matching
-/// the presence check used before Lance introduced query-based index lookup.
-fn carries_vector_index(store: &IndexStore, column: &str) -> bool {
-    let probe = VectorMemQuery {
-        vector: arrow_array::FixedSizeListArray::new_null(
-            Arc::new(arrow_schema::Field::new("item", DataType::Float32, true)),
-            1,
-            1,
-        ),
-        k: 1,
-        ef: None,
-        distance_type: None,
-    };
-    store.index_answering(column, &probe).is_some()
 }
 
 /// Whether `column` stores binary (uint8) vectors, which the LSM vector planner
@@ -822,9 +805,22 @@ mod tests {
     use lance_index::mem_wal::{CompactedSsTable, IndexCatchupProgress};
 
     #[test]
-    fn resident_index_checks_distinguish_columns_and_query_types() {
+    fn search_effort_is_not_silently_ignored() {
+        let query = VectorQueryRequest {
+            query_vector: vec![Arc::new(arrow_array::Float32Array::from(vec![1.0, 0.0]))],
+            search_effort: Some(0.5),
+            ..Default::default()
+        };
+        assert!(
+            matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
+            if message.contains("search_effort") && message.contains("un-compacted MemWAL"))
+        );
+    }
+
+    #[test]
+    fn resident_fts_check_distinguishes_columns() {
         use arrow_schema::Field;
-        use lance::dataset::mem_wal::index::MemIndexSpec;
+        use lance::dataset::mem_wal::index::{IndexStore, MemIndexSpec};
 
         let schema = ArrowSchema::new(vec![
             Field::new("id", DataType::Int32, false),
@@ -847,16 +843,11 @@ mod tests {
             ),
         ];
         let store = IndexStore::from_specs(&specs, &schema, 1_000, 16).unwrap();
-        assert!(carries_vector_index(&store, "vector"));
-        for column in ["id", "text", "missing"] {
-            assert!(!carries_vector_index(&store, column));
-        }
         assert!(!store.fts_granularities_on("text").is_empty());
         for column in ["id", "vector", "missing"] {
             assert!(store.fts_granularities_on(column).is_empty());
         }
         let empty = IndexStore::from_specs(&[], &schema, 1_000, 16).unwrap();
-        assert!(!carries_vector_index(&empty, "vector"));
         assert!(empty.fts_granularities_on("text").is_empty());
     }
 
