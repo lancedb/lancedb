@@ -1,72 +1,71 @@
 ---
 title: "Naming rules"
 sidebarTitle: "Naming Rules"
-description: "The names a database, namespace, table or view can have, and which versions check them."
+description: "Choose portable names for your data objects and namespace paths."
 icon: signature
-keywords: ["names", "naming", "table name", "namespace name", "identifier", "characters", "limits"]
+keywords: ["names", "naming", "table name", "namespace", "identifier", "limits"]
 ---
 
-A name ends up in a storage path, in a deployment's URLs, and in the identifiers
-that [authorization](/governance/authorization) records, so not every string
-works as one. A name that follows the rules on this page works on every
-connection. Some connections accept more today, as
-[below](#which-versions-check-them), but treat these rules as the contract.
+## What can you name? {#objects}
 
-## The rules {#rules}
+Databases, namespaces, tables, views and branches all have names. Choose names
+that describe their purpose, such as `documents`, `prod` or `training_2026`.
+Consistent names make data easier to find and application code easier to read.
+
+## What makes a valid name? {#rules}
+
+Use these naming constraints when creating objects. Some OSS backends and older
+clients accept names outside these bounds; that does not make those names
+portable to Enterprise or another namespace implementation.
 
 | Object | Characters | Length |
 | --- | --- | --- |
-| Table, materialized view | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
-| View | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
-| Namespace | each component: ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters a component; at most 10 components |
-| Database | ASCII letters and digits, `-`, `_`, `.`, and `/` between components | up to 64 characters |
-| Branch | anything but `$` and `:` | 1 to 64 characters |
+| Table, materialized view, view | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Namespace component | ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters; at most 10 components in a path |
+| Database | ASCII letters and digits, `-`, `_`, `.`, with `/` between components | 1 to 64 characters for the whole name |
+| Branch | Avoid `$` and `:`; use ASCII letters, digits, `-` and `_` for portability | Keep to 1 to 64 characters |
 | Secret | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
-| Function {/* if functions launched */} | ASCII letters and digits, `_` -- no `-` or `.` | 1 to 128 characters |
+| Function {/* if functions launched */} | ASCII letters and digits, `_` | 1 to 128 characters |
 
-And for every name:
+Names must be non-empty. A table, view, secret, namespace component or database
+component cannot be `.` or `..`. Avoid `$` and `:` in names because they are used
+to separate parts of qualified identifiers.
 
-- It can't be empty, and neither can any component of a namespace path or a
-  database name.
-- It can't be `.` or `..`, nor can any of its components.
-- A namespace path whose first component is `public` can't have a second one.
+## How do namespace paths work? {#paths}
 
-`$` and `:` are never in a name: a deployment writes a namespace path and a
-table as one identifier joined by `$`, and a database and a table, or a table
-and a branch, joined by `:`.
+A namespace path is a list of names. `["prod", "search"]` identifies the
+`search` namespace within `prod`. A table named `documents` belongs to that
+namespace; its table name remains `documents`.
 
-## Examples {#examples}
+Use the SDK's namespace-path argument to supply the list. A period inside an
+SDK name is a character in that name, not a separator that creates another
+namespace. SQL uses its own qualified-name syntax; see
+[SQL namespace paths](/sql/dql/select#namespaces).
 
-| Name | |
+The empty path `[]` identifies the root namespace. Individual components cannot
+be empty, and a path beginning with `public` cannot contain another component.
+
+## What are good examples? {#examples}
+
+| Name or path | Guidance |
 | --- | --- |
-| `documents`, `user-events.v2`, `train_2026` | valid table names |
-| `["prod", "search"]` | a valid two-component namespace path |
-| `my table` | refused: a space |
-| `orders$2026` | refused: `$` joins a namespace and a table |
-| `résumés` | refused: not ASCII |
-| `["public", "search"]` | refused: `public` can't have a child |
+| `documents`, `user-events.v2`, `train_2026` | Portable table names |
+| `["prod", "search"]` | A two-component namespace path |
+| `my table` | Use `my_table` instead of a space |
+| `orders$2026` | Use `orders_2026`; `$` is reserved |
+| `résumés` | Use an ASCII name such as `resumes` |
+| `["public", "search"]` | Invalid nesting under `public`; use a different parent namespace |
 
-## Which versions check them {#which-versions-check-them}
+## Compatibility {#which-versions-check-them}
 
-The rules come from lancedb
-[#4490](https://github.com/lancedb/lancedb/pull/4490), which gives the SDKs and
-deployments one set of name checks. What enforces them depends on the
-connection and the version:
+Validation can happen in the SDK, namespace implementation or Enterprise
+service. The point where an invalid name is rejected depends on the client and
+server versions. Following the constraints above avoids relying on a backend
+accepting a name that another rejects. Your account's database name and namespace
+permissions are still assigned by its administrator.
 
-- **The embedded library** refuses a table name with any other character, and
-  `.` and `..`, but sets no length limit beyond what the filesystem allows. A
-  directory namespace accepts other characters in namespace names.
-- **The SDKs on a `db://` connection** check every name above before sending a
-  request, from the first release that includes #4490. As of v0.41.0-beta.2, no
-  release does: earlier releases send names to the deployment unchecked.
-- **A deployment** checks names itself, but not on every path in every version.
-  Some accept a longer name when a table is created and then fail on it later --
-  when the table is dropped, or in background work on it.
+## Learn more {#next}
 
-So keep to the rules even where a longer or unusual name is accepted: a name
-that works today on one connection can fail on another, or later on the same
-one.
-
-See [Limits](/basics/limits#names) for the other bounds, and
-[Namespaces](/management/namespace#namespace-paths-and-names) for how a path is
-built.
+- [Namespaces](/management/namespace): create namespaces and address tables.
+- [Branches](/tables/branching): name and manage separate lines of table history.
+- [Limits](/basics/limits): check other constraints before designing your schema.

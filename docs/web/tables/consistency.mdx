@@ -1,175 +1,88 @@
 ---
-title: Consistency
+title: "Consistency"
 sidebarTitle: "Consistency"
-description: Learn about consistency settings and versioning in LanceDB tables.
+description: "Understand when readers see changes and choose the freshness your application needs."
 icon: "water"
 availability:
   oss: available
   enterprise: available
   summary: >-
-    Read freshness can be set per connection in the embedded library and on a
-    deployment. On a deployment, the default freshness comes from its
-    configuration, and the connection setting can only make reads fresher.
+    Configure read freshness in OSS and Enterprise. OSS checks for table updates;
+    Enterprise uses the connection setting to tighten its configured freshness bound.
 ---
-import {
-    PyConsistencyStrong as ConsistencyStrong,
-    TsConsistencyStrong as TsConsistencyStrong,
-    RsConsistencyStrong as RsConsistencyStrong,
-    PyConsistencyEventual as ConsistencyEventual,
-    TsConsistencyEventual as TsConsistencyEventual,
-    RsConsistencyEventual as RsConsistencyEventual,
-    PyConsistencyCheckoutLatest as ConsistencyCheckoutLatest,
-    TsConsistencyCheckoutLatest as TsConsistencyCheckoutLatest,
-    RsConsistencyCheckoutLatest as RsConsistencyCheckoutLatest,
-    RsUpdateMakeUsersReader as RsConsistencyMakeUsersReader,
-} from '/snippets/tables.mdx';
 
-You can set `read_consistency_interval` on the connection to control how often reads check for updates from other writers.
+import { PyReadConsistency } from '/snippets/read_consistency.mdx';
 
-There are three possible settings for `read_consistency_interval`:
+## What does consistency mean here? {#consistency}
 
-1. **Unset (default)**: no automatic cross-process refresh checks.
-2. **Zero seconds**: check for updates on every read (strongest freshness).
-3. **Non-zero interval**: check for updates after the interval elapses (eventual refresh).
+A table read uses a consistent snapshot of the data. **Freshness** describes how
+recent that snapshot is. A reader can see a coherent earlier version while
+another process has already committed newer data.
 
-The value you set depends on your application's consistency needs and performance requirements.
-For example, a real-time dashboard might require strong consistency, while a batch analytics job might be
-fine with eventual consistency. Stronger consistency is not free — the smaller the interval, the more
-often each read pays the cost of refreshing against object storage, which raises per-read latency and cost.
+For example, a dashboard may need the latest updates, while an experiment may
+need to keep reading a specific table version. These are different requirements.
 
-This setting works for both local ([LanceTable](/management/database#uris)) and remote
-tables. It only affects read operations —
-write operations are always consistent.
+## When do changes become visible? {#visibility}
 
-<Callout color="blue">
-**Consistency in Remote Tables**
+In **OSS**, a table handle sees its own committed writes. By default, it does
+not automatically check for changes made through other handles or processes.
+Use a read consistency interval or `checkout_latest()` to pick up those changes.
 
-For remote tables (`db://` connections), `read_consistency_interval` is also
-respected by the client. The interval is sent to the server as a freshness bound on each read:
+In **Enterprise**, readers use the service's configured freshness policy.
+A connection can request fresher data. When a read must include a completed
+write, use a zero interval or call `checkout_latest()` after the write, with a
+client and server that support these freshness controls.
 
-- **Unset (default)**: no freshness bound is sent; reads are as fresh as the deployment's own setting, described below.
-- **Zero seconds**: every read asks the server for the latest committed version.
-- **Non-zero interval**: reads accept data at least as fresh as `now - interval`.
+## How do you control freshness? {#configure-consistency-parameters}
 
-In addition, `checkout_latest` and `restore` set a time floor on that table handle: later
-reads ask for data at least as fresh as that moment, or as the configured interval allows,
-whichever is later. Each opened table handle keeps its own floor.
+Set `read_consistency_interval` when connecting. The setting applies to reads;
+it does not change the transaction boundary of a write.
 
-Each remote table handle also tracks the highest dataset version a response from the server has
-reported and sends it back with every subsequent request, as `x-lancedb-min-read-version`. A
-deployment checks it against the version it has cached, so successive reads on the same handle do
-not observe an older version even when a load balancer routes them to query nodes with
-differently-cached views. `checkout_latest` resets this watermark.
+| Setting | OSS | Enterprise |
+| --- | --- | --- |
+| **Unset** | Keep the open table version until explicitly refreshed or changed by that handle. | Use the service's configured freshness policy. |
+| **Zero** | Check for the latest committed version on every read. | Request the latest committed version on every read. |
+| **Non-zero interval** | Check for updates on a read once the interval since the last check has elapsed. | Request data no older than the interval allows; the service may return fresher data. |
 
-A successful write's response reports the version it committed, so it advances the same watermark:
-the next read on that handle asks for at least that version. The client also sends the version a
-write returned in a separate header, `x-lancedb-min-version`, which deployments do not use. How a
-deployment honors the read watermark depends on its version and configuration, so when a read must
-reflect your own write, set the interval to zero, or call `checkout_latest` after writing.
+`checkout_latest()` explicitly refreshes an OSS table handle. On Enterprise it
+asks subsequent reads on that handle to reflect data at least as recent as the
+refresh request. To read a fixed historical version instead, use
+[table versioning](/management/table#versioning).
 
-Stronger consistency is not free — the smaller the interval, the more often each read pays the cost
-of refreshing against storage, which raises per-read latency and cost.
+<Accordion title="Complete Python example: compare two readers">
 
-In <Badge color="red">Enterprise</Badge> deployments, the server-side default freshness is still
-controlled by the cluster-level `weak_read_consistency_interval_seconds` parameter; the client setting
-tightens that bound on a per-connection basis. When the parameter is unset, every read is strongly
-consistent; deployments installed from the Helm chart default it to 600 seconds.
+Install the Python SDK with `pip install lancedb`, then save this as
+`consistency.py` and run `python consistency.py`. It creates a temporary local
+database and removes it when finished. No Enterprise connection is needed.
 
-<Tip>
-30-60 seconds is a reasonable starting point for
-`weak_read_consistency_interval_seconds`: it cuts unnecessary object-store
-checks while keeping data fresh enough for most applications. This setting
-only affects reads -- writes always remain strongly consistent.
-</Tip>
-</Callout>
+<CodeBlock filename="consistency.py" language="python" icon="python">
+{PyReadConsistency}
+</CodeBlock>
 
-## Configure Consistency Parameters {#configure-consistency-parameters}
+The default reader sees one row until refreshed. The reader with a zero
+interval sees the new row on its next read.
 
-To set strong consistency, set the interval to 0:
+</Accordion>
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {ConsistencyStrong}
-    </CodeBlock>
+## How should you choose? {#choosing}
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsConsistencyStrong}
-    </CodeBlock>
+- **Reads that must include recent writes:** use a zero interval. Checking more
+  frequently can increase read latency and storage requests.
+- **Dashboards with an acceptable delay:** choose an interval within that delay
+  budget, then measure the effect on latency and cost.
+- **Reproducible experiments:** read an explicit table version and retain it for
+  as long as the experiment needs it.
 
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsConsistencyStrong}
-    </CodeBlock>
-</CodeGroup>
+There is no single interval that suits every application. Choose based on how
+stale a result your users can accept.
 
-<Expandable title="In the Rust snippets, a `make_users_reader` helper is used to build Arrow input data.">
-<CodeGroup>
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsConsistencyMakeUsersReader}
-    </CodeBlock>
-</CodeGroup>
-</Expandable>
+## Learn more {#next}
 
-For eventual consistency, use a non-zero interval:
+- [Connect](/basics/connect): configure your client.
+- [Table versioning](/management/table#versioning): read and restore retained versions.
+- [Guarantees](/basics/guarantees): understand commit and failure boundaries.
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {ConsistencyEventual}
-    </CodeBlock>
+<span id="handle-bad-vectors" />
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsConsistencyEventual}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsConsistencyEventual}
-    </CodeBlock>
-</CodeGroup>
-
-
-In the embedded library, with the default unset interval, tables do not auto-refresh from other writers.
-To manually check for updates, use `checkout_latest` / `checkoutLatest`:
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {ConsistencyCheckoutLatest}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsConsistencyCheckoutLatest}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsConsistencyCheckoutLatest}
-    </CodeBlock>
-</CodeGroup>
-
-For reproducible reads, you can also pin a table to a specific snapshot with `checkout(...)` or
-a tag, restore a table to a prior version, then return to the live table with
-`checkout_latest` / `checkoutLatest`. See
-[Versioning](/management/table#versioning) for the full version and tag workflow.
-
-## Handle bad vectors {#handle-bad-vectors}
-
-<Note>
-This section is currently specific to the Python SDK.
-</Note>
-
-In LanceDB Python, you can use the `on_bad_vectors` parameter to choose how
-invalid vector values are handled. Invalid vectors are vectors that are not valid
-because:
-
-1. They are the wrong dimension
-2. They contain NaN values
-3. They are null but are on a non-nullable field
-
-By default, LanceDB will raise an error if it encounters a bad vector. You can
-also choose one of the following options:
-
-* `drop`: Ignore rows with bad vectors
-* `fill`: Replace bad values (NaNs) or missing values (too few dimensions) with
-    the fill value specified in the `fill_value` parameter. An input like
-    `[1.0, NaN, 3.0]` will be replaced with `[1.0, 0.0, 3.0]` if `fill_value=0.0`.
-* `null`: Replace bad vectors with null (only works if the column is nullable).
-    A bad vector `[1.0, NaN, 3.0]` will be replaced with `null` if the column is
-    nullable. If the vector column is non-nullable, then bad vectors will cause an
-    error
+For invalid vector handling during ingestion, see
+[Create a table](/ingestion/create-table#from-a-custom-schema).
