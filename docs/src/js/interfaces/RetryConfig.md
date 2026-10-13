@@ -84,7 +84,7 @@ optional statuses: number[];
 ```
 
 The HTTP status codes for which to retry the request. Default is
-[429, 500, 502, 503].
+[409, 429, 500, 502, 503, 504].
 
 You can also set this via the environment variable
 `LANCE_CLIENT_RETRY_STATUSES`. Use a comma-separated list of integers.
