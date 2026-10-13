@@ -7,13 +7,15 @@ import sys
 import textwrap
 
 import lance
+import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytest
-from lance.blob import BlobType as LanceBlobType
+from lance.blob import Blob, BlobType as LanceBlobType
 
 import lancedb
 from lancedb._blob import (
+    _set_blob_column,
     blob_v2_projection_sources,
     read_row_ids_from_hits,
     stash_auto_row_ids,
@@ -68,21 +70,25 @@ def _row_ids_by_id(table):
 
 def _assert_missing_blob_row_ids(exc_info):
     message = str(exc_info.value)
-    assert "row ids" in message
+    assert "row ids but some do not exist in the table" in message
     assert "rowaddr" not in message
     assert "fragment" not in message
 
 
 def _assert_fetch_apis_reject_missing_row_ids(table, row_ids):
+    expected = f"first missing row ids: [{row_ids[0]}]"
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blobs("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_files("image", row_ids)
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(row_id, 0, 1) for row_id in row_ids])
     _assert_missing_blob_row_ids(exc_info)
+    assert expected in str(exc_info.value)
 
 
 def test_blob_factory_declares_v2_field():
@@ -91,6 +97,37 @@ def test_blob_factory_declares_v2_field():
     assert field.type.extension_name == "lance.blob.v2"
     assert lancedb.BlobType is LanceBlobType
     assert type(field.type) is LanceBlobType
+
+
+def test_blob_thresholds_land_in_field_metadata():
+    field = lancedb.blob(
+        "payload",
+        inline_size_threshold=8 * 1024,
+        dedicated_size_threshold=1 << 20,
+        pack_file_size_threshold=1 << 26,
+    )
+    assert field.type.extension_name == "lance.blob.v2"
+    metadata = field.metadata
+    assert metadata[b"lance-encoding:blob-inline-size-threshold"] == b"8192"
+    assert metadata[b"lance-encoding:blob-dedicated-size-threshold"] == b"1048576"
+    assert metadata[b"lance-encoding:blob-pack-file-size-threshold"] == b"67108864"
+
+
+def test_blob_without_thresholds_has_no_threshold_metadata():
+    field = lancedb.blob("image")
+    metadata = field.metadata or {}
+    assert not any(b"threshold" in key for key in metadata)
+
+
+def test_blob_thresholds_are_validated():
+    with pytest.raises(ValueError, match="inline_size_threshold must be non-negative"):
+        lancedb.blob("payload", inline_size_threshold=-1)
+    with pytest.raises(ValueError, match="dedicated_size_threshold must be positive"):
+        lancedb.blob("payload", dedicated_size_threshold=0)
+    with pytest.raises(ValueError, match="pack_file_size_threshold must be positive"):
+        lancedb.blob("payload", pack_file_size_threshold=0)
+    with pytest.raises(TypeError, match="inline_size_threshold must be an int"):
+        lancedb.blob("payload", inline_size_threshold="8192")
 
 
 def test_blob_type_works_without_pylance():
@@ -294,6 +331,121 @@ def test_blob_v2_projection_sources_use_typed_column_name():
     assert blob_v2_projection_sources(schema, {"blob_alias": col("blob")}) == {
         "blob_alias": "blob"
     }
+
+
+def test_blob_v2_projection_sources_include_selected_struct():
+    schema = pa.schema(
+        [
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            )
+        ]
+    )
+
+    assert blob_v2_projection_sources(schema, ["info"]) == {"info.blob": "info.blob"}
+    assert blob_v2_projection_sources(schema, {"renamed": "info"}) == {
+        "renamed.blob": "info.blob"
+    }
+
+
+@pytest.mark.parametrize("parent_path", ["info", "outer.info"])
+def test_set_blob_column_missing_nested_field_raises(parent_path):
+    row = {"name": "first"}
+    for name in reversed(parent_path.split(".")):
+        row = {name: row}
+    table = pa.Table.from_pylist([row])
+    blobs = pa.array([b"hello"], type=pa.large_binary())
+
+    with pytest.raises(KeyError) as exc_info:
+        _set_blob_column(table, f"{parent_path}.blob", blobs)
+
+    assert parent_path in str(exc_info.value)
+    assert "'blob'" in str(exc_info.value)
+
+
+def _nested_blob_table(db, name):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            ),
+        ]
+    )
+    table = db.create_table(name, schema=schema)
+    info = pa.StructArray.from_arrays(
+        [
+            pa.array(["first", "second", "third"]),
+            pa.array([b"hello", None, b"hidden"], type=pa.large_binary()),
+        ],
+        names=["name", "blob"],
+        mask=pa.array([False, False, True]),
+    )
+    table.add(pa.table({"id": pa.array([0, 1, 2]), "info": info}))
+    return table
+
+
+def test_nested_blob_to_pandas_bytes(tmp_path):
+    table = _nested_blob_table(lancedb.connect(tmp_path), "nested_pandas_bytes")
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+        None,
+    ]
+
+    assert table.to_pandas(blob_mode="bytes")["info"].tolist() == expected
+    assert table.search().to_pandas(blob_mode="bytes")["info"].tolist() == expected
+    assert (
+        table.search().select(["info"]).to_pandas(blob_mode="bytes")["info"].tolist()
+        == expected
+    )
+    assert (
+        table.search()
+        .select({"renamed": "info"})
+        .to_pandas(blob_mode="bytes")["renamed"]
+        .tolist()
+        == expected
+    )
+    assert table.search().select({"b": "info.blob"}).to_pandas(blob_mode="bytes")[
+        "b"
+    ].tolist() == [b"hello", None, None]
+
+
+@pytest.mark.asyncio
+async def test_nested_blob_to_pandas_bytes_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info", pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")])
+            ),
+        ]
+    )
+    table = await db.create_table("nested_pandas_bytes_async", schema=schema)
+    await table.add(
+        pa.table(
+            {
+                "id": pa.array([0, 1]),
+                "info": pa.StructArray.from_arrays(
+                    [
+                        pa.array(["first", "second"]),
+                        pa.array([b"hello", None], type=pa.large_binary()),
+                    ],
+                    names=["name", "blob"],
+                ),
+            }
+        )
+    )
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+    ]
+
+    assert (await table.to_pandas(blob_mode="bytes"))["info"].tolist() == expected
+    assert (await table.query().to_pandas(blob_mode="bytes"))[
+        "info"
+    ].tolist() == expected
 
 
 def _legacy_v1_table(name):
@@ -719,6 +871,38 @@ def test_fetch_blobs_accepts_query_result():
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"gamma"}
 
 
+def test_fetch_blob_apis_accept_integer_arrow_row_ids():
+    table = _blob_table(
+        "arrow_row_ids",
+        [{"id": 1, "image": b"alpha"}, {"id": 2, "image": b"beta"}],
+    )
+    by_id = _row_ids_by_id(table)
+    ids = [by_id[2], by_id[1]]
+
+    for row_ids in (
+        pa.array(ids, type=pa.uint64()),
+        pa.chunked_array([ids[:1], ids[1:]], type=pa.int64()),
+    ):
+        assert table.fetch_blobs("image", row_ids).to_pylist() == [b"beta", b"alpha"]
+        files = table.fetch_blob_files("image", row_ids)
+        assert [file.read() for file in files] == [b"beta", b"alpha"]
+
+
+def test_fetch_blob_apis_validate_arrow_and_negative_row_ids():
+    table = _blob_table("invalid_arrow_row_ids", [{"id": 1, "image": b"alpha"}])
+    hits = table.search().with_row_id(True).to_arrow()
+
+    for fetch in (table.fetch_blobs, table.fetch_blob_files):
+        with pytest.raises(ValueError, match="non-negative"):
+            fetch("image", [-1])
+        with pytest.raises(ValueError, match="non-negative"):
+            fetch("image", pa.array([-1], type=pa.int64()))
+        with pytest.raises(ValueError, match="without nulls"):
+            fetch("image", pa.array([None], type=pa.int64()))
+        with pytest.raises(ValueError, match="integer type"):
+            fetch("image", hits["image"])
+
+
 def test_fetch_blobs_after_compact_with_stable_row_ids(tmp_path):
     db = lancedb.connect(
         tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
@@ -850,6 +1034,15 @@ def test_fetch_blob_ranges_aligns_repeated_ranges_and_nulls():
     assert ranges.to_pylist() == [b"cde", None, b"ab", b"cde", b""]
 
 
+def test_fetch_blob_ranges_accepts_three_item_sequences():
+    table = _blob_table("range_sequences", [{"id": 1, "image": b"abcdef"}])
+    row_id = _row_ids_by_id(table)[1]
+
+    ranges = table.fetch_blob_ranges("image", [[row_id, 1, 2], (row_id, 4, 2)])
+
+    assert ranges.to_pylist() == [b"bc", b"ef"]
+
+
 def test_fetch_blob_ranges_validates_requests():
     table = _blob_table("range_validation", [{"id": 1, "image": b"abc"}])
     row_id = _row_ids_by_id(table)[1]
@@ -863,6 +1056,30 @@ def test_fetch_blob_ranges_validates_requests():
     with pytest.raises(ValueError) as exc_info:
         table.fetch_blob_ranges("image", [(2**64 - 1, 0, 1)])
     _assert_missing_blob_row_ids(exc_info)
+
+    for index, name in enumerate(("row id", "offset", "length")):
+        request = [row_id, 0, 1]
+        request[index] = -1
+        with pytest.raises(
+            ValueError, match=f"blob range {name} must be a non-negative"
+        ):
+            table.fetch_blob_ranges("image", [request])
+
+    with pytest.raises(ValueError, match="three values"):
+        table.fetch_blob_ranges("image", [[row_id, 0]])
+
+
+def test_fetch_blob_apis_reject_row_past_fragment_end():
+    table = _blob_table(
+        "past_fragment_end",
+        [
+            {"id": 1, "image": b"a"},
+            {"id": 2, "image": b"b"},
+            {"id": 3, "image": b"c"},
+        ],
+    )
+    _assert_fetch_apis_reject_missing_row_ids(table, [3])
+    _assert_fetch_apis_reject_missing_row_ids(table, [3, 0])
 
 
 def test_fetch_blob_apis_reject_missing_fragment_row_addr():
@@ -878,6 +1095,19 @@ def test_fetch_blob_apis_reject_deleted_row_ids():
     )
     by_id = _row_ids_by_id(table)
     table.delete("id = 2")
+    _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
+
+
+def test_fetch_blob_apis_reject_deleted_stable_row_ids(tmp_path):
+    db = lancedb.connect(
+        tmp_path, storage_options={"new_table_enable_stable_row_ids": "true"}
+    )
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("stable_deleted", schema=schema)
+    table.add([{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}])
+    by_id = _row_ids_by_id(table)
+    table.delete("id = 2")
+
     _assert_fetch_apis_reject_missing_row_ids(table, [by_id[2], by_id[1]])
 
 
@@ -1438,3 +1668,129 @@ def test_add_external_uri_string_round_trips_with_flag(tmp_path):
     hits = table.search().to_arrow()
     blobs = table.fetch_blobs("image", hits)
     assert blobs[0].as_py() == payload
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"inline",
+        payload,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_mixed_python_blob_values_preserves_external_uris(tmp_path, as_pandas):
+    payload = b"external-payload"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    uri = blob_path.as_uri()
+    rows = [
+        {"id": 1, "image": b"inline"},
+        {"id": 2, "image": uri},
+        {"id": 3, "image": {"data": b"from-dict"}},
+        {"id": 4, "image": Blob.from_bytes(b"from-blob")},
+        {"id": 5, "image": Blob.from_uri(uri)},
+        {"id": 6, "image": {"uri": uri}},
+        {"id": 7, "image": None},
+    ]
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("mixed", schema=schema)
+
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 8)]).to_pylist() == [
+        b"inline",
+        payload,
+        b"from-dict",
+        b"from-blob",
+        payload,
+        payload,
+        None,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_mixed_python_blobs_validates_external_uri(tmp_path, as_pandas):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"external-payload")
+    table = _blob_table("merge_mixed_uri", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": blob_path.as_uri()},
+    ]
+
+    with pytest.raises(ValueError, match="outside registered external bases"):
+        (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(pd.DataFrame(rows) if as_pandas else rows)
+        )
+    assert table.count_rows() == 1
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_merge_insert_python_blob_dicts_and_objects(as_pandas):
+    table = _blob_table("merge_python_blobs", [{"id": 1, "image": b"before"}])
+    rows = [
+        {"id": 1, "image": b"updated"},
+        {"id": 2, "image": {"data": b"from-dict"}},
+        {"id": 3, "image": Blob.from_bytes(b"from-blob")},
+    ]
+
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(pd.DataFrame(rows) if as_pandas else rows)
+    )
+
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 2
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in range(1, 4)]).to_pylist() == [
+        b"updated",
+        b"from-dict",
+        b"from-blob",
+    ]
+
+
+def test_create_table_with_python_blob_dict_and_object():
+    db = lancedb.connect("memory:///")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table(
+        "create_python_blobs",
+        data=[
+            {"id": 1, "image": {"data": b"from-dict"}},
+            {"id": 2, "image": Blob.from_bytes(b"from-blob")},
+        ],
+        schema=schema,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+        b"from-dict",
+        b"from-blob",
+    ]

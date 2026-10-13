@@ -1,0 +1,224 @@
+---
+title: "Functions"
+sidebarTitle: "Function"
+description: "Register a Python function once and apply it as a column, for work SQL cannot express."
+icon: code
+keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+---
+
+import {
+    PyFunctionDefine as FunctionDefine,
+    PyFunctionLocalCall as FunctionLocalCall,
+    PyFunctionConnect as FunctionConnect,
+    PyFunctionCreateTable as FunctionCreateTable,
+    PyFunctionRegister as FunctionRegister,
+    PyFunctionApply as FunctionApply,
+    PyFunctionRefresh as FunctionRefresh,
+    PyFunctionInspect as FunctionInspect,
+} from '/snippets/function.mdx';
+
+<Badge color="red">Enterprise</Badge>
+
+Some columns cannot be written as a SQL expression: an embedding, a model call,
+an image decode. A function is a Python callable registered with the database,
+versioned, and then applied as a column — the code runs where the data is
+rather than pulling rows to your process.
+
+Registering and running a function needs a LanceDB Enterprise connection. On a
+local connection `create_function` raises `NotImplementedError`; to derive a
+column locally, declare a
+[SQL computed column](/feature-engineering/add-computed-column) instead.
+
+<Note>
+In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
+</Note>
+
+The steps below take a column of numbers to a filled column of their doubles.
+
+## Define a function {#define}
+
+`@udf` packages a scalar Python callable. Input and output types are inferred
+from annotations, so `double` takes one non-nullable `float64` parameter,
+`value`, and returns a non-nullable `float64`:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionDefine}
+</CodeBlock>
+
+The decorated object stays callable. Calling it runs the original function in
+your process, without the database, so unit tests stay ordinary tests:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionLocalCall}
+</CodeBlock>
+
+Where annotations cannot express the Arrow type precisely, pass `input_schema`
+and `output_schema` together — one without the other is rejected. A scalar
+output must be non-nullable, because a physical NULL is what marks a
+computed-column row as unfilled. A named-struct output may declare nullable
+fields: whether a row has a result at all is the struct's own validity, which
+Enterprise keeps in a separate internal column when it expands the result into
+sibling columns, so a null field is a value rather than a missing row.
+
+## Connect and create a table {#table}
+
+The remaining steps run against your Enterprise deployment. This connection
+reads its settings from environment variables, so no credential appears in the
+code:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionConnect}
+</CodeBlock>
+
+For an ordinary stored input column, the Arrow type must match the parameter.
+A nullable column requires a nullable parameter, such as `Optional[float]`;
+a non-nullable column can bind to either. This example uses `value: float`,
+so the table declares `value` non-nullable.
+
+Computed-column inputs depend on the deployment version. Where supported,
+they bind to non-nullable parameters even though the physical column is
+nullable: refresh skips rows whose computed input is still null. Check your
+deployment's support before using another computed column as an input.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionCreateTable}
+</CodeBlock>
+
+## Register it {#register}
+
+Registration returns a job; the immutable version exists once the job succeeds.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRegister}
+</CodeBlock>
+
+`create_function` is the blocking equivalent. A registered version is fetched
+with `db.get_function(name, version=...)`.
+
+<Note>
+**Enterprise job type:** `create_function`. Registration returns a job because
+the function is baked into an image before the version becomes usable.
+</Note>
+
+## Apply it as a column {#apply}
+
+Calling the registered version binds each parameter, by name, to a column with
+`col(...)`. `add_columns` declares the result as a new column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionApply}
+</CodeBlock>
+
+The column is declared empty; the function has not run yet. A mapping with one
+function application keeps its scalar or named-struct result in the named
+column. A bare named-struct application expands its result fields as one atomic
+binding, with aliases from `rename(columns=...)`.
+
+## Fill the column {#refresh}
+
+A refresh runs the function on the cluster as a [job](/basics/jobs). `wait()`
+blocks until the job finishes and returns its result, including how many rows
+it filled:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionRefresh}
+</CodeBlock>
+
+The filled values are read like any other column:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionInspect}
+</CodeBlock>
+
+Filling then works as it does for a SQL computed column: a later refresh fills
+rows added since the last one and recomputes rows whose inputs changed, and
+leaves filled rows with unchanged inputs alone. See
+[Refresh a column](/feature-engineering/refresh-column).
+
+## Declare the environment {#environment}
+
+The function runs remotely, so its dependencies are part of its definition:
+
+| | |
+| --- | --- |
+| `pip` | requirements for the remote environment |
+| `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
+| `env` | environment variables |
+| `python_version` | remote Python major/minor, defaulting to yours |
+| `gpu` | whether every execution requires a GPU |
+
+These are part of the **immutable function version**. Changing a dependency
+produces a new version rather than altering the one already registered, so a
+column filled by version 1 is unaffected by version 2.
+
+Declaring them is not optional bookkeeping. If the worker environment differs
+from the one the function was written against, the failures are among the
+hardest to diagnose in the system, because the error rarely names the cause.
+
+### Symptoms of an environment mismatch {#mismatch-symptoms}
+
+| Symptom | Likely cause |
+| --- | --- |
+| `TypeError: Enum.__new__() missing 1 required positional argument` | `attrs` version mismatch |
+| `TypeError: Can't instantiate abstract class` | package structure differs between versions |
+| `ArrowInvalid: cannot cast`, or serialization errors | NumPy 1.x against 2.x |
+| `ModuleNotFoundError` on the worker | package installed locally but not declared |
+| Model loading failures | PyTorch version mismatch |
+| Permission denied | an API key present locally but absent from `env` |
+
+The packages worth pinning explicitly, because a mismatch in them produces the
+errors above rather than a clear one: **numpy, torch, pyarrow, attrs,
+pydantic**.
+
+<Note>
+The client version defaults `python_version`, so a function registered from a
+3.11 environment runs on 3.11 unless you say otherwise. That default is usually
+right and occasionally surprising -- pin it when the function is sensitive to it.
+</Note>
+
+## Failure handling {#failures}
+
+A function that raises fails the job. There is no per-row retry or skip policy
+in the function definition: `@udf` takes no error-handling parameter, so a
+function that calls a flaky external service should handle that itself, inside
+the function body.
+
+Letting the job fail is the other option: fix the cause and refresh again. The
+next refresh [skips rows that are filled and current](/feature-engineering/refresh-column#idempotent),
+but how much of the failed job's work was kept is not guaranteed, so do not
+count on the retry costing only the rows that did not complete.
+
+## What gets packaged {#packaging}
+
+<Warning>
+The artifact is a **snapshot**: the function source, plus exactly the
+module-level names it references — modules as imports, importable classes and
+functions as imports, literals inlined.
+
+Code that reaches the module namespace another way is rejected where it can be
+seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,
+`builtins`. Closures and a non-standard `__builtins__` are rejected outright.
+</Warning>
+
+In practice this means a function should be self-contained: take its inputs as
+arguments, import what it needs at module level, and avoid capturing state from
+the surrounding scope.
+
+## Drop it {#drop}
+
+`db.drop_function(name, version=...)` drops the function's name and the object
+it is bound to; `version` must be a version that exists. It returns `False` if
+the name was already gone. Deleting the object's content can finish after the
+call returns, as a [background job](/maintenance/background-jobs).
+`drop_function_async` returns that job with the result, so you can wait for it.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/refresh-column">
+    Refresh semantics, and the SQL alternative.
+  </Card>
+  <Card title="Embedding functions" icon="vector-square" href="/embedding">
+    Built-in embedding providers, which need no registration.
+  </Card>
+</CardGroup>

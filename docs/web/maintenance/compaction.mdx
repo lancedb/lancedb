@@ -1,0 +1,95 @@
+---
+title: "Compaction and cleanup"
+sidebarTitle: "Compaction"
+description: "Merge small files, prune old versions, and fold new rows into existing indexes."
+icon: broom
+---
+
+import { PyStorageRebuildVectorIndex } from '/snippets/doc_storage_examples.mdx';
+
+Every write commits a new table version, and versions accumulate: small files
+from frequent appends, superseded files from updates and deletes, and rows added
+since an index was built. `optimize()` addresses all three.
+
+It is modelled after `VACUUM` in PostgreSQL — routine housekeeping that a table
+needs periodically rather than a repair for something broken.
+
+## What it does {#what-it-does}
+
+```python
+table.optimize()
+```
+
+Three operations, in one call:
+
+| | |
+| --- | --- |
+| **Compaction** | merges small files into larger ones |
+| **Prune** | removes versions older than the retention window -- see [Cleanup](/maintenance/cleanup) |
+| **Index** | folds newly added rows into existing indexes -- see [Build & Repair](/indexing/reindexing) |
+
+Compaction itself is only the first of the three: merging small fragments back
+into larger ones, which is what keeps a scan from opening more files than it
+needs to.
+
+<Note>
+**Enterprise job type:** `compact`. Runs automatically as data accumulates,
+separately from [`cleanup`](/maintenance/cleanup) -- the two are distinct jobs
+even though `optimize()` bundles both in one OSS call.
+</Note>
+
+## Retraining indexes {#retrain}
+
+Folding new rows into an index preserves the structure the index was trained on.
+When the data distribution has shifted enough that the index's clusters are a
+poor fit, recreate the index with `replace=True` to train it on the current data.
+The deprecated `retrain` argument to `optimize()` does not rebuild indexes.
+
+This example assumes a populated table whose `vector` column has an IVF_FLAT
+index configured for L2 distance and four partitions:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageRebuildVectorIndex}
+    </CodeBlock>
+</CodeGroup>
+
+Use your index's column, type, distance metric, and training settings when
+rebuilding it. Recreating an index is more expensive than a normal optimize,
+and can help after a large ingest that changed the data distribution.
+
+## When to run it {#when}
+
+There is no background compactor: `optimize()` runs when you call it.
+
+Frequent small appends are what make it necessary, because each one commits
+files. A table written in a few large batches needs it rarely; one taking
+continuous small writes needs it on a schedule.
+
+<Note>
+Compaction rewrites files, which conflicts with a concurrent
+[computed-column refresh](/feature-engineering/add-computed-column) or
+[view refresh](/feature-engineering/materialized-views) planned against the
+version it replaces. Sequence them rather than running both at once.
+</Note>
+
+See [Cleanup](/maintenance/cleanup) for pruning old versions, and
+[Build & Repair](/indexing/reindexing) for the index-folding half of
+`optimize()`.
+
+## Performance {#performance}
+
+Two things accumulate on a long-lived table as more and more data gets added to it:
+
+- **Many small fragments build up as you write**, slowing down queries that have to scan across more files. **Compaction** merges them back into larger fragments.
+- **Old versions build up as the table changes**, growing disk usage beyond the live data size (LanceDB retains them for time-travel and rollback). **Cleanup** prunes versions older than a retention window.
+
+In OSS, you run them yourself via `optimize()`, which bundles both into a single call:
+
+```python Python icon="python"
+from datetime import timedelta
+table.optimize()                                       # 7-day default retention
+table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
+```
+
+The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates — see [Build & Repair](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed — rebuild the index after large update batches.

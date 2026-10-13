@@ -164,6 +164,71 @@ jobs:
         python ci/mock_openai.py &
         cd nodejs/examples
         node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose
+  arrow-compat:
+    # The main jobs resolve `apache-arrow` to the version pinned in
+    # devDependencies (the newest supported release). This job re-runs the
+    # suite with the library itself running on each older Arrow release the
+    # peer range still accepts, which is what a consumer on that version gets.
+    name: Linux (Arrow ${{ matrix.arrow-version }})
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        arrow-version: [ "19.0.1", "20.0.0" ]
+    runs-on: "ubuntu-22.04"
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: pnpm/action-setup@v6
+      with:
+        version: 11.1.1
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
+    - uses: Swatinem/rust-cache@v2
+      with:
+        # Same crate, profile and target as the `linux` job above, so reuse
+        # its cache: rust-cache keys on the job id by default, and this job
+        # would otherwise start cold on every run until it had saved its own.
+        shared-key: linux
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build
+      run: |
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+    - name: Resolve apache-arrow to ${{ matrix.arrow-version }}
+      run: |
+        # The older releases are already installed as the `apache-arrow-NN`
+        # test aliases. With pnpm's hoisted linker each alias is a complete,
+        # self-contained directory, so swap it in for the library's own
+        # `apache-arrow` instead of running a second install, which has been
+        # seen to hang after printing "Done" in CI. A copy, not a symlink: the
+        # cross-version tests rely on the alias being a separate module
+        # instance from the one the library loads.
+        major="$(echo '${{ matrix.arrow-version }}' | cut -d. -f1)"
+        mv node_modules/apache-arrow node_modules/apache-arrow.pinned
+        cp -R "node_modules/apache-arrow-${major}" node_modules/apache-arrow
+        # `require("apache-arrow/package.json")` is blocked by the package's exports map.
+        node -p "'apache-arrow resolved to ' + JSON.parse(require('fs').readFileSync('node_modules/apache-arrow/package.json')).version"
+        pnpm tsc
+    - name: Test
+      env:
+        # Newer @smithy/core uses dynamic ESM imports.
+        NODE_OPTIONS: "--experimental-vm-modules"
+      run: node_modules/.bin/jest --verbose
   macos:
     timeout-minutes: 30
     # macos-15 ships a newer linker; the older macos-14 linker fails to insert

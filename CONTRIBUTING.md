@@ -71,7 +71,50 @@ are wrappers around the Rust library.
 * `nodejs`: Typescript package source code
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
-* `docs`: Documentation source code
+* `docs/src`: SDK reference, built with mkdocs
+* `docs/web`: the open-source pages of [docs.lancedb.com](https://docs.lancedb.com)
+* `docs/web-tests`: the tests the documentation's code examples are extracted from
+
+## Documentation
+
+The open-source pages of [docs.lancedb.com](https://docs.lancedb.com) live in
+`docs/web`, so a change to behaviour and the change to the page describing it
+belong in the same pull request.
+
+Preview them locally — this serves `docs/web` on its own, with no other checkout:
+
+```bash
+npm i -g mint      # https://mintlify.com/docs/installation
+cd docs/web && mint dev
+```
+
+This repository holds a page at every path the site publishes, so the whole
+navigation resolves locally. Enterprise pages exist here as open-source pages --
+what the capability is, and what the embedded form does instead. A separate
+private repository supplies the fuller version of each, which replaces the page
+at the same path when the published site is assembled.
+
+Two things to know before editing:
+
+**Code examples are not written into the pages.** They live in real tests under
+`docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
+imported by the pages. Edit the test, then regenerate from the repository root:
+
+```bash
+uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs -o docs/web/snippets
+```
+
+Review the diff before committing: a few modules currently regenerate with
+unrelated changes, so commit only the snippets for the examples you changed.
+
+Run the Python, TypeScript and Rust examples in `docs/web-tests/{py,ts,rs}`
+locally before submitting the change. These examples are not yet wired into
+pull-request CI; that integration remains follow-up work.
+
+**Every heading carries an explicit `{#anchor}`.** Those anchors are how the
+Enterprise pages attach their additions to the right section, so they are
+assigned once and never regenerated. Leave an existing anchor alone even when
+you reword the heading above it; only new headings need a new one.
 
 ## Release process
 

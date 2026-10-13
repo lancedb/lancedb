@@ -1,0 +1,90 @@
+---
+title: "Pydantic"
+sidebarTitle: "Pydantic"
+
+---
+
+import {
+  PyFrameworksPydanticBaseExample,
+  PyFrameworksPydanticBaseModel,
+  PyFrameworksPydanticImports,
+  PyFrameworksPydanticSetUrl,
+  PyFrameworksPydanticTypeConversion,
+  PyFrameworksPydanticVectorField,
+} from '/snippets/integrations.mdx';
+
+[Pydantic](https://docs.pydantic.dev/latest/) is a data validation library in Python.
+LanceDB integrates with Pydantic for schema inference, data ingestion, and query result casting.
+Using `lancedb.pydantic.LanceModel`, users can seamlessly
+integrate Pydantic with the rest of the LanceDB APIs.
+
+First, import the necessary LanceDB and Pydantic modules:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticImports}
+</CodeBlock>
+
+Next, define your Pydantic model by inheriting from `LanceModel` and specifying your fields including a vector field:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticBaseModel}
+</CodeBlock>
+
+Set the database connection URL:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticSetUrl}
+</CodeBlock>
+
+Now you can create a table, add data, and perform vector search operations:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticBaseExample}
+</CodeBlock>
+
+
+## Vector Field {#vector-field}
+
+LanceDB provides a `lancedb.pydantic.Vector` method to define a
+vector Field in a Pydantic Model.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticVectorField}
+</CodeBlock>
+
+This example demonstrates how LanceDB automatically converts Pydantic field types to their corresponding Apache Arrow data types. The `pydantic_to_schema()` function takes a Pydantic model and generates an Arrow schema where:
+- `int` fields become `pa.int64()` (64-bit integers)
+- `str` fields become `pa.utf8()` (UTF-8 encoded strings)  
+- `Vector(768)` becomes `pa.list_(pa.float32(), 768)` (fixed-size list of 768 float32 values)
+- The `False` parameter indicates that the fields are not nullable
+
+## Type Conversion {#type-conversion}
+
+LanceDB automatically convert Pydantic fields to
+[Apache Arrow DataType](https://arrow.apache.org/docs/python/generated/pyarrow.DataType.html#pyarrow.DataType).
+
+Current supported type conversions:
+
+| Pydantic Field Type | PyArrow Data Type |
+| ------------------- | ----------------- |
+| `int`               | `pyarrow.int64`   |
+| `float`              | `pyarrow.float64`  |
+| `bool`              | `pyarrow.bool`    |
+| `str`               | `pyarrow.utf8()`    |
+| `list`              | `pyarrow.List`    |
+| `BaseModel`         | `pyarrow.Struct`    |
+| `Vector(n)`         | `pyarrow.FixedSizeList(float32, n)` |
+
+LanceDB supports to create Apache Arrow Schema from a
+`pydantic.BaseModel`
+via `lancedb.pydantic.pydantic_to_schema` method.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksPydanticTypeConversion}
+</CodeBlock>
+
+This example shows a more complex Pydantic model with various field types and demonstrates how LanceDB handles:
+- Basic types: `int` and `str` fields
+- Vector fields: `Vector(1536)` creates a fixed-size list of 1536 float32 values
+- List fields: `List[int]` becomes a variable-length list of int64 values
+- Schema generation: The `pydantic_to_schema()` function automatically converts all these types to their Arrow equivalents

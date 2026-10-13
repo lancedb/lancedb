@@ -1,0 +1,102 @@
+---
+title: "Lance Lakehouse"
+sidebarTitle: "Lance Lakehouse"
+description: "What operates on the catalog's objects: storage, search, computation, and maintenance."
+icon: layer-group
+keywords: ["lakehouse", "multimodal", "search", "compute", "maintenance", "feature engineering"]
+---
+
+The [catalog](/basics/catalog) says what exists. The **lakehouse** is everything
+that acts on it: storing the rows, searching them, computing new ones, and
+keeping the whole thing fast as it grows.
+
+The distinction matters because the two layers have different lifetimes. A
+catalog entry is a name and a pointer. A lakehouse operation reads and writes
+the [Lance](/basics/lance) files that name points at -- and those operations are
+where almost all of the cost, and all of the tuning, lives.
+
+## Multimodal is the point {#multimodal}
+
+A lakehouse table holds images, video, audio, text, embeddings, annotations and
+the features you derive from them **in one table**, side by side.
+
+That is the difference from assembling a warehouse plus a vector store plus a
+feature store. There is one copy of the data, one set of versions, and no
+pipeline keeping three systems agreeing about the same rows. A search can filter
+on a label, rank by a vector, and return the blob, without leaving the table.
+
+| | |
+| --- | --- |
+| **Columns** | vectors, blobs, and columns [computed](/feature-engineering/add-computed-column) from other columns |
+| **Versions** | every write commits one, so reads can [travel back](/management/table#versioning) |
+| **Indexes** | vector, full-text and scalar, built over those columns |
+| **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
+
+## The four capabilities {#capabilities}
+
+Everything the lakehouse does falls into one of four groups, and the rest of
+these docs is organized the same way.
+
+### Ingest {#ingest}
+
+Getting rows in, and changing the ones that are there: append, merge, update,
+delete. Every write commits a version rather than mutating in place, which is
+what makes the other three safe to run against a moving table. See
+[Data Ingestion](/ingestion).
+
+### Search {#search}
+
+Vector, full-text and hybrid retrieval over the same rows, with filters that
+push into the scan rather than running after it. The search is a lakehouse
+operation, not a separate service holding a second copy of your embeddings. See
+[Semantic Search](/search).
+
+### Compute {#compute}
+
+Deriving new columns and tables from what is already stored:
+[computed columns](/feature-engineering/add-computed-column),
+[functions](/management/function) that run Python where the data is, and
+[materialized views](/management/materialized-view) that persist a query's
+result.
+
+The reason this belongs in the lakehouse rather than in a pipeline outside it is
+the format. Adding a derived column writes only that column -- the images and
+videos are never rewritten -- so deriving a feature is an ordinary operation
+rather than a migration. See [Feature Engineering](/feature-engineering) and
+[Data Curation](/curation).
+
+### Maintenance {#maintenance}
+
+The work that keeps the first three fast: building and repairing
+[indexes](/indexing), and [compaction](/maintenance/compaction) to merge small
+files, prune old versions and fold new rows into existing indexes.
+
+<Warning>
+None of it runs on its own. There is no background compactor -- `optimize()`
+runs when you call it, and an index does not cover rows added after it was
+built until you do. See [Guarantees](/basics/guarantees#not-guaranteed).
+</Warning>
+
+## Where the work happens {#where}
+
+The same lakehouse runs in two shapes, and which one you use decides where these
+capabilities execute rather than whether you have them:
+
+- **Embedded** -- your process does all four itself, directly against object
+  storage. Nothing runs unless you call it.
+- **Distributed** -- a cluster does them, with indexing and compaction on
+  workers separate from the ones serving queries, plus
+  [SQL](/sql) and server-side [jobs](/basics/jobs).
+
+See [Architecture](/architecture) for the comparison in full.
+
+## Next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Lance Catalog" icon="sitemap" href="/basics/catalog">
+    The objects these operations act on.
+  </Card>
+  <Card title="Lance format" icon="layer-group" href="/basics/lance">
+    The open format underneath, and why column evolution is cheap.
+  </Card>
+</CardGroup>

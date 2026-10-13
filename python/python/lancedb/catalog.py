@@ -3,9 +3,8 @@
 
 """Remote catalogs manage databases through a server's root namespace."""
 
-from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any, Optional, Union
+from typing import Any, AsyncIterator, Iterator, Optional, Union
 
 from . import _lancedb
 from .background_loop import LOOP
@@ -14,12 +13,66 @@ from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
 
 
-@dataclass
-class ListDatabasesResponse:
-    """A page of database names and an optional continuation token."""
+class AsyncDatabaseNames(AsyncIterator[str]):
+    """An async iterator of database names with pagination state.
 
-    databases: list[str]
-    page_token: Optional[str] = None
+    Returned by [list_databases][lancedb.catalog.AsyncCatalog.list_databases].
+    """
+
+    def __init__(self, inner: _lancedb.DatabaseNames):
+        self._inner = inner
+
+    def __aiter__(self) -> "AsyncDatabaseNames":
+        return self
+
+    async def __anext__(self) -> str:
+        return await self._inner.__anext__()
+
+    def num_page_results(self) -> int:
+        """Return the number of names available without another REST request."""
+        return self._inner.num_page_results()
+
+    def page_token(self) -> Optional[str]:
+        """Return the token for the next REST request.
+
+        Before the first request, this is the supplied starting token (``None``
+        starts at the beginning). After the final page is fetched, it is ``None``,
+        even if names remain cached. Drain the cache before saving a token to
+        avoid skipping those names when resuming. A failed request terminates
+        iteration and leaves its token available for resuming a new iterator.
+        """
+        return self._inner.page_token()
+
+
+class DatabaseNames(Iterator[str]):
+    """A synchronous iterator of database names with pagination state.
+
+    Returned by [Catalog.list_databases][lancedb.catalog.Catalog.list_databases].
+    """
+
+    def __init__(self, inner: AsyncDatabaseNames):
+        self._inner = inner
+
+    def __iter__(self) -> "DatabaseNames":
+        return self
+
+    def __next__(self) -> str:
+        try:
+            return LOOP.run(self._inner.__anext__())
+        except StopAsyncIteration:
+            raise StopIteration from None
+
+    def num_page_results(self) -> int:
+        """Return the number of names available without another REST request."""
+        return self._inner.num_page_results()
+
+    def page_token(self) -> Optional[str]:
+        """Return the token for the next REST request.
+
+        See [page_token][lancedb.catalog.AsyncDatabaseNames.page_token]
+        for initial, cached, final-page, and error behavior.
+        """
+        return self._inner.page_token()
 
 
 class AsyncCatalog:
@@ -50,14 +103,25 @@ class AsyncCatalog:
         """Connect to an existing database by its logical name."""
         return AsyncConnection(await self._inner.connect_database(name))
 
-    async def list_databases(
-        self, *, limit: Optional[int] = None, page_token: Optional[str] = None
-    ) -> ListDatabasesResponse:
-        """List a page of databases. Pass the returned token for the next page."""
-        names, token = await self._inner.list_databases(
-            limit=limit, page_token=page_token
+    def list_databases(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncDatabaseNames:
+        """Iterate lazily over all database names using ``async for``.
+
+        ``page_token`` resumes from a saved token; ``None`` starts at the beginning.
+        ``page_limit`` sets the maximum names per REST response (not the total);
+        ``None`` uses the server default. Request errors are raised during iteration.
+
+        Examples
+        --------
+        ```python
+        async for name in catalog.list_databases():
+            print(name)
+        ```
+        """
+        return AsyncDatabaseNames(
+            self._inner.list_databases(page_token=page_token, page_limit=page_limit)
         )
-        return ListDatabasesResponse(names, token)
 
     async def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
         """Drop an empty database. A nonempty database is an error."""
@@ -73,7 +137,8 @@ class Catalog:
     ```python
     catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
     db = catalog.create_database("analytics", exist_ok=True)
-    page = catalog.list_databases(limit=20)
+    for name in catalog.list_databases():
+        print(name)
     ```
     """
 
@@ -118,10 +183,17 @@ class Catalog:
         )
 
     def list_databases(
-        self, *, limit: Optional[int] = None, page_token: Optional[str] = None
-    ) -> ListDatabasesResponse:
-        """List a page of databases. Pass the returned token for the next page."""
-        return LOOP.run(self._inner.list_databases(limit=limit, page_token=page_token))
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> DatabaseNames:
+        """Iterate lazily over database names, fetching more results as needed.
+
+        ``page_token`` resumes from a saved token; ``None`` starts at the beginning.
+        ``page_limit`` sets the maximum names per REST response (not the total);
+        ``None`` uses the server default. Request errors are raised during iteration.
+        """
+        return DatabaseNames(
+            self._inner.list_databases(page_token=page_token, page_limit=page_limit)
+        )
 
     def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
         """Drop an empty database. A nonempty database is an error."""

@@ -1,0 +1,52 @@
+<svg width="1280" height="280" viewBox="0 0 1280 280" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Training data lifecycle</title>
+  <desc id="desc">Four pillars of the LanceDB training data lifecycle: Curation, Feature Engineering, Search and Retrieval, and Training.</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#4f2a1a" flood-opacity="0.10"/>
+    </filter>
+    <linearGradient id="accent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFB08E"/>
+      <stop offset="1" stop-color="#FF7E4F"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="20" y="24" width="260" height="220" rx="16" style="fill:#FFFFFF !important;stroke:#F29A75 !important;" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="20" y="48" width="5" height="170" rx="2.5" fill="url(#accent)"/>
+  <rect x="350" y="24" width="260" height="220" rx="16" style="fill:#FFFFFF !important;stroke:#F29A75 !important;" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="350" y="48" width="5" height="170" rx="2.5" fill="url(#accent)"/>
+  <rect x="680" y="24" width="260" height="220" rx="16" style="fill:#FFFFFF !important;stroke:#F29A75 !important;" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="680" y="48" width="5" height="170" rx="2.5" fill="url(#accent)"/>
+  <rect x="1010" y="24" width="260" height="220" rx="16" style="fill:#FFFFFF !important;stroke:#F29A75 !important;" stroke-width="1.5" filter="url(#shadow)"/>
+  <rect x="1010" y="48" width="5" height="170" rx="2.5" fill="url(#accent)"/>
+
+  <path d="M292 134H338" stroke="#FF8A5C" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M622 134H668" stroke="#FF8A5C" stroke-width="2.5" stroke-linecap="round"/>
+  <path d="M952 134H998" stroke="#FF8A5C" stroke-width="2.5" stroke-linecap="round"/>
+
+  <g stroke="#EF7B4E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="112" y="84" width="26" height="26" rx="4"/>
+    <rect x="138" y="62" width="26" height="26" rx="4"/>
+  </g>
+  <text x="150" y="172" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Curation</text>
+
+  <g stroke="#EF7B4E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="447" y="72" width="66" height="46" rx="5"/>
+    <path d="M447 87H513M447 103H513M469 72V118M491 72V118"/>
+  </g>
+  <text x="480" y="165" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Feature</text>
+  <text x="480" y="200" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Engineering</text>
+
+  <g stroke="#EF7B4E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="795" cy="90" r="19"/>
+    <path d="M809 104L828 123"/>
+  </g>
+  <text x="810" y="165" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Search &amp;</text>
+  <text x="810" y="200" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Retrieval</text>
+
+  <g stroke="#EF7B4E" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1106 124C1126 119 1141 107 1153 84C1160 96 1174 99 1190 92"/>
+    <circle cx="1191" cy="91" r="3" fill="#EF7B4E" stroke="none"/>
+  </g>
+  <text x="1140" y="172" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="28" font-weight="700">Training</text>
+</svg>

@@ -162,6 +162,29 @@ def test_function_version_binds_named_columns_as_one_immutable_application():
     ] == [("text", "column", "documents.body")]
 
 
+def test_function_version_names_its_namespace_as_a_separate_field():
+    """A Function is named by its parts, as a Secret is; a root one states no
+    namespace."""
+    value = job_result("remote_function_job.json")
+    root = FunctionVersion.from_json(json.dumps(value))
+    assert root.namespace_path == ()
+    assert "namespace_path" not in json.loads(root.to_canonical_json())
+
+    nested = FunctionVersion(**{**value, "namespace_path": ["analytics", "features"]})
+    assert nested.name == "embed"
+    assert nested.namespace_path == ("analytics", "features")
+    assert json.loads(nested.to_canonical_json())["namespace_path"] == [
+        "analytics",
+        "features",
+    ]
+    application = nested(text=col("documents.body"))
+    assert application.function.name == "embed"
+    assert application.function.namespace_path == ("analytics", "features")
+    assert json.loads(application.to_canonical_json())["function"][
+        "namespace_path"
+    ] == ["analytics", "features"]
+
+
 def test_function_version_binding_validates_names_and_direct_columns():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))

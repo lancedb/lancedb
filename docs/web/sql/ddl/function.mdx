@@ -1,0 +1,86 @@
+---
+title: "Function"
+sidebarTitle: "Function"
+description: "CREATE FUNCTION, SHOW FUNCTIONS, and DROP FUNCTION."
+icon: function
+keywords: ["create function", "drop function", "show functions", "sql", "udf"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+## CREATE FUNCTION {#create}
+
+```sql
+CREATE FUNCTION f(x BIGINT) RETURNS BIGINT
+LANGUAGE python
+AS 'def f(x): return x * 2'
+WITH (pip = 'numpy==1.26.4', python_version = '3.11')
+```
+
+The body is Python source. Its dependencies are declared with it and are part
+of the **immutable function version** -- changing one produces a new version
+rather than altering the registered one, so a column filled by an earlier
+version is unaffected.
+
+| Option | |
+| --- | --- |
+| `pip` | pip requirements for the worker environment |
+| `conda` | conda packages instead of pip |
+| `conda_channels` | channels in priority order; requires `conda` |
+| `python_version` | worker Python version, defaulting to yours |
+| `gpu` | `'true'` when every execution needs a GPU |
+
+**Errors and limits**
+
+| | |
+| --- | --- |
+| `LANGUAGE` other than `python` | refused |
+| `pip` and `conda` together | refused -- pick one |
+| `conda_channels` without `conda` | refused |
+| `gpu` set to anything but `'true'` | refused |
+| An empty body | refused |
+| Any other option | refused, and the message lists what is supported |
+
+<Note>
+**Enterprise job type:** `create_function`. Registration returns a job because
+the function is baked into an image before the version becomes usable.
+</Note>
+
+## SHOW FUNCTIONS {#show}
+
+```sql
+SHOW FUNCTIONS
+```
+
+Lists registered functions and their versions. Since a version is immutable
+and a column pins the version that fills it, this is how you find which
+versions are still in use before dropping one.
+
+## DROP FUNCTION {#drop}
+
+```sql
+DROP FUNCTION embed WITH (version = '1')
+DROP FUNCTION IF EXISTS embed WITH (version = '1')
+DROP FUNCTION embed WITH (version = '1', cascade = 'true')
+```
+
+`version` is required -- a function is a set of immutable versions, and
+dropping is always of one specific version, never "the function" as a whole.
+
+<Warning>
+Without `cascade = 'true'`, dropping a version that a column still pins fails
+rather than breaking that column silently. Passing it drops the version and
+lets columns pinned to it stop refreshing -- they keep their last-filled
+values, per [Guarantees](/basics/guarantees#jobs).
+</Warning>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Function" icon="function" href="/management/function">
+    Registering one from the SDK, and diagnosing environment mismatches.
+  </Card>
+  <Card title="Computed columns" icon="table-columns" href="/feature-engineering/add-computed-column">
+    Filling a column with a function instead of an expression.
+  </Card>
+</CardGroup>

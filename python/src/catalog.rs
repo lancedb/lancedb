@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lancedb::catalog::{
-    CatalogConnection, CreateDatabaseRequest, DropDatabaseRequest, ListDatabasesRequest,
-};
-use pyo3::exceptions::PyValueError;
+use futures::{StreamExt, future::poll_fn};
+
+use lancedb::catalog::{CatalogConnection, CreateDatabaseRequest, DropDatabaseRequest};
+use pyo3::exceptions::{PyStopAsyncIteration, PyValueError};
 use pyo3::{Bound, PyAny, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
 
 use crate::connection::{Connection, PyClientConfig};
@@ -67,19 +68,48 @@ impl Catalog {
         })
     }
 
-    #[pyo3(signature = (*, limit=None, page_token=None))]
-    fn list_databases<'py>(
-        self_: PyRef<'py, Self>,
-        limit: Option<u32>,
-        page_token: Option<String>,
-    ) -> PyResult<Bound<'py, PyAny>> {
+    #[pyo3(signature = (*, page_token=None, page_limit=None))]
+    fn list_databases(&self, page_token: Option<String>, page_limit: Option<u32>) -> DatabaseNames {
+        DatabaseNames {
+            inner: Arc::new(Mutex::new(
+                self.inner.list_databases(page_token, page_limit),
+            )),
+            next_lock: Arc::new(tokio::sync::Mutex::new(())),
+        }
+    }
+}
+
+#[pyclass]
+pub struct DatabaseNames {
+    inner: Arc<Mutex<lancedb::catalog::DatabaseNames>>,
+    next_lock: Arc<tokio::sync::Mutex<()>>,
+}
+
+#[pymethods]
+impl DatabaseNames {
+    fn num_page_results(&self, py: Python<'_>) -> usize {
+        py.detach(|| self.inner.lock().unwrap().num_page_results())
+    }
+
+    fn page_token(&self, py: Python<'_>) -> Option<String> {
+        py.detach(|| self.inner.lock().unwrap().page_token().map(str::to_owned))
+    }
+
+    fn __aiter__(self_: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        self_
+    }
+
+    fn __anext__(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let next_lock = self_.next_lock.clone();
         future_into_py(self_.py(), async move {
-            let mut request = ListDatabasesRequest::default();
-            request.limit = limit;
-            request.page_token = page_token;
-            let response = inner.list_databases(request).await.infer_error()?;
-            Ok((response.databases, response.page_token))
+            // Serialize advances while allowing synchronous state inspection
+            // between polls, including while a REST request is pending.
+            let _guard = next_lock.lock().await;
+            poll_fn(|cx| inner.lock().unwrap().poll_next_unpin(cx))
+                .await
+                .ok_or_else(|| PyStopAsyncIteration::new_err(""))?
+                .infer_error()
         })
     }
 }

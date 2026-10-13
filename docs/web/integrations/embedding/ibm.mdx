@@ -1,0 +1,64 @@
+---
+title: IBM watsonx
+sidebarTitle: IBM WatsonX
+---
+
+import { PyEmbeddingIbmUsage } from '/snippets/integrations.mdx';
+
+Generate text embeddings using IBM's watsonx.ai platform.
+
+## Supported Models {#supported-models}
+
+You can find a list of supported models at [IBM watsonx.ai Documentation](https://dataplatform.cloud.ibm.com/docs/content/wsj/analyze-data/fm-models-embed.html?context=wx). The currently supported model names are:
+
+| Model ID                                     | Dimensions |
+|----------------------------------------------|------------|
+| `ibm/granite-embedding-278m-multilingual`    | 768        |
+| `ibm/slate-125m-english-rtrvr-v2`            | 768        |
+| `ibm/slate-30m-english-rtrvr-v2`             | 384        |
+| `intfloat/multilingual-e5-large`             | 1024       |
+| `sentence-transformers/all-minilm-l6-v2`     | 384        |
+
+<Info>
+For new tables, `ibm/granite-embedding-278m-multilingual` is the recommended default. Older model IDs (such as `ibm/slate-125m-english-rtrvr` and `sentence-transformers/all-minilm-l12-v2`) remain resolvable for tables whose stored metadata references them, but they are no longer advertised for new use.
+</Info>
+
+## Parameters {#parameters}
+
+The following parameters can be passed to the `create` method:
+
+| Parameter  | Type     | Default Value                    | Description                                               |
+|------------|----------|----------------------------------|-----------------------------------------------------------|
+| name       | str      | `"ibm/slate-125m-english-rtrvr"` | The model ID of the watsonx.ai model to use. Pass one of the current supported IDs above (e.g. `"ibm/granite-embedding-278m-multilingual"`) when creating new tables. |
+| api_key    | str      | None                             | Optional IBM Cloud API key (or set `WATSONX_API_KEY`)     |
+| project_id | str      | None                             | Optional watsonx project ID (or set `WATSONX_PROJECT_ID`). Mutually exclusive with `space_id`. |
+| space_id   | str      | None                             | Optional watsonx deployment space ID (or set `WATSONX_SPACE_ID`). Mutually exclusive with `project_id`. |
+| url        | str      | None                             | Optional custom URL for the watsonx.ai instance           |
+| params     | dict     | None                             | Optional additional parameters for the embedding model (e.g. `{"truncate_input_tokens": 512}`) |
+
+<Info>
+You must supply exactly one of `project_id` or `space_id` (either as an argument or via its environment variable). Setting both, or neither, raises a `ValueError`.
+</Info>
+
+## Usage Example {#usage-example}
+
+First, the watsonx.ai library is an optional dependency, so must be installed separately:
+
+```
+pip install ibm-watsonx-ai
+```
+
+Optionally set environment variables (if not passing credentials to `create` directly):
+
+```sh
+export WATSONX_API_KEY="YOUR_WATSONX_API_KEY"
+# Provide exactly one of the following:
+export WATSONX_PROJECT_ID="YOUR_WATSONX_PROJECT_ID"
+export WATSONX_SPACE_ID="YOUR_WATSONX_SPACE_ID"
+```
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingIbmUsage}
+  </CodeBlock>
+</CodeGroup>

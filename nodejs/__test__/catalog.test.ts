@@ -80,9 +80,12 @@ describe("remote catalog", () => {
         const second = await catalog.connectDatabase("other");
         expect(await second.tableNames()).toEqual([]);
         expect(await first.tableNames()).toEqual([]);
-        expect(
-          await catalog.listDatabases({ limit: 1, pageToken: "a/b" }),
-        ).toEqual({ databases: ["team/search"], pageToken: "next" });
+        const names = catalog.listDatabases({ pageLimit: 1, pageToken: "a/b" });
+        expect(await names.next()).toEqual({
+          done: false,
+          value: "team/search",
+        });
+        expect(names.pageToken()).toBe("next");
         await catalog.dropDatabase("team/search", { ignoreMissing: true });
         expect(requests[0].url).toBe("/v1/namespace/team%2Fsearch/create");
         expect(requests[0].body).toEqual({ mode: "ExistOk" });
@@ -129,11 +132,139 @@ describe("remote catalog", () => {
     );
   });
 
+  it("lazily traverses pages, including empty pages, and exposes cached state", async () => {
+    await withCatalog(
+      [
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        [200, { namespaces: ["a", "b"], page_token: "empty" }],
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        [200, { namespaces: [], page_token: "last" }],
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        [200, { namespaces: ["c", "d"], page_token: "" }],
+      ],
+      async (catalog, requests) => {
+        const names = catalog.listDatabases({ pageLimit: 2 });
+        expect(names[Symbol.asyncIterator]()).toBe(names);
+        expect(requests).toHaveLength(0);
+        expect(names.numPageResults()).toBe(0);
+        expect(names.pageToken()).toBeUndefined();
+        expect(await names.next()).toEqual({ done: false, value: "a" });
+        expect(names.numPageResults()).toBe(1);
+        expect(names.pageToken()).toBe("empty");
+        expect(await names.next()).toEqual({ done: false, value: "b" });
+        expect(requests).toHaveLength(1);
+        expect(await names.next()).toEqual({ done: false, value: "c" });
+        expect(requests).toHaveLength(3);
+        expect(names.pageToken()).toBeUndefined();
+        expect(names.numPageResults()).toBe(1);
+        const remaining = [];
+        for await (const name of names) remaining.push(name);
+        expect(remaining).toEqual(["d"]);
+        expect(names.numPageResults()).toBe(0);
+        expect(await names.next()).toEqual({ done: true, value: undefined });
+        expect(requests.map((request) => request.url)).toEqual([
+          "/v1/namespace/$/list?limit=2",
+          "/v1/namespace/$/list?limit=2&page_token=empty",
+          "/v1/namespace/$/list?limit=2&page_token=last",
+        ]);
+      },
+    );
+  });
+
+  it("resumes from a saved token after draining the cache", async () => {
+    await withCatalog(
+      [
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        [200, { namespaces: ["a", "b"], page_token: "next/token" }],
+        [200, { namespaces: ["c"] }],
+      ],
+      async (catalog, requests) => {
+        const names = catalog.listDatabases({
+          pageToken: "start/token",
+          pageLimit: 2,
+        });
+        expect(names.pageToken()).toBe("start/token");
+        expect(await names.next()).toEqual({ done: false, value: "a" });
+        while (names.numPageResults() > 0) await names.next();
+        const resumed = catalog.listDatabases({
+          pageToken: names.pageToken(),
+          pageLimit: 2,
+        });
+        const results = [];
+        for await (const name of resumed) results.push(name);
+        expect(results).toEqual(["c"]);
+        expect(requests.map((request) => request.url)).toEqual([
+          "/v1/namespace/$/list?limit=2&page_token=start%2Ftoken",
+          "/v1/namespace/$/list?limit=2&page_token=next%2Ftoken",
+        ]);
+      },
+    );
+  });
+
+  it("terminates on errors and retains the failed request token", async () => {
+    await withCatalog(
+      [
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        [200, { namespaces: ["a"], page_token: "retry" }],
+        [400, {}],
+        [200, { namespaces: ["b"] }],
+      ],
+      async (catalog, requests) => {
+        const names = catalog.listDatabases();
+        await names.next();
+        await expect(names.next()).rejects.toThrow();
+        expect(names.pageToken()).toBe("retry");
+        expect(names.numPageResults()).toBe(0);
+        expect(await names.next()).toEqual({ done: true, value: undefined });
+        expect(requests).toHaveLength(2);
+        const resumed = catalog.listDatabases({ pageToken: names.pageToken() });
+        expect(await resumed.next()).toEqual({ done: false, value: "b" });
+        expect(await resumed.next()).toEqual({ done: true, value: undefined });
+      },
+    );
+  });
+
+  it("handles an empty listing and concurrent advances", async () => {
+    await withCatalog(
+      [
+        [200, { namespaces: [] }],
+        [200, { namespaces: ["a", "b"] }],
+      ],
+      async (catalog, requests) => {
+        const empty = catalog.listDatabases();
+        expect(await empty.next()).toEqual({ done: true, value: undefined });
+        expect(await empty.next()).toEqual({ done: true, value: undefined });
+        const names = catalog.listDatabases();
+        const pending = [names.next(), names.next(), names.next()];
+        expect(names.numPageResults()).toBe(0);
+        expect(names.pageToken()).toBeUndefined();
+        const results = await Promise.all(pending);
+        expect(
+          results
+            .filter((result) => !result.done)
+            .map((result) => result.value)
+            .sort(),
+        ).toEqual(["a", "b"]);
+        expect(results.filter((result) => result.done)).toHaveLength(1);
+        expect(requests).toHaveLength(2);
+      },
+    );
+  });
+
   it("validates endpoints and pagination", async () => {
     await expect(connectCatalog("/tmp/catalog")).rejects.toThrow();
     const catalog = await connectCatalog("http://127.0.0.1:1");
-    for (const limit of [0, -1, 1.5, 2147483648]) {
-      await expect(catalog.listDatabases({ limit })).rejects.toThrow("limit");
+    for (const limit of [
+      0,
+      -1,
+      1.5,
+      2147483648,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+    ]) {
+      expect(() => catalog.listDatabases({ pageLimit: limit })).toThrow(
+        "limit",
+      );
     }
     await expect(catalog.connectDatabase("a$b")).rejects.toThrow(
       "Invalid database name",

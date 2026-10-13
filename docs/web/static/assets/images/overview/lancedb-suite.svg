@@ -1,0 +1,95 @@
+<svg width="2048" height="540" viewBox="0 0 2048 540" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">LanceDB suite</title>
+  <desc id="desc">LanceDB OSS supports search. LanceDB Enterprise is a multimodal lakehouse for curation, feature engineering, search and retrieval, and training. Both are built on the Lance open lakehouse format for multimodal AI.</desc>
+  <defs>
+    <filter id="cardShadow" x="-8%" y="-18%" width="116%" height="136%" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#4F2A1A" flood-opacity="0.16"/>
+    </filter>
+    <linearGradient id="enterpriseGradient" x1="512" y1="90" x2="2020" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E9C9F6"/>
+      <stop offset="0.52" stop-color="#F39A9A"/>
+      <stop offset="1" stop-color="#FF744F"/>
+    </linearGradient>
+    <linearGradient id="curationGradient" x1="512" y1="272" x2="872" y2="272" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#E8C9F4"/>
+      <stop offset="1" stop-color="#EFC5E2"/>
+    </linearGradient>
+    <linearGradient id="featureGradient" x1="894" y1="272" x2="1254" y2="272" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F0ABB8"/>
+      <stop offset="1" stop-color="#F49A92"/>
+    </linearGradient>
+    <linearGradient id="searchGradient" x1="1276" y1="272" x2="1636" y2="272" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F78F85"/>
+      <stop offset="1" stop-color="#FA8265"/>
+    </linearGradient>
+    <linearGradient id="trainingGradient" x1="1658" y1="272" x2="2018" y2="272" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FF7C5D"/>
+      <stop offset="1" stop-color="#FF704E"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="28" y="28" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2" filter="url(#cardShadow)"/>
+  <rect x="28" y="202" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2" filter="url(#cardShadow)"/>
+
+  <rect x="512" y="28" width="1506" height="146" rx="8" style="fill:url(#enterpriseGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="516" y="32" width="1498" height="138" rx="6" style="fill:#FFFFFF !important;"/>
+  <rect x="512" y="202" width="360" height="146" rx="8" style="fill:url(#curationGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="516" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
+  <rect x="894" y="202" width="360" height="146" rx="8" style="fill:url(#featureGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="898" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
+  <rect x="1276" y="202" width="360" height="146" rx="8" style="fill:url(#searchGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="1280" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
+  <rect x="1658" y="202" width="360" height="146" rx="8" style="fill:url(#trainingGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="1662" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
+
+  <rect x="28" y="376" width="1990" height="116" rx="8" style="fill:#FFFFFF !important;stroke:#665FFF !important;" stroke-width="3" filter="url(#cardShadow)"/>
+
+  <g style="fill:#241712 !important;">
+    <circle cx="78" cy="78" r="9"/>
+    <circle cx="94" cy="78" r="9"/>
+    <circle cx="110" cy="78" r="9"/>
+    <circle cx="78" cy="94" r="9"/>
+    <circle cx="110" cy="94" r="9"/>
+    <circle cx="126" cy="94" r="9"/>
+    <circle cx="78" cy="110" r="9"/>
+    <circle cx="94" cy="110" r="9"/>
+    <circle cx="110" cy="110" r="9"/>
+    <circle cx="94" cy="126" r="9"/>
+    <circle cx="126" cy="126" r="9"/>
+  </g>
+  <text x="162" y="117" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="760">LanceDB OSS</text>
+  <text x="260" y="291" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="500">Search</text>
+
+  <g style="fill:#241712 !important;">
+    <circle cx="748" cy="78" r="9"/>
+    <circle cx="764" cy="78" r="9"/>
+    <circle cx="780" cy="78" r="9"/>
+    <circle cx="748" cy="94" r="9"/>
+    <circle cx="780" cy="94" r="9"/>
+    <circle cx="796" cy="94" r="9"/>
+    <circle cx="748" cy="110" r="9"/>
+    <circle cx="764" cy="110" r="9"/>
+    <circle cx="780" cy="110" r="9"/>
+    <circle cx="764" cy="126" r="9"/>
+    <circle cx="796" cy="126" r="9"/>
+  </g>
+  <text x="834" y="117" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="760">LanceDB Enterprise - Multimodal Lakehouse</text>
+
+  <text x="692" y="285" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Curation</text>
+  <text x="1074" y="265" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Feature</text>
+  <text x="1074" y="309" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Engineering</text>
+  <text x="1456" y="265" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Search &amp;</text>
+  <text x="1456" y="309" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Retrieval</text>
+  <text x="1838" y="285" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="38" font-weight="500">Training</text>
+
+  <rect x="456" y="414" width="42" height="42" rx="2" fill="#665FFF"/>
+  <g stroke="#FFFFFF" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M467 446L487 426"/>
+    <path d="M467 438L479 426"/>
+    <path d="M475 446L487 434"/>
+    <path d="M482 420L493 424L493 438L482 434V420Z"/>
+  </g>
+  <text x="516" y="451" fill="#665FFF" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="760">
+    <tspan font-weight="760">Lance</tspan><tspan font-weight="500"> Open Lakehouse Format for Multimodal AI</tspan>
+  </text>
+</svg>

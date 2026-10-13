@@ -104,6 +104,7 @@ pub(crate) async fn execute_add_columns(
     transforms: NewColumnTransform,
     read_columns: Option<Vec<String>>,
 ) -> Result<AddColumnsResult> {
+    table.ensure_not_a_view("add columns to").await?;
     computed_columns::ensure_not_function_bound(
         table.schema().await?.as_ref(),
         "schema evolution",
@@ -202,6 +203,15 @@ pub(crate) async fn execute_alter_columns(
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    ensure_only_computed_columns_of_a_view(
+        table,
+        &dataset,
+        &schema,
+        "alter columns of",
+        alterations
+            .iter()
+            .map(|alteration| alteration.path.as_str()),
+    )?;
     // A Function binding stores its columns' exact fields, nullability
     // included, so every alteration of one counts, and a rename's target too.
     computed_columns::ensure_not_function_bound(
@@ -241,6 +251,13 @@ pub(crate) async fn execute_drop_columns(
     table.dataset.ensure_mutable()?;
     let mut dataset = (*table.dataset.get().await?).clone();
     let schema = std::sync::Arc::new(ArrowSchema::from(dataset.schema()));
+    ensure_only_computed_columns_of_a_view(
+        table,
+        &dataset,
+        &schema,
+        "drop columns of",
+        columns.iter().copied(),
+    )?;
     let unbinding = computed_columns::plan_function_unbinding(schema.as_ref(), columns)?;
 
     let mut names = columns.iter().map(|c| c.to_string()).collect::<Vec<_>>();
@@ -264,6 +281,30 @@ pub(crate) async fn execute_drop_columns(
     let version = dataset.version().version;
     table.dataset.update(dataset);
     Ok(DropColumnsResult { version })
+}
+
+/// A view's stored columns are the definition's output, which refresh checks
+/// against the view's schema; only its computed columns may be altered or
+/// dropped.
+fn ensure_only_computed_columns_of_a_view<'a>(
+    table: &NativeTable,
+    dataset: &Dataset,
+    schema: &ArrowSchema,
+    operation: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let metadata = &dataset.schema().metadata;
+    if !metadata.contains_key(crate::materialized_view::DEFINITION_META_KEY) {
+        return Ok(());
+    }
+    let computed = computed_columns::computed_columns(schema);
+    if paths
+        .into_iter()
+        .all(|path| computed.iter().any(|column| column.name == path))
+    {
+        return Ok(());
+    }
+    crate::materialized_view::ensure_not_a_view(&table.name, metadata, operation)
 }
 
 /// Retire the bindings a drop covers, in the commit before it.
@@ -806,6 +847,29 @@ mod tests {
     }
 
     // Alter Columns Tests
+
+    #[tokio::test]
+    async fn test_alter_columns_rejects_missing_changes() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+        let table = conn.create_table("test", batch).execute().await.unwrap();
+        let initial_version = table.version().await.unwrap();
+        let initial_schema = table.schema().await.unwrap();
+
+        for alterations in [
+            vec![ColumnAlteration::new("id".into())],
+            vec![
+                ColumnAlteration::new("id".into()).rename("new_id".into()),
+                ColumnAlteration::new("id".into()),
+            ],
+        ] {
+            let err = table.alter_columns(&alterations).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            assert!(err.to_string().contains("path 'id'"));
+            assert_eq!(table.version().await.unwrap(), initial_version);
+            assert_eq!(table.schema().await.unwrap(), initial_schema);
+        }
+    }
 
     #[tokio::test]
     async fn test_alter_column_rename() {

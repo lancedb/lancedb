@@ -1,0 +1,52 @@
+---
+title: "Explain"
+sidebarTitle: "Explain"
+description: "EXPLAIN, EXPLAIN ANALYZE and EXPLAIN VERBOSE — reading and measuring a plan from SQL."
+icon: map
+keywords: ["explain", "explain analyze", "explain verbose", "query plan"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+
+```sql
+EXPLAIN SELECT * FROM documents WHERE identifier < 1000
+EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
+```
+
+| Statement | What it returns |
+| --- | --- |
+| `EXPLAIN <query>` | Logical and physical plan, without executing the query. |
+| `EXPLAIN ANALYZE <query>` | Executes the query and annotates each operator with runtime metrics (rows, timing). |
+| `EXPLAIN VERBOSE <query>` | Adds intermediate optimizer plans on top of `EXPLAIN`. |
+
+The result is a small relation with `plan_type` and `plan` columns, read
+through the same client you use for regular queries -- see
+[Connecting](/sql#connecting).
+
+The operators are the same ones the SDK's
+[`explain_plan` and `analyze_plan`](/search/explain) methods produce, so the
+reasoning about index coverage and filter pushdown carries across unchanged:
+
+<CardGroup cols={2}>
+  <Card title="What it shows" icon="map" href="/search/explain#inspect-a-query-plan">
+    Reading a plan: operators, pushdown, index usage.
+  </Card>
+  <Card title="What it measures" icon="gauge" href="/search/explain#analyze-a-query-plan">
+    Reading the metrics, and a worked before/after.
+  </Card>
+</CardGroup>
+
+## What to look for {#what-to-look-for}
+
+| Sign | Means |
+| --- | --- |
+| `ScalarIndexQuery` | the predicate used a scalar index |
+| `LanceScan` with high `bytes_read` | no index, or too many columns selected |
+| `FilterExec` above a search | the filter ran after search rather than pushing into it |
+| `ANNSubIndex` / `ANNIvfPartition` | the vector index was used |
+
+A `LanceScan` feeding a join is the common one worth acting on -- see
+[Joins](/sql/dql/join#performance).
+
+For a table's columns and types without a plan, see
+[`DESCRIBE`](/sql/ddl/table#describe).

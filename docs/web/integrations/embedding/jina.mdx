@@ -1,0 +1,49 @@
+---
+title: Jina
+sidebarTitle: Jina
+---
+
+import {
+  PyEmbeddingJinaText,
+  PyEmbeddingJinaMultimodal,
+} from '/snippets/integrations.mdx';
+
+## Text Embedding Models {#text-embedding-models}
+
+Jina embeddings are used to generate embeddings for text and image data.
+You also need to set the `JINA_API_KEY` environment variable to use the Jina API.
+
+You can find a list of supported models under [https://jina.ai/embeddings/](https://jina.ai/embeddings/)
+
+Supported parameters (to be passed in `create` method) are:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
+
+Usage Example:
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingJinaText}
+  </CodeBlock>
+</CodeGroup>
+
+## Multimodal Embedding Models {#multimodal-embedding-models}
+
+Jina embeddings can also be used to embed both text and image data, only some of the models support image data and you can check the list
+under [https://jina.ai/embeddings/](https://jina.ai/embeddings/)
+
+Supported parameters (to be passed in `create` method) are:
+
+| Parameter | Type | Default Value | Description |
+|---|---|---|---|
+| `name` | `str` | `"jina-clip-v1"` | The model ID of the jina model to use |
+
+Usage Example:
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyEmbeddingJinaMultimodal}
+  </CodeBlock>
+</CodeGroup>

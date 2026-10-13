@@ -1,0 +1,82 @@
+---
+title: "Cleanup"
+sidebarTitle: "Cleanup"
+description: "Pruning old versions and the files only they referenced."
+icon: broom
+keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
+---
+
+Every write keeps the version before it, which is what makes
+[time travel](/management/table#versioning) possible. Cleanup is what ends
+that -- pruning versions older than a retention window, and the files that only
+those versions referenced.
+
+<Note>
+**Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
+merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
+Enterprise schedules them as separate jobs.
+</Note>
+
+## Retention {#retention}
+
+```python
+from datetime import timedelta
+
+table.optimize(cleanup_older_than=timedelta(days=30))
+```
+
+`cleanup_older_than` defaults to **7 days**. Versions older than that are
+removed, along with the files only they referenced.
+
+The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
+everything except it.
+
+<Warning>
+Pruning is what makes [time travel](/management/table#versioning) finite. A
+version outside the retention window is gone, and a tag or branch pointing at
+it no longer resolves.
+
+If you rely on reading old versions, set the window to cover the range you
+need before running this, not after.
+</Warning>
+
+## Disk usage does not drop immediately {#disk}
+
+Compaction writes new, merged files before the old ones are removed, so disk
+usage can rise before it falls. Space is reclaimed only when cleanup prunes the
+versions that referenced the superseded files.
+
+If you need to reclaim space aggressively, shorten the retention window rather
+than waiting for the default:
+
+```python
+table.optimize(cleanup_older_than=timedelta(days=1))
+```
+
+## Files from failed transactions {#unverified}
+
+A write that fails partway can leave files that look like an operation still
+in progress. Cleanup will not remove them until they are at least seven days
+old, because it cannot tell them apart from a live write.
+
+```python
+table.optimize(delete_unverified=True)
+```
+
+<Warning>
+`delete_unverified=True` removes them regardless of age. Only set it when you
+can guarantee **no other process is writing to the table** -- otherwise it can
+delete files belonging to a write that is genuinely in progress, and corrupt
+the table.
+</Warning>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Compaction" icon="broom" href="/maintenance/compaction">
+    Merging small files -- the other half of `optimize()`.
+  </Card>
+  <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
+    The Enterprise jobs that run without a call from you.
+  </Card>
+</CardGroup>
