@@ -57,6 +57,7 @@ from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
@@ -239,12 +240,14 @@ class RemoteTable(Table):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported for remote tables."""
+        validate_blob_mode(blob_mode)
         raise NotImplementedError("to_arrow() is not supported for remote tables.")
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not supported for remote tables."""
+        validate_blob_mode(blob_mode)
         raise NotImplementedError("to_pandas() is not supported for remote tables.")
 
     def checkout(self, version: Union[int, str]):
