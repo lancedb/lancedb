@@ -1,42 +1,86 @@
 ---
-title: "OSS and Enterprise"
+title: "Choose your LanceDB deployment"
 sidebarTitle: "OSS and Enterprise"
-description: "LanceDB OSS and LanceDB Enterprise: what each one is, and which features each one has."
+description: "Start with an embedded library, or use the LanceDB Enterprise multimodal lakehouse for shared AI workloads."
 icon: compass
 keywords: ["oss", "enterprise", "embedded", "deployment", "availability", "comparison"]
 ---
 
-LanceDB comes in two forms. Both use the same SDKs and the same
-[Lance](/basics/lance) tables, and this documentation covers both.
+LanceDB gives you two ways to work with multimodal data, both built on the open
+[Lance](/basics/lance) format.
 
-- **LanceDB OSS** is a library. It runs inside your process and works on tables
-  in a local directory or in object storage, with nothing else running on your
-  behalf.
-- **LanceDB Enterprise** is a database service. A `db://` connection sends each
-  operation to a deployment, which runs it.
+**LanceDB OSS** is an embedded library. Run it inside your application
+with tables on local disk or in object storage. You control the application,
+its resources, and table maintenance, without a separate database service.
+[Try the quickstart](/quickstart) to create a table and run your first search.
 
-[Connect to LanceDB](/basics/connect) shows how to start with either.
+**LanceDB Enterprise** is a multimodal lakehouse for data curation, feature
+engineering, search, and training data access. It adds query-serving capacity,
+data caching, and background operations for teams working with shared
+multimodal datasets.
+[Connect to Enterprise](/basics/connect#enterprise) when your deployment is ready.
 
-## How a page says where it applies {#labels}
+## Why choose Enterprise? {#why-enterprise}
 
-A page that declares its availability opens with a label.
-<Badge color="green">OSS</Badge> and <Badge color="red">Enterprise</Badge> name
-the offerings it applies to, and **varies** marks one where it depends on the
-version or configuration; the sentence after the label says how. A page that
-applies to one offering only also shows that offering's tag in the sidebar.
-Every page stays in the same navigation, whichever offering you use.
+### Serve growing workloads {#serving}
+
+Add query-serving capacity as more applications and users depend on your data.
+Enterprise spreads query traffic across a fleet and caches frequently read
+table data near compute, reducing repeated reads from object storage. Query
+serving and background work use separate resources, so you can size each for
+your workload. See [Enterprise architecture](/enterprise/architecture).
+
+### Reduce operational work {#operations}
+
+Let the service handle routine table maintenance instead of scheduling it in
+application code. Enterprise handles background [compaction](/maintenance/compaction) and can
+[clean up old table versions](/maintenance/cleanup) according to your retention
+policy. Configure these maintenance tasks at the deployment level so each
+application does not have to schedule them.
+
+### Fit your deployment requirements {#deployment}
+
+Choose a managed deployment or bring LanceDB into your own cloud account.
+Enterprise integrates with OpenTelemetry for metrics and traces, helping your
+team monitor the service alongside your applications. Talk to us about your
+cloud, networking, and operational requirements to plan the right deployment.
+The [Enterprise overview](/enterprise) explains the available options.
+
+### Connect your data workflows {#workflows}
+
+Use the same tables for retrieval, dataset preparation, and training data access.
+With its [SQL endpoint](/basics/sql) enabled, Enterprise supports analytical
+[curation](/curation), including joins, grouping, and sampling.
+[Feature engineering](/feature-engineering) adds derived columns and tables;
+computed columns and materialized views require a deployment that enables them.
+[Geneva](/geneva) runs Python feature backfills as distributed jobs.
+[Training data loaders](/training/data-loading), available in both offerings,
+read the resulting datasets for model training.
+
+## Plan your Enterprise deployment {#get-started}
+
+[Talk to us about your workload](https://www.lancedb.com/contact) to discuss your
+data, query traffic, pipelines, and deployment requirements.
+
+For a closer look at how the service runs, read the
+[Enterprise architecture](/enterprise/architecture).
 
 ## Feature availability {#availability}
 
-These are the pages that state where they apply, grouped as in the navigation.
-**Yes** means an offering has what the page describes and **No** that it does
-not; **Varies** means it depends on the version or configuration of a
-deployment, and the summary says on what. The list is not every feature:
-pages that span several, such as overviews and tutorials, are left out, and the
-[SQL](/basics/sql) row stands for the SQL reference, whose pages each say where
-they run.
+<span id="labels" />
+
+Guides identify which capabilities are available in OSS and Enterprise,
+including version and configuration requirements. **Yes** means the offering
+supports what the guide describes and **No** means it does not. Setup, SDK and
+server version requirements, and subfeature differences are explained in the
+summary or linked guide; they do not change product support.
+
+<Accordion title="Compare documented capabilities">
+
+This comparison covers guides that declare availability. It is not an
+exhaustive feature catalog: overviews and tutorials are omitted, and the
+[SQL](/basics/sql) row represents the SQL reference.
 
 {/* availability-comparison */}
 
-[LanceDB Enterprise](/enterprise) describes what a deployment adds and how the
-two differ in operation, such as scale, caching and maintenance.
+</Accordion>

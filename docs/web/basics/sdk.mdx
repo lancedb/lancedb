@@ -1,149 +1,117 @@
 ---
 title: "SDKs"
 sidebarTitle: "SDKs"
-description: "The language clients — Python, TypeScript, Rust — and what stays true across all of them."
+description: "Choose a LanceDB SDK and find the API reference for your language."
 icon: code-compare
 keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
 availability:
   oss: available
   enterprise: available
   summary: >-
-    The Python, TypeScript and Rust SDKs work with embedded databases and,
-    through `db://`, with Enterprise deployments; the Java SDK reaches
-    deployments only. What each can do differs by language and connection.
+    Python, TypeScript and Rust support both LanceDB OSS and LanceDB Enterprise.
+    Java provides a client for the Enterprise REST API.
 ---
 
-A language SDK is the primary way to work with LanceDB: create and manage
-tables, write and query data, build indexes, run feature engineering.
+Use a LanceDB SDK to create tables, add data, build indexes and run searches
+from your application. Python, TypeScript and Rust work with both the embedded
+OSS library and LanceDB Enterprise.
 
-Start locally, then connect to Enterprise by changing your connection URI. Keep
-the same core table and search code as your application grows: creating a
-table, adding, updating and deleting rows, and searching and filtering it are
-the same calls on either connection. What else changes when you move is in
-[Moving to LanceDB Enterprise](#moving-to-enterprise).
+The [quickstart](/quickstart) includes installation instructions and complete
+examples in all three languages. For connection settings, see
+[Connect to LanceDB](/basics/connect).
 
-## Officially supported SDKs {#supported-sdks}
+## Official SDKs {#supported-sdks}
 
-Python, TypeScript and Rust are supported against both embedded and deployed
-LanceDB.
+| SDK | Use it with | API reference |
+| --- | --- | --- |
+| Python | Python applications, notebooks, pandas and PyArrow | [Python reference](https://lancedb.github.io/lancedb/python/python/) |
+| TypeScript | Node.js and TypeScript applications | [TypeScript reference](https://lancedb.github.io/lancedb/js/) |
+| Rust | Rust applications using the native library | [Rust reference](https://docs.rs/lancedb/latest/lancedb/index.html) |
+| Java | Applications using the Enterprise REST API | [Java reference](https://lancedb.github.io/lancedb/java/java/) |
 
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="python" /> [Python](https://lancedb.github.io/lancedb/python/python/) | Full-featured Python client with pandas and numpy integration |
-| <Icon icon="square-js" /> [TypeScript](https://lancedb.github.io/lancedb/js/) | A TypeScript wrapper around the Rust library, built with `napi-rs` |
-| <Icon icon="rust" /> [Rust](https://docs.rs/lancedb/latest/lancedb/index.html) | Native Rust library with persistent storage and high performance |
+Guides show the available language examples together. Use the API reference for
+method signatures and options; SDKs do not expose every feature through the same
+methods. In Rust, enable the `remote` feature to connect to Enterprise.
 
-Not every SDK covers the same surface, though:
-
-| | Python | TypeScript |
-| --- | :---: | :---: |
-| Create and manage catalog objects | yes | yes |
-| Insert, merge, update, delete | yes | yes |
-| Filter, project | yes | yes |
-| Vector search | yes | yes |
-| Full-text search | yes | yes |
-| Feature engineering, jobs | yes | partly |
-| Runs against a local database | yes | yes |
-
-Neither SDK aggregates or joins.
-TypeScript has no methods for [functions](/management/function). {/* if functions launched */}
-Reach those with SQL on a deployment instead -- see [SQL](/basics/sql).
+For SQL joins, aggregations and window functions, use
+[SQL](/basics/sql). Python provides a SQL client, and applications in other
+languages can use a Flight SQL client. TypeScript's table query API does not
+provide a SQL execution method.
 
 ## REST API {#rest}
 
-<Badge color="red">Enterprise</Badge> A deployment implements the
-[Lance REST Namespace](/basics/lance#enterprise), so the catalog is reachable
-over HTTP by anything that speaks it -- see the
-[REST API reference](/api-reference/rest).
-
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="java" /> [Java](https://lancedb.github.io/lancedb/java/java/) | REST API Enterprise SDK in Java |
+LanceDB Enterprise also exposes an HTTP API for catalog and table operations.
+Use it when integrating a language or tool without a LanceDB SDK. The
+[REST API reference](/api-reference/rest) describes its endpoints and request
+formats. For SQL queries, connect through [Flight SQL](/basics/sql).
 
 ## Community SDKs {#community-sdks}
 
-Contributed by the community rather than supported by LanceDB, so feature parity
-and release cadence vary.
+These clients are maintained by the community. Check each project's supported
+features, installation instructions and releases before choosing one.
 
-| Reference | Description |
-|:--------------|-------------------|
-| <Icon icon="golang" /> [Go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) | Community-contributed Go SDK |
-| <Icon icon="gem" /> [Ruby](https://github.com/scientist-labs/lancelot) | Community-contributed Ruby bindings |
-| <Icon icon="swift" /> [Swift](https://github.com/RyanLisse/LanceDbSwiftKit) | Community-contributed Swift SDK |
-| <Icon icon="R" /> [R](https://github.com/CathalByrneGit/lancedb) | Community-contributed R package |
-| <Icon icon="flutter" /> [Flutter](https://github.com/Alexcn/flutter_lancedb) | Community-contributed Flutter bindings |
-
-For any other language, [SQL](/basics/sql) on a deployment reaches the same
-tables without a LanceDB-specific SDK at all.
+| Language | Project |
+| --- | --- |
+| Go | [lancedb-go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) |
+| Ruby | [Lancelot](https://github.com/scientist-labs/lancelot) |
+| Swift | [LanceDbSwiftKit](https://github.com/RyanLisse/LanceDbSwiftKit) |
+| R | [lancedb](https://github.com/CathalByrneGit/lancedb) |
+| Flutter | [flutter_lancedb](https://github.com/Alexcn/flutter_lancedb) |
 
 ## Python multiprocessing {#multiprocessing}
 
 <Warning>
-Do not use `fork` as the start method with Python's `multiprocessing` module.
-Lance is multi-threaded internally, and `fork` with alive threads is unsafe --
-use `spawn` instead. See
-[this discussion](https://discuss.python.org/t/concerns-regarding-deprecation-of-fork-with-alive-threads/33555)
-for why.
+Use `spawn` when starting Python worker processes with `multiprocessing`.
+LanceDB uses threads internally, and forking a process with active threads can
+cause deadlocks. Create a connection inside each worker instead of sharing an
+open connection from the parent process.
 </Warning>
+
+For PyTorch worker setup and connection factories, see
+[PyTorch integration](/training/torch).
 
 ## Moving to LanceDB Enterprise {#moving-to-enterprise}
 
-The [quickstart](/quickstart)'s core steps -- create a table, add rows, search,
-filter -- run unchanged once the connection points at a deployment. Four things
-around them change:
+The core table workflow stays familiar: connect, create or open a table, write
+records, and query them. Enterprise runs those operations on remote compute and
+manages background maintenance.
 
-**Connection settings and credentials.** A deployment takes a `db://` URI, its
-endpoint and an API key, which its administrator gives you; keep the key in the
-environment or a secret manager. See
-[Connect to LanceDB Enterprise](/quickstart#connect-to-lancedb-enterprise), and
-[Authentication](/enterprise/authentication) for OAuth.
+- **Configure the connection.** Replace the local path with your database URI,
+  and supply the endpoint, region and credentials provided by your administrator.
+  [Connect to Enterprise](/basics/connect#enterprise) shows these settings.
+- **Retrieve query results.** Python's remote tables do not support whole-table
+  `to_arrow()` or `to_pandas()` calls. Use a query and select the columns and
+  number of rows you need, for example `table.search().limit(10).to_arrow()`.
+- **Handle table listings and namespaces.** Remote table listings are paginated.
+  Use the namespace and pagination options described in
+  [Namespaces](/management/namespace).
+- **Use server-side jobs.** Index builds and feature refreshes can run as
+  [jobs](/basics/jobs). Each operation's guide explains how to submit work and
+  track completion.
+- **Let Enterprise manage maintenance.** Use
+  [background maintenance](/maintenance/background-jobs) rather than calling
+  the embedded table's `optimize()` method.
 
-**Methods that are missing or behave differently.** A `db://` connection
-returns a remote table, which lacks some local methods and changes others. For
-example, in Python `table_exists` raises, a whole-table `to_arrow()` or
-`to_pandas()` raises -- query the table instead, as in
-`table.search().to_arrow()` -- and listing tables returns one page at a time.
-Some features also have to be enabled on the deployment before they work:
-computed columns, views, materialized views and SQL among them. Each page's
-label says where its feature applies, and
-[OSS and Enterprise](/basics/offerings) compares them all.
+For SQL connection details, see [SQL](/basics/sql). For the operating model and
+deployment options, see [LanceDB Enterprise](/enterprise).
 
-**Maintenance.** Embedded, compaction, cleanup and index updates happen when
-you call `optimize()`. On a deployment they are the deployment's work, and its
-configuration decides when they run; calling `optimize()` against it does not
-start them. Synchronous Python warns and returns `None`, while asynchronous
-Python and TypeScript raise. See [Background jobs](/maintenance/background-jobs).
+## Shared data across languages {#invariants}
 
-**Long-running work.** On a deployment, building an index, refreshing a
-computed column and similar operations run on the server as
-[jobs](/basics/jobs). The `_async` form submits one and returns the job, which
-you can wait on, check later from another process, or cancel; the blocking form
-of a refresh raises there. Running on the server does not make derived data
-keep itself current: a computed column is filled only when you submit a
-refresh.
+LanceDB uses Arrow schemas across its SDKs. A fixed-size vector column stores
+vectors of a consistent dimension; the [data types reference](/sql/data-types)
+describes the supported element types and other column types.
 
-The [Enterprise overview](/enterprise) describes how a deployment is put
-together.
+Applications in different languages can work with the same tables. Connect to
+the same database and namespace, use the appropriate credentials, and account
+for [read consistency](/tables/consistency) when another process writes data.
 
-## What stays the same {#invariants}
-
-Whichever you pick:
-
-- **Types are Arrow types.** A vector column is a `FixedSizeList<Float32>`
-  everywhere, not a SQL type mapped onto storage. See
-  [Functions and types](/sql/functions).
-- **Reads are Arrow.** Nothing is serialized into language objects on the way out
-  unless you convert it.
-- **The catalog is one catalog.** A table created from TypeScript is visible to
-  Python and to SQL immediately -- there is no per-language namespace.
-
-## What to read next {#next}
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="SQL" icon="table-list" href="/basics/sql">
-    The same tables, reached by any Flight SQL client -- and the one way in for a language with no SDK.
+    Query Enterprise tables with SQL from Python or a Flight SQL client.
   </Card>
   <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
-    Give a coding agent a current reference to this same API surface.
+    Use the LanceDB plugin to help a coding agent work with your data.
   </Card>
 </CardGroup>
