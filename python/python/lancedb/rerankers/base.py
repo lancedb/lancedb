@@ -25,7 +25,7 @@ class Reranker(ABC):
         Parameters
         ----------
         return_score : str, default "relevance"
-            opntions are "relevance" or "all"
+            options are "relevance" or "all"
             The type of score to return. If "relevance", will return only the relevance
             score. If "all", will return all scores from the vector and FTS search along
             with the relevance score.
