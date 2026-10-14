@@ -1114,10 +1114,24 @@ pub struct VectorQueryRequest {
     pub column: Option<String>,
     /// The vector(s) to search for
     pub query_vector: Vec<Arc<dyn Array>>,
-    /// The minimum number of partitions to search
-    pub minimum_nprobes: usize,
-    /// The maximum number of partitions to search
+    /// The legacy number of partitions to search.
+    ///
+    /// Lance sets both probe bounds to this value. Explicit bounds can override it.
+    pub nprobes: Option<usize>,
+    /// The minimum number of partitions to search.
+    ///
+    /// If unset, Lance's default is used.
+    pub minimum_nprobes: Option<usize>,
+    /// The maximum number of partitions to search.
+    ///
+    /// If unset, Lance's default is used. Zero represents an explicitly unbounded
+    /// maximum on request and wire representations.
     pub maximum_nprobes: Option<usize>,
+    /// Optional initial IVF search effort in [0, 1].
+    ///
+    /// None preserves Auto and fixed `nprobes`; any explicit value overrides
+    /// `nprobes` while retaining explicit minimum and maximum bounds.
+    pub search_effort: Option<f64>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
     /// The upper bound (exclusive) of the distance to search for.
@@ -1141,8 +1155,10 @@ impl Default for VectorQueryRequest {
             base: QueryRequest::default(),
             column: None,
             query_vector: Vec::new(),
-            minimum_nprobes: 20,
-            maximum_nprobes: Some(20),
+            nprobes: None,
+            minimum_nprobes: None,
+            maximum_nprobes: None,
+            search_effort: None,
             lower_bound: None,
             upper_bound: None,
             ef: None,
@@ -1155,6 +1171,17 @@ impl Default for VectorQueryRequest {
 }
 
 impl VectorQueryRequest {
+    pub(crate) fn validate_search_effort(&self) -> Result<()> {
+        if let Some(effort) = self.search_effort
+            && (!effort.is_finite() || !(0.0..=1.0).contains(&effort))
+        {
+            return Err(Error::InvalidInput {
+                message: format!("search_effort must be finite and in [0, 1], got {effort}"),
+            });
+        }
+        Ok(())
+    }
+
     fn add_query_vector(&mut self, vector: impl IntoQueryVector) -> Result<()> {
         let vector = vector.to_query_vector(&DataType::Float32, "default")?;
         let array =
@@ -1248,7 +1275,7 @@ impl VectorQuery {
         Ok(self)
     }
 
-    /// Set the number of partitions to search (probe)
+    /// Set the legacy IVF probe parameter
     ///
     /// This argument is only used when the vector column has an IVF PQ index.
     /// If there is no index then this value is ignored.
@@ -1258,19 +1285,20 @@ impl VectorQuery {
     ///
     /// The partition whose centroids are closest to the query vector will be
     /// exhaustiely searched to find matches.  This parameter controls how many
-    /// partitions should be searched.
+    /// partitions may be searched.
     ///
     /// Increasing this value will increase the recall of your query but will
-    /// also increase the latency of your query.  The default value is 20.  This
-    /// default is good for many cases but the best value to use will depend on
-    /// your data and the recall that you need to achieve.
+    /// also increase the latency of your query. If this method is not called,
+    /// Lance's adaptive probe defaults are used.
     ///
     /// For best results we recommend tuning this parameter with a benchmark against
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     ///
-    /// This method sets both the minimum and maximum number of partitions to search.
-    /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
+    /// LanceDB retains this as `nprobes` through local and remote request
+    /// construction. Lance sets both probe bounds to this value only when
+    /// [`Self::search_effort`] is unset. For more
+    /// fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
     ///
     /// Returns an error if `nprobes` is not greater than 0.
@@ -1280,8 +1308,32 @@ impl VectorQuery {
                 message: "nprobes must be greater than 0".to_string(),
             });
         }
-        self.request.minimum_nprobes = nprobes;
-        self.request.maximum_nprobes = Some(nprobes);
+        self.request.nprobes = Some(nprobes);
+        Ok(self)
+    }
+
+    /// Set the initial IVF search effort to a finite value in [0, 1].
+    ///
+    /// None (the default) resolves to 0.5, preserving Auto probing. At 0 the
+    /// search starts at the caller minimum; at 1 it searches all partitions
+    /// within the caller maximum. Intermediate values interpolate around Auto.
+    /// Later probing may continue when too few candidates are found.
+    /// Any explicit value, including 0.5, overrides [`Self::nprobes`] regardless
+    /// of setter order. Explicit minimum and maximum bounds still apply.
+    /// This does not change refinement or HNSW ef and is not a recall guarantee.
+    /// Lance's MemWAL LSM scanner does not yet support this option.
+    ///
+    /// ```
+    /// # use lancedb::{Table, query::{QueryBase, ExecutableQuery}};
+    /// # async fn example(table: &Table) -> lancedb::Result<()> {
+    /// let results = table.query().nearest_to([0.1, 0.2].as_slice())?
+    ///     .search_effort(0.75)?.execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn search_effort(mut self, search_effort: impl Into<Option<f64>>) -> Result<Self> {
+        self.request.search_effort = search_effort.into();
+        self.request.validate_search_effort()?;
         Ok(self)
     }
 
@@ -1303,6 +1355,7 @@ impl VectorQuery {
             });
         }
         if let Some(maximum_nprobes) = self.request.maximum_nprobes
+            && maximum_nprobes != 0
             && minimum_nprobes > maximum_nprobes
         {
             return Err(Error::InvalidInput {
@@ -1310,7 +1363,7 @@ impl VectorQuery {
                     .to_string(),
             });
         }
-        self.request.minimum_nprobes = minimum_nprobes;
+        self.request.minimum_nprobes = Some(minimum_nprobes);
         Ok(self)
     }
 
@@ -1323,11 +1376,13 @@ impl VectorQuery {
     ///
     /// If this value is greater than minimum_nprobes then the excess partitions will
     /// only be searched if the initial search does not return enough results.
+    /// The bound applies per index segment to initial and later probing without
+    /// disabling Auto probing.
     ///
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
     ///
-    /// Set to None to search all partitions, if needed, to satisfy the limit
+    /// Set to None to use Lance's default maximum probe behavior.
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
         if let Some(maximum_nprobes) = maximum_nprobes {
             if maximum_nprobes == 0 {
@@ -1335,14 +1390,18 @@ impl VectorQuery {
                     message: "maximum_nprobes must be greater than 0".to_string(),
                 });
             }
-            if maximum_nprobes < self.request.minimum_nprobes {
+            if let Some(minimum_nprobes) = self.request.minimum_nprobes
+                && maximum_nprobes < minimum_nprobes
+            {
                 return Err(Error::InvalidInput {
                     message: "maximum_nprobes must be greater than or equal to minimum_nprobes"
                         .to_string(),
                 });
             }
         }
-        self.request.maximum_nprobes = maximum_nprobes;
+        // Preserve an explicit reset separately from an untouched maximum. The
+        // request protocols already use zero to represent an unbounded maximum.
+        self.request.maximum_nprobes = Some(maximum_nprobes.unwrap_or(0));
         Ok(self)
     }
 
@@ -2431,6 +2490,29 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+        assert_eq!(query.request.nprobes, None);
+        assert_eq!(query.request.minimum_nprobes, None);
+        assert_eq!(query.request.maximum_nprobes, None);
+        assert_eq!(query.request.search_effort, None);
+
+        let effort_query = query
+            .clone()
+            .nprobes(20)
+            .unwrap()
+            .search_effort(0.5)
+            .unwrap();
+        assert_eq!(effort_query.request.search_effort, Some(0.5));
+        assert_eq!(effort_query.request.nprobes, Some(20));
+        assert_eq!(effort_query.request.minimum_nprobes, None);
+        assert_eq!(effort_query.request.maximum_nprobes, None);
+        assert_eq!(
+            effort_query
+                .search_effort(None)
+                .unwrap()
+                .request
+                .search_effort,
+            None
+        );
         assert_eq!(
             *query
                 .request
@@ -2442,6 +2524,37 @@ mod tests {
             vector
         );
 
+        let minimum_only_query = query.clone().minimum_nprobes(20).unwrap();
+        assert_eq!(minimum_only_query.request.minimum_nprobes, Some(20));
+        assert_eq!(minimum_only_query.request.maximum_nprobes, None);
+
+        let maximum_only_query = query.maximum_nprobes(Some(20)).unwrap();
+        assert_eq!(maximum_only_query.request.minimum_nprobes, None);
+        assert_eq!(maximum_only_query.request.maximum_nprobes, Some(20));
+
+        let explicitly_unbounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .nprobes(20)
+            .unwrap()
+            .maximum_nprobes(None)
+            .unwrap();
+        assert_eq!(explicitly_unbounded_query.request.nprobes, Some(20));
+        assert_eq!(explicitly_unbounded_query.request.maximum_nprobes, Some(0));
+
+        let bounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .minimum_nprobes(5)
+            .unwrap()
+            .nprobes(20)
+            .unwrap();
+        assert_eq!(bounded_query.request.nprobes, Some(20));
+        assert_eq!(bounded_query.request.minimum_nprobes, Some(5));
+        assert_eq!(bounded_query.request.maximum_nprobes, None);
+
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = table
@@ -2450,7 +2563,7 @@ mod tests {
             .offset(1)
             .nearest_to(&[9.8, 8.7])
             .unwrap()
-            .nprobes(1000)
+            .nprobes(20)
             .unwrap()
             .postfilter()
             .distance_type(DistanceType::Cosine)
@@ -2469,8 +2582,9 @@ mod tests {
         );
         assert_eq!(query.request.base.limit.unwrap(), 100);
         assert_eq!(query.request.base.offset.unwrap(), 1);
-        assert_eq!(query.request.minimum_nprobes, 1000);
-        assert_eq!(query.request.maximum_nprobes, Some(1000));
+        assert_eq!(query.request.nprobes, Some(20));
+        assert_eq!(query.request.minimum_nprobes, None);
+        assert_eq!(query.request.maximum_nprobes, None);
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
@@ -2492,13 +2606,13 @@ mod tests {
             Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
         ));
 
-        // Fixed probe counts replace both bounds, even when moving below or
-        // above the previous range.
+        // Legacy probe counts remain independent until Lance resolves them.
         let mut query = query;
         for nprobes in [30, 1, 50] {
             query = query.nprobes(nprobes).unwrap();
-            assert_eq!(query.request.minimum_nprobes, nprobes);
-            assert_eq!(query.request.maximum_nprobes, Some(nprobes));
+            assert_eq!(query.request.nprobes, Some(nprobes));
+            assert_eq!(query.request.minimum_nprobes, None);
+            assert_eq!(query.request.maximum_nprobes, None);
         }
     }
 

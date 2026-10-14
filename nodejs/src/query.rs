@@ -299,6 +299,16 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn minimum_nprobes(&mut self, minimum_nprobe: u32) -> napi::Result<()> {
         self.inner = self
             .inner

@@ -47,6 +47,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
+    validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -76,7 +77,6 @@ use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -597,6 +597,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
             Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
             Index::FTS(p) => {
+                validate_fts_field(&field)?;
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
                     params["document_granularity"] = "list_element".into();
@@ -1056,6 +1057,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 );
             }
             Select::Dynamic(pairs) => {
+                // Keep the caller's alias order in the JSON object sent to the server.
+                // serde_json's preserve_order feature is required here.
                 let alias_map =
                     serde_json::Map::from_iter(pairs.iter().map(|(name, expr)| {
                         (name.clone(), serde_json::Value::String(expr.clone()))
@@ -1136,6 +1139,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
+        query.validate_search_effort()?;
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1145,17 +1149,17 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(approx_mode) = query.approx_mode {
             body["approx_mode"] = serde_json::json!(approx_mode);
         }
-        // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
-        // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
-        // New client / old server: old server will only see nprobes, make sure to set both
-        //                          nprobes and minimum_nprobes
-        // New client / new server: since minimum_nprobes is present, server can ignore nprobes
-        body["nprobes"] = query.minimum_nprobes.into();
-        body["minimum_nprobes"] = query.minimum_nprobes.into();
+        if let Some(nprobes) = query.nprobes {
+            body["nprobes"] = nprobes.into();
+        }
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            body["minimum_nprobes"] = minimum_nprobes.into();
+        }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
-        } else {
-            body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
+        }
+        if let Some(search_effort) = query.search_effort {
+            body["search_effort"] = search_effort.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -1400,24 +1404,29 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        if let Some(timeout) = options.timeout {
+        let streams = if let Some(timeout) = options.timeout {
             let timeout_future = tokio::time::sleep(timeout);
             tokio::pin!(timeout_future);
             tokio::pin!(streams);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    Err(Error::Other {
+                    return Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
                     })
                 }
                 result = &mut streams => {
-                    Ok(result?)
+                    result?
                 }
             }
         } else {
-            Ok(streams.await?)
-        }
+            streams.await?
+        };
+
+        Ok(streams
+            .into_iter()
+            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .collect())
     }
 
     fn prepare_query_bodies(
@@ -1457,6 +1466,52 @@ impl<S: HttpSend> RemoteTable<S> {
             self.invalidate_schema_cache();
         }
     }
+}
+
+fn restore_projection_order(
+    stream: Pin<Box<dyn RecordBatchStream + Send>>,
+    select: &Select,
+) -> Pin<Box<dyn RecordBatchStream + Send>> {
+    let pairs = match select {
+        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        _ => return stream,
+    };
+
+    let schema = stream.schema();
+    let mut remaining = (0..schema.fields().len()).collect::<Vec<_>>();
+    let mut indices = Vec::with_capacity(remaining.len());
+    for name in pairs {
+        if let Some(position) = remaining
+            .iter()
+            .position(|&index| schema.field(index).name() == name)
+        {
+            indices.push(remaining.remove(position));
+        }
+    }
+    indices.extend(remaining);
+    if indices
+        .iter()
+        .enumerate()
+        .all(|(index, &field)| index == field)
+    {
+        return stream;
+    }
+
+    // Older servers may sort alias maps even when the request preserves their
+    // order. Reorder the schema and every batch while keeping server-added fields.
+    let fields = indices
+        .iter()
+        .map(|&index| schema.field(index).clone())
+        .collect::<Vec<_>>();
+    let schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ));
+    let batches = stream.map(move |batch| {
+        batch.and_then(|batch| batch.project(&indices).map_err(DataFusionError::from))
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, batches))
 }
 
 #[derive(Deserialize)]
@@ -5249,6 +5304,14 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn schema_describe_response(schema: &Schema) -> http::Response<String> {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
     fn blob_describe_response() -> http::Response<String> {
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -5256,11 +5319,7 @@ mod tests {
             Field::new("caption", DataType::Utf8, true),
             crate::blob("thumbnail", true),
         ]);
-        let json_schema = JsonSchema::try_from(&schema).unwrap();
-        http::Response::builder()
-            .status(200)
-            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
-            .unwrap()
+        schema_describe_response(&schema)
     }
 
     #[rstest]
@@ -5277,6 +5336,95 @@ mod tests {
 
         let columns = table.blob_columns().await.unwrap();
         assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_blob_paths_are_not_advertised_or_fetchable() {
+        let schema = Schema::new(vec![
+            crate::blob("thumbnail", true),
+            Field::new(
+                "imgs",
+                DataType::List(Arc::new(crate::blob("item", true))),
+                true,
+            ),
+        ]);
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&schema),
+                "/v1/table/my_table/fetch_blobs/" | "/v1/table/my_table/query/" => {
+                    http::Response::builder()
+                        .status(400)
+                        .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                        .unwrap()
+                }
+                path if path.starts_with("/v1/table/my_table/blob/") => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_eq!(table.blob_columns().await.unwrap(), vec!["thumbnail"]);
+        for column in ["imgs", "imgs.item"] {
+            let err = table.fetch_blobs(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table.fetch_blob_files(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blob_files_explains_uncached_list_descriptors() {
+        let list_field = Field::new(
+            "imgs",
+            DataType::List(Arc::new(crate::blob("item", true))),
+            true,
+        );
+        let schema = Schema::new(vec![list_field.clone()]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                list_field.clone(),
+                Field::new(lance::dataset::ROW_ID, DataType::UInt64, false),
+            ])),
+            vec![
+                arrow_array::new_null_array(list_field.data_type(), 1),
+                Arc::new(arrow_array::UInt64Array::from(vec![10])),
+            ],
+        )
+        .unwrap();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&schema).map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/query/" => http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .header(VERSION_HEADER, "1")
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        let error = table.fetch_blob_files("imgs", &[10]).await.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
     }
 
     #[tokio::test]
@@ -5512,7 +5660,7 @@ mod tests {
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
-                    "bytes=0-" => http::Response::builder()
+                    "bytes=0-9" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
@@ -5534,21 +5682,35 @@ mod tests {
         assert_eq!(blobs.value(4), b"bbb");
         let requests = requests.lock().unwrap();
         assert!(requests.contains(&"GET bytes=0-0".to_string()));
-        assert!(requests.contains(&"GET bytes=0-".to_string()));
+        assert!(requests.contains(&"GET bytes=0-9".to_string()));
     }
 
     #[tokio::test]
     async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = requests.clone();
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                http::Response::builder()
-                    .status(400)
-                    .body(b"unknown blob column".to_vec())
-                    .unwrap()
-            });
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
 
         assert_fetch_blobs_http_error(
             table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
@@ -5711,10 +5873,18 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
         let ipc = one_row_blob_ipc_stream("info.blob");
+        let schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(vec![crate::blob("blob", true)].into()),
+            true,
+        )]);
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return schema_describe_response(&schema).map(|body| body.into_bytes());
+                }
                 let body = request_body_json(&request);
                 assert_eq!(body["column"], "info.blob");
                 http::Response::builder()
@@ -6088,9 +6258,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
@@ -6122,7 +6289,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_vector_approx_mode_sent_when_set() {
+    async fn test_query_vector_minimum_only_and_approx_mode() {
         let expected_data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -6142,9 +6309,7 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "minimum_nprobes": 5,
                 "approx_mode": "accurate",
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
@@ -6168,12 +6333,47 @@ mod tests {
             .query()
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
+            .minimum_nprobes(5)
+            .unwrap()
             .approx_mode(crate::ApproxMode::Accurate)
             .execute()
             .await;
         let data = data.unwrap().collect::<Vec<_>>().await;
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_query_vector_explicitly_unbounded_maximum() {
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["nprobes"], 5);
+            assert_eq!(body["maximum_nprobes"], 0);
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .nprobes(5)
+            .unwrap()
+            .maximum_nprobes(None)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6241,6 +6441,77 @@ mod tests {
         ));
     }
 
+    #[rstest]
+    #[case::unset(None)]
+    #[case::minimum(Some(0.0))]
+    #[case::low(Some(0.25))]
+    #[case::auto(Some(0.5))]
+    #[case::high(Some(0.75))]
+    #[case::maximum(Some(1.0))]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_wire(#[case] effort: Option<f64>) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            assert_eq!(body["nprobes"], 7);
+            assert_eq!(body["minimum_nprobes"], 2);
+            assert_eq!(body["maximum_nprobes"], 8);
+            if let Some(effort) = effort {
+                assert_eq!(body["search_effort"], effort);
+            } else {
+                assert!(body.get("search_effort").is_none());
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+        let batches = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort)
+            .unwrap()
+            .nprobes(7)
+            .unwrap()
+            .minimum_nprobes(2)
+            .unwrap()
+            .maximum_nprobes(Some(8))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[rstest]
+    #[case::negative(-0.1)]
+    #[case::too_large(1.1)]
+    #[case::nan(f64::NAN)]
+    #[case::infinity(f64::INFINITY)]
+    #[case::negative_infinity(f64::NEG_INFINITY)]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_invalid(#[case] effort: f64) {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("invalid search_effort must not send a request")
+        });
+        let result = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort);
+        assert!(matches!(result, Err(Error::InvalidInput { message })
+            if message.contains("search_effort must be finite and in [0, 1]")));
+    }
+
     #[tokio::test]
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -6274,8 +6545,8 @@ mod tests {
                     }
                 ],
                 "nprobes": 12,
-                "minimum_nprobes": 12,
-                "maximum_nprobes": 12,
+                "minimum_nprobes": 3,
+                "maximum_nprobes": 10,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
@@ -6315,11 +6586,81 @@ mod tests {
             .distance_type(crate::DistanceType::Cosine)
             .nprobes(12)
             .unwrap()
+            .minimum_nprobes(3)
+            .unwrap()
+            .maximum_nprobes(Some(10))
+            .unwrap()
             .refine_factor(2)
             .bypass_vector_index()
             .execute()
             .await
             .unwrap();
+    }
+
+    #[rstest]
+    #[case::sql(Select::dynamic(&[("p", "x"), ("id", "id")]))]
+    #[case::typed(Select::expr_projection(&[
+        ("p", crate::expr::col("x")),
+        ("id", crate::expr::col("id")),
+    ]))]
+    #[tokio::test]
+    async fn test_query_dynamic_projection_order(#[case] select: Select) {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let aliases = body["columns"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(aliases, ["p", "id"]);
+
+            // Simulate a server that returns aliases in alphabetical order.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("p", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![7])),
+                    Arc::new(Int32Array::from(vec![42])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let batches = table
+            .query()
+            .select(select)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let schema = batches[0].schema();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["p", "id"]
+        );
+        let projected = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(projected.value(0), 42);
     }
 
     #[tokio::test]
@@ -6345,9 +6686,6 @@ mod tests {
                 "vector_column": "image.embedding",
                 "prefilter": true,
                 "k": 10,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
@@ -7083,19 +7421,24 @@ mod tests {
         ];
 
         for (index_type, expected_body, index) in cases {
+            let data_type = match &index {
+                Index::FTS(params) if params.get_document_granularity().is_list_element() => {
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+                }
+                Index::FTS(_) => DataType::Utf8,
+                _ => DataType::Int32,
+            };
+            let schema = Schema::new(vec![Field::new("a", data_type, false)]);
             let table = Table::new_with_handler_version(
                 "my_table",
                 semver::Version::new(0, 6, 0),
                 move |request| {
                     assert_eq!(request.method(), "POST");
                     match request.url().path() {
-                        "/v1/table/my_table/describe/" => {
-                            let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                            http::Response::builder()
-                                .status(200)
-                                .body(describe_response(&schema))
-                                .unwrap()
-                        }
+                        "/v1/table/my_table/describe/" => http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap(),
                         "/v1/table/my_table/create_index/" => {
                             assert_eq!(
                                 request.headers().get("Content-Type").unwrap(),

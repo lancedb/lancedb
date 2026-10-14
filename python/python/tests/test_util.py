@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
@@ -155,6 +156,41 @@ def test_value_to_sql_string(tmp_path):
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
 
 
 def test_value_to_sql_dict():
@@ -949,6 +985,39 @@ def test_cast_to_target_schema_coerces_binary_to_blob_v2():
         {"data": b"hello", "uri": None, "position": None, "size": None},
         None,
     ]
+
+
+@pytest.mark.parametrize(
+    "string_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_cast_to_target_schema_coerces_string_to_blob_v2_uri(string_type):
+    data = pa.table({"image": pa.array(["file:///payload", None], type=string_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": None, "uri": "file:///payload", "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_cast_to_target_schema_rejects_unsupported_blob_input(source_type, value):
+    data = pa.table({"image": pa.array([value], type=source_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        _cast_to_target_schema(data.to_reader(), target)
 
 
 def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():

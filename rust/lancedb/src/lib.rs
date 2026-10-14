@@ -173,6 +173,7 @@
 #![recursion_limit = "256"]
 
 pub mod arrow;
+pub mod authz;
 pub mod blob;
 pub mod catalog;
 pub mod connection;

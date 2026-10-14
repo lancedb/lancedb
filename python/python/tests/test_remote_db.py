@@ -4,6 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 import contextlib
 from datetime import timedelta
 import http.server
+import io
 import json
 import multiprocessing as mp
 import pickle
@@ -13,6 +14,7 @@ import threading
 import time
 from unittest.mock import MagicMock, patch
 import uuid
+from urllib.parse import parse_qs, urlparse
 from packaging.version import Version
 
 import lancedb
@@ -103,6 +105,67 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+def paginated_table_listing_handler(request):
+    url = urlparse(request.path)
+    assert url.path in {
+        "/v1/table/",
+        "/v1/namespace/$/table/list",
+        "/v1/namespace/n/table/list",
+    }
+    query = parse_qs(url.query)
+    limit = int(query.get("limit", [10])[0])
+    assert limit > 0
+    token = query.get("page_token", ["page-0"])[0]
+    start = int(token.removeprefix("page-"))
+    end = min(start + limit, 130)
+    body = {"tables": [f"t{i:03}" for i in range(start, end)]}
+    if end < 130:
+        body["page_token"] = f"page-{end}"
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(json.dumps(body).encode())
+
+
+@pytest.mark.parametrize("namespace", [[], ["n"]])
+def test_remote_table_listing_defaults_and_zero_limit(namespace):
+    names = [f"t{i:03}" for i in range(130)]
+    with mock_lancedb_connection(paginated_table_listing_handler) as db:
+        assert db.table_names(namespace_path=namespace) == names
+        assert db.table_names(limit=None, namespace_path=namespace) == names
+        assert db.table_names(limit=0, namespace_path=namespace) == []
+        first = db.list_tables(namespace_path=namespace)
+        assert first.tables == names[:100]
+        assert first.page_token == "page-100"
+        second = db.list_tables(namespace_path=namespace, page_token=first.page_token)
+        assert second.tables == names[100:]
+        assert second.page_token is None
+        assert db.list_tables(namespace_path=namespace, limit=200).tables == names
+        empty = db.list_tables(namespace_path=namespace, limit=0)
+        assert empty.tables == []
+        assert empty.page_token is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace", [[], ["n"]])
+async def test_async_remote_table_listing_defaults_and_zero_limit(namespace):
+    names = [f"t{i:03}" for i in range(130)]
+    async with mock_lancedb_connection_async(paginated_table_listing_handler) as db:
+        assert await db.table_names(namespace_path=namespace) == names
+        assert await db.table_names(limit=0, namespace_path=namespace) == []
+        first = await db.list_tables(namespace_path=namespace)
+        assert first.tables == names[:100]
+        assert first.page_token == "page-100"
+        second = await db.list_tables(
+            namespace_path=namespace, page_token=first.page_token
+        )
+        assert second.tables == names[100:]
+        assert second.page_token is None
+        empty = await db.list_tables(namespace_path=namespace, limit=0)
+        assert empty.tables == []
+        assert empty.page_token is None
 
 
 @pytest.mark.asyncio
@@ -805,6 +868,19 @@ def test_table_unimplemented_functions():
             assert f"search().{method}()" in message
 
 
+@pytest.mark.parametrize("method", ["to_arrow", "to_pandas"])
+@pytest.mark.parametrize("blob_mode", ["lazy", "descriptions", "bytes", "invalid"])
+def test_remote_conversion_blob_mode_errors(method, blob_mode):
+    with blob_remote_table() as table:
+        if blob_mode == "invalid":
+            with pytest.raises(ValueError, match="blob_mode must be one of"):
+                getattr(table, method)(blob_mode=blob_mode)
+        else:
+            with pytest.raises(NotImplementedError) as error:
+                getattr(table, method)(blob_mode=blob_mode)
+            assert f"search().{method}()" in str(error.value)
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("version", [None, 1])
 @pytest.mark.parametrize("expose_location", [False, True])
@@ -1439,6 +1515,72 @@ def test_remote_job_wait_raises_on_failure():
         job = table.create_index_async("id", config=BTree())
         with pytest.raises(JobFailedError, match="job-2"):
             job.wait()
+
+
+@pytest.mark.parametrize("server_version", ["0.2.0", "0.6.0"])
+def test_remote_json_fts_config(server_version):
+    from lancedb.index import FTS
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("phalanx-version", server_version)
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            fields = [
+                {
+                    "name": "doc",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                    "metadata": {"ARROW:extension:name": "lance.json"},
+                },
+                {
+                    "name": "raw",
+                    "type": {"type": "large_binary"},
+                    "nullable": True,
+                },
+            ]
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": fields}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.create_index(
+            "doc",
+            config=FTS(
+                with_position=True,
+                base_tokenizer="whitespace",
+                stem=False,
+                remove_stop_words=False,
+                lower_case=False,
+                block_size=256,
+            ),
+            name="doc_fts",
+            replace=False,
+        )
+        with pytest.raises(ValueError, match="FTS.*lance.json.*raw binary"):
+            table.create_index("raw", config=FTS())
+
+    assert len(received_requests) == 1
+    request = received_requests[0]
+    assert request["column"] == "doc"
+    assert request["index_type"] == "FTS"
+    assert request["name"] == "doc_fts"
+    assert request["replace"] is False
+    assert request["with_position"] is True
+    assert request["base_tokenizer"] == "whitespace"
+    assert request["stem"] is False
+    assert request["remove_stop_words"] is False
+    assert request["lower_case"] is False
+    assert request["block_size"] == 256
 
 
 def test_remote_create_index_new_api(caplog):
@@ -2132,9 +2274,6 @@ def test_query_sync_minimal():
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
             "vector_column": "vector",
-            "nprobes": 20,
-            "minimum_nprobes": 20,
-            "maximum_nprobes": 20,
             "version": None,
         }
 
@@ -2306,8 +2445,6 @@ def test_query_sync_maximal():
             "refine_factor": 10,
             "vector": [1.0, 2.0, 3.0],
             "nprobes": 5,
-            "minimum_nprobes": 5,
-            "maximum_nprobes": 5,
             "lower_bound": None,
             "upper_bound": None,
             "ef": None,
@@ -2403,7 +2540,7 @@ async def test_query_async_nprobes_zero(hybrid):
     assert requests == ["/v1/table/test/describe/"]
 
 
-def test_query_sync_nprobes():
+def test_query_sync_probe_bounds():
     def handler(body):
         assert body == {
             "k": 10,
@@ -2415,7 +2552,6 @@ def test_query_sync_nprobes():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
-            "nprobes": 5,
             "minimum_nprobes": 5,
             "maximum_nprobes": 15,
             "version": None,
@@ -2432,7 +2568,28 @@ def test_query_sync_nprobes():
         )
 
 
-def test_query_sync_no_max_nprobes():
+def test_query_sync_nprobes_passthrough():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert "minimum_nprobes" not in body
+        assert "maximum_nprobes" not in body
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).to_list()
+
+
+def test_query_sync_nprobes_with_unbounded_maximum():
+    def handler(body):
+        assert body["nprobes"] == 20
+        assert body["maximum_nprobes"] == 0
+        return pa.table({"id": [1]})
+
+    with query_test_table(handler) as table:
+        table.search([1, 2, 3]).nprobes(20).maximum_nprobes(0).to_list()
+
+
+def test_query_sync_minimum_nprobes_only():
     def handler(body):
         assert body == {
             "k": 10,
@@ -2444,9 +2601,7 @@ def test_query_sync_no_max_nprobes():
             "upper_bound": None,
             "ef": None,
             "vector": [1.0, 2.0, 3.0],
-            "nprobes": 5,
             "minimum_nprobes": 5,
-            "maximum_nprobes": 0,
             "version": None,
         }
 
@@ -2456,7 +2611,6 @@ def test_query_sync_no_max_nprobes():
         (
             table.search([1, 2, 3], vector_column_name="vector2", fast_search=True)
             .minimum_nprobes(5)
-            .maximum_nprobes(0)
             .to_list()
         )
 
@@ -2611,9 +2765,6 @@ def test_query_sync_hybrid():
                 "refine_factor": None,
                 "vector": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
                 "vector_column": "vector",
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": None,
                 "upper_bound": None,
                 "ef": None,
@@ -2686,6 +2837,11 @@ def test_create_client():
     )
     assert isinstance(db.client_config, ClientConfig)
     assert db.client_config.retry_config.retries == 42
+
+    db = lancedb.connect(
+        **mandatory_args, client_config={"blob_request_concurrency": 3}
+    )
+    assert db.client_config.blob_request_concurrency == 3
 
     with pytest.warns(DeprecationWarning):
         db = lancedb.connect(**mandatory_args, connection_timeout=42)
@@ -3359,7 +3515,7 @@ def test_remote_blob_columns_and_fetch():
 
 
 @pytest.mark.parametrize("blob_mode", ["descriptions", "bytes", "lazy"])
-def test_sync_remote_blob_pandas_rejects_storage_access(
+def test_sync_remote_blob_pandas_avoids_storage_access(
     tmp_path, monkeypatch, blob_mode
 ):
     import lance
@@ -3372,10 +3528,19 @@ def test_sync_remote_blob_pandas_rejects_storage_access(
 
     monkeypatch.setattr(lance, "dataset", fail_dataset)
     with blob_remote_table(location=location) as table:
-        with pytest.raises(RuntimeError, match="to_lance.*remote tables") as error:
-            table.search().select(["id", "image"]).to_pandas(blob_mode=blob_mode)
-
-    assert isinstance(error.value.__cause__, NotImplementedError)
+        monkeypatch.setattr(table, "to_lance", fail_dataset)
+        query = table.search().select(["id", "image"])
+        if blob_mode == "descriptions":
+            df = query.to_pandas(blob_mode=blob_mode)
+            assert df["id"].tolist() == [1, 2, 3]
+            assert "_rowid" not in df.columns
+            assert df["image"][0]["size"] == 5
+        elif blob_mode == "bytes":
+            with pytest.raises(NotImplementedError, match="stable table snapshot"):
+                query.to_pandas(blob_mode=blob_mode)
+        else:
+            with pytest.raises(RuntimeError, match="cannot use Lance native"):
+                query.to_pandas(blob_mode=blob_mode)
 
 
 @pytest.mark.asyncio
@@ -3446,6 +3611,45 @@ async def test_async_remote_blob_pandas_rejects_unpinned_fetch(monkeypatch, blob
             await table.to_pandas(**pandas_kwargs)
 
 
+@pytest.mark.parametrize("method", ["to_arrow", "to_list"])
+def test_remote_search_bytes_refused_before_query(monkeypatch, method):
+    with blob_remote_table() as table:
+        query = table.search().select(["id", "image"])
+        descriptions = getattr(query, method)(blob_mode="descriptions")
+        images = (
+            descriptions["image"].to_pylist()
+            if method == "to_arrow"
+            else [row["image"] for row in descriptions]
+        )
+        assert "_lance_row_id" not in images[0]
+
+        def fail_query(*args, **kwargs):
+            raise AssertionError("bytes must be refused before the query runs")
+
+        monkeypatch.setattr(table, "_execute_query", fail_query)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            getattr(query, method)(blob_mode="bytes")
+        with pytest.raises(ValueError, match="blob_mode must be one of"):
+            table.to_pandas(blob_mode="handles")
+
+
+@pytest.mark.asyncio
+async def test_async_remote_to_arrow_bytes_refused_before_query(monkeypatch):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table
+
+        async def fail_fetch(*args, **kwargs):
+            raise AssertionError("blob fetch must not use an unpinned remote table")
+
+        monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
+        query = table.query().select(["id", "image"])
+        monkeypatch.setattr(query, "to_batches", fail_fetch)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await query.to_arrow(blob_mode="bytes")
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await table.to_arrow(blob_mode="bytes")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
 async def test_async_remote_nonblob_projection_to_pandas(blob_mode):
@@ -3477,8 +3681,30 @@ def test_remote_blob_files_are_lazy_seekable_handles():
         assert empty.read_range(0, 0) == b""
         alpha.close()
         assert alpha.closed
-        with pytest.raises(RuntimeError, match="already closed"):
+        with pytest.raises(ValueError, match="read of closed file"):
             alpha.read_range(0, 1)
+
+
+def test_remote_blob_file_matches_file_error_and_range_contract():
+    with blob_remote_table() as table:
+        handle = table.fetch_blob_files("image", [10])[0]
+        handle.seek(2)
+
+        with pytest.raises(ValueError, match="negative seek value -1"):
+            handle.seek(-3, io.SEEK_CUR)
+        assert handle.tell() == 2
+        assert handle.read(None) == b"pha"
+
+        handle.seek(2)
+        assert handle.read1(2) == b"ph"
+        assert handle.read_ranges([(0, 2), (3, 2)]) == [b"al", b"ha"]
+        assert handle.tell() == 4
+        with pytest.raises(ValueError):
+            handle.read_range(4, 2)
+
+        handle.close()
+        with pytest.raises(ValueError, match="read of closed file"):
+            handle.read(1)
 
 
 def test_remote_blob_fetch_accepts_query_table():
