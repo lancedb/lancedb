@@ -645,6 +645,39 @@ def test_open_clip_opens_percent_encoded_file_uri(tmp_path):
         assert image.size == (4, 4)
 
 
+def test_open_clip_model_in_eval_mode():
+    """
+    open_clip.create_model_and_transforms returns the model in training mode,
+    which leaves dropout, stochastic depth and batch norm in their training
+    behaviour. OpenCLIP must switch the model to eval mode before embedding.
+    """
+    from lancedb.embeddings.open_clip import OpenClipEmbeddings
+
+    class FakeModel:
+        training = True
+
+        def to(self, device):
+            return self
+
+        def eval(self):
+            self.training = False
+            return self
+
+    open_clip = MagicMock()
+    open_clip.create_model_and_transforms.return_value = (FakeModel(), None, None)
+
+    with patch(
+        "lancedb.embeddings.open_clip.attempt_import_or_raise",
+        return_value=open_clip,
+    ):
+        func = OpenClipEmbeddings(name="ViTamin-B", pretrained="datacomp1b")
+
+    open_clip.create_model_and_transforms.assert_called_once_with(
+        "ViTamin-B", pretrained="datacomp1b"
+    )
+    assert func._model.training is False
+
+
 def test_jina_generate_image_input_dict_local_path(tmp_path):
     """
     JinaEmbeddings._generate_image_input_dict must accept a local image path
