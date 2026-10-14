@@ -3469,6 +3469,45 @@ async def test_async_remote_blob_pandas_rejects_unpinned_fetch(monkeypatch, blob
             await table.to_pandas(**pandas_kwargs)
 
 
+@pytest.mark.parametrize("method", ["to_arrow", "to_list"])
+def test_remote_search_bytes_refused_before_query(monkeypatch, method):
+    with blob_remote_table() as table:
+        query = table.search().select(["id", "image"])
+        descriptions = getattr(query, method)(blob_mode="descriptions")
+        images = (
+            descriptions["image"].to_pylist()
+            if method == "to_arrow"
+            else [row["image"] for row in descriptions]
+        )
+        assert "_lance_row_id" not in images[0]
+
+        def fail_query(*args, **kwargs):
+            raise AssertionError("bytes must be refused before the query runs")
+
+        monkeypatch.setattr(table, "_execute_query", fail_query)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            getattr(query, method)(blob_mode="bytes")
+        with pytest.raises(ValueError, match="blob_mode must be one of"):
+            table.to_pandas(blob_mode="handles")
+
+
+@pytest.mark.asyncio
+async def test_async_remote_to_arrow_bytes_refused_before_query(monkeypatch):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table
+
+        async def fail_fetch(*args, **kwargs):
+            raise AssertionError("blob fetch must not use an unpinned remote table")
+
+        monkeypatch.setattr(table, "fetch_blobs", fail_fetch)
+        query = table.query().select(["id", "image"])
+        monkeypatch.setattr(query, "to_batches", fail_fetch)
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await query.to_arrow(blob_mode="bytes")
+        with pytest.raises(NotImplementedError, match="stable table snapshot"):
+            await table.to_arrow(blob_mode="bytes")
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["bytes", "lazy"])
 async def test_async_remote_nonblob_projection_to_pandas(blob_mode):

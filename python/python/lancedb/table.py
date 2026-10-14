@@ -1399,8 +1399,16 @@ class Table(ABC):
         return self.to_arrow().to_pandas(**kwargs)
 
     @abstractmethod
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
@@ -2961,6 +2969,8 @@ class LanceTable(Table):
                     managed_versioning=managed_versioning,
                 )
             )
+        # Take queries read the pushdown set from the inner table.
+        self._table._pushdown_operations = self._pushdown_operations
 
     @property
     def name(self) -> str:
@@ -3339,12 +3349,23 @@ class LanceTable(Table):
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
         pa.Table"""
+        validate_blob_mode(blob_mode)
+        if blob_mode != "lazy" and schema_has_blob_field(self.schema):
+            return self.search().to_arrow(blob_mode=blob_mode)
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
@@ -5788,22 +5809,37 @@ class AsyncTable:
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
-    async def to_arrow(self) -> pa.Table:
+    async def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
         pa.Table
         """
+        validate_blob_mode(blob_mode)
+        schema = await self.schema()
+        fetches_bytes = blob_mode == "bytes" and schema_has_blob_field(schema)
         if (
-            _should_push_down_query_table(
+            not fetches_bytes
+            and _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
         ):
-            return (await self._execute_query(Query())).read_all()
-
-        return await self.query().to_arrow()
+            tbl = (await self._execute_query(Query())).read_all()
+            if blob_mode == "descriptions":
+                tbl = strip_auto_row_ids(tbl, row_addressable_blob_v2_paths(schema))
+            return tbl
+        # The query builder refuses bytes under pushdown before running the query.
+        return await self.query().to_arrow(blob_mode=blob_mode)
 
     async def create_index(
         self,

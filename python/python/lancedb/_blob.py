@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Optional, Union
 import pyarrow as pa
 
 from .expr import Expr
-from .schema import row_addressable_blob_v2_paths
+from .schema import blob_column_paths, row_addressable_blob_v2_paths
 from .types import BlobMode, QueryProjection, QueryProjectionSpec
 
 if TYPE_CHECKING:
@@ -27,8 +27,8 @@ BLOB_MODE_TO_HANDLING = {
 
 ROW_ID_FIELD_NAME = "_lance_row_id"
 
-FetchBlobsSync = Callable[[str, pa.Table], pa.Array | pa.ChunkedArray]
-FetchBlobsAsync = Callable[[str, pa.Table], Awaitable[pa.Array | pa.ChunkedArray]]
+FetchBlobsSync = Callable[[str, list[int]], pa.Array | pa.ChunkedArray]
+FetchBlobsAsync = Callable[[str, list[int]], Awaitable[pa.Array | pa.ChunkedArray]]
 
 
 class BlobFile(io.RawIOBase):
@@ -136,7 +136,7 @@ def projection_includes_blob_column(
     columns = set(blob_columns)
     if not columns:
         return False
-    if projection is None:
+    if not projection:
         return True
     for output, source in _iter_projection_pairs(projection):
         if output in columns or any(
@@ -150,18 +150,68 @@ def blob_v2_projection_sources(
     schema: pa.Schema,
     projection: QueryProjection,
 ) -> dict[str, str]:
-    blob_columns = row_addressable_blob_v2_paths(schema)
-    if not blob_columns:
-        return {}
-    if projection is None:
+    return _project_blob_paths(row_addressable_blob_v2_paths(schema), projection)
+
+
+def reject_unfetchable_blob_columns(
+    schema: pa.Schema, projection: QueryProjection, blob_sources: dict[str, str]
+) -> None:
+    # Rerankers can drop field metadata, so validate against the source schema.
+    unfetchable = [
+        output
+        for output in _project_blob_paths(blob_column_paths(schema), projection)
+        if output not in blob_sources
+    ]
+    if unfetchable:
+        raise ValueError(
+            f"blob_mode='bytes' cannot fetch blob columns {unfetchable}. Bytes are "
+            "fetched by row id, which covers blob v2 columns with one blob per "
+            "row but not legacy blob columns or blobs inside lists. Use "
+            "blob_mode='descriptions' or remove these columns from the projection."
+        )
+
+
+def reject_unmatched_blob_outputs(
+    output_schema: pa.Schema, blob_sources: dict[str, str]
+) -> None:
+    # Another spelling of a blob column, such as a quoted or recased name, is a
+    # blob in the query's output schema but maps to no source by name.
+    unmatched = [
+        path for path in blob_column_paths(output_schema) if path not in blob_sources
+    ]
+    if unmatched:
+        raise ValueError(
+            f"blob_mode='bytes' could not match result columns {unmatched} to a blob "
+            "column of the table. Select blob columns by their plain names, or "
+            "use blob_mode='descriptions'."
+        )
+
+
+def _project_blob_paths(
+    blob_columns: list[str], projection: QueryProjection
+) -> dict[str, str]:
+    """Map each projected output path to the blob column path it reads."""
+    # An empty projection selects all columns.
+    if not projection:
         return {column: column for column in blob_columns}
-    sources = {}
+    sources: dict[str, str] = {}
+    entries: dict[str, str] = {}
     for output, source in _iter_projection_pairs(projection):
         for column in blob_columns:
             if column == source:
-                sources[output] = column
+                path = output
             elif column.startswith(f"{source}."):
-                sources[f"{output}{column[len(source) :]}"] = column
+                path = f"{output}{column[len(source) :]}"
+            else:
+                continue
+            if path in sources:
+                raise ValueError(
+                    f"projection entries {entries[path]!r} and {output!r} both "
+                    f"produce blob column '{path}'. Rename one of them or drop "
+                    "the redundant selection."
+                )
+            sources[path] = column
+            entries[path] = output
     return sources
 
 
@@ -212,11 +262,14 @@ async def replace_v2_blob_columns_with_bytes(
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsAsync,
 ) -> pa.Table:
-    for output_name, source_name in blob_sources.items():
-        if not _has_column_path(tbl.schema, output_name):
-            continue
-        blobs = await fetch_blobs(source_name, tbl)
-        tbl = _set_blob_column(tbl, output_name, blobs)
+    present = _present_blob_sources(tbl, blob_sources)
+    if not present:
+        return tbl
+    row_ids = _hit_row_ids(tbl, present)
+    for output_name, source_name in present.items():
+        tbl = _set_blob_column(
+            tbl, output_name, await fetch_blobs(source_name, row_ids)
+        )
     return tbl
 
 
@@ -225,19 +278,48 @@ def replace_v2_blob_columns_with_bytes_sync(
     blob_sources: dict[str, str],
     fetch_blobs: FetchBlobsSync,
 ) -> pa.Table:
-    for output_name, source_name in blob_sources.items():
-        if not _has_column_path(tbl.schema, output_name):
-            continue
-        blobs = fetch_blobs(source_name, tbl)
-        tbl = _set_blob_column(tbl, output_name, blobs)
+    present = _present_blob_sources(tbl, blob_sources)
+    if not present:
+        return tbl
+    row_ids = _hit_row_ids(tbl, present)
+    for output_name, source_name in present.items():
+        tbl = _set_blob_column(tbl, output_name, fetch_blobs(source_name, row_ids))
     return tbl
+
+
+def _present_blob_sources(
+    tbl: pa.Table, blob_sources: dict[str, str]
+) -> dict[str, str]:
+    return {
+        output: source
+        for output, source in blob_sources.items()
+        if _has_column_path(tbl.schema, output)
+    }
+
+
+def _hit_row_ids(tbl: pa.Table, blob_sources: dict[str, str]) -> list[int]:
+    """Read row ids before replacing columns, since a swapped alias can overwrite
+    the lookup source."""
+    if "_rowid" in tbl.column_names:
+        return tbl["_rowid"].to_pylist()
+    for output in blob_sources:
+        descriptor = _leaf_struct_column(tbl, output)
+        if pa.types.is_struct(descriptor.type) and (
+            ROW_ID_FIELD_NAME in descriptor.type.names
+        ):
+            return descriptor.field(ROW_ID_FIELD_NAME).to_pylist()
+    raise ValueError(
+        f"query result has no '_rowid' column and no '{ROW_ID_FIELD_NAME}' "
+        f"field on blob columns {list(blob_sources)}. Call .with_row_id(True) "
+        "to fetch blob bytes for this query."
+    )
 
 
 def stash_auto_row_ids(tbl: pa.Table, blob_paths: Iterable[str]) -> pa.Table:
     if "_rowid" not in tbl.column_names:
         raise ValueError("query result has no '_rowid' column to hide")
 
-    present_paths = [p for p in blob_paths if p.split(".")[0] in tbl.column_names]
+    present_paths = [p for p in blob_paths if _has_column_path(tbl.schema, p)]
     if not present_paths:
         raise ValueError("query result has no blob v2 column to carry a row id")
 
@@ -257,7 +339,7 @@ def read_row_ids_from_hits(hits: pa.Table, blob_column: str) -> list[int]:
 
     try:
         leaf = _leaf_struct_column(hits, blob_column)
-        if ROW_ID_FIELD_NAME in leaf.type.names:
+        if pa.types.is_struct(leaf.type) and ROW_ID_FIELD_NAME in leaf.type.names:
             return leaf.field(ROW_ID_FIELD_NAME).to_pylist()
     except KeyError:
         pass
@@ -321,31 +403,22 @@ def _iter_projection_pairs(
 
 
 def _has_column_path(schema: pa.Schema, path: str) -> bool:
-    if schema.get_field_index(path) >= 0:
-        return True
-    top_name, *rest = path.split(".")
+    top_name, rest = _split_column_path(schema, path)
     index = schema.get_field_index(top_name)
-    if index < 0:
-        return False
-    field = schema.field(index)
-    for name in rest:
-        if not pa.types.is_struct(field.type):
-            return False
-        index = field.type.get_field_index(name)
-        if index < 0:
-            return False
-        field = field.type.field(index)
-    return True
+    return (
+        index >= 0 and _walk_struct_fields(schema.field(index).type, rest) is not None
+    )
 
 
 def _set_blob_column(
     tbl: pa.Table, output_name: str, blobs: pa.Array | pa.ChunkedArray
 ) -> pa.Table:
-    index = tbl.schema.get_field_index(output_name)
-    if index >= 0:
-        return tbl.set_column(index, pa.field(output_name, blobs.type), [blobs])
+    top_name, rest = _split_column_path(tbl.schema, output_name)
+    if not rest:
+        index = tbl.schema.get_field_index(top_name)
+        return tbl.set_column(index, pa.field(top_name, blobs.type), [blobs])
 
-    parent_path, leaf_name = output_name.rsplit(".", 1)
+    leaf_name = rest[-1]
     if isinstance(blobs, pa.ChunkedArray):
         blobs = blobs.combine_chunks()
 
@@ -357,9 +430,9 @@ def _set_blob_column(
                     leaf_name, blobs.type, nullable=field.nullable
                 )
                 return
-        raise KeyError(f"Blob field '{leaf_name}' not found in struct '{parent_path}'")
+        raise KeyError(f"Blob field '{leaf_name}' not found in '{output_name}'")
 
-    return _transform_struct_column(tbl, parent_path, replace_blob)
+    return _transform_struct_column(tbl, top_name, rest[:-1], replace_blob)
 
 
 def _embed_row_id_in_column(tbl: pa.Table, path: str, row_ids: pa.Array) -> pa.Table:
@@ -367,7 +440,9 @@ def _embed_row_id_in_column(tbl: pa.Table, path: str, row_ids: pa.Array) -> pa.T
         children.append(row_ids)
         child_fields.append(pa.field(ROW_ID_FIELD_NAME, pa.uint64(), nullable=False))
 
-    return _transform_struct_column(tbl, path, add_row_id)
+    return _transform_struct_column(
+        tbl, *_split_column_path(tbl.schema, path), add_row_id
+    )
 
 
 def strip_auto_row_ids(tbl: pa.Table, blob_paths: Iterable[str]) -> pa.Table:
@@ -384,16 +459,20 @@ def strip_auto_row_ids(tbl: pa.Table, blob_paths: Iterable[str]) -> pa.Table:
                 return
 
     for path in blob_paths:
-        if path.split(".")[0] not in tbl.column_names:
+        if not _has_column_path(tbl.schema, path):
             continue
-        tbl = _transform_struct_column(tbl, path, drop_row_id)
+        tbl = _transform_struct_column(
+            tbl, *_split_column_path(tbl.schema, path), drop_row_id
+        )
     return tbl
 
 
 def _transform_struct_column(
-    tbl: pa.Table, path: str, leaf_transform: Callable[[list, list], None]
+    tbl: pa.Table,
+    top_name: str,
+    rest: list[str],
+    leaf_transform: Callable[[list, list], None],
 ) -> pa.Table:
-    top_name, *rest = path.split(".")
     top_index = tbl.schema.get_field_index(top_name)
     top_field = tbl.schema.field(top_index)
     top_array = tbl.column(top_name)
@@ -451,13 +530,47 @@ def _rebuild_struct(
 
 
 def _leaf_struct_column(tbl: pa.Table, path: str) -> pa.StructArray:
-    parts = path.split(".")
-    column = tbl.column(parts[0])
+    top_name, rest = _split_column_path(tbl.schema, path)
+    column = tbl.column(top_name)
     if isinstance(column, pa.ChunkedArray):
         column = column.combine_chunks()
-    for part in parts[1:]:
+    for part in rest:
+        if not pa.types.is_struct(column.type):
+            raise KeyError(f"blob path '{path}' crosses non-struct column")
         column = column.field(part)
     return column
+
+
+def _split_column_path(schema: pa.Schema, path: str) -> tuple[str, list[str]]:
+    """Prefer a path ending in a struct, since a flat alias can shadow a nested
+    blob path."""
+    parts = path.split(".")
+    fallback = None
+    for cut in range(len(parts), 0, -1):
+        top_name, rest = ".".join(parts[:cut]), parts[cut:]
+        index = schema.get_field_index(top_name)
+        if index < 0:
+            continue
+        leaf_type = _walk_struct_fields(schema.field(index).type, rest)
+        if leaf_type is None:
+            continue
+        if pa.types.is_struct(leaf_type):
+            return top_name, rest
+        fallback = fallback or (top_name, rest)
+    return fallback or (parts[0], parts[1:])
+
+
+def _walk_struct_fields(
+    data_type: pa.DataType, names: list[str]
+) -> Optional[pa.DataType]:
+    for name in names:
+        if not pa.types.is_struct(data_type):
+            return None
+        index = data_type.get_field_index(name)
+        if index < 0:
+            return None
+        data_type = data_type.field(index).type
+    return data_type
 
 
 def _normalize_blob_row_ids(
