@@ -1,0 +1,46 @@
+name: Setup protoc
+description: Install the protoc version pinned for wheel builds, and expose it for builds that install protoc themselves
+
+inputs:
+  install:
+    description: "Install protoc on the runner. Set to false when the build runs in a container (e.g. manylinux) and installs protoc there."
+    required: false
+    default: "true"
+
+outputs:
+  version:
+    description: "The pinned protoc version, e.g. 24.4"
+    value: ${{ steps.version.outputs.version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set protoc version
+      id: version
+      shell: bash
+      run: echo "version=24.4" >> "$GITHUB_OUTPUT"
+    - name: Install protoc
+      if: ${{ inputs.install == 'true' }}
+      shell: bash
+      env:
+        PROTOC_VERSION: ${{ steps.version.outputs.version }}
+        RUNNER_OS_NAME: ${{ runner.os }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS_NAME" in
+          Linux) platform="linux-$(uname -m | sed 's/aarch64/aarch_64/')" ;;
+          macOS) platform="osx-universal_binary" ;;
+          Windows) platform="win64" ;;
+          *) echo "Unsupported runner OS: $RUNNER_OS_NAME" >&2; exit 1 ;;
+        esac
+        dest="$RUNNER_TEMP/protoc"
+        curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${platform}.zip" -o "$RUNNER_TEMP/protoc.zip"
+        if [ "$RUNNER_OS_NAME" = "Windows" ]; then
+          # Git Bash on Windows runners does not reliably ship unzip.
+          7z x -y -o"$dest" "$RUNNER_TEMP/protoc.zip" > /dev/null
+        else
+          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$dest"
+        fi
+        rm "$RUNNER_TEMP/protoc.zip"
+        echo "$dest/bin" >> "$GITHUB_PATH"
+        "$dest/bin/protoc" --version
