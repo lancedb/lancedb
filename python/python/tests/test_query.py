@@ -509,7 +509,7 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         )
 
 
-def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+def test_vector_query_to_pandas_blob_descriptions(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         "test_vector_query_blob_descriptions",
@@ -517,10 +517,68 @@ def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
-    with pytest.raises(RuntimeError, match="plain scan query"):
-        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
-            blob_mode="descriptions"
-        )
+    df = (
+        table.search([1.0, 0.0])
+        .select(["id", "blob"])
+        .limit(1)
+        .to_pandas(blob_mode="descriptions")
+    )
+
+    assert df["id"].tolist() == [1]
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
+
+
+def test_vector_query_to_pandas_blob_v2_descriptions_omits_row_id(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_vector_query_blob_v2_descriptions",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+                lancedb.blob("blob"),
+            ]
+        ),
+    )
+    table.add(
+        [
+            {"id": 1, "vector": [1.0, 0.0], "blob": b"one"},
+            {"id": 2, "vector": [2.0, 0.0], "blob": b"two"},
+        ]
+    )
+
+    df = (
+        table.search([1.0, 0.0])
+        .select(["id", "blob"])
+        .limit(1)
+        .to_pandas(blob_mode="descriptions")
+    )
+
+    assert df["id"].tolist() == [1]
+    desc = df["blob"].iloc[0]
+    assert isinstance(desc, dict)
+    assert "_lance_row_id" not in desc
+
+
+@pytest.mark.asyncio
+async def test_async_vector_query_to_pandas_blob_descriptions(tmp_db_async):
+    pytest.importorskip("lance")
+    table = await tmp_db_async.create_table(
+        "test_async_vector_query_blob_descriptions",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+
+    df = await (
+        table.query()
+        .nearest_to([1.0, 0.0])
+        .select(["id", "blob"])
+        .limit(1)
+        .to_pandas(blob_mode="descriptions")
+    )
+
+    assert df["id"].tolist() == [1]
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
 
 
 def test_order_by_plain_query(mem_db):

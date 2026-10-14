@@ -1094,15 +1094,23 @@ class LanceQueryBuilder(ABC):
                             return df
                     except Exception as err:
                         native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
-                raise _unsupported_blob_pandas_error(reason) from native_error
+                # Blob descriptions don't need the native scanner: any query
+                # shape can return them through the Arrow path below.
+                if native_error is not None or blob_mode != "descriptions":
+                    reason = (
+                        "this query shape cannot use Lance native pandas conversion"
+                        if native_error is None
+                        else str(native_error)
+                    )
+                    raise _unsupported_blob_pandas_error(reason) from native_error
 
-        tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
-        if _blob_mode_requires_native_pandas(blob_mode, tbl.schema):
+        tbl = self.to_arrow(timeout=timeout)
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, blob_column_paths(tbl.schema))
+        tbl = flatten_columns(tbl, flatten)
+        if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
+            blob_mode, tbl.schema
+        ):
             raise _unsupported_blob_pandas_error(
                 "this query shape cannot use Lance native pandas conversion"
             )
@@ -3166,15 +3174,23 @@ class AsyncQueryBase(object):
                             return df
                     except Exception as err:
                         native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
-                raise _unsupported_blob_pandas_error(reason) from native_error
+                # Blob descriptions don't need the native scanner: any query
+                # shape can return them through the Arrow path below.
+                if native_error is not None or blob_mode != "descriptions":
+                    reason = (
+                        "this query shape cannot use Lance native pandas conversion"
+                        if native_error is None
+                        else str(native_error)
+                    )
+                    raise _unsupported_blob_pandas_error(reason) from native_error
 
-        tbl = flatten_columns(await self.to_arrow(timeout=timeout), flatten)
-        if _blob_mode_requires_native_pandas(blob_mode, tbl.schema):
+        tbl = await self.to_arrow(timeout=timeout)
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, blob_column_paths(tbl.schema))
+        tbl = flatten_columns(tbl, flatten)
+        if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
+            blob_mode, tbl.schema
+        ):
             raise _unsupported_blob_pandas_error(
                 "this query shape cannot use Lance native pandas conversion"
             )
