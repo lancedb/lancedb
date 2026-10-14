@@ -51,7 +51,6 @@ database:db
 namespace:db:ns
 table:db:ns$table
 view:db:ns$view
-secret:db:ns$secret
 ```
 {/* end if */}
 {/* if functions launched */}
@@ -82,11 +81,11 @@ table alone is not enough to traverse to it.
 | `USAGE` | database | accessing the namespaces inside |
 | `USAGE` | namespace | accessing the tables inside |
 | `USAGE` {/* if functions launched */} | function | binding it to a column, and refreshing a column it computes |
-| `USAGE` | secret | binding and resolving it |
+| `USAGE` {/* if functions launched */} | secret | binding and resolving it |
 | `SELECT` | table, view | reading rows |
 | `INSERT` | table | appending rows |
 | `UPDATE` | table | modifying existing rows |
-| `UPDATE` | secret | rotating it, without the right to bind or read it |
+| `UPDATE` {/* if functions launched */} | secret | rotating it, without the right to bind or read it |
 | `DELETE` | table | deleting rows |
 | `CREATE_DATABASE` | system | creating a database |
 | `CREATE_NAMESPACE` | database, namespace | creating immediate child namespaces |
@@ -94,7 +93,7 @@ table alone is not enough to traverse to it.
 | `CREATE_MATERIALIZED_VIEW` | namespace | creating a materialized view in it |
 | `CREATE_VIEW` | namespace | creating a non-materialized view in it |
 | `CREATE_FUNCTION` {/* if functions launched */} | namespace | registering a function in it |
-| `CREATE_SECRET` | namespace | creating a secret in it |
+| `CREATE_SECRET` {/* if functions launched */} | namespace | creating a secret in it |
 | `OPERATE` | system | describing and controlling jobs, managing caches, and reading server configuration |
 
 The four data privileges map onto the four
