@@ -24,12 +24,19 @@ portable to Enterprise or another namespace implementation.
 | Namespace component | ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters; at most 10 components in a path |
 | Database | ASCII letters and digits, `-`, `_`, `.`, with `/` between components | 1 to 64 characters for the whole name |
 | Branch | Avoid `$` and `:`; use ASCII letters, digits, `-` and `_` for portability | Keep to 1 to 64 characters |
-| Secret | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Secret {/* if functions launched */} | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
 | Function {/* if functions launched */} | ASCII letters and digits, `_` | 1 to 128 characters |
 
+{/* if functions not launched */}
+Names must be non-empty. A table, view, namespace component or database
+component cannot be `.` or `..`. Avoid `$` and `:` in names because they are used
+to separate parts of qualified identifiers.
+{/* end if */}
+{/* if functions launched */}
 Names must be non-empty. A table, view, secret, namespace component or database
 component cannot be `.` or `..`. Avoid `$` and `:` in names because they are used
 to separate parts of qualified identifiers.
+{/* end if */}
 
 ## How do namespace paths work? {#paths}
 
