@@ -40,8 +40,8 @@ removed, along with the files only they referenced. On a deployment, the
 retention period comes from its configuration instead.
 
 The latest version is never removed, whatever you pass. `timedelta(0)` makes
-every older version eligible for removal, but cleanup still keeps the versions
-that branches and tags protect, as the warning below describes.
+every older version eligible for removal, but cleanup still keeps tagged
+versions and the files branches still read, as the warning below describes.
 
 <Warning>
 Pruning is what makes [time travel](/management/table#versioning) finite: an
@@ -49,9 +49,14 @@ eligible version outside the retention window is gone. Cleanup keeps a version,
 whatever its age, when it is:
 
 - the **latest** version;
-- a version a **branch** was forked from, along with the files the branch
-  reads; the parent's other old versions are pruned as usual;
 - a **tagged** version.
+
+Cleanup also keeps the files a **branch** still reads, and the version the
+branch was forked from while the branch's remaining versions read the parent's
+files. That does not keep the fork for good: once the branch has replaced the
+data it inherited and its own older versions are pruned, cleanup prunes the
+fork version like any other. To keep a version recoverable, tag it, subject to
+the policy below, or keep the window wide enough to cover it.
 
 Under the default policy, a tag can also stop cleanup. When a tagged version is
 older than the window and is not the latest, cleanup refuses to run: it raises

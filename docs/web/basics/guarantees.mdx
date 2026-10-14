@@ -77,11 +77,13 @@ exists.
 Retention is finite. [Cleanup](/maintenance/cleanup) prunes versions older
 than the retention window — **7 days by default** for `optimize()` in the
 embedded library, while a deployment's configuration sets its own. It always
-keeps the latest version, the versions branches were forked from and tagged
-versions. A tagged version that is older than the window and is not the latest
-stops cleanup altogether, until the tag is moved inside the window or deleted,
-or the window is widened. If you rely on reading old versions, widen the window
-before running it, not after.
+keeps the latest version and tagged versions. It also keeps the files a branch
+still reads, and the version the branch was forked from while the branch's
+remaining versions read the parent's files; after that, the fork version is
+pruned like any other. A tagged version that is older than the window and is
+not the latest stops cleanup altogether, until the tag is moved inside the
+window or deleted, or the window is widened. If you rely on reading old
+versions, tag them or widen the window before running it, not after.
 </Warning>
 
 **Dropping a table ends its history.** Versioning does not survive
