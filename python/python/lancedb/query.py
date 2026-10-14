@@ -103,6 +103,33 @@ def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) ->
     return blob_mode in BLOB_MODE_TO_HANDLING and schema_has_blob_field(schema)
 
 
+def _struct_blob_paths(schema: pa.Schema) -> list[str]:
+    """Blob paths reachable through structs only.
+
+    Blobs nested inside lists never carry auto row ids, and the row id
+    stripping step only knows how to traverse structs, so skip list paths.
+    """
+
+    def struct_only(path: str) -> bool:
+        if schema.get_field_index(path) >= 0:
+            return True
+        top_name, *rest = path.split(".")
+        index = schema.get_field_index(top_name)
+        if index < 0:
+            return False
+        field = schema.field(index)
+        for name in rest:
+            if not pa.types.is_struct(field.type):
+                return False
+            child = field.type.get_field_index(name)
+            if child < 0:
+                return False
+            field = field.type.field(child)
+        return True
+
+    return [path for path in blob_column_paths(schema) if struct_only(path)]
+
+
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     return RuntimeError(
         "blob columns require Lance native scanner conversion for query "
@@ -1116,7 +1143,7 @@ class LanceQueryBuilder(ABC):
 
         tbl = self.to_arrow(timeout=timeout)
         if blob_mode == "descriptions":
-            tbl = strip_auto_row_ids(tbl, blob_column_paths(tbl.schema))
+            tbl = strip_auto_row_ids(tbl, _struct_blob_paths(tbl.schema))
         tbl = flatten_columns(tbl, flatten)
         if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
             blob_mode, tbl.schema
@@ -3206,7 +3233,7 @@ class AsyncQueryBase(object):
 
         tbl = await self.to_arrow(timeout=timeout)
         if blob_mode == "descriptions":
-            tbl = strip_auto_row_ids(tbl, blob_column_paths(tbl.schema))
+            tbl = strip_auto_row_ids(tbl, _struct_blob_paths(tbl.schema))
         tbl = flatten_columns(tbl, flatten)
         if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
             blob_mode, tbl.schema

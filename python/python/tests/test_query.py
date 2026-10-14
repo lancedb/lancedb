@@ -2484,3 +2484,44 @@ async def test_search_effort_invalid_async(table_async, hybrid, effort):
         query = query.nearest_to_text("dog")
     with pytest.raises(ValueError, match="search_effort must be finite and in"):
         query.search_effort(effort)
+
+
+def _list_blob_table():
+    blob = lancedb.blob("image")
+    storage = pa.array(
+        [{"data": b"abc", "uri": None, "position": None, "size": None}],
+        type=blob.type.storage_type,
+    )
+    values = pa.ExtensionArray.from_storage(blob.type, storage)
+    images = pa.ListArray.from_arrays(pa.array([0, 1], pa.int32()), values)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            pa.field("images", pa.list_(blob)),
+        ]
+    )
+    return pa.Table.from_arrays(
+        [
+            pa.array([1], pa.int64()),
+            pa.array([[0.0, 0.0]], schema.field(1).type),
+            images,
+        ],
+        schema=schema,
+    )
+
+
+def test_blob_descriptions_to_pandas_list_nested_blobs():
+    table = lancedb.connect("memory://").create_table("t", data=_list_blob_table())
+    df = table.search([0.0, 0.0]).to_pandas(blob_mode="descriptions")
+    assert df["id"].tolist() == [1]
+    assert len(df["images"][0]) == 1
+
+
+@pytest.mark.asyncio
+async def test_blob_descriptions_to_pandas_list_nested_blobs_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", data=_list_blob_table())
+    df = await (await table.search([0.0, 0.0])).to_pandas(blob_mode="descriptions")
+    assert df["id"].tolist() == [1]
+    assert len(df["images"][0]) == 1
