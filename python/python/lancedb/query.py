@@ -209,7 +209,8 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
 
 
 def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
-    if req.select_source_columns is not None:
+    # Treat empty map as a calculated select
+    if req.select_source_columns:
         return req.select_source_columns
     return req.select
 

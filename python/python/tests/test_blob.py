@@ -666,6 +666,19 @@ async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
 
 
 @pytest.mark.asyncio
+async def test_async_calculated_select_does_not_read_every_blob_column():
+    db = await lancedb.connect_async("memory:///calculated_select")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = await db.create_table("calculated_select", schema=schema)
+    await table.add([{"id": 1, "image": b"hello"}])
+
+    hits = await table.query().select({"next_id": col("id") + 1}).to_arrow()
+
+    assert hits.column_names == ["next_id"]
+    assert hits["next_id"].to_pylist() == [2]
+
+
+@pytest.mark.asyncio
 async def test_async_typed_blob_projection_preserves_source_column():
     db = await lancedb.connect_async("memory:///typed_blob_projection")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
