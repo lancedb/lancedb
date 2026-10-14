@@ -375,6 +375,34 @@ fn validate_partial_response(
 }
 
 impl<S: HttpSend> RemoteTable<S> {
+    async fn reject_list_blob_path_if_known(&self, column: &str) -> Result<()> {
+        // A dotted path needs client-side validation because the server may
+        // report an internal type mismatch when the path crosses a list. Use
+        // an already cached schema for top-level list fields as well.
+        if column.contains('.') || self.schema_cache.try_get().is_some() {
+            let schema = self.schema().await?;
+            crate::blob::reject_list_blob_column(schema.as_ref(), column)?;
+        }
+        Ok(())
+    }
+
+    async fn explain_list_blob_bad_request(&self, column: &str, error: Error) -> Error {
+        let is_bad_request = match &error {
+            Error::Http {
+                status_code: Some(code),
+                ..
+            } => *code == StatusCode::BAD_REQUEST || *code == StatusCode::UNPROCESSABLE_ENTITY,
+            _ => false,
+        };
+        if is_bad_request
+            && let Ok(schema) = self.schema().await
+            && let Err(list_error) = crate::blob::reject_list_blob_column(schema.as_ref(), column)
+        {
+            return list_error;
+        }
+        error
+    }
+
     /// Blob v2 columns are marked in field metadata, which `describe` returns. Reading
     /// them from the cached schema needs no route of its own and no version gate.
     pub(super) async fn blob_columns_impl(&self) -> Result<Vec<String>> {
@@ -387,6 +415,7 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
     ) -> Result<LargeBinaryArray> {
+        self.reject_list_blob_path_if_known(column).await?;
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
             return Ok(LargeBinaryArray::from(Vec::<Option<&[u8]>>::new()));
@@ -466,7 +495,10 @@ impl<S: HttpSend> RemoteTable<S> {
         let (request_id, response) = self
             .send_with_freshness(request, true, read_snapshot.freshness)
             .await?;
-        let mut stream = self.read_arrow_response(&request_id, response).await?;
+        let mut stream = match self.read_arrow_response(&request_id, response).await {
+            Ok(stream) => stream,
+            Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
+        };
 
         let mut blob_chunks: Vec<Arc<dyn Array>> = Vec::new();
         while let Some(batch) = stream.try_next().await? {
@@ -535,6 +567,7 @@ impl<S: HttpSend> RemoteTable<S> {
         column: &str,
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
+        self.reject_list_blob_path_if_known(column).await?;
         // Empty requests do not require blob-route support.
         if row_ids.is_empty() {
             return Ok(Vec::new());
@@ -542,9 +575,13 @@ impl<S: HttpSend> RemoteTable<S> {
         self.ensure_blob_files_supported()?;
 
         let mut read_snapshot = self.snapshot_read_state().await;
-        let sizes = self
+        let sizes = match self
             .take_blob_descriptor_sizes(column, row_ids, &mut read_snapshot)
-            .await?;
+            .await
+        {
+            Ok(sizes) => sizes,
+            Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
+        };
         let version = read_snapshot.version;
 
         let mut files = Vec::with_capacity(row_ids.len());
@@ -568,7 +605,10 @@ impl<S: HttpSend> RemoteTable<S> {
                 }
             }
         }
-        let probed = probe_blob_files(probe_requesters).await?;
+        let probed = match probe_blob_files(probe_requesters).await {
+            Ok(files) => files,
+            Err(error) => return Err(self.explain_list_blob_bad_request(column, error).await),
+        };
         for (index, file) in probe_indices.into_iter().zip(probed) {
             files[index] = file;
         }
@@ -589,7 +629,10 @@ impl<S: HttpSend> RemoteTable<S> {
             .iter()
             .map(|row_id| self.blob_range_requester(column, *row_id, &read_snapshot))
             .collect();
-        probe_blob_files(requesters).await
+        match probe_blob_files(requesters).await {
+            Ok(files) => Ok(files),
+            Err(error) => Err(self.explain_list_blob_bad_request(column, error).await),
+        }
     }
 
     /// Read the blob descriptor of every unique row in `row_ids`.
@@ -696,6 +739,15 @@ impl<S: HttpSend> RemoteTable<S> {
             let values = batch.column_by_name(column).ok_or_else(|| {
                 invalid_response(format!("blob descriptor take is missing '{column}'"))
             })?;
+            // An uncached top-level list can reach the descriptor query. Explain
+            // that unsupported path before the generic descriptor type check.
+            if matches!(
+                values.data_type(),
+                DataType::List(_) | DataType::LargeList(_) | DataType::FixedSizeList(_, _)
+            ) && let Ok(schema) = self.schema().await
+            {
+                crate::blob::reject_list_blob_column(schema.as_ref(), column)?;
+            }
             // Only blob v2 columns read back as descriptors.
             let descriptors = values
                 .as_any()

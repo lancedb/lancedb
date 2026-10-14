@@ -508,6 +508,10 @@ still work. Queries return descriptors. Call
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+Blobs inside lists can be written and queried as descriptors. They are omitted
+from `blob_columns()` because row ids do not identify individual list elements,
+so the fetch APIs cannot read their bytes yet.
+
 ::: lancedb.blob
 
 ::: lancedb._blob.BlobFile
