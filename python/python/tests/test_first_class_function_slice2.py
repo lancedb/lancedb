@@ -1555,7 +1555,7 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202

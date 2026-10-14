@@ -11,6 +11,7 @@ on:
       - .github/workflows/build_linux_wheel/action.yml
       - .github/workflows/build_mac_wheel/action.yml
       - .github/workflows/build_windows_wheel/action.yml
+      - .github/actions/setup-protoc/action.yml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 

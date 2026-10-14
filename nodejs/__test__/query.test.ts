@@ -527,3 +527,106 @@ describe("Query orderBy", () => {
     ]);
   });
 });
+
+describe("IVF search effort", () => {
+  let directory: tmp.DirResult;
+  let table: Table;
+  const vector = Array.from({ length: 16 }, (_, i) => (i === 0 ? 1 : 0));
+
+  beforeEach(async () => {
+    directory = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(directory.name);
+    const rows = Array.from({ length: 512 }, (_, id) => ({
+      id,
+      vector: Array.from(
+        { length: 16 },
+        (_, j) =>
+          (Math.floor(id / 32) === j ? 1 : 0) + Math.sin(id * 17 + j) * 0.001,
+      ),
+    }));
+    table = await db.createTable("effort", rows.slice(0, 256));
+    await table.add(rows.slice(256));
+    await table.createIndex("vector", {
+      config: Index.ivfFlat({ numPartitions: 16 }),
+    });
+  });
+
+  afterEach(() => {
+    directory.removeCallback();
+  });
+
+  it.each([
+    [null, 6],
+    [0, 1],
+    [0.25, 3],
+    [0.5, 6],
+    [0.75, 10],
+    [1, 16],
+  ])(
+    "preserves effort %s through execution and probe precedence",
+    async (effort, expected) => {
+      const partitions = async (query: ReturnType<Table["vectorSearch"]>) => {
+        const plan = await query.limit(8).analyzePlan();
+        const matches = [...plan.matchAll(/partitions_searched=(\d+)/g)];
+        expect(matches.length).toBeGreaterThan(0);
+        return matches.reduce((total, match) => total + Number(match[1]), 0);
+      };
+      expect(
+        await partitions(table.vectorSearch(vector).searchEffort(effort)),
+      ).toBe(expected);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).nprobes(1).searchEffort(effort),
+        ),
+      ).toBe(effort === null ? 1 : expected);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).searchEffort(effort).nprobes(1),
+        ),
+      ).toBe(effort === null ? 1 : expected);
+      expect(
+        await partitions(
+          table
+            .vectorSearch(vector)
+            .searchEffort(effort)
+            .nprobes(1)
+            .searchEffort(null),
+        ),
+      ).toBe(1);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).searchEffort(effort).maximumNprobes(2),
+        ),
+      ).toBeLessThanOrEqual(2);
+      const actual = await table
+        .vectorSearch(vector)
+        .searchEffort(effort)
+        .limit(8)
+        .toArray();
+      const exact = await table
+        .vectorSearch(vector)
+        .bypassVectorIndex()
+        .limit(8)
+        .toArray();
+      const ids = new Set(exact.map((row) => row.id));
+      expect(
+        actual.filter((row) => ids.has(row.id)).length / 8,
+      ).toBeGreaterThanOrEqual(0.5);
+    },
+  );
+
+  it.each([
+    -0.1,
+    1.1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])("rejects invalid effort %s before execution", (effort) => {
+    expect(() => table.vectorSearch(vector).searchEffort(effort)).toThrow(
+      "search_effort must be finite and in [0, 1]",
+    );
+    expect(() =>
+      table.vectorSearch(vector).fullTextSearch("dog").searchEffort(effort),
+    ).toThrow("search_effort must be finite and in [0, 1]");
+  });
+});

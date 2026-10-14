@@ -57,6 +57,7 @@ from lancedb.table import IndexConfigType, KNOWN_METRICS
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
@@ -239,12 +240,14 @@ class RemoteTable(Table):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported for remote tables."""
+        validate_blob_mode(blob_mode)
         raise NotImplementedError("to_arrow() is not supported for remote tables.")
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not supported for remote tables."""
+        validate_blob_mode(blob_mode)
         raise NotImplementedError("to_pandas() is not supported for remote tables.")
 
     def checkout(self, version: Union[int, str]):
@@ -1154,7 +1157,9 @@ class RemoteTable(Table):
         return LOOP.run(self._table.blob_columns())
 
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
@@ -1162,7 +1167,9 @@ class RemoteTable(Table):
         return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 

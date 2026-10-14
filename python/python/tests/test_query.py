@@ -509,18 +509,30 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         )
 
 
-def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         "test_vector_query_blob_descriptions",
         _blob_query_data(),
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
+    query = table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1)
 
-    with pytest.raises(RuntimeError, match="plain scan query"):
-        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
-            blob_mode="descriptions"
-        )
+    df = query.to_pandas(blob_mode="descriptions")
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
+
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_pandas(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_arrow(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        table.to_arrow(blob_mode="bytes")
+    assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
+        b"one",
+        b"two",
+        b"three",
+        b"four",
+    ]
 
 
 def test_order_by_plain_query(mem_db):
@@ -995,12 +1007,22 @@ def test_invalid_nprobes_sync(table):
         ValueError,
         match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        LanceVectorQueryBuilder(table, [0, 0], "vector").maximum_nprobes(5).to_list()
+        (
+            LanceVectorQueryBuilder(table, [0, 0], "vector")
+            .minimum_nprobes(10)
+            .maximum_nprobes(5)
+            .to_list()
+        )
     with pytest.raises(
         ValueError,
-        match="minimum_nprobes must be less than or equal to maximum_nprobes",
+        match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        LanceVectorQueryBuilder(table, [0, 0], "vector").minimum_nprobes(100).to_list()
+        (
+            LanceVectorQueryBuilder(table, [0, 0], "vector")
+            .maximum_nprobes(5)
+            .minimum_nprobes(100)
+            .to_list()
+        )
 
 
 def test_nprobes_works_sync(table):
@@ -1039,12 +1061,22 @@ async def test_invalid_nprobes_async(table_async: AsyncTable):
         ValueError,
         match="maximum_nprobes must be greater than or equal to minimum_nprobes",
     ):
-        await table_async.vector_search([0, 0]).maximum_nprobes(5).to_list()
+        await (
+            table_async.vector_search([0, 0])
+            .minimum_nprobes(10)
+            .maximum_nprobes(5)
+            .to_list()
+        )
     with pytest.raises(
         ValueError,
         match="minimum_nprobes must be less than or equal to maximum_nprobes",
     ):
-        await table_async.vector_search([0, 0]).minimum_nprobes(100).to_list()
+        await (
+            table_async.vector_search([0, 0])
+            .maximum_nprobes(5)
+            .minimum_nprobes(100)
+            .to_list()
+        )
 
 
 def test_query_builder_with_prefilter(table):
@@ -1635,8 +1667,9 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=10,
-        maximum_nprobes=10,
+        nprobes=10,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         refine_factor=5,
     )
 
@@ -1654,8 +1687,19 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         q,
         vector_column="vector",
         vector=[5.0, 6.0],
-        minimum_nprobes=50,
-        maximum_nprobes=50,
+        nprobes=50,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
+    )
+
+    q = table.search([5.0, 6.0]).minimum_nprobes(5).nprobes(50).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        nprobes=50,
+        minimum_nprobes=5,
+        maximum_nprobes=None,
     )
 
     q = table.search([5.0, 6.0]).maximum_nprobes(10).to_query_object()
@@ -1665,6 +1709,15 @@ def test_query_serialization_sync(table: lancedb.table.Table):
         vector=[5.0, 6.0],
         maximum_nprobes=10,
         minimum_nprobes=None,
+    )
+
+    q = table.search([5.0, 6.0]).nprobes(5).maximum_nprobes(0).to_query_object()
+    check_set_props(
+        q,
+        vector_column="vector",
+        vector=[5.0, 6.0],
+        nprobes=5,
+        maximum_nprobes=0,
     )
 
     q = table.search([5.0, 6.0]).distance_range(0.0, 1.0).to_query_object()
@@ -1716,8 +1769,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         limit=10,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -1727,8 +1780,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1739,8 +1792,9 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=50,
-        maximum_nprobes=50,
+        nprobes=50,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1759,8 +1813,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         filter="id = 1",
         postfilter=True,
         vector=sample_vector,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
     )
@@ -1774,8 +1828,9 @@ async def test_query_serialization_async(table_async: AsyncTable):
     check_set_props(
         q,
         vector=sample_vector,
-        minimum_nprobes=10,
-        maximum_nprobes=10,
+        nprobes=10,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         refine_factor=5,
         postfilter=False,
         with_row_id=False,
@@ -1788,7 +1843,24 @@ async def test_query_serialization_async(table_async: AsyncTable):
         q,
         vector=sample_vector,
         minimum_nprobes=5,
-        maximum_nprobes=20,
+        maximum_nprobes=None,
+        postfilter=False,
+        with_row_id=False,
+        bypass_vector_index=False,
+        limit=10,
+    )
+
+    q = (
+        (await table_async.search([5.0, 6.0]))
+        .nprobes(5)
+        .maximum_nprobes(0)
+        .to_query_object()
+    )
+    check_set_props(
+        q,
+        vector=sample_vector,
+        nprobes=5,
+        maximum_nprobes=0,
         postfilter=False,
         with_row_id=False,
         bypass_vector_index=False,
@@ -1806,8 +1878,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         lower_bound=0.0,
         upper_bound=1.0,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1819,8 +1891,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         distance_type="cosine",
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1832,8 +1904,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         ef=7,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         bypass_vector_index=False,
         limit=10,
@@ -1845,8 +1917,8 @@ async def test_query_serialization_async(table_async: AsyncTable):
         bypass_vector_index=True,
         vector=sample_vector,
         postfilter=False,
-        minimum_nprobes=20,
-        maximum_nprobes=20,
+        minimum_nprobes=None,
+        maximum_nprobes=None,
         with_row_id=False,
         limit=10,
     )
@@ -2205,3 +2277,127 @@ def test_blob_v2_to_batches_row_id(tmp_db):
     assert "_rowid" in hits.column_names
     blobs = table.fetch_blobs("blob", hits)
     assert [blobs[i].as_py() for i in range(len(blobs))] == [b"one", b"two"]
+
+
+@pytest.mark.parametrize("metric", ["l2", "cosine", "dot"])
+@pytest.mark.parametrize(
+    "effort,probes", [(None, 4), (0, 1), (0.25, 2), (0.5, 4), (0.75, 8), (1, 16)]
+)
+def test_search_effort_probe_budget(tmp_path, monkeypatch, metric, effort, probes):
+    import re
+    from lancedb.index import IvfFlat
+
+    monkeypatch.setenv("LANCE_AUTO_PROBE_MARGIN", "0")
+    monkeypatch.setenv("LANCE_AUTO_MIN_INITIAL_NPROBES", "4")
+    monkeypatch.setenv("LANCE_AUTO_MAX_INITIAL_NPROBES", "4")
+    rng = np.random.default_rng(42)
+    vectors = np.repeat(np.eye(16, dtype=np.float32), 32, axis=0)
+    vectors += rng.normal(0, 0.001, vectors.shape).astype(np.float32)
+    data = pa.table(
+        {
+            "id": np.arange(512),
+            "text": ["dog"] * 512,
+            "vector": pa.FixedSizeListArray.from_arrays(pa.array(vectors.ravel()), 16),
+        }
+    )
+    table = lancedb.connect(tmp_path).create_table("effort", data.slice(0, 256))
+    table.add(data.slice(256))
+    table.create_index(
+        "vector", config=IvfFlat(distance_type=metric, num_partitions=16)
+    )
+    vector = np.eye(16, dtype=np.float32)[0]
+
+    def search(value=effort):
+        return table.search(vector).distance_type(metric).search_effort(value).limit(8)
+
+    def partitions(query):
+        vector_plan = query.analyze_plan().split("FTS Search Plan:", 1)[0]
+        values = re.findall(r"partitions_searched=(\d+)", vector_plan)
+        assert values
+        return sum(map(int, values))
+
+    assert partitions(search()) == probes
+    exact = set(
+        table.search(vector)
+        .distance_type(metric)
+        .bypass_vector_index()
+        .limit(8)
+        .to_arrow()["id"]
+        .to_pylist()
+    )
+    actual = set(search().to_arrow()["id"].to_pylist())
+    assert len(actual & exact) / 8 >= 0.5
+    expected = 1 if effort is None else probes
+    assert partitions(search().nprobes(1)) == expected
+    assert (
+        partitions(
+            table.search(vector)
+            .distance_type(metric)
+            .nprobes(1)
+            .search_effort(effort)
+            .limit(8)
+        )
+        == expected
+    )
+    assert partitions(search().nprobes(1).search_effort(None)) == 1
+    assert partitions(search().maximum_nprobes(2)) <= 2
+    assert partitions(search().minimum_nprobes(3).maximum_nprobes(3)) == 3
+    assert partitions(search(0).nprobes(16).maximum_nprobes(0)) == 1
+    if effort is None:
+        assert search().to_arrow() == search(0.5).to_arrow()
+    filtered = search(0).maximum_nprobes(2).where("id % 8 = 0", prefilter=True)
+    assert partitions(filtered) <= 2
+    assert all(row["id"] % 8 == 0 for row in filtered.to_list())
+
+    if metric == "l2" and effort == 0.5:
+        table.create_index("text", config=FTS())
+        hybrid = (
+            table.search(query_type="hybrid")
+            .vector(vector)
+            .text("dog")
+            .nprobes(1)
+            .search_effort(0.5)
+            .limit(8)
+        )
+        assert partitions(hybrid) == 4
+        assert partitions(hybrid.search_effort(None)) == 1
+
+
+@pytest.mark.parametrize(
+    "effort", [-0.1, 1.1, float("nan"), float("inf"), -float("inf")]
+)
+def test_search_effort_invalid_sync(table, effort):
+    with pytest.raises(ValueError, match="search_effort must be finite and in"):
+        table.search([0, 0]).search_effort(effort).to_list()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize("effort", [None, 0, 0.25, 0.5, 0.75, 1])
+async def test_search_effort_async_roundtrip(table_async, hybrid, effort):
+    query = table_async.vector_search([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    query = query.nprobes(5).search_effort(effort).minimum_nprobes(2).maximum_nprobes(3)
+    request = query.to_query_object()
+    assert request.search_effort == effort
+    assert request.nprobes == 5
+    assert request.minimum_nprobes == 2
+    assert request.maximum_nprobes == 3
+    assert query.search_effort(None).to_query_object().search_effort is None
+    query.search_effort(effort)
+    if not hybrid:
+        assert len(await query.limit(1).to_list()) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("hybrid", [False, True])
+@pytest.mark.parametrize(
+    "effort", [-0.1, 1.1, float("nan"), float("inf"), -float("inf")]
+)
+async def test_search_effort_invalid_async(table_async, hybrid, effort):
+    query = table_async.vector_search([0, 0])
+    if hybrid:
+        query = query.nearest_to_text("dog")
+    with pytest.raises(ValueError, match="search_effort must be finite and in"):
+        query.search_effort(effort)
