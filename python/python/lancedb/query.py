@@ -1096,7 +1096,17 @@ class LanceQueryBuilder(ABC):
                         native_error = err
                 # Blob descriptions don't need the native scanner: any query
                 # shape can return them through the Arrow path below.
-                if native_error is not None or blob_mode != "descriptions":
+                # Fragment selection is only honored by the native scanner, so
+                # keep rejecting it rather than returning rows outside it.
+                has_fragments = (
+                    getattr(self, "_fragments", None) is not None
+                    or getattr(self, "_fragment_ids", None) is not None
+                )
+                if (
+                    native_error is not None
+                    or blob_mode != "descriptions"
+                    or has_fragments
+                ):
                     reason = (
                         "this query shape cannot use Lance native pandas conversion"
                         if native_error is None
@@ -3176,7 +3186,17 @@ class AsyncQueryBase(object):
                         native_error = err
                 # Blob descriptions don't need the native scanner: any query
                 # shape can return them through the Arrow path below.
-                if native_error is not None or blob_mode != "descriptions":
+                # Fragment selection is only honored by the native scanner, so
+                # keep rejecting it rather than returning rows outside it.
+                has_fragments = (
+                    getattr(self, "_fragments", None) is not None
+                    or getattr(self, "_fragment_ids", None) is not None
+                )
+                if (
+                    native_error is not None
+                    or blob_mode != "descriptions"
+                    or has_fragments
+                ):
                     reason = (
                         "this query shape cannot use Lance native pandas conversion"
                         if native_error is None

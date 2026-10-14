@@ -509,6 +509,26 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         )
 
 
+def test_blob_descriptions_timeout_rejects_fragment_selection(tmp_db):
+    table = tmp_db.create_table(
+        "test_blob_descriptions_timeout_fragments",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("payload")]),
+    )
+    table.add([{"id": 1, "payload": b"one"}])
+    table.add([{"id": 2, "payload": b"two"}])
+    selected = table.to_lance().get_fragments()[0].fragment_id
+
+    df = table.search().fragment_ids([selected]).to_pandas(blob_mode="descriptions")
+    assert df["id"].tolist() == [1]
+
+    # The Arrow fallback can't honor fragment selection, so it must not
+    # silently return rows from other fragments.
+    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+        table.search().fragment_ids([selected]).to_pandas(
+            blob_mode="descriptions", timeout=timedelta(seconds=30)
+        )
+
+
 def test_vector_query_to_pandas_blob_descriptions(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
@@ -558,6 +578,23 @@ def test_vector_query_to_pandas_blob_v2_descriptions_omits_row_id(tmp_db):
     desc = df["blob"].iloc[0]
     assert isinstance(desc, dict)
     assert "_lance_row_id" not in desc
+
+
+@pytest.mark.asyncio
+async def test_async_blob_descriptions_timeout_rejects_fragment_selection(
+    tmp_db_async,
+):
+    table = await tmp_db_async.create_table(
+        "test_async_blob_descriptions_timeout_fragments",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("payload")]),
+    )
+    await table.add([{"id": 1, "payload": b"one"}])
+    await table.add([{"id": 2, "payload": b"two"}])
+    query = table.query()
+    query._fragment_ids = [0]
+
+    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+        await query.to_pandas(blob_mode="descriptions", timeout=timedelta(seconds=30))
 
 
 @pytest.mark.asyncio
