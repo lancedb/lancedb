@@ -37,7 +37,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let db = connect_enterprise_quickstart().await?;
         println!("{:?}", db.table_names().execute().await?);
     }
-    let _ = connect_object_storage_config();
     Ok(())
 }
 
@@ -58,13 +57,15 @@ async fn connect_enterprise_quickstart() -> Result<Connection, Box<dyn std::erro
     Ok(db)
 }
 
-fn connect_object_storage_config() -> &'static str {
+// Compiled as documentation, never called by the example runner.
+#[allow(dead_code)]
+async fn connect_object_storage() -> lancedb::Result<Connection> {
     // --8<-- [start:connect_object_storage]
     let uri = "s3://your-bucket/path";
     // You can also use "gs://your-bucket/path" or "az://your-container/path".
+    let db = connect(uri).execute().await?;
     // --8<-- [end:connect_object_storage]
-
-    uri
+    Ok(db)
 }
 
 async fn namespace_table_ops_example(uri: &str) -> lancedb::Result<()> {

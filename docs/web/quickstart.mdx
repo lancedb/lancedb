@@ -192,10 +192,13 @@ You can also connect directly to object storage from the client SDK:
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
     {TsConnectObjectStorage}
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n" }
+    { "\n" }
     {RsConnectObjectStorage}
     </CodeBlock>
 </CodeGroup >

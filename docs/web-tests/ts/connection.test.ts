@@ -76,14 +76,14 @@ describe("enterprise quickstart connect", () => {
   });
 });
 
-// --8<-- [start:connect_object_storage]
 async function connectObjectStorageExample() {
+  // --8<-- [start:connect_object_storage]
   const uri = "s3://your-bucket/path";
   // You can also use "gs://your-bucket/path" or "az://your-container/path".
   const db = await lancedb.connect(uri);
+  // --8<-- [end:connect_object_storage]
   return db;
 }
-// --8<-- [end:connect_object_storage]
 
 async function namespaceTableOpsExample() {
   // --8<-- [start:namespace_table_ops]
