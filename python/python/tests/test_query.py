@@ -509,18 +509,30 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         )
 
 
-def test_vector_query_to_pandas_blob_descriptions_requires_plain_scan(tmp_db):
+def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
     pytest.importorskip("lance")
     table = tmp_db.create_table(
         "test_vector_query_blob_descriptions",
         _blob_query_data(),
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
+    query = table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1)
 
-    with pytest.raises(RuntimeError, match="plain scan query"):
-        table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
-            blob_mode="descriptions"
-        )
+    df = query.to_pandas(blob_mode="descriptions")
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
+
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_pandas(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_arrow(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        table.to_arrow(blob_mode="bytes")
+    assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
+        b"one",
+        b"two",
+        b"three",
+        b"four",
+    ]
 
 
 def test_order_by_plain_query(mem_db):

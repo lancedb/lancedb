@@ -480,8 +480,6 @@ When you call `to_pandas()` on a local LanceDB table that contains Blob API colu
 - `"bytes"`: eagerly materializes each blob as `bytes`. Use this when you need the raw payload in the DataFrame, for example to decode an image or audio clip in-process.
 - `"descriptions"`: returns blob descriptors (offsets, sizes, and positions) instead of the data itself. Use this when you want to plan I/O without paying the cost of loading every blob.
 
-`"bytes"` and `"descriptions"` require a filesystem-backed Lance dataset and are not supported on in-memory tables.
-
 Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas conversion, so you can also pass options like `split_blocks` or `self_destruct`:
 
 <CodeGroup>
@@ -490,10 +488,13 @@ Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas c
     </CodeBlock>
 </CodeGroup>
 
-Query builders also accept `blob_mode` on their `to_pandas()` method:
+Query builders also accept `blob_mode` on `to_pandas()`, `to_arrow()`, and `to_list()`:
 
 - Plain scans support `"lazy"`, `"bytes"`, and `"descriptions"` with filters, projections, aliases, `limit`, and `offset`.
-- Vector, FTS, hybrid, and ordered queries can't materialize blob columns through `to_pandas()`; omit blob columns from the projection for those query shapes.
+- Vector, FTS, hybrid, and take queries support `"bytes"` and `"descriptions"`. Lazy `BlobFile` handles need a plain scan.
+- In `to_arrow()` and `to_list()`, `"lazy"` returns blob descriptors that carry the row id `fetch_blobs` reads, and `"descriptions"` returns them without it.
+- A plain scan's `to_pandas()` without `timeout` reads the local dataset through Lance's scanner, so it also returns `"bytes"` for legacy blob columns and under namespace query pushdown. In-memory tables have no local dataset, so they take the `to_arrow()` route.
+- Every other `"bytes"` route raises `ValueError` for legacy blob columns and blobs inside lists, and `NotImplementedError` on remote tables and namespace query pushdown, where the blob fetch could read a different table version than the query.
 - This works on both sync and async query builders. Extra PyArrow kwargs like `split_blocks` and `self_destruct` are still forwarded.
 
 <CodeGroup>
