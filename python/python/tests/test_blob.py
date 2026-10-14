@@ -1632,7 +1632,7 @@ def test_fetch_blob_files_lazy_read():
     assert handles[0].read() == payload
     handles[0].close()
     assert handles[0].closed
-    with pytest.raises(RuntimeError, match="already closed"):
+    with pytest.raises(ValueError, match="read of closed file"):
         handles[0].read()
 
 
@@ -1681,8 +1681,8 @@ def test_blob_file_finalizer_and_close_on_runtime_worker():
         explicit_handle.close()  # Close remains idempotent after the worker call.
         try:
             explicit_handle.read()
-        except RuntimeError as error:
-            assert "already closed" in str(error)
+        except ValueError as error:
+            assert "read of closed file" in str(error)
         else:
             raise AssertionError("a closed blob file was readable")
         print("worker close completed")
