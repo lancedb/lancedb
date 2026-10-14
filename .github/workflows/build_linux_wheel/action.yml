@@ -59,13 +59,14 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} -e PROTOC_SHA256=${{ steps.protoc.outputs.linux-x86_64-sha256 }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
         target: x86_64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
         before-script-linux: |
           set -e
           curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-x86_64.zip -o /tmp/protoc.zip
+          echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum -c -
           unzip /tmp/protoc.zip -d /usr/local
           rm /tmp/protoc.zip
           /usr/local/bin/protoc --version
@@ -76,7 +77,7 @@ runs:
         maturin-version: "1.12.4"
         command: build
         working-directory: python
-        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
+        docker-options: "-e PIP_EXTRA_INDEX_URL='https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/' -e PROTOC=/usr/local/bin/protoc -e PROTOC_VERSION=${{ steps.protoc.outputs.version }} -e PROTOC_SHA256=${{ steps.protoc.outputs.linux-aarch_64-sha256 }} ${{ inputs.rustflags != '' && format('-e RUSTFLAGS={0}', inputs.rustflags) || '' }}"
         target: aarch64-unknown-linux-gnu
         manylinux: ${{ inputs.manylinux }}
         args: ${{ inputs.args }}
@@ -84,6 +85,7 @@ runs:
           set -e
           yum install -y clang
           curl -fsSL https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-linux-aarch_64.zip -o /tmp/protoc.zip
+          echo "${PROTOC_SHA256}  /tmp/protoc.zip" | sha256sum -c -
           unzip /tmp/protoc.zip -d /usr/local
           rm /tmp/protoc.zip
           /usr/local/bin/protoc --version

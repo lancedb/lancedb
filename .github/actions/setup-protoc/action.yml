@@ -9,38 +9,72 @@ inputs:
 
 outputs:
   version:
-    description: "The pinned protoc version, e.g. 24.4"
-    value: ${{ steps.version.outputs.version }}
+    description: "The pinned protoc version, e.g. 36.2"
+    value: ${{ steps.pin.outputs.version }}
+  linux-x86_64-sha256:
+    description: "SHA-256 of the protoc linux-x86_64 zip"
+    value: ${{ steps.pin.outputs.linux-x86_64-sha256 }}
+  linux-aarch_64-sha256:
+    description: "SHA-256 of the protoc linux-aarch_64 zip"
+    value: ${{ steps.pin.outputs.linux-aarch_64-sha256 }}
 
 runs:
   using: composite
   steps:
-    - name: Set protoc version
-      id: version
+    # protobuf does not publish checksum files for protoc. These are the digests
+    # GitHub records for the release assets; when bumping, copy them from
+    # `gh api repos/protocolbuffers/protobuf/releases/tags/v<version>`.
+    - name: Set protoc pin
+      id: pin
       shell: bash
-      run: echo "version=24.4" >> "$GITHUB_OUTPUT"
+      run: |
+        {
+          echo "version=36.2"
+          echo "linux-x86_64-sha256=121f6c7afe1d4d0e3ea6aab9432038599250134cbf4474cb1167d2c7decd4278"
+          echo "linux-aarch_64-sha256=8b8f18bd2b30346efbc698dd5a73dd7c805f3ef8380f6dfc95c768f3f1852f6a"
+          echo "osx-universal_binary-sha256=83d0dc80672f53486f54299bca6177159f9cad1fd54d4d3143eeea53c4423e1b"
+          echo "win64-sha256=f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3"
+        } >> "$GITHUB_OUTPUT"
     - name: Install protoc
       if: ${{ inputs.install == 'true' }}
       shell: bash
       env:
-        PROTOC_VERSION: ${{ steps.version.outputs.version }}
+        PROTOC_VERSION: ${{ steps.pin.outputs.version }}
         RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+        LINUX_X86_64_SHA256: ${{ steps.pin.outputs.linux-x86_64-sha256 }}
+        LINUX_AARCH_64_SHA256: ${{ steps.pin.outputs.linux-aarch_64-sha256 }}
+        OSX_SHA256: ${{ steps.pin.outputs.osx-universal_binary-sha256 }}
+        WIN64_SHA256: ${{ steps.pin.outputs.win64-sha256 }}
       run: |
         set -euo pipefail
-        case "$RUNNER_OS_NAME" in
-          Linux) platform="linux-$(uname -m | sed 's/aarch64/aarch_64/')" ;;
-          macOS) platform="osx-universal_binary" ;;
-          Windows) platform="win64" ;;
-          *) echo "Unsupported runner OS: $RUNNER_OS_NAME" >&2; exit 1 ;;
+        case "$RUNNER_OS_NAME/$RUNNER_ARCH_NAME" in
+          Linux/X64) platform="linux-x86_64"; sha256="$LINUX_X86_64_SHA256" ;;
+          Linux/ARM64) platform="linux-aarch_64"; sha256="$LINUX_AARCH_64_SHA256" ;;
+          macOS/*) platform="osx-universal_binary"; sha256="$OSX_SHA256" ;;
+          Windows/X64) platform="win64"; sha256="$WIN64_SHA256" ;;
+          *) echo "Unsupported runner: $RUNNER_OS_NAME/$RUNNER_ARCH_NAME" >&2; exit 1 ;;
         esac
+        zip="$RUNNER_TEMP/protoc.zip"
         dest="$RUNNER_TEMP/protoc"
-        curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${platform}.zip" -o "$RUNNER_TEMP/protoc.zip"
+        curl -fsSL "https://github.com/protocolbuffers/protobuf/releases/download/v${PROTOC_VERSION}/protoc-${PROTOC_VERSION}-${platform}.zip" -o "$zip"
+        # Hash stdin rather than a path: Windows paths contain backslashes,
+        # which make sha256sum escape its output.
+        if [ "$RUNNER_OS_NAME" = "macOS" ]; then
+          actual=$(shasum -a 256 < "$zip" | cut -d' ' -f1)
+        else
+          actual=$(sha256sum < "$zip" | cut -d' ' -f1)
+        fi
+        if [ "$actual" != "$sha256" ]; then
+          echo "protoc checksum mismatch: expected $sha256, got $actual" >&2
+          exit 1
+        fi
         if [ "$RUNNER_OS_NAME" = "Windows" ]; then
           # Git Bash on Windows runners does not reliably ship unzip.
-          7z x -y -o"$dest" "$RUNNER_TEMP/protoc.zip" > /dev/null
+          7z x -y -o"$dest" "$zip" > /dev/null
         else
-          unzip -q -o "$RUNNER_TEMP/protoc.zip" -d "$dest"
+          unzip -q -o "$zip" -d "$dest"
         fi
-        rm "$RUNNER_TEMP/protoc.zip"
+        rm "$zip"
         echo "$dest/bin" >> "$GITHUB_PATH"
         "$dest/bin/protoc" --version
