@@ -2817,6 +2817,18 @@ describe("when dealing with blob columns", () => {
     expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
   });
 
+  it("rejects a whole blob read batch when one row ID was deleted", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await table.delete("id = 2");
+
+    await expect(table.fetchBlobs("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+    await expect(table.fetchBlobFiles("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+  });
+
   it("adds a LargeBinary Arrow column to a blob table", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([new Field("id", new Int64()), blob("image")]);
@@ -3029,7 +3041,7 @@ describe("when dealing with blob columns", () => {
     expect(bytes[0]!.equals(payload)).toBe(true);
   });
 
-  it("creates and adds list blob columns", async () => {
+  it("creates list blobs without advertising unfetchable elements", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([
       new Field("id", new Int64(), true),
@@ -3048,7 +3060,16 @@ describe("when dealing with blob columns", () => {
       { id: 3n, images: [gamma, null] },
       { id: 4n, images: [] },
     ]);
-    expect(await table.blobColumns()).toEqual(["images.image"]);
+    expect(await table.blobColumns()).toEqual([]);
+    const [first] = await table.query().withRowId().toArray();
+    for (const column of ["images", "images.image"]) {
+      await expect(
+        table.fetchBlobs(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+      await expect(
+        table.fetchBlobFiles(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+    }
     const rows = await table.query().toArray();
     const byId = new Map(rows.map((row) => [Number(row.id), row]));
     expect(descriptorSizes(byId.get(1)!.images)).toEqual([
@@ -3094,6 +3115,7 @@ describe("when dealing with blob columns", () => {
         ],
       },
     ]);
+    expect(await table.blobColumns()).toEqual([]);
     const rows = await table.query().toArray();
     const byId = new Map(rows.map((row) => [Number(row.id), row]));
     expect(

@@ -523,18 +523,47 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
-    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+    with pytest.raises(RuntimeError, match="no fetchable blob v2 source"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
             blob_mode="lazy"
         )
 
 
+def test_vector_query_to_pandas_legacy_blob_descriptions_and_bytes(tmp_db):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        "test_vector_query_blob_descriptions",
+        _blob_query_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+    query = table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1)
+
+    df = query.to_pandas(blob_mode="descriptions")
+    assert df["blob"].tolist() == [{"position": 0, "size": 3}]
+
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_pandas(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        query.to_arrow(blob_mode="bytes")
+    with pytest.raises(ValueError, match="legacy blob columns"):
+        table.to_arrow(blob_mode="bytes")
+    assert table.to_pandas(blob_mode="bytes")["blob"].tolist() == [
+        b"one",
+        b"two",
+        b"three",
+        b"four",
+    ]
+
+
 @pytest.mark.parametrize("blob_mode", ["default", "lazy", "bytes", "descriptions"])
-def test_vector_query_to_pandas_blob_v2_modes(tmp_db, blob_mode):
+@pytest.mark.parametrize("with_row_id", [None, True, False])
+def test_vector_query_to_pandas_blob_v2_modes(tmp_db, blob_mode, with_row_id):
     pytest.importorskip("lance")
     table = _create_blob_v2_query_table(tmp_db, f"test_vector_blob_v2_{blob_mode}")
 
     query = table.search([1.0, 0.0]).select(["id", "blob", "vector"]).limit(1)
+    if with_row_id is not None:
+        query = query.with_row_id(with_row_id)
     df = (
         query.to_pandas()
         if blob_mode == "default"
@@ -542,7 +571,7 @@ def test_vector_query_to_pandas_blob_v2_modes(tmp_db, blob_mode):
     )
 
     assert df["id"].tolist() == [1]
-    assert "_rowid" not in df.columns
+    assert ("_rowid" in df.columns) == (with_row_id is True)
     if blob_mode == "bytes":
         assert df["blob"].tolist() == [b"one"]
     else:
@@ -552,7 +581,8 @@ def test_vector_query_to_pandas_blob_v2_modes(tmp_db, blob_mode):
         assert "_lance_row_id" not in descriptor
 
 
-def test_blob_v2_non_scan_query_shapes_to_pandas(tmp_db):
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_blob_v2_non_scan_query_shapes_to_pandas(tmp_db, blob_mode):
     pytest.importorskip("lance")
     table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_query_shapes")
     table.create_index("tag", config=FTS())
@@ -563,12 +593,15 @@ def test_blob_v2_non_scan_query_shapes_to_pandas(tmp_db):
         table.take_offsets([1, 2]).select(["id", "blob"]),
     ]
     for query in queries:
-        df = query.to_pandas(blob_mode="bytes")
+        df = query.to_pandas(blob_mode=blob_mode)
         assert len(df) == 2
-        assert df["blob"].tolist() == [
-            {1: b"one", 2: b"two", 3: b"three", 4: b"four"}[row_id]
-            for row_id in df["id"]
-        ]
+        if blob_mode == "bytes":
+            assert df["blob"].tolist() == [
+                {1: b"one", 2: b"two", 3: b"three", 4: b"four"}[row_id]
+                for row_id in df["id"]
+            ]
+        else:
+            assert all("_lance_row_id" not in blob for blob in df["blob"])
         assert "_rowid" not in df.columns
 
 
@@ -677,14 +710,21 @@ def test_blob_v2_pandas_preserves_fetch_error(tmp_db, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
-async def test_async_vector_query_to_pandas_blob_v2_modes(tmp_db_async, blob_mode):
+@pytest.mark.parametrize("with_row_id", [False, True])
+async def test_async_vector_query_to_pandas_blob_v2_modes(
+    tmp_db_async, blob_mode, with_row_id
+):
     pytest.importorskip("lance")
     table = await _create_blob_v2_query_table_async(
         tmp_db_async, f"test_async_vector_blob_v2_{blob_mode}"
     )
 
-    df = await table.vector_search([1.0, 0.0]).limit(1).to_pandas(blob_mode=blob_mode)
+    query = table.vector_search([1.0, 0.0]).limit(1)
+    if with_row_id:
+        query = query.with_row_id()
+    df = await query.to_pandas(blob_mode=blob_mode)
     assert df["id"].tolist() == [1]
+    assert ("_rowid" in df.columns) == with_row_id
     if blob_mode == "bytes":
         assert df["blob"].tolist() == [b"one"]
     else:

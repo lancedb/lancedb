@@ -12,15 +12,7 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Install Protoc v21.12
-      working-directory: C:\
-      run: |
-        New-Item -Path 'C:\protoc' -ItemType Directory
-        Set-Location C:\protoc
-        Invoke-WebRequest https://github.com/protocolbuffers/protobuf/releases/download/v21.12/protoc-21.12-win64.zip -OutFile C:\protoc\protoc.zip
-        7z x protoc.zip
-        Add-Content $env:GITHUB_PATH "C:\protoc\bin"
-      shell: powershell
+    - uses: ./.github/actions/setup-protoc
     - name: Build wheel
       uses: PyO3/maturin-action@v1
       with:
