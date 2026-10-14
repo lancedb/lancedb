@@ -99,8 +99,9 @@ variables or a secrets manager.
     </CodeBlock>
 </CodeGroup>
 
-In Rust, the connection builder takes the same settings through `api_key`,
-`region` and `host_override`. To use OAuth instead of an API key, see
+In Rust, enable the crate's `remote` feature; the connection builder then takes
+the same settings through `api_key`, `region` and `host_override`. To use OAuth
+instead of an API key, see
 [Authentication](/enterprise/authentication); for every connection option, see
 [Database](/management/database#deployment).
 
