@@ -28,9 +28,11 @@ multi-column index, use the SDK's [`create_index`](/indexing).
 </Note>
 
 <Note>
-**Enterprise job type:** `create_ivf_pq`, `create_btree`, `create_fts`, and one
-more per algorithm -- the type names which algorithm is building, not a
-different feature. See [Build & Repair](/indexing/reindexing).
+**Enterprise job type:** `reindex_` followed by the algorithm, such as
+`reindex_btree` or `reindex_ivf_pq`; the name says which algorithm is building,
+not a different feature. An SDK build that must not replace an existing index
+runs as `create_` followed by the algorithm instead. See
+[Build & Repair](/indexing/reindexing).
 </Note>
 
 ## DROP INDEX {#drop}

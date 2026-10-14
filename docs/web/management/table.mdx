@@ -229,11 +229,11 @@ does not support it refuses every clone.
 </Warning>
 
 <Note>
-**Enterprise job type:** `drop_table`. On a deployment that drops tables in the
-background, fences the table's directory with a marker and deletes its content
-as a job -- see
-[Background jobs](/maintenance/background-jobs#teardown) for the namespace
-and view equivalent.
+**Enterprise job type:** on a deployment that drops tables in the background,
+the teardown runs as a job: `drop_table`, which fences the table's directory
+with a marker and deletes its content, or `drop_object`, depending on how the
+deployment stores its catalog. See
+[Background jobs](/maintenance/background-jobs#teardown).
 </Note>
 
 ## Dropping {#drop}
