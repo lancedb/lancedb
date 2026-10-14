@@ -41,7 +41,9 @@ DROP INDEX documents.title_idx
 
 Takes the qualified `table.index` name. Find it with the SDK's
 [`list_indices`](/indexing) if you created the index without
-naming it yourself.
+naming it yourself. A deployment builds the index in the background after
+`CREATE INDEX` returns; until that build finishes, the index is not listed and
+`DROP INDEX` reports it as not found.
 
 ## What to read next {#next}
 

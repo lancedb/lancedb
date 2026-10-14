@@ -35,11 +35,10 @@ name.
 
 ### A plain column {#plain-column}
 
-```sql
-ALTER TABLE t ADD COLUMN c INT
-```
-
-Added empty and nullable. Nothing is computed.
+SQL `ADD COLUMN` requires an `AS` binding, so a plain column such as
+`ALTER TABLE t ADD COLUMN c INT` is rejected. Add an empty, nullable column
+with the SDK instead -- see
+[Add nullable columns](/management/table#schema-add-nullable-columns).
 
 ### A computed column {#computed-column}
 
@@ -97,19 +96,23 @@ ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
 
 Records which column identifies a row. **Unenforced** is not a hedge in the
 naming: uniqueness is not checked on write, and declaring it does not make
-duplicates impossible. It tells the planner what to assume.
+duplicates impossible. It tells the planner what to assume. The column must be
+declared `NOT NULL`.
 
 ```sql
 ALTER TABLE t SET WAL
-ALTER TABLE t SET WAL WITH (sharding = 'bucket', buckets = 4)
+ALTER TABLE t SET WAL WITH (sharding = 'bucket', column = 'id', buckets = 4)
 ALTER TABLE t SET WAL WITH (maintained_indexes = '')
 ALTER TABLE t UNSET WAL
 ```
 
 A write-ahead log makes small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
-not contend on one place; `maintained_indexes` chooses which indexes are kept
-current against WAL rows. See
+not contend on one place; `bucket` sharding names its `column`, which must be
+the table's unenforced primary key, and inserts into the table then need a
+scalar index on that key. `maintained_indexes` chooses which indexes are kept
+current against WAL rows. A table with a computed column cannot take a
+write-ahead log. See
 [Background jobs](/maintenance/background-jobs#wal) for how the log gets
 folded back into the table.
 
