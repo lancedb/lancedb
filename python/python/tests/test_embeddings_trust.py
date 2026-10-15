@@ -21,6 +21,7 @@ from lancedb.embeddings import (
     UntrustedEmbeddingConfigError,
     get_registry,
 )
+from lancedb.embeddings.base import UntrustedEmbeddingFunction
 
 
 @pytest.fixture(autouse=True)
@@ -142,6 +143,44 @@ def test_create_trusts_its_own_config(tmp_path):
     restored = db.open_table("t").embedding_functions["vector"].function
     assert isinstance(restored, SentenceTransformerEmbeddings)
     assert restored.trust_remote_code is True
+
+
+def test_create_trusts_only_the_revision_it_selected():
+    # Anyone can push a PR ref to a Hugging Face repo, so trusting a model's
+    # default branch must not extend to its other revisions.
+    SentenceTransformerEmbeddings.create(name="org/model", trust_remote_code=True)
+    func = restore(
+        "sentence-transformers",
+        {"name": "org/model", "revision": "refs/pr/123", "trust_remote_code": True},
+    )
+    assert isinstance(func, UntrustedEmbeddingFunction)
+
+    same = restore(
+        "sentence-transformers", {"name": "org/model", "trust_remote_code": True}
+    )
+    assert same.trust_remote_code is True
+
+
+def test_explicit_unpinned_approval_covers_any_revision():
+    get_registry().allow_remote_code("org/model")
+    func = restore(
+        "sentence-transformers",
+        {"name": "org/model", "revision": "abc123", "trust_remote_code": True},
+    )
+    assert func.trust_remote_code is True
+
+
+def test_missing_flag_does_not_inherit_unapproved_trust_default():
+    class LegacySentenceTransformer(SentenceTransformerEmbeddings):
+        trust_remote_code: bool = True
+
+    registry = get_registry()
+    registry.register("legacy-trust-default")(LegacySentenceTransformer)
+    try:
+        func = restore("legacy-trust-default", {"name": "attacker/model"})
+        assert isinstance(func, UntrustedEmbeddingFunction)
+    finally:
+        del registry._functions["legacy-trust-default"]
 
 
 def test_trusting_one_model_does_not_trust_a_swapped_name():
