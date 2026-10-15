@@ -94,7 +94,7 @@ what the capability is, and what the embedded form does instead. A separate
 private repository supplies the fuller version of each, which replaces the page
 at the same path when the published site is assembled.
 
-Two things to know before editing:
+Four things to know before editing:
 
 **Code examples are not written into the pages.** They live in real tests under
 `docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
@@ -115,6 +115,52 @@ pull-request CI; that integration remains follow-up work.
 Enterprise pages attach their additions to the right section, so they are
 assigned once and never regenerated. Leave an existing anchor alone even when
 you reword the heading above it; only new headings need a new one.
+
+**A page can declare where it applies.** Its frontmatter says whether LanceDB
+OSS and LanceDB Enterprise support the feature: use only `available` or
+`unavailable`, and one sentence that explains its scope. Availability describes
+product support, not whether a particular deployment has enabled or configured
+the feature. A supported feature stays `available` when it requires setup, a
+supported SDK or server version, or has differences between offerings. State
+those requirements in the summary or the relevant section, including unsupported
+subfeatures. Do not use `varies`, infer support from an unknown status, or mark an
+absent capability available. Narrow a page to the capability it actually covers
+when necessary. Publication of unlaunched features is controlled separately by
+`launch`, not by an availability status:
+
+```yaml
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Requests to a deployment carry an API key or an OAuth token. Embedded
+    LanceDB has no server to sign in to.
+```
+
+The assembled site renders this as a label above the page's content, as a
+sidebar tag when only one offering has the feature, and as the page's row in
+the comparison on [OSS and Enterprise](docs/web/basics/offerings.mdx). Do not
+also open the page with a badge of its own, and keep a qualification that only
+one section needs in that section's text. A `mint dev` preview of `docs/web`
+alone renders neither the labels nor the comparison.
+
+**A feature can be documented before it launches.** Functions are documented
+ahead of their launch. A page that documents only them says so in its
+frontmatter:
+
+```yaml
+launch: functions
+```
+
+Another page marks what it says about them. A section between
+`{/* if functions launched */}` and `{/* end if */}`, each on a line of its own,
+is published only once Functions launch; `{/* if functions not launched */}`
+marks one published only until then. Put the marker at the end of a table row or
+list item to gate that line alone. Until the launch, the assembled site leaves
+out those pages, their examples, and every marked section, navigation entry and
+redirect, and stops the build if anything still published links to them. A
+`mint dev` preview of `docs/web` alone shows both sides of every marker. The
+documentation repository's README shows how to assemble either site.
 
 ## Release process
 

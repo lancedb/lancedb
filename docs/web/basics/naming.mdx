@@ -1,0 +1,64 @@
+---
+title: "Naming rules"
+sidebarTitle: "Naming Rules"
+description: "Choose portable names for your data objects and namespace paths."
+icon: signature
+keywords: ["names", "naming", "table name", "namespace", "identifier", "limits"]
+---
+
+## Naming rules {#rules}
+
+<span id="objects" />
+
+Databases, namespaces, tables, views and branches all have names. Choose names
+that describe their purpose, such as `documents`, `prod` or `training_2026`.
+Consistent names make data easier to find and application code easier to read.
+
+Use the following rules for names that work across LanceDB OSS and Enterprise.
+
+| Object | Characters | Length |
+| --- | --- | --- |
+| Table, materialized view, view | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Namespace component | ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters; at most 10 components in a path |
+| Database | ASCII letters and digits, `-`, `_`, `.`, with `/` between components | 1 to 64 characters for the whole name |
+| Branch | Avoid `$` and `:`; use ASCII letters, digits, `-` and `_` for portability | Keep to 1 to 64 characters |
+| Secret {/* if functions launched */} | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Function {/* if functions launched */} | ASCII letters and digits, `_` | 1 to 128 characters |
+
+- Names and individual namespace or database components must not be empty.
+- Table, view, namespace and database components cannot be `.` or `..`.
+- Secret names cannot be `.` or `..`. {/* if functions launched */}
+- Avoid `$` and `:` because they separate parts of qualified identifiers.
+- A namespace path beginning with `public` cannot contain another component.
+
+## Namespace paths {#paths}
+
+A namespace path is a list of names. `["prod", "search"]` identifies the
+`search` namespace within `prod`. A table named `documents` belongs to that
+namespace; its table name remains `documents`.
+
+Use the SDK's namespace-path argument to supply the list. A period inside an
+SDK name is a character in that name, not a separator that creates another
+namespace. SQL uses its own qualified-name syntax; see
+[SQL namespace paths](/sql/dql/select#namespaces).
+
+The empty path `[]` identifies the root namespace.
+
+## Examples {#examples}
+
+| Name or path | Guidance |
+| --- | --- |
+| `documents`, `user-events.v2`, `train_2026` | Portable table names |
+| `["prod", "search"]` | A two-component namespace path |
+| `my table` | Use `my_table` instead of a space |
+| `orders$2026` | Use `orders_2026`; `$` is reserved |
+| `résumés` | Use an ASCII name such as `resumes` |
+| `["public", "search"]` | Invalid nesting under `public`; use a different parent namespace |
+
+<span id="which-versions-check-them" />
+
+## Learn more {#next}
+
+- [Namespaces](/management/namespace): create namespaces and address tables.
+- [Branches](/tables/branching): name and manage separate lines of table history.
+- [Limits](/basics/limits): check other constraints before designing your schema.
