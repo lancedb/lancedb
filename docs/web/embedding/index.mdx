@@ -123,6 +123,29 @@ For non-sensitive settings such as inference device selection, you can also use 
 
 Find the full list of arguments for each provider in the [integrations](/integrations/embedding) section.
 
+### Trusting remote code and custom endpoints {#trusting-remote-code-and-custom-endpoints}
+
+In Python, the embedding definition is stored in the table, so anyone who can write to the table can change it.
+To keep a table from running code or sending data where you didn't intend, two kinds of settings are only honored
+when this process has approved them:
+
+- `trust_remote_code=True`, which runs code from the model's Hugging Face repository.
+- Custom endpoints such as OpenAI `base_url`, Ollama `host`, or watsonx `url`, which receive your data and API keys.
+
+Embedding functions you create in the current process are approved automatically. When you open a table in a new
+process, approve these settings explicitly before computing embeddings:
+
+```python
+from lancedb.embeddings import get_registry
+
+registry = get_registry()
+# Pinning a commit hash is recommended, since the code at a branch can change.
+registry.allow_remote_code("nomic-ai/nomic-embed-text-v1.5", revision="<commit-hash>")
+registry.allow_endpoint("http://my-ollama-host:11434")
+```
+
+Until then, computing embeddings raises `UntrustedEmbeddingConfigError`. Other operations on the table still work.
+
 ## Multiple embedding columns {#multiple-embedding-columns}
 
 A single table can include more than one embedding definition when you want to store multiple semantic views

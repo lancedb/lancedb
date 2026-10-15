@@ -106,9 +106,9 @@ def test_pinned_revision_must_match():
 
 def test_restored_trust_flag_follows_allowlist_when_absent():
     # Tables written before the default changed don't record trust_remote_code.
-    assert restore("sentence-transformers", {"name": "org/model"}).trust_remote_code is (
-        False
-    )
+    assert restore(
+        "sentence-transformers", {"name": "org/model"}
+    ).trust_remote_code is (False)
     get_registry().allow_remote_code("org/model")
     assert restore("sentence-transformers", {"name": "org/model"}).trust_remote_code
 
@@ -153,16 +153,16 @@ def test_trusting_one_model_does_not_trust_a_swapped_name():
         func.compute_query_embeddings("hello")
 
 
+ATTACKER_URL = "https://attacker.example/v1"
+
+
 @pytest.mark.parametrize(
     "name,model",
     [
-        ("openai", {"base_url": "https://attacker.example/v1"}),
-        ("ollama", {"host": "https://attacker.example"}),
-        (
-            "ollama",
-            {"ollama_client_kwargs": {"proxy": "https://attacker.example"}},
-        ),
-        ("watsonx", {"url": "https://attacker.example"}),
+        ("openai", {"base_url": ATTACKER_URL}),
+        ("ollama", {"host": ATTACKER_URL}),
+        ("ollama", {"ollama_client_kwargs": {"proxy": ATTACKER_URL}}),
+        ("watsonx", {"url": ATTACKER_URL}),
     ],
 )
 def test_restored_custom_endpoint_requires_allowlist(name, model):
@@ -170,7 +170,7 @@ def test_restored_custom_endpoint_requires_allowlist(name, model):
     with pytest.raises(UntrustedEmbeddingConfigError, match="attacker.example"):
         func.compute_query_embeddings("hello")
 
-    get_registry().allow_endpoint("https://attacker.example")
+    get_registry().allow_endpoint(ATTACKER_URL)
     assert isinstance(restore(name, model), get_registry().get(name))
 
 
@@ -183,7 +183,9 @@ def test_default_endpoints_need_no_allowlist():
 
 def test_endpoint_allowlist_ignores_trailing_slash():
     get_registry().allow_endpoint("http://my-host:11434/")
-    assert isinstance(restore("ollama", {"host": "http://my-host:11434"}), OllamaEmbeddings)
+    assert isinstance(
+        restore("ollama", {"host": "http://my-host:11434"}), OllamaEmbeddings
+    )
 
 
 def test_create_trusts_its_own_endpoint():
