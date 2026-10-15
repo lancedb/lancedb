@@ -78,6 +78,27 @@ ignore = [
     { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
     { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
 
+    # rustls 0.23.45: four advisories fixed in 0.23.46 (Debug impls leaking
+    # TLS secrets, ECH rejection buffering, Brotli certificate decompression
+    # allocation, ServerHello key-exchange downgrade). 0.23.46 was published
+    # 2026-10-14 and the dependency age policy requires releases to be 48
+    # hours old, so the upgrade cannot land yet. Remove these entries and run
+    # `cargo update -p rustls` once the window has passed. Mirrors lance #9985.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0346
+    # https://rustsec.org/advisories/RUSTSEC-2026-0347
+    # https://rustsec.org/advisories/RUSTSEC-2026-0348
+    # https://rustsec.org/advisories/RUSTSEC-2026-0349
+    { id = "RUSTSEC-2026-0346", reason = "fixed in rustls 0.23.46; blocked on the 48-hour release age policy" },
+    { id = "RUSTSEC-2026-0347", reason = "fixed in rustls 0.23.46; blocked on the 48-hour release age policy" },
+    { id = "RUSTSEC-2026-0348", reason = "fixed in rustls 0.23.46; blocked on the 48-hour release age policy" },
+    { id = "RUSTSEC-2026-0349", reason = "fixed in rustls 0.23.46; blocked on the 48-hour release age policy" },
+
+    # unsafe-libyaml: unmaintained. Transitive via lance-tokenizer → lindera
+    # → serde_yaml_ng. No maintained upgrade exists; clearing it requires
+    # lindera to move off serde_yaml_ng.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0449
+    { id = "RUSTSEC-2024-0449", reason = "transitive via lindera (lance-tokenizer); no maintained upgrade available" },
+
     # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
     # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
     # we actively use is upgraded to 0.103.13 which contains the fix.
