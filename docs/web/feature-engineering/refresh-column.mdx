@@ -69,7 +69,7 @@ REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 
 <Note>
 **Enterprise job type:** `computed_refresh` for a SQL-expression column.
-`function_refresh` for one filled by a registered [function](/management/function). {/* if functions launched */}
+{/* Draft for the Functions release: `function_refresh` for one filled by a registered [function](/management/function). */}
 </Note>
 
 ## Run a refresh on Enterprise {#async}
@@ -126,12 +126,14 @@ that were already written -- for example when the record of the inputs they
 were computed from was not saved -- so do not count on a retry costing only the
 rows that did not complete.
 
-{/* if functions launched */}
+{/*
+Draft for the Functions release.
+
 For a column filled by a [function](/management/function), the usual cause is
 the worker environment rather than the data. See
 [environment mismatches](/management/function#mismatch-symptoms) for the
 symptoms, which rarely name their cause.
-{/* end if */}
+*/}
 
 ## Related guides {#next}
 

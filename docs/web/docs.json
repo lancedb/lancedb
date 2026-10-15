@@ -64,10 +64,6 @@
       "destination": "/feature-engineering/add-computed-column"
     },
     {
-      "source": "/feature-engineering/functions",
-      "destination": "/management/function"
-    },
-    {
       "source": "/tables/create",
       "destination": "/ingestion"
     },
@@ -332,8 +328,7 @@
               "management/table",
               "tables/branching",
               "management/materialized-view",
-              "management/view",
-              "management/function"
+              "management/view"
             ]
           },
           {
@@ -383,7 +378,6 @@
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
                   "sql/ddl/index",
-                  "sql/ddl/function",
                   "sql/ddl/job"
                 ],
                 "icon": "sitemap"

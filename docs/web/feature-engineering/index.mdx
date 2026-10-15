@@ -10,15 +10,18 @@ Use feature engineering to turn raw data into features for search, analysis
 and model training. LanceDB stores derived columns and materialized views
 alongside the source data, so you can reuse the results across those workflows.
 
-{/* if functions launched */}
-[Functions](/management/function) and
-[materialized views](/feature-engineering/materialized-views) are ordinary
-{/* end if */}
-{/* if functions not launched */}
 [Materialized views](/feature-engineering/materialized-views) are ordinary
-{/* end if */}
 [catalog objects](/basics/catalog). Create them through the SDK or SQL,
 then refresh the derived data when its inputs change.
+
+{/*
+Draft for the Functions release. Replaces the paragraph above:
+
+[Functions](/management/function) and
+[materialized views](/feature-engineering/materialized-views) are ordinary
+[catalog objects](/basics/catalog). Create them through the SDK or SQL,
+then refresh the derived data when its inputs change.
+*/}
 
 <Note>
 In LanceDB Enterprise, every operation here also has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
@@ -77,9 +80,13 @@ options supported by your server version; see
 | --- | --- | --- | --- |
 | [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | OSS and Enterprise |
 | [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | OSS and Enterprise |
-| [Function](/management/function) {/* if functions launched */} | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
-| [Geneva](/geneva) {/* if functions not launched */} | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
-| [Geneva](/geneva) {/* if functions launched */} | columns filled by Python, for existing pipelines | the `geneva` package | <Badge color="red">Enterprise</Badge> |
+| [Geneva](/geneva) | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
+
+{/*
+Draft for the Functions release. Replace the Geneva row of the table above with:
+| [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
+| [Geneva](/geneva) | columns filled by Python, for existing pipelines | the `geneva` package | <Badge color="red">Enterprise</Badge> |
+*/}
 
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).
@@ -88,21 +95,21 @@ expression, filled by [a refresh](/feature-engineering/refresh-column).
 aggregated view of a source -- and bring it up to date on each refresh. The
 result is an ordinary table: queryable, indexable, searchable.
 
-{/* if functions launched */}
-**Functions** run Python where the data is, for work SQL cannot express:
-embedding a column, calling a model, decoding an image. Registered once,
-versioned, then applied as a column. They are the way to do that on a
-deployment; [Geneva](/geneva) remains available for existing pipelines.
-
-{/* end if */}
-{/* if functions not launched */}
 **Geneva** is LanceDB Enterprise's Python package for work SQL cannot express:
 embedding a column, calling a model, decoding an image. It defines features as
 Python functions and backfills them as distributed jobs.
 
-{/* end if */}
+{/*
+Draft for the Functions release. Replaces the Geneva paragraph above:
+
+**Functions** run Python where the data is, for work SQL cannot express:
+embedding a column, calling a model, decoding an image. Registered once,
+versioned, then applied as a column. They are the way to do that on a
+deployment; [Geneva](/geneva) remains available for existing pipelines.
+*/}
+
 A materialized view can select computed columns.
-A computed column can be filled by a registered function. {/* if functions launched */}
+{/* Draft for the Functions release: A computed column can be filled by a registered function. */}
 
 ## Where the work runs {#where}
 
@@ -125,16 +132,18 @@ from a different process -- the connection does not have to stay open.
 
 Enterprise manages the compute for the refresh. You still control when to
 submit it; declaring a computed column does not schedule recurring refreshes.
-That is also why a function must declare the environment it needs. {/* if functions launched */}
+{/* Draft for the Functions release: That is also why a function must declare the environment it needs. */}
 
 ## Recovering from a failure {#failures}
 
-{/* if functions launched */}
+{/*
+Draft for the Functions release.
+
 A function that raises fails the job. There is no per-row retry or skip policy
 in the function definition, so a function calling a flaky external service
 should handle that itself, inside the function body.
+*/}
 
-{/* end if */}
 When a refresh fails, fix the cause and run the refresh
 again. The new refresh fills what is still empty or stale. How much of the
 failed run was kept depends on where it ran (see
@@ -154,9 +163,10 @@ only the rows that did not complete.
   <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
     Bring a derived table up to date with its source.
   </Card>
-  {/* if functions launched */}
+  {/*
+  Draft for the Functions release:
   <Card title="Functions" icon="code" href="/management/function">
     Register Python to fill a column with.
   </Card>
-  {/* end if */}
+  */}
 </CardGroup>

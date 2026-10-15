@@ -51,7 +51,9 @@ The column is committed empty and the expression is stored, not evaluated --
 declaring one on a billion-row table costs what declaring one on an empty table
 costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
 
-{/* if functions launched */}
+{/*
+Draft for the Functions release.
+
 ### A function column {#function-column}
 
 ```sql
@@ -86,7 +88,7 @@ ALTER TABLE t ADD COLUMN c AS f(x) WITH (num_workers = '2')
 `WITH` on a plain computed column accepts only `version`. Resource options such
 as `num_workers` apply to function columns, where there are workers to size.
 </Note>
-{/* end if */}
+*/}
 
 ### Table properties {#properties}
 

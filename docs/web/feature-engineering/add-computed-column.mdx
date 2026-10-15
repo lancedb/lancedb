@@ -38,11 +38,10 @@ including that you can travel back to before the column existed.
 - **SQL expressions in `transforms`** are evaluated *now*, for every row, as
   part of the call. Good for a small table, or a column you want populated
   immediately.
-  {/* if functions launched */}
+  {/* Draft for the Functions release:
   A `FunctionApplication` passed through `transforms` instead
   declares empty Function-bound columns, which a refresh fills; that needs a
-  deployment with Functions enabled, and the embedded library refuses it.
-  {/* end if */}
+  deployment with Functions enabled, and the embedded library refuses it. */}
 - **`computed`** stores the expression and evaluates nothing. The column is
   committed empty and filled later by
   [`refresh_column`](/feature-engineering/refresh-column).
@@ -93,18 +92,19 @@ reshape later. Dropping the computed column releases the constraint.
 
 <Badge color="red">Enterprise</Badge>
 
-{/* if functions launched */}
+When the value cannot be expressed in SQL -- an embedding, a model call, an
+image decode -- [Geneva](/geneva), the feature engineering package for LanceDB
+Enterprise, fills the column with a Python function instead.
+
+{/*
+Draft for the Functions release. Replaces the paragraph above:
+
 When the value cannot be expressed in SQL -- an embedding, a model call, an
 image decode -- the column is filled by a registered
 [function](/management/function) instead of an expression. Declaring it looks
 the same; what differs is what fills it. It needs a deployment with Functions
 enabled.
-{/* end if */}
-{/* if functions not launched */}
-When the value cannot be expressed in SQL -- an embedding, a model call, an
-image decode -- [Geneva](/geneva), the feature engineering package for LanceDB
-Enterprise, fills the column with a Python function instead.
-{/* end if */}
+*/}
 
 ## Related guides {#next}
 
@@ -112,14 +112,13 @@ Enterprise, fills the column with a Python function instead.
   <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     Fill the rows that lack values.
   </Card>
-  {/* if functions launched */}
-  <Card title="Functions" icon="code" href="/management/function">
-    Fill a column with Python.
-  </Card>
-  {/* end if */}
-  {/* if functions not launched */}
   <Card title="Geneva" icon="layer-group" href="/geneva">
     Fill a column with Python on LanceDB Enterprise.
   </Card>
-  {/* end if */}
+  {/*
+  Draft for the Functions release. Replaces the Geneva card above:
+  <Card title="Functions" icon="code" href="/management/function">
+    Fill a column with Python.
+  </Card>
+  */}
 </CardGroup>
