@@ -6,11 +6,15 @@ icon: trash
 keywords: ["delete", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
-DELETE FROM documents WHERE created_at < '2025-01-01'
+DELETE FROM documents WHERE created_at < TIMESTAMP '2025-01-01 00:00:00'
 ```
+
+Compare a timestamp column with a typed literal, as above, or with
+`CAST('2025-01-01' AS TIMESTAMP)`. A bare string such as `'2025-01-01'` is
+rejected in a `DELETE` predicate, even though a `SELECT` accepts it.
 
 Deletion marks rows rather than erasing them, so the data remains recoverable
 for as long as the version holding it survives

@@ -1,10 +1,23 @@
 ---
-title: "Storage"
-sidebarTitle: "Storage"
-description: "Choosing and configuring where LanceDB stores its data -- how you deploy an embedded database."
+title: "Embedded storage configuration"
+sidebarTitle: "Embedded Storage"
+description: "Choose and configure local disk or object storage for tables accessed by the embedded LanceDB OSS library."
 icon: database
 keywords: ["storage", "s3", "gcs", "azure", "object store", "configuration", "deploy"]
+availability:
+  oss: available
+  enterprise: unavailable
+  summary: >-
+    The embedded library chooses and configures its storage backend from the
+    connection URI and `storage_options`. In LanceDB Enterprise, storage is part of
+    the deployment's own configuration instead.
 ---
+
+This page is about the embedded library, where your connection chooses and
+configures the storage backend. A LanceDB Enterprise deployment sets up its own
+storage when it is deployed, so a `db://` connection passes none of these
+options except an Azure storage account name -- see
+[Deployment](/enterprise/deployment) for how a deployment is set up.
 
 LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
 
@@ -176,9 +189,9 @@ Table-level `storage_options` inherit every key from the connection and override
 </CodeGroup>
 
 <Tip>
-**Inspect the effective options**
+**Inspect a table's own options**
 
-On `AsyncTable`, `await table.initial_storage_options()` returns the options the table was opened with, and `await table.latest_storage_options()` returns the current options after any provider-driven refresh. The deprecated `table.storage_options()` method will be removed in a future release.
+On `AsyncTable`, `await table.initial_storage_options()` returns the options passed when the table was opened, and `await table.latest_storage_options()` returns them after any provider-driven refresh. Neither includes what the table inherits from its connection's `storage_options`, which still apply. The deprecated `table.storage_options()` method will be removed in a future release.
 </Tip>
 
 #### General object store options {#general-object-store-options}

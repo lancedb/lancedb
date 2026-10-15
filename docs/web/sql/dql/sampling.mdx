@@ -6,12 +6,11 @@ icon: dice
 keywords: ["tablesample", "sampling", "bernoulli", "system", "repeatable", "random"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-`TABLESAMPLE` draws a random subset of a table. On a lakehouse table that is
-often the difference between a question you can afford to ask and one you
-cannot -- an aggregate over 1% of forty billion rows answers in a fraction of
-the time, and for most estimates that is enough.
+Use `TABLESAMPLE` to explore a subset of a table or estimate aggregate
+statistics. The sampling method determines how much data is read and whether
+the table's physical layout influences the sample.
 
 ```sql
 SELECT * FROM documents TABLESAMPLE (10)        -- 10 percent
@@ -41,8 +40,8 @@ only as uniform as the data's layout. If rows were written in an order that
 correlates with what you are measuring, a fragment sample inherits that
 correlation.
 
-Reach for `SYSTEM` when you want a cheap look at the data and `BERNOULLI` when
-the number you compute has to be defensible. Omitting the method gives
+Use `SYSTEM` for a quick look at the data and `BERNOULLI` when you need
+independent row sampling. Omitting the method gives
 `BERNOULLI`.
 
 ## Repeatability {#repeatable}
@@ -54,9 +53,10 @@ different rows. `REPEATABLE` fixes the draw:
 SELECT * FROM documents TABLESAMPLE (10) REPEATABLE (42)
 ```
 
-This is what makes a sample usable as a **fixed evaluation set**: the same seed
-against the same data gives the same rows, so a metric computed today is
-comparable with one computed last week.
+Use the same seed and table snapshot to reproduce a sampling run. For a fixed
+evaluation set, save the selected row IDs or materialize the sample and retain
+its version. A seed alone does not preserve membership after source changes
+or changes to the physical layout.
 
 ## Where the clause can go {#placement}
 
@@ -64,7 +64,7 @@ It attaches to a table in `FROM`, including inside a subquery, a CTE, or either
 side of a join:
 
 ```sql
-SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 
 SELECT * FROM a TABLESAMPLE (5 ROWS) JOIN b ON a.id = b.id
 
@@ -75,7 +75,7 @@ Each side of a join samples independently. Sampling both sides of a join
 shrinks the *result* far more than either fraction suggests, because a row only
 survives if both its sides were drawn.
 
-## What is refused {#refused}
+## Unsupported sampling forms {#refused}
 
 Sampling is semantics, not a hint. A clause that were read and then not applied
 would be a wrong answer rather than a missing feature, so anything that cannot
@@ -86,6 +86,7 @@ be honoured exactly is an error:
 | `TABLESAMPLE (101)` | a percentage outside `0..=100` is refused, not clamped |
 | `TABLESAMPLE (1.5 ROWS)` | a row count must be whole |
 | `TABLESAMPLE (BUCKET 1 OUT OF 4)` | bucket sampling is not supported |
+| `(SELECT ...) d TABLESAMPLE (10)` | a subquery's result cannot be sampled; sample the table inside it |
 | the `SAMPLE` spelling | use `TABLESAMPLE` |
 | the `OFFSET` modifier | not supported |
 
