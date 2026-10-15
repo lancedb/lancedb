@@ -6,7 +6,7 @@ icon: layer-group
 keywords: ["lakehouse", "multimodal", "search", "compute", "training", "feature engineering"]
 ---
 
-## What is the LanceDB lakehouse? {#multimodal}
+## Multimodal storage and processing {#multimodal}
 
 LanceDB brings storage, search and data processing together for AI workloads.
 You can store multimodal data, derive features, search your records and prepare
@@ -15,7 +15,7 @@ training datasets using tables built on the open [Lance format](/basics/lance).
 The format provides the storage foundation. The [catalog](/basics/catalog)
 organizes your tables. LanceDB provides the tools to work with that data.
 
-## How does the data flow? {#capabilities}
+## Example: a video search workflow {#capabilities}
 
 Consider a team building a video search application:
 
@@ -42,7 +42,7 @@ The clips, metadata and derived features stay associated in the same table,
 so retrieval and training workflows can use the same dataset. Your training
 framework runs the model; LanceDB provides access to the training data.
 
-## What does Enterprise add? {#where}
+## Shared compute and maintenance in Enterprise {#where}
 
 LanceDB OSS runs as an embedded library in your application. LanceDB Enterprise
 provides shared infrastructure for applications and teams working with larger

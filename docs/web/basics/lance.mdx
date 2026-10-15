@@ -6,7 +6,7 @@ icon: "/static/assets/logo/lance-logo-gray.svg"
 keywords: ["lance", "format", "multimodal", "versioning", "column evolution"]
 ---
 
-## What is Lance? {#standard}
+## Lance format overview {#standard}
 
 [Lance](https://lance.org/) is an open-source, columnar format designed for
 multimodal AI. It defines how data is stored and organized into versioned tables.
@@ -18,14 +18,14 @@ LanceDB OSS and LanceDB Enterprise both use Lance as their storage foundation.
 The format is developed as an independent open-source project, with its own
 specification and tools.
 
-## What can it store? {#storage}
+## Multimodal data {#storage}
 
 A Lance table can hold images, video, audio, text, embeddings and structured
 metadata together. For example, a video dataset can keep each clip alongside
 its caption, labels and embeddings, so applications can search and work with
 those fields together.
 
-## What does the format enable? {#capabilities}
+## Data access, versioning and column updates {#capabilities}
 
 - **Efficient data access.** Read individual rows for retrieval and training,
   or scan columns for analytics.

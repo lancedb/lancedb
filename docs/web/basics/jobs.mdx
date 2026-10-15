@@ -12,32 +12,36 @@ availability:
     supports listing server jobs, reopening them by ID and reading their events.
 ---
 
-## What is a job? {#convention}
+## Job handles {#convention}
 
-A job is a handle for tracking work, such as building an index or refreshing a
-computed column. It lets you inspect progress and wait for the operation's
-outcome after submission.
+A job handle lets you track an operation, such as an index build or a computed
+column refresh. Use it to check progress, wait for completion and inspect
+failures.
 
-Job-returning methods include Python's `create_index_async` and TypeScript's
-`createIndexAsync`. Check the operation's reference for submission and waiting
-behavior: a method's name alone does not tell you when the work is complete.
+Methods such as Python's `create_index_async` and TypeScript's
+`createIndexAsync` return job handles. In OSS, the work runs in your application
+process; in Enterprise, it runs on server workers. A returned handle can
+represent an operation that has already finished, so check its status before
+waiting or requesting cancellation. See the operation's API reference for when
+the method returns.
 
-## What is its lifecycle? {#waiting}
+## Submit and wait for a job {#waiting}
 
 1. **Submit the operation.** Keep the returned job handle. For an Enterprise
    job, also keep its ID if another process needs to look it up later.
 2. **Check progress.** Read the current status while the operation runs.
-3. **Wait for an outcome.** A job can finish, fail or be cancelled. Inspect its
-   result or failure information before continuing dependent work.
+3. **Wait for completion.** Check that the job succeeded before using its
+   result. If it failed or was cancelled, inspect the failure details and any
+   results it committed before stopping.
 
 In Python, `job.status()` reports the current state and `job.wait()` waits for
-completion, raising if the job fails or is cancelled. A wait timeout ends the
-wait; it does not request cancellation of the server job.
+completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
+The timeout does not cancel the server job.
 
 <span id="inspecting" />
 <span id="events" />
 
-## How do you manage a job? {#managing}
+## Inspect and cancel jobs {#managing}
 
 | Task | What to do |
 | --- | --- |
@@ -53,7 +57,7 @@ Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
 history.
 
-## Where does the work run? {#in-process}
+## OSS and Enterprise execution {#in-process}
 
 | | OSS | Enterprise |
 | --- | --- | --- |
@@ -61,9 +65,6 @@ history.
 | Job identity | No server ID | A server ID for looking up the job |
 | Event history | No server event history | Available through the jobs API |
 | Reattaching after a client restart | No server job to reopen | Reopen by ID while the record is retained |
-
-A handle can represent work that has already completed. Check its state rather
-than assuming every returned job is still running.
 
 ## Learn more {#next}
 

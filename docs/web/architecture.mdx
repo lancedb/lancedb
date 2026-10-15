@@ -78,18 +78,18 @@ Size and monitor each tier for your workload. Read the
 [Enterprise architecture](/enterprise/architecture) for the component details
 and request flows.
 
-## Familiar APIs, a different operating model {#differences}
+## Application changes for Enterprise {#differences}
 
 Core operations remain familiar: create a table, add data, and run a search.
 With OSS, the application executes those operations. With Enterprise, the SDK
 sends requests to the service, and the service manages execution and configured
 background maintenance.
 
-Moving an application involves more than changing a connection string. Plan
-for data migration, connection settings, credentials, and SDK methods that
-behave differently on remote tables. See
-[Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise) before adapting
-an existing application. If you plan to use materialized views, check the
+To use Enterprise, configure the cluster endpoint, database URI and credentials,
+and make your data available in the Enterprise database. Review SDK methods
+that behave differently on remote tables, including result retrieval and
+background jobs. [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise)
+describes these application changes. If you plan to use materialized views, check the
 [stable row ID requirements](/basics/limits#schema) before creating source tables.
 
 ## Choose for the workload you need to run {#choosing}

@@ -6,13 +6,13 @@ icon: sitemap
 keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view"]
 ---
 
-## What is a catalog? {#catalog}
+## Catalog overview {#catalog}
 
 A catalog keeps track of named data objects, such as tables and views, so
 applications can discover and access them. In LanceDB, it organizes those
 objects into databases and namespaces.
 
-## How is data organized? {#objects}
+## Databases, namespaces and tables {#objects}
 
 A database contains namespaces that group related tables and views. Namespaces
 can also contain other namespaces, allowing teams to organize data by project,
@@ -42,7 +42,7 @@ flowchart TD
 
 <span id="resolution" />
 
-## Why does the organization matter? {#governance}
+## Organization and access control {#governance}
 
 - **Separate projects and environments.** Keep production and staging tables
   in distinct namespaces, even when they use the same table names.

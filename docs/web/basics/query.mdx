@@ -6,14 +6,14 @@ icon: magnifying-glass
 keywords: ["query", "search", "SQL", "async", "streaming", "results"]
 ---
 
-## What is a query? {#queries}
+## Querying tables {#queries}
 
 A query selects data from your tables. You can filter rows, choose columns,
 search for similar content or combine those operations. For example, a video
 application might find clips similar to a sample and return only those recorded
 in the last month.
 
-## How can you query? {#searches}
+## SDK searches and SQL queries {#searches}
 
 | Interface | When to use it |
 | --- | --- |
@@ -24,26 +24,27 @@ Both interfaces work with LanceDB tables. Choose the one that supports your
 operation and fits your application. See [SQL](/basics/sql) for connection
 instructions and SQL search support, and [Search](/search) for the query builders.
 
-## How do results arrive? {#results}
+## Collect or stream results {#results}
 
 - **Collect the results** when you want a list, Arrow table or DataFrame that
   fits in memory. Use a result limit and select only the columns you need.
 - **Read batches** when you want to process a large result incrementally.
-  Streaming avoids collecting the entire result in application memory, although
-  some query operations still need to do substantial work before producing rows.
+  Reading batches avoids loading the entire result into application memory.
+  It does not guarantee that the query can return its first batch immediately.
 
-<span id="async-client" />
+### Asynchronous clients {#async-client}
 
 An async client lets your application do other work while a request is waiting.
 That is separate from whether you collect results or read them in batches.
 Python offers synchronous and asynchronous clients; TypeScript uses async APIs.
 Check the SDK reference for the methods available in your client.
 
-<span id="jobs" />
+### Query handles and background jobs {#jobs}
 
-Enterprise SQL can also return a query handle for inspecting execution and
-requesting cancellation. A [job](/basics/jobs) tracks an operation such as an
-index build. Use the result API for the operation you submitted.
+An Enterprise SQL query handle lets you inspect query execution and request
+cancellation. Background operations such as index builds return a
+[job](/basics/jobs) handle instead. Use the API for the returned handle to
+check status and retrieve results.
 
 ## Learn more {#next}
 

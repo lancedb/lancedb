@@ -6,11 +6,11 @@ icon: ruler
 keywords: ["limits", "maximum", "quota", "constraints", "bounds"]
 ---
 
-## Which limits apply? {#scope}
+<span id="scope" />
 
-Some limits come from an API or data type; others come from Enterprise
-configuration. Use the scope and linked reference below to identify which
-applies to your operation. SQL and server job limits apply to Enterprise.
+This page lists limits for job events, SQL error reports, sampling and
+full-text indexing. Each table identifies the affected API and what happens
+when a request reaches its limit. SQL and server job limits apply to Enterprise.
 
 <span id="names" />
 
@@ -21,7 +21,7 @@ enforce.
 <span id="jobs" />
 <span id="sql" />
 
-## What are the fixed limits? {#fixed-limits}
+## Fixed API limits {#fixed-limits}
 
 | Operation | Scope | Limit and behavior |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ before choosing a schema or index. For materialized views, check
 [stable row ID requirements](/feature-engineering/materialized-views#stable-row-ids)
 before creating source tables.
 
-## What can you configure? {#not-quotas}
+## Configurable limits {#not-quotas}
 
 | Setting | What it controls |
 | --- | --- |
@@ -50,7 +50,7 @@ before creating source tables.
 | FTS `max_token_length` | The maximum indexed token length. The default is 40; longer tokens are excluded from the index. |
 | Enterprise capacity and quotas | Storage, request rate and concurrency are governed by your deployment's resources and configuration. Confirm these with your administrator or LanceDB support. |
 
-## What happens at a limit? {#behavior}
+## Handling rejected or incomplete results {#behavior}
 
 - **Rejected requests:** correct the input before retrying, such as a sampling
   percentage outside the accepted range.

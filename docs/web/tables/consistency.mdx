@@ -13,16 +13,18 @@ availability:
 
 import { PyReadConsistency } from '/snippets/read_consistency.mdx';
 
-## What does consistency mean here? {#consistency}
+## Table snapshots and freshness {#consistency}
 
-A table read uses a consistent snapshot of the data. **Freshness** describes how
-recent that snapshot is. A reader can see a coherent earlier version while
-another process has already committed newer data.
+Each table read uses one committed version of the data. **Freshness** describes
+whether that version includes recent writes. For example, after another
+application appends records, an already-open table handle can still read the
+version from before the append.
 
 For example, a dashboard may need the latest updates, while an experiment may
-need to keep reading a specific table version. These are different requirements.
+need to keep reading a specific table version. Use read freshness settings for the dashboard and an explicit table version
+for the experiment.
 
-## When do changes become visible? {#visibility}
+## Visibility of writes {#visibility}
 
 In **OSS**, a table handle sees its own committed writes. By default, it does
 not automatically check for changes made through other handles or processes.
@@ -33,10 +35,10 @@ A connection can request fresher data. When a read must include a completed
 write, use a zero interval or call `checkout_latest()` after the write, with a
 client and server that support these freshness controls.
 
-## How do you control freshness? {#configure-consistency-parameters}
+## Configure read freshness {#configure-consistency-parameters}
 
-Set `read_consistency_interval` when connecting. The setting applies to reads;
-it does not change the transaction boundary of a write.
+Set `read_consistency_interval` when connecting. This controls when reads
+pick up newer table versions; it does not change how writes commit.
 
 | Setting | OSS | Enterprise |
 | --- | --- | --- |
@@ -64,7 +66,7 @@ interval sees the new row on its next read.
 
 </Accordion>
 
-## How should you choose? {#choosing}
+## Choose a freshness interval {#choosing}
 
 - **Reads that must include recent writes:** use a zero interval. Checking more
   frequently can increase read latency and storage requests.
@@ -73,8 +75,8 @@ interval sees the new row on its next read.
 - **Reproducible experiments:** read an explicit table version and retain it for
   as long as the experiment needs it.
 
-There is no single interval that suits every application. Choose based on how
-stale a result your users can accept.
+Choose the interval based on the delay your application can tolerate between
+a write completing and a reader seeing it.
 
 ## Learn more {#next}
 
