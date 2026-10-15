@@ -1,14 +1,125 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import os
+import shutil
+import uuid
+from pathlib import Path
+
 import lancedb
 import pytest
+import pytest_asyncio
+
+# What the quickstart's download step leaves in an application's directory.
+IMAGE = (
+    Path(__file__).resolve().parents[2]
+    / "web/static/assets/images/quickstart/sir-lancelot.jpg"
+)
+DEPLOYMENT = ("LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY")
+# The connection settings alone never send these tests to a deployment.
+OPT_IN = "LANCEDB_DOCS_TEST_DEPLOYMENT"
 
 
-def test_quickstart(db_path_factory):
-    uri = db_path_factory("quickstart_db")
-    db = lancedb.connect(uri)
+def deployment_settings():
+    if os.environ.get(OPT_IN) != "1":
+        pytest.skip(f"set {OPT_IN}=1 and {', '.join(DEPLOYMENT)} to use a deployment")
+    missing = [name for name in DEPLOYMENT if not os.environ.get(name)]
+    if missing:
+        pytest.fail(f"{OPT_IN}=1 needs {', '.join(missing)}")
+    return dict(
+        uri=os.environ["LANCEDB_URI"],
+        api_key=os.environ["LANCEDB_API_KEY"],
+        region=os.environ.get("LANCEDB_REGION", "us-east-1"),
+        host_override=os.environ["LANCEDB_HOST_OVERRIDE"],
+    )
 
+
+class OwnedTables:
+    """A deployment connection on which a test creates only tables of its own.
+
+    Each name gets a suffix unique to the test and is claimed only while no
+    table has it; the test drops what it claimed, whether or not it passed.
+    """
+
+    def __init__(self, db):
+        self.db = db
+        self.suffix = uuid.uuid4().hex[:12]
+        self.claimed = []
+
+    def claim(self, name, existing, mode):
+        owned = f"{name}_{self.suffix}"
+        if owned in self.claimed:
+            return owned, mode
+        if owned in existing:
+            raise RuntimeError(f"{owned} already exists and is not this test's")
+        self.claimed.append(owned)
+        return owned, "create"
+
+    def table_names(self):
+        names, token = [], None
+        while True:
+            page = self.db.list_tables(page_token=token)
+            names += page.tables
+            if not (token := page.page_token):
+                return names
+
+    def create_table(self, name, *args, mode="create", **kwargs):
+        owned, mode = self.claim(name, self.table_names(), mode)
+        return self.db.create_table(owned, *args, mode=mode, **kwargs)
+
+    def drop_claimed(self):
+        existing = self.table_names()
+        for name in self.claimed:
+            if name in existing:
+                self.db.drop_table(name)
+
+
+class AsyncOwnedTables(OwnedTables):
+    async def table_names(self):
+        names, token = [], None
+        while True:
+            page = await self.db.list_tables(page_token=token)
+            names += page.tables
+            if not (token := page.page_token):
+                return names
+
+    async def create_table(self, name, *args, mode="create", **kwargs):
+        owned, mode = self.claim(name, await self.table_names(), mode)
+        return await self.db.create_table(owned, *args, mode=mode, **kwargs)
+
+    async def drop_claimed(self):
+        existing = await self.table_names()
+        for name in self.claimed:
+            if name in existing:
+                await self.db.drop_table(name)
+
+
+@pytest.fixture
+def deployment():
+    owned = OwnedTables(lancedb.connect(**deployment_settings()))
+    yield owned
+    owned.drop_claimed()
+
+
+@pytest.fixture(params=["local", "enterprise"])
+def db(request, db_path_factory):
+    if request.param == "local":
+        yield lancedb.connect(db_path_factory("quickstart_db"))
+    else:
+        yield request.getfixturevalue("deployment")
+
+
+@pytest_asyncio.fixture(params=["local", "enterprise"])
+async def async_db(request, db_path_factory):
+    if request.param == "local":
+        yield await lancedb.connect_async(db_path_factory("quickstart_async_db"))
+        return
+    owned = AsyncOwnedTables(await lancedb.connect_async(**deployment_settings()))
+    yield owned
+    await owned.drop_claimed()
+
+
+def create_characters(db):
     # --8<-- [start:quickstart_data]
     data = [
         {
@@ -41,14 +152,29 @@ def test_quickstart(db_path_factory):
     # --8<-- [start:quickstart_create_table]
     table = db.create_table("characters", data=data, mode="overwrite")
     # --8<-- [end:quickstart_create_table]
-    assert len(table) == 3
-    # Drop the table to test create without overwrite
-    db.drop_table("characters")
+    assert table.count_rows() == 3
 
-    # --8<-- [start:quickstart_create_table_no_overwrite]
-    table = db.create_table("characters", data=data)
-    # --8<-- [end:quickstart_create_table_no_overwrite]
-    assert len(table) == 3
+    # --8<-- [start:quickstart_add_data]
+    table.add(
+        [
+            {
+                "id": "4",
+                "name": "Morgana",
+                "role": "Sorceress",
+                "description": "Powerful sorceress of Avalon.",
+                "stats": {"strength": 2, "magic": 5, "leadership": 4, "wisdom": 4},
+                "vector": [0.3, 0.9, 0.6, 0.8],
+            }
+        ]
+    )
+    # --8<-- [end:quickstart_add_data]
+    assert table.count_rows() == 4
+    return table
+
+
+def test_quickstart(db):
+    table = create_characters(db)
+
     # --8<-- [start:quickstart_vector_search_1]
     # Search for examples similar to a "wise magical advisor"
     query_vector = [0.2, 0.8, 0.4, 0.9]
@@ -62,7 +188,14 @@ def test_quickstart(db_path_factory):
     )
     print(result)
     # --8<-- [end:quickstart_vector_search_1]
-    assert result.head(1)["name"][0] == "Merlin"
+    assert result["name"].to_list() == ["Merlin", "Morgana"]
+
+    # --8<-- [start:quickstart_output_pandas]
+    # Ensure you run `pip install pandas` beforehand
+    result = table.search(query_vector).limit(2).to_pandas()
+    print(result)
+    # --8<-- [end:quickstart_output_pandas]
+    assert result["name"].to_list() == ["Merlin", "Morgana"]
 
     # --8<-- [start:quickstart_curate_with_metadata]
     curated = (
@@ -74,131 +207,15 @@ def test_quickstart(db_path_factory):
     )
     print(curated)
     # --8<-- [end:quickstart_curate_with_metadata]
-    assert curated.head(1)["name"][0] == "Merlin"
+    assert curated["name"].to_list() == ["Merlin", "Morgana"]
 
-    # --8<-- [start:quickstart_output_pandas]
-    # Ensure you run `pip install pandas` beforehand
-    result = table.search(query_vector).limit(2).to_pandas()
-    print(result)
-    # --8<-- [end:quickstart_output_pandas]
-    assert result.iloc[0]["name"] == "Merlin"
-
-    # --8<-- [start:quickstart_add_feature]
-    table.add_columns(
-        {
-            "power_score": "cast(((stats.strength + stats.magic + stats.leadership + stats.wisdom) / 4.0) as float)"
-        }
-    )
-    # --8<-- [end:quickstart_add_feature]
-    assert "power_score" in table.schema.names
-
-    # --8<-- [start:quickstart_query_feature]
-    features = table.search().select(["name", "role", "power_score"]).to_polars()
-    print(features)
-    # --8<-- [end:quickstart_query_feature]
-    assert "power_score" in features.columns
-
-    # --8<-- [start:quickstart_multimodal_bytes]
-    from pathlib import Path
-
-    image_path = Path("docs/web/static/assets/images/quickstart/sir-lancelot.jpg")
-    image_bytes = image_path.read_bytes()
-
-    multimodal_table = db.create_table(
-        "character_images",
-        data=[
-            {
-                "id": "lancelot",
-                "description": "Portrait of Sir Lancelot",
-                "image": image_bytes,
-                "vector": [0.9, 0.1, 0.5, 0.4],
-            }
-        ],
-        mode="overwrite",
-    )
-    # --8<-- [end:quickstart_multimodal_bytes]
-    assert len(multimodal_table) == 1
-
-    # --8<-- [start:quickstart_open_table]
-    table = db.open_table("characters")
-    # --8<-- [end:quickstart_open_table]
-
-    # --8<-- [start:quickstart_add_data]
-    more_data = [
-        {
-            "id": "4",
-            "name": "Morgana",
-            "role": "Sorceress",
-            "description": "Powerful sorceress of Avalon.",
-            "stats": {"strength": 2, "magic": 5, "leadership": 4, "wisdom": 4},
-            "vector": [0.3, 0.9, 0.6, 0.8],
-            "power_score": 3.75,
-        },
-    ]
-
-    # Add data to table
-    table.add(more_data)
-    # --8<-- [end:quickstart_add_data]
-    assert len(table) == 4
-
-    # --8<-- [start:quickstart_vector_search_2]
-    # Search for examples similar to a "powerful sorceress"
-    query_vector = [0.3, 0.9, 0.6, 0.8]
-
-    results = table.search(query_vector).limit(2).to_polars()
-    print(results)
-    # --8<-- [end:quickstart_vector_search_2]
-    assert results.head(1)["name"][0] == "Morgana"
-
-    # --8<-- [start:quickstart_computed_feature]
-    table.add_columns(computed={"combat_score": "(stats.magic + stats.strength) / 2.0"})
-    table.refresh_column("combat_score")
-    # --8<-- [end:quickstart_computed_feature]
-    scores = (
-        table.search().select(["combat_score"]).to_arrow()["combat_score"].to_pylist()
-    )
-    assert scores == [2.5, 3.5, 3.0, 3.5]
-
-    # --8<-- [start:quickstart_training]
-    import torch
-    from lancedb.permutation import Permutation
-
-    dataset = Permutation.identity(table).select_columns(
-        ["power_score", "combat_score"]
-    )
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, shuffle=True)
-    # --8<-- [end:quickstart_training]
-    batches = list(dataloader)
-    assert len(batches) == 1
-    assert set(batches[0]) == {"power_score", "combat_score"}
-    assert all(isinstance(value, torch.Tensor) for value in batches[0].values())
-    assert sorted(batches[0]["combat_score"].tolist()) == sorted(scores)
-
-    # --8<-- [start:quickstart_training_projection]
-    dataset = Permutation.identity(table).select_columns(["power_score"])
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024)
-    # --8<-- [end:quickstart_training_projection]
-    batch = next(iter(dataloader))
-    assert set(batch) == {"power_score"}
-    assert batch["power_score"].tolist() == [3.5, 4.0, 3.0, 3.75]
+    curated = table.search(query_vector).where("stats.magic < 4").limit(2).to_list()
+    assert [row["name"] for row in curated] == ["King Arthur", "Sir Lancelot"]
 
 
 @pytest.mark.asyncio
-async def test_quickstart_async_api(db_path_factory):
-    db_uri = db_path_factory("quickstart_async_db")
-    import lancedb
-    async_db = await lancedb.connect_async(db_uri)
-
-    # --8<-- [start:quickstart_data_async]
+async def test_quickstart_async_api(async_db):
     data = [
-        {
-            "id": "1",
-            "name": "King Arthur",
-            "role": "King",
-            "description": "Leader of Camelot and wielder of Excalibur.",
-            "stats": {"strength": 4, "magic": 1, "leadership": 5, "wisdom": 4},
-            "vector": [0.7, 0.1, 0.9, 0.7],
-        },
         {
             "id": "2",
             "name": "Merlin",
@@ -206,17 +223,8 @@ async def test_quickstart_async_api(db_path_factory):
             "description": "Advisor and prophet with deep magical knowledge.",
             "stats": {"strength": 2, "magic": 5, "leadership": 4, "wisdom": 5},
             "vector": [0.2, 0.9, 0.4, 0.9],
-        },
-        {
-            "id": "3",
-            "name": "Sir Lancelot",
-            "role": "Knight",
-            "description": "Legendary knight known for courage and combat skill.",
-            "stats": {"strength": 5, "magic": 1, "leadership": 3, "wisdom": 3},
-            "vector": [0.9, 0.1, 0.5, 0.4],
-        },
+        }
     ]
-    # --8<-- [end:quickstart_data_async]
 
     # --8<-- [start:quickstart_create_table_async]
     async_table = await async_db.create_table(
@@ -236,5 +244,110 @@ async def test_quickstart_async_api(db_path_factory):
     ).select(["name", "role", "description", "_distance"]).limit(2).to_polars()
     print(async_result)
     # --8<-- [end:quickstart_vector_search_1_async]
+    assert async_result["name"].to_list() == ["Merlin"]
 
-    assert async_result.head(1)["name"][0] == "Merlin"
+
+def test_quickstart_derived_feature(db):
+    table = create_characters(db)
+
+    # --8<-- [start:quickstart_add_feature]
+    table.add_columns(
+        {
+            "power_score": "cast(((stats.strength + stats.magic + stats.leadership + stats.wisdom) / 4.0) as float)"
+        }
+    )
+    # --8<-- [end:quickstart_add_feature]
+
+    # --8<-- [start:quickstart_query_feature]
+    features = table.search().select(["name", "role", "power_score"]).to_polars()
+    print(features)
+    # --8<-- [end:quickstart_query_feature]
+    assert sorted(zip(features["name"], features["power_score"])) == [
+        ("King Arthur", 3.5),
+        ("Merlin", 4.0),
+        ("Morgana", 3.75),
+        ("Sir Lancelot", 3.0),
+    ]
+
+
+def description_lengths(table):
+    rows = table.search().select(["description", "description_length"]).to_list()
+    return {row["description"]: row["description_length"] for row in rows}
+
+
+def test_quickstart_computed_column(db_path_factory):
+    table = create_characters(lancedb.connect(db_path_factory("computed")))
+
+    # --8<-- [start:quickstart_computed_feature]
+    table.add_columns(computed={"description_length": "length(description)"})
+    table.refresh_column("description_length")
+    # --8<-- [end:quickstart_computed_feature]
+    lengths = description_lengths(table)
+    assert lengths == {text: len(text) for text in lengths}
+
+
+def test_quickstart_computed_column_on_a_deployment(deployment):
+    table = create_characters(deployment)
+
+    # --8<-- [start:quickstart_computed_feature_enterprise]
+    table.add_columns(computed={"description_length": "length(description)"})
+    job = table.refresh_column_async("description_length")
+    job.wait()
+    # --8<-- [end:quickstart_computed_feature_enterprise]
+    lengths = description_lengths(table)
+    assert len(lengths) == 4
+    assert lengths == {text: len(text) for text in lengths}
+    with pytest.raises(Exception):
+        table.refresh_column("description_length")
+
+
+def test_quickstart_multimodal(db, tmp_path, monkeypatch):
+    app = tmp_path / "app"
+    (app / "data").mkdir(parents=True)
+    shutil.copy(IMAGE, app / "data/sir-lancelot.jpg")
+    monkeypatch.chdir(app)
+
+    # --8<-- [start:quickstart_multimodal_bytes]
+    from pathlib import Path
+
+    image_bytes = Path("data/sir-lancelot.jpg").read_bytes()
+
+    multimodal_table = db.create_table(
+        "character_images",
+        data=[
+            {
+                "id": "lancelot",
+                "description": "Portrait of Sir Lancelot",
+                "image": image_bytes,
+                "vector": [0.9, 0.1, 0.5, 0.4],
+            }
+        ],
+        mode="overwrite",
+    )
+    # --8<-- [end:quickstart_multimodal_bytes]
+    assert multimodal_table.count_rows() == 1
+    stored = multimodal_table.search().select(["image"]).to_list()[0]["image"]
+    assert stored == IMAGE.read_bytes()
+
+
+def test_quickstart_training(db):
+    table = create_characters(db)
+
+    # --8<-- [start:quickstart_training]
+    import torch
+    from lancedb.permutation import Permutation
+
+    table.add_columns(
+        {
+            "magic": "cast(stats.magic as float)",
+            "strength": "cast(stats.strength as float)",
+        }
+    )
+    dataset = Permutation.identity(table).select_columns(["magic", "strength"])
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=1024, shuffle=True)
+    # --8<-- [end:quickstart_training]
+    batches = list(dataloader)
+    assert len(batches) == 1
+    assert set(batches[0]) == {"magic", "strength"}
+    assert all(isinstance(value, torch.Tensor) for value in batches[0].values())
+    assert sorted(batches[0]["magic"].tolist()) == [1.0, 1.0, 5.0, 5.0]

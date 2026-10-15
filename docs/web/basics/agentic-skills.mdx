@@ -269,10 +269,11 @@ where appropriate.
 
 Choose [LanceDB Enterprise](/enterprise) when the resulting table becomes
 shared production infrastructure, and the workload needs distributed capacity,
-private deployment, or platform-managed operations. The underlying data format and table
-API stay the same, so the pipeline does not need to be redesigned. The agent
-instead connects to a remote `db://` table and lets the cluster handle
-maintenance and background work.
+private deployment, or platform-managed operations. The data format and the core
+table API stay the same, so the pipeline's table and search code carries over:
+the agent connects to a remote `db://` table, leaves maintenance to the
+deployment instead of calling `optimize()`, and submits long-running work as
+jobs. See [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
 
 ## What agents are good at here {#workflows}
 
