@@ -47,7 +47,7 @@ A [computed column](/feature-engineering/add-computed-column) separates
 - Fill the column with a separate refresh call that you can retry. In LanceDB
   Enterprise, submit the refresh as a [job](/basics/jobs) and track its progress.
 
-**Filling does not redo current work.** A
+**Refresh new and changed rows.** A
 [refresh](/feature-engineering/refresh-column) gives values to rows that lack
 them and recomputes rows whose inputs changed since they were computed. It
 leaves the rest alone, so calling it twice is not twice the work, and appending
@@ -101,7 +101,7 @@ embedding a column, calling a model, decoding an image. It defines features as
 Python functions and backfills them as distributed jobs.
 
 {/* end if */}
-They compose. A materialized view can select computed columns.
+A materialized view can select computed columns.
 A computed column can be filled by a registered function. {/* if functions launched */}
 
 ## Where the work runs {#where}

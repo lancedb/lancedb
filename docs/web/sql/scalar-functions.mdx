@@ -118,8 +118,7 @@ arrow_cast  arrow_try_cast  arrow_typeof  arrow_field  arrow_metadata
 with_metadata  version
 ```
 
-`arrow_typeof` is the fastest way to answer "what is this column, really" when a
-result does not have the shape you expected:
+Use `arrow_typeof` to inspect the Arrow data type of a column or expression:
 
 ```sql
 SELECT arrow_typeof(vector) FROM documents LIMIT 1
@@ -190,10 +189,10 @@ feature rather than an unknown-function error, and the spatial index is gated
 the same way.
 </Warning>
 
-## Reaching a function not listed here {#escape-hatch}
+## Additional scalar functions {#escape-hatch}
 
-Nothing wraps or restricts the set — a query reaches any registered function by
-writing it. When a name is not recognised, check it against
+SQL queries can call functions registered with the server, including functions
+not listed on this page. Consult
 [DataFusion's scalar function reference](https://datafusion.apache.org/user-guide/sql/scalar_functions.html)
-for version 54 before assuming it is unsupported; functions are added in most
-DataFusion releases, and a function documented on `main` may not exist here yet.
+for version 54. Functions documented for a newer DataFusion release may not be
+available in your LanceDB Enterprise version.

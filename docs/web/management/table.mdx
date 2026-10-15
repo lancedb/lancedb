@@ -120,18 +120,20 @@ import {
     PyQueryToPandasKwargs as QueryToPandasKwargs,
 } from '/snippets/multimodal.mdx';
 
-A table is rows and columns, versioned. It is what searches read, what writes
-commit to, and what indexes and branches belong to.
+A table stores data in rows and columns and keeps a history of committed
+versions. Queries read table data, writes update it, and indexes accelerate
+searches over its columns. Branches let you make changes separately from the
+main table history.
 
-This page covers the table as a catalog object. Getting data into one is
-[Ingest](/ingestion); changing its shape is
-[Schema evolution](/management/table#schema).
+This page covers table management, data types, schema changes and version
+history. For loading records, see [Ingestion](/ingestion). For changes to
+columns, see [Schema evolution](/management/table#schema).
 
 <Note>
 In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl/table).
 </Note>
 
-## What a table carries {#carries}
+## Table structure and metadata {#carries}
 
 | | |
 | --- | --- |
@@ -140,7 +142,7 @@ In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE 
 | **Indexes** | vector, full-text and scalar, built over its columns |
 | **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
 
-## Creating {#create}
+## Create a table {#create}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -169,7 +171,7 @@ ids**; in LanceDB Enterprise, whether a new table gets them is the deployment's
 setting. See [Limits](/basics/limits#schema).
 </Warning>
 
-## Opening and listing {#open}
+## Open and list tables {#open}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -196,7 +198,7 @@ deployment raises `NotImplementedError` for it, and on a connection from
 `connect_namespace("dir", ...)` or `connect_namespace("rest", ...)` it fails with
 an `AttributeError`. TypeScript has no `tableExists`.
 
-## Renaming and cloning {#rename-clone}
+## Rename and clone tables {#rename-clone}
 
 ```python
 db.rename_table("documents", "docs")
@@ -236,7 +238,7 @@ deployment stores its catalog. See
 [Background jobs](/maintenance/background-jobs#teardown).
 </Note>
 
-## Dropping {#drop}
+## Drop a table {#drop}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -268,7 +270,7 @@ On a large table the drop can take a while, so `drop_table_async` returns a
 background. In the embedded library, and on an Enterprise cluster that drops inline, the
 returned job has already finished.
 
-## The full surface {#surface}
+## Table management APIs {#surface}
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
