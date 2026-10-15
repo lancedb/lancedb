@@ -5,7 +5,7 @@ description: Integrate Jina's multilingual reranking API with LanceDB for improv
 
 ---
 
-import { PyRerankingJinaUsage } from '/snippets/integrations.mdx';
+import { PyRerankingJinaUsage } from '/snippets/provider_examples.mdx';
 
 # Jina Reranker
 
@@ -14,6 +14,8 @@ This reranker uses the [Jina](https://jina.ai/reranker/) API to rerank the searc
 
 > **Note:** Supported query types – Hybrid, Vector, and FTS.
 
+
+Replace the credential placeholders with your provider credentials. In application code, load credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">
