@@ -663,3 +663,28 @@ def test_jina_generate_image_input_dict_local_path(tmp_path):
         image_dict = JinaEmbeddings._generate_image_input_dict(image)
         assert "image" in image_dict
         assert isinstance(image_dict["image"], str) and len(image_dict["image"]) > 0
+
+
+def test_jina_embeddings_use_their_own_api_key(monkeypatch):
+    """Each JinaEmbeddings instance must send its own API key."""
+    pytest.importorskip("requests")
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    registry = get_registry()
+    registry.set_var("jina_key_a", "key-a")
+    registry.set_var("jina_key_b", "key-b")
+    func_a = registry.get("jina").create(api_key="$var:jina_key_a")
+    func_b = registry.get("jina").create(api_key="$var:jina_key_b")
+
+    sent = []
+
+    def fake_post(session, url, json=None, **kwargs):
+        sent.append(session.headers["Authorization"])
+        response = MagicMock()
+        response.json.return_value = {"data": [{"index": 0, "embedding": [0.0]}]}
+        return response
+
+    with patch("requests.Session.post", fake_post):
+        func_a.compute_source_embeddings(["hello"])
+        func_b.compute_source_embeddings(["hello"])
+
+    assert sent == ["Bearer key-a", "Bearer key-b"]
