@@ -153,6 +153,15 @@ class MockPermutationServer:
         return self._arrow(request, pa.table({"id": pa.array([], pa.int64())}))
 
 
+def start_server_thread(server, daemon=False) -> threading.Thread:
+    """Serve on a thread; a short poll interval lets ``shutdown()`` return promptly."""
+    thread = threading.Thread(
+        target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=daemon
+    )
+    thread.start()
+    return thread
+
+
 def _make_handler(serve):
     class MockLanceDBHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
@@ -175,15 +184,14 @@ def mock_remote_table(server):
     serialize, hiding the prefetch overlap under test.
     """
     with http.server.ThreadingHTTPServer(
-        ("localhost", 0), _make_handler(server)
+        ("127.0.0.1", 0), _make_handler(server)
     ) as srv:
-        thread = threading.Thread(target=srv.serve_forever)
-        thread.start()
+        thread = start_server_thread(srv)
         try:
             db = lancedb.connect(
                 "db://dev",
                 api_key="fake",
-                host_override=f"http://localhost:{srv.server_address[1]}",
+                host_override=f"http://127.0.0.1:{srv.server_address[1]}",
                 client_config={"timeout_config": {"connect_timeout": 5}},
             )
             yield db.open_table(server.name)

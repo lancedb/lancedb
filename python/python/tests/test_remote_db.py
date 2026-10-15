@@ -10,7 +10,6 @@ import multiprocessing as mp
 import pickle
 import re
 import sys
-import threading
 import time
 from unittest.mock import MagicMock, patch
 import uuid
@@ -31,6 +30,7 @@ from lancedb.remote import ClientConfig
 from lancedb.remote.errors import HttpError, RetryError
 import pytest
 import pyarrow as pa
+from utils import start_server_thread
 
 
 def make_mock_http_handler(handler):
@@ -53,16 +53,15 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 @contextlib.contextmanager
 def mock_lancedb_connection(handler):
     with http.server.HTTPServer(
-        ("localhost", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
 
         db = lancedb.connect(
             "db://dev",
             api_key="fake",
-            host_override=f"http://localhost:{port}",
+            host_override=f"http://127.0.0.1:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
@@ -81,16 +80,15 @@ def mock_lancedb_connection(handler):
 @contextlib.asynccontextmanager
 async def mock_lancedb_connection_async(handler, **client_config):
     with http.server.HTTPServer(
-        ("localhost", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
 
         db = await lancedb.connect_async(
             "db://dev",
             api_key="fake",
-            host_override=f"http://localhost:{port}",
+            host_override=f"http://127.0.0.1:{port}",
             client_config={
                 "retry_config": {"retries": 2},
                 "timeout_config": {
@@ -561,16 +559,15 @@ def test_remote_table_open_does_not_require_picklable_client_config():
             request.end_headers()
 
     with http.server.HTTPServer(
-        ("localhost", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
         try:
             db = lancedb.connect(
                 "db://dev",
                 api_key="fake",
-                host_override=f"http://localhost:{port}",
+                host_override=f"http://127.0.0.1:{port}",
                 client_config={
                     "retry_config": {"retries": 0},
                     "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
@@ -2873,17 +2870,16 @@ def test_header_provider_with_sync_connection():
 
     # Create connection with custom client config
     with http.server.HTTPServer(
-        ("localhost", 0), make_mock_http_handler(handler)
+        ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
-        handle = threading.Thread(target=server.serve_forever)
-        handle.start()
+        handle = start_server_thread(server)
 
         try:
             db = lancedb.connect(
                 "db://dev",
                 api_key="fake",
-                host_override=f"http://localhost:{port}",
+                host_override=f"http://127.0.0.1:{port}",
                 client_config={
                     "retry_config": {"retries": 2},
                     "timeout_config": {"connect_timeout": 1},
@@ -3087,7 +3083,7 @@ def _remote_fork_child(port: int, queue) -> None:
     db = lancedb.connect(
         "db://dev",
         api_key="fake",
-        host_override=f"http://localhost:{port}",
+        host_override=f"http://127.0.0.1:{port}",
         client_config={
             "retry_config": {"retries": 0},
             "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
@@ -3121,17 +3117,16 @@ def test_remote_connection_after_fork():
         request.end_headers()
         request.wfile.write(b'{"tables": []}')
 
-    server = http.server.HTTPServer(("localhost", 0), make_mock_http_handler(handler))
+    server = http.server.HTTPServer(("127.0.0.1", 0), make_mock_http_handler(handler))
     port = server.server_address[1]
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.start()
+    server_thread = start_server_thread(server)
     try:
         # Hit the server in the parent first so the runtime + LOOP are warm
         # before fork; a fresh child must still succeed.
         parent_db = lancedb.connect(
             "db://dev",
             api_key="fake",
-            host_override=f"http://localhost:{port}",
+            host_override=f"http://127.0.0.1:{port}",
             client_config={
                 "retry_config": {"retries": 0},
                 "timeout_config": {"connect_timeout": 2, "read_timeout": 2},
@@ -3187,15 +3182,14 @@ def test_inherited_remote_table_reopens_after_fork():
             request.send_response(404)
             request.end_headers()
 
-    server = http.server.HTTPServer(("localhost", 0), make_mock_http_handler(handler))
+    server = http.server.HTTPServer(("127.0.0.1", 0), make_mock_http_handler(handler))
     port = server.server_address[1]
-    server_thread = threading.Thread(target=server.serve_forever)
-    server_thread.start()
+    server_thread = start_server_thread(server)
     try:
         db = lancedb.connect(
             "db://dev",
             api_key="fake",
-            host_override=f"http://localhost:{port}",
+            host_override=f"http://127.0.0.1:{port}",
             client_config={
                 "retry_config": {"retries": 0},
                 "timeout_config": {"connect_timeout": 2, "read_timeout": 2},

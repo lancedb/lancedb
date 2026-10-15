@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
 import urllib.parse
 from typing import Optional
 
@@ -33,6 +32,7 @@ from lancedb.functions import (
     udf,
 )
 from lancedb.secrets import EnvVarSecret
+from utils import start_server_thread
 
 THRESHOLD = 20
 _CACHE = None
@@ -273,13 +273,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(
+    target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+).start()
 try:
     db = lancedb.connect(
         "db://dev",
         api_key="API_KEY_SENTINEL",
-        host_override="http://localhost:%d" % server.server_address[1],
+        host_override="http://127.0.0.1:%d" % server.server_address[1],
         client_config={"retry_config": {"retries": 0}},
     )
     db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
@@ -1633,11 +1635,10 @@ def _mock_remote_function_catalog():
                 response = {"functions": []}
             self._write_response(200, response)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", state
+            yield f"http://127.0.0.1:{server.server_address[1]}", state
         finally:
             server.shutdown()
             thread.join()
