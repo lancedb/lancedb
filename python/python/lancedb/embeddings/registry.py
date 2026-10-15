@@ -48,7 +48,8 @@ class EmbeddingFunctionRegistry:
     def __init__(self):
         self._functions = {}
         self._variables = {}
-        self._allowed_remote_code: Set[Tuple[str, Optional[str]]] = set()
+        # Revision is a str, None for the default branch, or _ANY_REVISION.
+        self._allowed_remote_code: Set[Tuple[str, object]] = set()
         self._allowed_endpoints: Set[str] = set()
 
     def register(self, alias: Optional[str] = None):
@@ -150,15 +151,15 @@ class EmbeddingFunctionRegistry:
         model = probe.remote_code_model()
         if model is not None:
             allowed = self._remote_code_allowed(*model)
-            if "trust_remote_code" not in resolved:
-                # The table didn't ask for remote code (or predates the default
-                # becoming False), so it is up to this process.
-                if allowed:
-                    resolved["trust_remote_code"] = True
-            elif (
-                TypeAdapter(bool).validate_python(resolved["trust_remote_code"])
-                and not allowed
-            ):
+            # Check the effective value, since a subclass may default to True.
+            requested = TypeAdapter(bool).validate_python(
+                getattr(probe, "trust_remote_code", False)
+            )
+            if allowed and "trust_remote_code" not in resolved:
+                # Tables written before the default became False don't record
+                # the flag, so let this process's approval decide.
+                resolved["trust_remote_code"] = True
+            elif requested and not allowed:
                 model_name, revision = model
                 reasons.append(
                     f"runs code from model '{model_name}' at revision "
@@ -199,9 +200,12 @@ class EmbeddingFunctionRegistry:
         revision : Optional[str]
             The revision the table's embedding function must pin. Pinning a
             commit hash is recommended, since the code at a branch or tag can
-            change after you review it. If None, any revision is trusted.
+            change after you review it. If None, any revision is trusted,
+            including pull request refs that anyone can push to the repository.
         """
-        self._allowed_remote_code.add((model, revision))
+        self._allowed_remote_code.add(
+            (model, _ANY_REVISION if revision is None else revision)
+        )
 
     def allow_endpoint(self, url: str) -> None:
         """
@@ -220,14 +224,17 @@ class EmbeddingFunctionRegistry:
         self._allowed_endpoints.add(_normalize_url(url))
 
     def _remote_code_allowed(self, model: str, revision: Optional[str]) -> bool:
-        return (model, None) in self._allowed_remote_code or (
-            revision is not None and (model, revision) in self._allowed_remote_code
-        )
+        return (model, _ANY_REVISION) in self._allowed_remote_code or (
+            model,
+            revision,
+        ) in self._allowed_remote_code
 
     def _trust(self, func: EmbeddingFunction) -> None:
         model = func.remote_code_model()
         if model is not None and getattr(func, "trust_remote_code", False):
-            self.allow_remote_code(*model)
+            # Only the revision this code selected, where None means the default
+            # branch. Other revisions, such as PR refs, may hold other code.
+            self._allowed_remote_code.add(model)
         for url in func.endpoints():
             self.allow_endpoint(url)
 
@@ -285,6 +292,9 @@ class EmbeddingFunctionRegistry:
         Get a variable.
         """
         return self._variables[name]
+
+
+_ANY_REVISION = object()
 
 
 def _normalize_url(url: str) -> str:
