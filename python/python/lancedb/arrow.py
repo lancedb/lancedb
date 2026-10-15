@@ -110,4 +110,10 @@ def _arrow_from_list(data: list) -> pa.Table:
         dicts = [model_to_dict(d) for d in data]
         return pa.Table.from_pylist(dicts, schema=schema)
 
+    # Arrow takes column names from the first row, so include later rows' keys.
+    if isinstance(data[0], dict):
+        fields = dict.fromkeys(key for row in data for key in row)
+        if len(fields) != len(data[0]):
+            data = [{**fields, **data[0]}, *data[1:]]
+
     return pa.Table.from_pylist(data)
