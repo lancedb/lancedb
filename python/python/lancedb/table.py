@@ -2190,8 +2190,9 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         results are returned.
 
-        Row IDs can be obtained from a query with ``with_row_id(True)``. This
-        API is currently supported only by local tables.
+        Row IDs can be obtained from a query with ``with_row_id(True)``.
+        Remote tables read the requested ranges through version-pinned blob
+        handles using HTTP byte-range requests.
         """
 
     @abstractmethod

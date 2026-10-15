@@ -1624,7 +1624,6 @@ def remote_unsupported_operations():
         ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
         ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
         ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
-        ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
         ("optimize", (), {}, "optimize"),
         ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
     ]
@@ -3363,13 +3362,20 @@ def blob_remote_table(*, server_version=Version("0.5.0")):
             else:
                 assert body["with_row_id"] is True
                 if columns == ["image"]:
-                    # fetch_blob_files sizes its handles from a descriptor take.
+                    # Blob handles are sized from a descriptor take.
                     assert body["filter"].startswith("_rowid IN")
                     response_table = blob_descriptor_take_table()
+                    row_ids = [
+                        int(value) for value in re.findall(r"\d+", body["filter"])
+                    ]
+                    response_table = response_table.filter(
+                        pa.compute.is_in(response_table["_rowid"], pa.array(row_ids))
+                    )
                 else:
                     response_table = blob_query_response_table()
             request.send_response(200)
             request.send_header("Content-Type", "application/vnd.apache.arrow.file")
+            request.send_header("x-lancedb-version", "1")
             request.end_headers()
             with pa.ipc.new_file(request.wfile, response_table.schema) as writer:
                 writer.write_table(response_table)
@@ -3399,6 +3405,42 @@ def test_remote_blob_columns_and_fetch():
         assert table.blob_columns() == ["image"]
         blobs = table.fetch_blobs("image", [10, 20, 30])
         assert blobs.to_pylist() == [b"alpha", None, b"gamma"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+async def test_remote_fetch_blob_ranges(use_async):
+    with blob_remote_table() as remote_table:
+        table = remote_table._table if use_async else remote_table
+        requests = [
+            (30, 2, 3),
+            (10, 1, 3),
+            (20, 0, 1),
+            (10, 0, 2),
+            (40, 0, 0),
+            (10, 5, 0),
+            (30, 2, 3),
+        ]
+        result = table.fetch_blob_ranges("image", requests)
+        if use_async:
+            result = await result
+        assert isinstance(result, pa.LargeBinaryArray)
+        assert result.to_pylist() == [b"mma", b"lph", None, b"al", b"", b"", b"mma"]
+
+        for invalid, message in [
+            ([(10, 0, 1), (99, 0, 1)], "only 1 exist"),
+            ([(10, 4, 2)], "exceeds blob size"),
+            ([(20, 2**64 - 1, 1)], "overflows u64"),
+        ]:
+            with pytest.raises(ValueError, match=message):
+                result = table.fetch_blob_ranges("image", invalid)
+                if use_async:
+                    await result
+
+        result = table.fetch_blob_ranges("image", [])
+        if use_async:
+            result = await result
+        assert result.to_pylist() == []
 
 
 @pytest.mark.asyncio
