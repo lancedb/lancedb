@@ -22,14 +22,19 @@ Use the following rules for names that work across LanceDB OSS and Enterprise.
 | Namespace component | ASCII letters and digits, `-`, `_`, `.` | 1 to 64 characters; at most 10 components in a path |
 | Database | ASCII letters and digits, `-`, `_`, `.`, with `/` between components | 1 to 64 characters for the whole name |
 | Branch | Avoid `$` and `:`; use ASCII letters, digits, `-` and `_` for portability | Keep to 1 to 64 characters |
-| Secret {/* if functions launched */} | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
-| Function {/* if functions launched */} | ASCII letters and digits, `_` | 1 to 128 characters |
 
 - Names and individual namespace or database components must not be empty.
 - Table, view, namespace and database components cannot be `.` or `..`.
-- Secret names cannot be `.` or `..`. {/* if functions launched */}
 - Avoid `$` and `:` because they separate parts of qualified identifiers.
 - A namespace path beginning with `public` cannot contain another component.
+
+{/*
+Draft for the Functions release. Add these rows to the end of the table above:
+| Secret | ASCII letters and digits, `-`, `_`, `.` | 1 to 128 characters |
+| Function | ASCII letters and digits, `_` | 1 to 128 characters |
+Add this item to the list above, after the rule for `.` and `..`:
+- Secret names cannot be `.` or `..`.
+*/}
 
 ## Namespace paths {#paths}
 

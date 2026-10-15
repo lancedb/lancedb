@@ -125,8 +125,7 @@ supported SDK or server version, or has differences between offerings. State
 those requirements in the summary or the relevant section, including unsupported
 subfeatures. Do not use `varies`, infer support from an unknown status, or mark an
 absent capability available. Narrow a page to the capability it actually covers
-when necessary. Publication of unlaunched features is controlled separately by
-`launch`, not by an availability status:
+when necessary. For example:
 
 ```yaml
 availability:
@@ -144,23 +143,17 @@ also open the page with a badge of its own, and keep a qualification that only
 one section needs in that section's text. A `mint dev` preview of `docs/web`
 alone renders neither the labels nor the comparison.
 
-**A feature can be documented before it launches.** Functions are documented
-ahead of their launch. A page that documents only them says so in its
-frontmatter:
-
-```yaml
-launch: functions
-```
-
-Another page marks what it says about them. A section between
-`{/* if functions launched */}` and `{/* end if */}`, each on a line of its own,
-is published only once Functions launch; `{/* if functions not launched */}`
-marks one published only until then. Put the marker at the end of a table row or
-list item to gate that line alone. Until the launch, the assembled site leaves
-out those pages, their examples, and every marked section, navigation entry and
-redirect, and stops the build if anything still published links to them. A
-`mint dev` preview of `docs/web` alone shows both sides of every marker. The
-documentation repository's README shows how to assemble either site.
+**A feature can be documented before its release.** List a draft page in
+`docs/web/.mintignore`, keep it out of the navigation in `docs.json`, and do not
+link to it from published pages. Wrap a draft section in an MDX comment,
+`{/* ... */}`, whose first line names the release, such as
+`Draft for the Feature X release.` Keep draft table rows and list items in a
+comment below the table or list, since a comment between rows or items breaks
+it. Drafts are hidden from readers but stay in the source, and availability does
+not change what is published. At release, remove the comments and the
+`.mintignore` entries, and restore the navigation and links. See
+[Writing docs before release](https://github.com/lancedb/docs#writing-docs-before-release)
+in the documentation repository's README for previews and release checks.
 
 ## Release process
 
