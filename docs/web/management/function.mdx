@@ -4,27 +4,32 @@ sidebarTitle: "Function"
 description: "Register a Python function once and apply it as a column, for work SQL cannot express."
 icon: code
 keywords: ["udf", "functions", "create_function", "embedding", "feature engineering"]
+launch: functions
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports Functions when enabled for your Enterprise cluster; the embedded library cannot register or run them.
 ---
 
 import {
     PyFunctionDefine as FunctionDefine,
     PyFunctionLocalCall as FunctionLocalCall,
-    PyFunctionConnect as FunctionConnect,
     PyFunctionCreateTable as FunctionCreateTable,
     PyFunctionRegister as FunctionRegister,
     PyFunctionApply as FunctionApply,
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
 } from '/snippets/function.mdx';
-
-<Badge color="red">Enterprise</Badge>
+import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
 
 Some columns cannot be written as a SQL expression: an embedding, a model call,
 an image decode. A function is a Python callable registered with the database,
 versioned, and then applied as a column — the code runs where the data is
 rather than pulling rows to your process.
 
-Registering and running a function needs a LanceDB Enterprise connection. On a
+Registering and running a function needs a LanceDB Enterprise deployment with
+Functions enabled, which they are not by default. On a
 local connection `create_function` raises `NotImplementedError`; to derive a
 column locally, declare a
 [SQL computed column](/feature-engineering/add-computed-column) instead.
@@ -32,6 +37,10 @@ column locally, declare a
 <Note>
 In SQL, a function is registered with [`CREATE FUNCTION`](/sql/ddl/function#create) and listed with [`SHOW FUNCTIONS`](/sql/ddl/function#show).
 </Note>
+
+Functions are the way to fill columns with Python in LanceDB Enterprise. If you
+already use [Geneva](/geneva), it remains available; see
+[Geneva and Functions](/geneva#functions) for how its concepts map onto these.
 
 The steps below take a column of numbers to a filled column of their doubles.
 
@@ -62,9 +71,9 @@ sibling columns, so a null field is a value rather than a missing row.
 
 ## Connect and create a table {#table}
 
-The remaining steps run against your Enterprise deployment. This connection
-reads its settings from environment variables, so no credential appears in the
-code:
+The remaining steps run against your Enterprise deployment. Replace the database
+URI, API key, region and endpoint below with your deployment details. In application
+code, load credentials from environment variables or a secrets manager:
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {FunctionConnect}
@@ -75,7 +84,7 @@ A nullable column requires a nullable parameter, such as `Optional[float]`;
 a non-nullable column can bind to either. This example uses `value: float`,
 so the table declares `value` non-nullable.
 
-Computed-column inputs depend on the deployment version. Where supported,
+Computed-column inputs depend on the Enterprise server version. Where supported,
 they bind to non-nullable parameters even though the physical column is
 nullable: refresh skips rows whose computed input is still null. Check your
 deployment's support before using another computed column as an input.
@@ -211,6 +220,10 @@ it is bound to; `version` must be a version that exists. It returns `False` if
 the name was already gone. Deleting the object's content can finish after the
 call returns, as a [background job](/maintenance/background-jobs).
 `drop_function_async` returns that job with the result, so you can wait for it.
+
+A deployment refuses the drop unless it also allows changes to a function's
+lifecycle, which is a separate setting, off by default even where Functions are
+enabled.
 
 ## What to read next {#next}
 

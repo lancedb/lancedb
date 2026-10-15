@@ -3,52 +3,83 @@ title: "Feature engineering"
 sidebarTitle: "Overview"
 description: "Derive columns and tables from data already in the lakehouse, without moving it somewhere else to compute."
 icon: layer-group
-keywords: ["feature engineering", "computed columns", "materialized views", "functions", "lakehouse", "jobs"]
+keywords: ["feature engineering", "computed columns", "materialized views", "lakehouse", "jobs"]
 ---
 
-Feature engineering happens where the data already is. Rather than exporting a
-table, computing somewhere else and writing the result back, you declare what a
-column or a table should contain and let LanceDB fill it.
+Use feature engineering to turn raw data into features for search, analysis
+and model training. LanceDB stores derived columns and materialized views
+alongside the source data, so you can reuse the results across those workflows.
 
+{/* if functions launched */}
 [Functions](/management/function) and
 [materialized views](/feature-engineering/materialized-views) are ordinary
-[catalog objects](/basics/catalog), alongside tables and indexes -- created,
-versioned, and refreshed like anything else, not a separate system bolted
-alongside.
+{/* end if */}
+{/* if functions not launched */}
+[Materialized views](/feature-engineering/materialized-views) are ordinary
+{/* end if */}
+[catalog objects](/basics/catalog). Create them through the SDK or SQL,
+then refresh the derived data when its inputs change.
 
 <Note>
-Every operation here has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
+In LanceDB Enterprise, every operation here also has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
 </Note>
 
-## The shape everything shares {#the-shape}
+## Computed columns and materialized views {#the-shape}
 
-Every mechanism here separates **declaring** from **filling**, and that
-separation is the point:
+Computed columns and materialized views both keep derived data in the
+lakehouse, but they fill it differently, and the difference decides what a
+refresh costs:
 
-- Declaring is cheap and immediate. It records intent in the schema and commits
-  a new table version, with no data written. Declaring a column on a
-  billion-row table costs what declaring one on an empty table costs.
-- Filling is a separate call you control, can retry, and -- against a deployment
-  -- can hand to the server as a [job](/basics/jobs) rather than waiting on.
+| | Computed column | Materialized view |
+| --- | --- | --- |
+| Declaring or creating it | records the expression; no values are written | runs the query and stores its rows, unless created empty |
+| A refresh | fills rows with no value and recomputes rows whose inputs changed | applies source changes or rebuilds the view, depending on the query and SDK version |
+| A refresh when nothing changed | fills nothing | can be a no-op when incremental refresh is supported |
+| In LanceDB Enterprise | runs as a [job](/basics/jobs) | runs as a server-side materialization job |
 
-**Filling does not redo current work.** A refresh gives values to rows that
-lack them and recomputes rows whose inputs changed since they were computed. It
+### Computed columns fill incrementally {#incremental}
+
+A [computed column](/feature-engineering/add-computed-column) separates
+**declaring** from **filling**:
+
+- Declaring is cheap and immediate. It records the expression in the schema
+  and commits a new table version, with no data written. It does not evaluate the expression over existing rows.
+- Fill the column with a separate refresh call that you can retry. In LanceDB
+  Enterprise, submit the refresh as a [job](/basics/jobs) and track its progress.
+
+**Filling does not redo current work.** A
+[refresh](/feature-engineering/refresh-column) gives values to rows that lack
+them and recomputes rows whose inputs changed since they were computed. It
 leaves the rest alone, so calling it twice is not twice the work, and appending
 rows means the next refresh handles only the new ones.
 
-The corollary is worth stating plainly: **a filled value catches up with its
-inputs only when you refresh.** If a column derives from `price` and a row's
+**Computed values update when you refresh.** If a column derives from `price` and a row's
 `price` is later updated, the derived value keeps its old value until the next
-refresh recomputes it. That is a deliberate trade -- it is what makes refreshes
-idempotent and cheap -- but it will surprise you if you expect a spreadsheet.
+refresh recomputes it. Schedule refreshes after changing the source data when consumers need
+up-to-date features.
 
-## Which one to reach for {#which-one}
+### Materialized views store query results {#views}
+
+A [materialized view](/feature-engineering/materialized-views) has no separate
+declaration step: creating one runs its query and stores the result, so the view
+is ready to read. A refresh updates those stored results. Python SDK 0.40.0 can apply
+changes incrementally for supported queries; other queries require a full rebuild.
+See [refresh behavior](/feature-engineering/materialized-views#incremental) for
+version-specific details.
+
+Enterprise runs materialization on remote compute. Use the SDK and refresh
+options supported by your server version; see
+[Enterprise refreshes](/feature-engineering/materialized-views#availability).
+
+## Choose a feature engineering workflow {#which-one}
 
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
-| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | everywhere |
-| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | everywhere |
-| [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | OSS and Enterprise |
+| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | OSS and Enterprise |
+| [Function](/management/function) {/* if functions launched */} | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
+| [Geneva](/geneva) {/* if functions not launched */} | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
+| [Geneva](/geneva) {/* if functions launched */} | columns filled by Python, for existing pipelines | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).
@@ -57,23 +88,34 @@ expression, filled by [a refresh](/feature-engineering/refresh-column).
 aggregated view of a source -- and bring it up to date on each refresh. The
 result is an ordinary table: queryable, indexable, searchable.
 
+{/* if functions launched */}
 **Functions** run Python where the data is, for work SQL cannot express:
 embedding a column, calling a model, decoding an image. Registered once,
-versioned, then applied as a column.
+versioned, then applied as a column. They are the way to do that on a
+deployment; [Geneva](/geneva) remains available for existing pipelines.
 
-They compose. A materialized view can select computed columns, and a computed
-column can be filled by a registered function.
+{/* end if */}
+{/* if functions not launched */}
+**Geneva** is LanceDB Enterprise's Python package for work SQL cannot express:
+embedding a column, calling a model, decoding an image. It defines features as
+Python functions and backfills them as distributed jobs.
+
+{/* end if */}
+They compose. A materialized view can select computed columns.
+A computed column can be filled by a registered function. {/* if functions launched */}
 
 ## Where the work runs {#where}
 
 <Badge color="red">Enterprise</Badge>
 
-Locally, a refresh runs in your process. Against a deployment it runs across the
+Locally, a refresh runs in your process. With LanceDB Enterprise it runs across the
 cluster, and the API reflects that: `refresh_column` raises, and
-`refresh_column_async` returns a [job](/basics/jobs) handle instead.
+`refresh_column_async` returns a [job](/basics/jobs) handle instead. Computed
+columns are off by default in LanceDB Enterprise, and its administrator has to enable
+them before a column can be declared there.
 
 ```python
-job = table.refresh_column_async("embedding")
+job = table.refresh_column_async("power_score")
 result = job.wait()
 result.rows_assigned
 ```
@@ -81,24 +123,26 @@ result.rows_assigned
 A backfill over a large table can therefore be started, left, and checked on
 from a different process -- the connection does not have to stay open.
 
-That relocation is the main thing to understand about Enterprise feature
-engineering. The API is the same; what changes is that the code runs somewhere
-else, which is also why a function must declare the environment it needs.
+Enterprise manages the compute for the refresh. You still control when to
+submit it; declaring a computed column does not schedule recurring refreshes.
+That is also why a function must declare the environment it needs. {/* if functions launched */}
 
 ## Recovering from a failure {#failures}
 
+{/* if functions launched */}
 A function that raises fails the job. There is no per-row retry or skip policy
 in the function definition, so a function calling a flaky external service
 should handle that itself, inside the function body.
 
-The alternative is to let the job fail, fix the cause, and run the refresh
+{/* end if */}
+When a refresh fails, fix the cause and run the refresh
 again. The new refresh fills what is still empty or stale. How much of the
 failed run was kept depends on where it ran (see
 [Refresh a column](/feature-engineering/refresh-column#failures)), and a retry
 can recompute values that were already written, so do not count on it costing
 only the rows that did not complete.
 
-## Where to go next {#next}
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="Add a computed column" icon="table-columns" href="/feature-engineering/add-computed-column">
@@ -110,7 +154,9 @@ only the rows that did not complete.
   <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
     Bring a derived table up to date with its source.
   </Card>
+  {/* if functions launched */}
   <Card title="Functions" icon="code" href="/management/function">
     Register Python to fill a column with.
   </Card>
+  {/* end if */}
 </CardGroup>

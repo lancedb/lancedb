@@ -1,13 +1,19 @@
 ---
 title: "Refresh a column"
 sidebarTitle: "Column Refresh"
-description: "Fill the rows of a computed column that lack values — in process, or as a server-side job."
+description: "Populate a computed column and update it when its inputs change."
 icon: arrows-rotate
 keywords: ["refresh_column", "backfill", "job", "idempotent", "REFRESH COLUMN"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Both offerings support column refresh. The embedded library runs it in your process; Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
 ---
 
-A [declared column](/feature-engineering/add-computed-column) starts empty. A
-refresh gives values to the rows that lack them.
+Refresh a [computed column](/feature-engineering/add-computed-column) to fill
+new rows and recompute values whose inputs changed. The example below continues
+with the `doubled` column from the computed-column guide.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -37,8 +43,7 @@ The SQL form is [`REFRESH COLUMN`](/sql/refresh#refresh-column), with the same r
 
 A refresh fills rows that have no value and recomputes rows whose inputs
 changed since they were computed. Every other row is left alone, so a second
-refresh with nothing changed does nothing. Two consequences follow, and both
-are load-bearing.
+refresh with nothing changed does nothing. This supports two common workflows.
 
 **Appending is cheap.** Rows added since the last refresh are filled by the
 next one; filled rows whose inputs are unchanged are skipped. Backfilling a
@@ -63,16 +68,16 @@ REFRESH COLUMN embedding ON documents WHERE created_at > '2026-01-01'
 ```
 
 <Note>
-**Enterprise job type:** `computed_refresh` for a SQL-expression column,
-`function_refresh` for one filled by a registered
-[function](/management/function).
+**Enterprise job type:** `computed_refresh` for a SQL-expression column.
+`function_refresh` for one filled by a registered [function](/management/function). {/* if functions launched */}
 </Note>
 
-## As a job {#async}
+## Run a refresh on Enterprise {#async}
 
 <Badge color="red">Enterprise</Badge>
 
-Against a deployment the refresh runs on the cluster. `refresh_column` raises
+With an Enterprise cluster that enables computed columns, the refresh runs on the
+cluster. `refresh_column` raises
 there; use `refresh_column_async`, which returns a [job](/basics/jobs) you can
 wait on or poll instead of holding a connection open:
 
@@ -92,7 +97,7 @@ does not raise, which is what makes it safe in a loop; `wait()` raises
 A long backfill can therefore be started, left, and checked on from a different
 process.
 
-### Resourcing the job {#resources}
+### Configure workers and resources {#resources}
 
 SQL exposes the worker budget directly, which is the lever when a backfill is
 too slow or too expensive:
@@ -111,7 +116,7 @@ rather than failing the job.
 
 What a failure keeps depends on where the refresh ran. `refresh_column` in your
 process writes the column in one commit, so a failure leaves the column as it
-was. A refresh job on a deployment commits finished batches as it goes, so some
+was. A refresh job in LanceDB Enterprise commits finished batches as it goes, so some
 values can remain after a failure.
 
 Either way, recover by fixing the cause and refreshing again. The new refresh
@@ -121,12 +126,14 @@ that were already written -- for example when the record of the inputs they
 were computed from was not saved -- so do not count on a retry costing only the
 rows that did not complete.
 
+{/* if functions launched */}
 For a column filled by a [function](/management/function), the usual cause is
 the worker environment rather than the data. See
 [environment mismatches](/management/function#mismatch-symptoms) for the
 symptoms, which rarely name their cause.
+{/* end if */}
 
-## What to read next {#next}
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="Jobs" icon="hourglass-half" href="/basics/jobs">

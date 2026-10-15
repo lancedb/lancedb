@@ -4,6 +4,12 @@ sidebarTitle: "Data Evolution"
 description: "Derive new columns from data already in the table, without rewriting what is already there."
 icon: wand-magic-sparkles
 keywords: ["data evolution", "derived columns", "add_columns", "zero copy", "feature engineering"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Adding columns computed from SQL expressions works in the embedded library
+    and in LanceDB Enterprise.
 ---
 
 import {
@@ -18,19 +24,22 @@ import {
     RsAddFeatureColumnsSql as RsAddFeatureColumnsSql,
 } from '/snippets/tables.mdx';
 
-Data evolution is adding **values** derived from what a table already holds.
-[Schema evolution](/management/table#schema) changes the table's shape; this fills the
-shape with something new.
+Add derived columns to calculate features from data already in a table.
+For example, compute a product score from existing fields without reading
+and rewriting the table in your application.
 
-The reason it is cheap is the format. Adding a derived column writes only that
-column -- the existing data, which is the expensive part on a multimodal table,
-is never rewritten. See [why that works](/basics/lance#evolution).
+Lance can write the new columns without rewriting the existing columns.
+This is useful when the table also contains large images, video or embeddings.
+See [Lance format](/basics/lance) for the storage model.
 
 <Note>
-In SQL this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl/table#computed-column).
+In SQL, on an Enterprise cluster that enables computed columns, this is [`ALTER TABLE ... ADD COLUMN ... AS`](/sql/ddl/table#computed-column).
 </Note>
 
 ## Set up the example table {#set-up-the-example-table}
+
+The examples use `db`, a connection opened as in
+[Connect to LanceDB](/basics/connect), and create a small product table in it:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -96,16 +105,24 @@ If your transformation cannot be expressed in SQL, compute the values outside
 
 ## When SQL is not enough {#beyond-sql}
 
-The expressions above are evaluated once, as part of the call. Two other shapes
-exist when that does not fit:
+The expressions above are evaluated once, as part of the call. For other workflows:
 
 - A [computed column](/feature-engineering/add-computed-column) declares the
   expression and leaves the column empty, so you choose when the work happens.
-  That is the right default on a large table.
+  Use it when you want to schedule the computation separately.
+{/* if functions launched */}
 - A [function](/management/function) fills a column with Python, for values SQL
   cannot express -- an embedding, a model call, an image decode.
+{/* end if */}
+{/* if functions not launched */}
+- On LanceDB Enterprise, [Geneva](/geneva) fills a column with Python, for
+  values SQL cannot express -- an embedding, a model call, an image decode.
+{/* end if */}
 
-## What to read next {#next}
+A deployment has to enable computed columns before you use them.
+Functions need enabling there too. {/* if functions launched */}
+
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="Add a computed column" icon="table-columns" href="/feature-engineering/add-computed-column">

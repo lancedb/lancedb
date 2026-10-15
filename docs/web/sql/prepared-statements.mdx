@@ -1,17 +1,18 @@
 ---
 title: "Prepared statements"
 sidebarTitle: "Prepared Statements"
-description: "Preparing a statement once and executing it many times, over the Flight SQL protocol."
+description: "What a deployment does when a Flight SQL client prepares a statement or binds parameter values."
 icon: bolt
 keywords: ["prepared statement", "flight sql", "parameters", "bind"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-A prepared statement is planned once and executed many times, which saves
-re-planning a statement whose shape does not change between runs.
+A Flight SQL client can prepare a statement before it runs it. A deployment
+accepts that, but it keeps no plan between runs and does not accept parameter
+values.
 
-## It is a protocol feature, not a statement {#protocol}
+## Prepare through a Flight SQL client {#protocol}
 
 <Warning>
 There is no SQL `PREPARE` / `EXECUTE` here. Preparation is part of the
@@ -20,46 +21,41 @@ by sending a statement.
 </Warning>
 
 That distinction matters when porting SQL from another engine: a script
-containing `PREPARE name AS SELECT ...` will not run, while the same intent
-expressed through a Flight SQL client will.
+containing `PREPARE name AS SELECT ...` will not run.
 
-## The flow {#flow}
+## Prepare and execute {#flow}
 
-Every Flight SQL client exposes the same three steps, whatever it calls them:
+A Flight SQL client takes these steps, whatever it calls them:
 
-1. **Prepare** — send the SQL, get back a handle and the result schema. The
+1. **Prepare:** send the SQL and get back a handle and the result schema. The
    statement is parsed and planned at this point, so a syntax or name error
    surfaces here rather than at execution.
-2. **Bind and execute** — supply parameter values for the handle and read the
-   result. Repeat as often as you like.
-3. **Close** — release the handle. Servers do not hold them forever.
-
-Knowing that the plan is built at step 1 is the practical part: if a statement
-is slow to prepare and fast to execute, the cost is planning, and reusing the
-handle is exactly the right fix.
+2. **Execute:** run the handle and read the result. The deployment plans the
+   statement again each time it runs, so reusing a handle does not save
+   planning time.
+3. **Close:** release the handle.
 
 ## Parameters {#parameters}
 
-Parameters are placeholders in the SQL text, bound to an Arrow record batch at
-execution. Binding rather than interpolating is worth doing for the usual two
-reasons — the value cannot change the statement's meaning, and the plan is
-reused across values.
+A deployment does not accept parameter values for a prepared statement. A
+client that binds values to placeholders such as `$1` and `$2` gets a "not
+implemented" error when it executes the statement. A statement with fixed,
+trusted values written into it runs as usual:
 
 ```sql
-SELECT id, title FROM documents WHERE category = $1 AND score > $2
+SELECT id, title FROM documents WHERE category = 'news' AND score > 0.5
 ```
 
-The exact placeholder spelling and the binding call belong to your client; see
-[connecting a client](/sql#connecting).
+Do not put untrusted input, such as a value from a user or a request, directly
+into the statement text. Quoting it does not protect the statement the way
+binding a parameter would.
 
-## When it helps {#when}
+## When to use prepared statements {#when}
 
-| | |
-| --- | --- |
-| The same query with different values, many times | prepare once, bind per execution |
-| A complex plan — several joins, window functions | planning dominates; reuse it |
-| A one-off analytical query | no benefit; just execute it |
+Prepare a statement when your client requires it, or to get a statement's
+result schema and catch syntax and name errors without running it. Preparing
+does not make a repeated statement faster.
 
-For a statement you want to keep rather than re-prepare, a
-[view](/management/view) stores the query server-side, and a
-[materialized view](/management/materialized-view) stores its rows.
+To give a reusable query a name, create a [view](/management/view). To store
+its result for later queries, create a
+[materialized view](/management/materialized-view).

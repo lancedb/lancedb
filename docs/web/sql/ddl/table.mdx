@@ -6,7 +6,7 @@ icon: table
 keywords: ["create table", "alter table", "drop table", "describe", "clone", "ddl"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ## CREATE TABLE {#create}
 
@@ -30,16 +30,15 @@ The table's columns and types, without a plan -- the SQL counterpart of
 
 ## ALTER TABLE {#alter}
 
-`ALTER TABLE ... ADD COLUMN` covers three different things, distinguished by
-what follows the column name.
+What `ALTER TABLE ... ADD COLUMN` does depends on what follows the column
+name.
 
 ### A plain column {#plain-column}
 
-```sql
-ALTER TABLE t ADD COLUMN c INT
-```
-
-Added empty and nullable. Nothing is computed.
+SQL `ADD COLUMN` requires an `AS` binding, so a plain column such as
+`ALTER TABLE t ADD COLUMN c INT` is rejected. Add an empty, nullable column
+with the SDK instead -- see
+[Add nullable columns](/management/table#schema-add-nullable-columns).
 
 ### A computed column {#computed-column}
 
@@ -52,6 +51,7 @@ The column is committed empty and the expression is stored, not evaluated --
 declaring one on a billion-row table costs what declaring one on an empty table
 costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
 
+{/* if functions launched */}
 ### A function column {#function-column}
 
 ```sql
@@ -86,6 +86,7 @@ ALTER TABLE t ADD COLUMN c AS f(x) WITH (num_workers = '2')
 `WITH` on a plain computed column accepts only `version`. Resource options such
 as `num_workers` apply to function columns, where there are workers to size.
 </Note>
+{/* end if */}
 
 ### Table properties {#properties}
 
@@ -95,19 +96,23 @@ ALTER TABLE t SET UNENFORCED PRIMARY KEY (id)
 
 Records which column identifies a row. **Unenforced** is not a hedge in the
 naming: uniqueness is not checked on write, and declaring it does not make
-duplicates impossible. It tells the planner what to assume.
+duplicates impossible. It tells the planner what to assume. The column must be
+declared `NOT NULL`.
 
 ```sql
 ALTER TABLE t SET WAL
-ALTER TABLE t SET WAL WITH (sharding = 'bucket', buckets = 4)
+ALTER TABLE t SET WAL WITH (sharding = 'bucket', column = 'id', buckets = 4)
 ALTER TABLE t SET WAL WITH (maintained_indexes = '')
 ALTER TABLE t UNSET WAL
 ```
 
 A write-ahead log makes small frequent writes cheap by batching them out of the
 commit path. `sharding` and `buckets` spread the log so concurrent writers do
-not contend on one place; `maintained_indexes` chooses which indexes are kept
-current against WAL rows. See
+not contend on one place; `bucket` sharding names its `column`, which must be
+the table's unenforced primary key, and inserts into the table then need a
+scalar index on that key. `maintained_indexes` chooses which indexes are kept
+current against WAL rows. A table with a computed column cannot take a
+write-ahead log. See
 [Background jobs](/maintenance/background-jobs#wal) for how the log gets
 folded back into the table.
 
@@ -162,7 +167,8 @@ Removes the table and every version of it. There is no undrop.
 </Warning>
 
 <Note>
-**Enterprise job type:** `drop_table`. See
+**Enterprise job type:** `drop_table` or `drop_object`, depending on how the
+deployment stores its catalog. See
 [Background jobs](/maintenance/background-jobs#teardown).
 </Note>
 

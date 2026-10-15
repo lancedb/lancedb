@@ -4,18 +4,24 @@ sidebarTitle: "Function"
 description: "CREATE FUNCTION, SHOW FUNCTIONS, and DROP FUNCTION."
 icon: function
 keywords: ["create function", "drop function", "show functions", "sql", "udf"]
+launch: functions
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ## CREATE FUNCTION {#create}
 
 ```sql
-CREATE FUNCTION f(x BIGINT) RETURNS BIGINT
+CREATE FUNCTION f(x int64) RETURNS int64
 LANGUAGE python
 AS 'def f(x): return x * 2'
 WITH (pip = 'numpy==1.26.4', python_version = '3.11')
 ```
+
+Parameter and result types are Arrow type names, not SQL ones: `int64`,
+`float64`, `utf8`, `bool`, `date32`, and lists such as `list<float32>` or
+`fixed_size_list<float32, 768>`. `BIGINT` is refused. A parameter accepts nulls
+unless it is declared `NOT NULL`.
 
 The body is Python source. Its dependencies are declared with it and are part
 of the **immutable function version** -- changing one produces a new version
@@ -27,7 +33,7 @@ version is unaffected.
 | `pip` | pip requirements for the worker environment |
 | `conda` | conda packages instead of pip |
 | `conda_channels` | channels in priority order; requires `conda` |
-| `python_version` | worker Python version, defaulting to yours |
+| `python_version` | worker Python version; `3.12` when omitted, whatever Python you send the statement from |
 | `gpu` | `'true'` when every execution needs a GPU |
 
 **Errors and limits**

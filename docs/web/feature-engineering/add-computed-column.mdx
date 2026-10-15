@@ -4,13 +4,18 @@ sidebarTitle: "Computed Columns"
 description: "Declare a column from a SQL expression. Nothing is evaluated until you refresh it."
 icon: table-columns
 keywords: ["computed columns", "add_columns", "transforms", "schema"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Both offerings support computed columns. Enterprise requires the deployment to enable them; the embedded library evaluates them in your process.
 ---
 
 A computed column is declared with an expression and starts with no values.
 Declaring it is cheap on any table size, because nothing is evaluated until
 [a refresh](/feature-engineering/refresh-column) asks for it.
 
-## Declaring one {#declare}
+## Add a computed column {#declare}
 
 ```python
 import lancedb
@@ -26,14 +31,18 @@ That commits a new table version with the column present and empty. It is an
 ordinary table version, so the usual [versioning](/management/table#versioning) applies --
 including that you can travel back to before the column existed.
 
-## `computed` and `transforms` are different {#computed-vs-transforms}
+## Compute now or on refresh {#computed-vs-transforms}
 
 `add_columns` takes either, and the difference matters:
 
 - **SQL expressions in `transforms`** are evaluated *now*, for every row, as
   part of the call. Good for a small table, or a column you want populated
-  immediately. A `FunctionApplication` passed through `transforms` instead
-  declares empty Function-bound columns; a refresh fills them.
+  immediately.
+  {/* if functions launched */}
+  A `FunctionApplication` passed through `transforms` instead
+  declares empty Function-bound columns, which a refresh fills; that needs a
+  deployment with Functions enabled, and the embedded library refuses it.
+  {/* end if */}
 - **`computed`** stores the expression and evaluates nothing. The column is
   committed empty and filled later by
   [`refresh_column`](/feature-engineering/refresh-column).
@@ -48,8 +57,8 @@ the table, including another computed column:
 
 ```python
 table.add_columns(computed={
-    "power_score": "(stats.magic + stats.strength) / 2.0",
-    "is_strong":   "power_score > 3.0",
+    "power_score": "cast(x as double) / 2.0",
+    "is_strong":   "power_score > 0.5",
 })
 ```
 
@@ -59,12 +68,22 @@ declared earlier in the same mapping, but not one declared after it.
 The functions available are the ones the
 [SQL dialect](/sql/functions) documents.
 
-## Its inputs become load-bearing {#input-constraints}
+A literal in the expression has to fit the column it meets: `x / 2.0` is
+refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
+
+<Warning>
+In LanceDB Enterprise, keep the expression to top-level columns. A column
+refresh can fail on an expression that reads a field inside a struct, such as
+`stats.magic + stats.strength`, which the embedded library computes. Try a new
+expression on a small table first.
+</Warning>
+
+## Change columns used by an expression {#input-constraints}
 
 <Warning>
 While a computed column's declaration references another column, that column
-cannot be renamed, retyped, or dropped. The declaration is part of the schema,
-and LanceDB will not let you invalidate it out from under itself.
+cannot be renamed, retyped, or dropped. Drop the computed column first
+if you need to change one of its inputs.
 </Warning>
 
 This is worth knowing before deriving a column from something you expect to
@@ -74,18 +93,33 @@ reshape later. Dropping the computed column releases the constraint.
 
 <Badge color="red">Enterprise</Badge>
 
+{/* if functions launched */}
 When the value cannot be expressed in SQL -- an embedding, a model call, an
 image decode -- the column is filled by a registered
 [function](/management/function) instead of an expression. Declaring it looks
-the same; what differs is what fills it.
+the same; what differs is what fills it. It needs a deployment with Functions
+enabled.
+{/* end if */}
+{/* if functions not launched */}
+When the value cannot be expressed in SQL -- an embedding, a model call, an
+image decode -- [Geneva](/geneva), the feature engineering package for LanceDB
+Enterprise, fills the column with a Python function instead.
+{/* end if */}
 
-## What to read next {#next}
+## Related guides {#next}
 
 <CardGroup cols={2}>
   <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     Fill the rows that lack values.
   </Card>
+  {/* if functions launched */}
   <Card title="Functions" icon="code" href="/management/function">
     Fill a column with Python.
   </Card>
+  {/* end if */}
+  {/* if functions not launched */}
+  <Card title="Geneva" icon="layer-group" href="/geneva">
+    Fill a column with Python on LanceDB Enterprise.
+  </Card>
+  {/* end if */}
 </CardGroup>

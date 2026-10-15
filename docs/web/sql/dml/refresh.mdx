@@ -6,7 +6,7 @@ icon: arrows-rotate
 keywords: ["refresh column", "refresh materialized view", "backfill", "cascade"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 LanceDB extensions with no DataFusion equivalent. They are what makes
 [feature engineering](/feature-engineering) reachable from SQL: a column
@@ -52,33 +52,33 @@ REFRESH COLUMN embedding ON documents
 `num_workers` sets a count; the budget options size each worker. They are
 alternatives rather than a pair.
 
+{/* if functions launched */}
 <Note>
 `error_policy` and `num_workers` are refused for a column filled by a registered
 [function](/management/function) with its own resource budget -- use the CPU,
 memory and GPU options there.
 </Note>
+{/* end if */}
 
 ## REFRESH MATERIALIZED VIEW {#refresh-materialized-view}
 
 ```sql
-REFRESH MATERIALIZED VIEW <name> [CASCADE] [WITH (<option> = <value>)]
+REFRESH MATERIALIZED VIEW <name>
 ```
 
 ```sql
 REFRESH MATERIALIZED VIEW chunks
-REFRESH MATERIALIZED VIEW chunks WITH (full = true)
 ```
 
-`full = true` asks for every row to be recomputed. Without it, whether a
-refresh rebuilds the whole view -- as every local SDK refresh does -- or
-reconciles only what changed in the source depends on the deployment's LanceDB
-Enterprise version and configuration.
+A refresh updates the view's stored result. Refresh views in dependency order,
+starting with their source views.
 
-<Warning>
-`CASCADE` asks for the views this one is built on to be refreshed first, in
-dependency order. Whether a deployment carries it out depends on its version;
-where it does not, refresh each view yourself, its sources first.
-</Warning>
+<Note>
+Some older server versions accepted `WITH (full = true)` and `CASCADE`.
+Those options are not accepted by the SQL implementation described here.
+Use the basic statement above; do not assume that the options accepted by a
+local SDK's `refresh()` method are also SQL options.
+</Note>
 
 ## Watching a refresh {#watching}
 

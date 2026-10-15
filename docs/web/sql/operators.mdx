@@ -6,7 +6,7 @@ icon: plus-minus
 keywords: ["operators", "literals", "precedence", "null", "cast", "interval"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 The operator set is DataFusion's. This page covers what is worth knowing when
 the operands are Lance columns.
@@ -44,8 +44,8 @@ IN`, which is the usual place this bites. See
 <Warning>
 Arithmetic over a vector column is **list** arithmetic, not scalar arithmetic —
 a vector is a `FixedSizeList<Float32>`. When the operation you want is a
-similarity comparison, use [vector search](/search/vector-search); there is no
-SQL form for it.
+similarity comparison, use [vector search](/search/vector-search); whether SQL
+can express it [depends on the Enterprise server version](/basics/sql#no-vector-sql).
 </Warning>
 
 ## Literals {#literals}
@@ -66,10 +66,13 @@ or a name with mixed case: `SELECT "order" FROM "MyTable"`.
 ## Casting {#casting}
 
 ```sql
-SELECT CAST(identifier AS VARCHAR), identifier::VARCHAR FROM documents
+SELECT CAST(identifier AS VARCHAR) AS with_cast, identifier::VARCHAR AS with_colons
+FROM documents
 ```
 
-Both forms work. `TRY_CAST` returns null instead of erroring on a value that
+Both forms work. Give each its own alias when one projection uses both: they
+produce the same expression name, and a projection refuses two columns with
+one name. `TRY_CAST` returns null instead of erroring on a value that
 will not convert, which is the one to use over a column you do not control.
 
 ## Precedence {#precedence}

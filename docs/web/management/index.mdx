@@ -6,17 +6,17 @@ icon: folder-tree
 keywords: ["ddl", "create", "drop", "list", "catalog", "management"]
 ---
 
-Every [catalog object](/basics/catalog) is created, listed, and dropped the same
-few ways. This section is the reference for those operations; the pages linked
-from it cover what each object is for.
+Use the SDKs or SQL to manage [catalog objects](/basics/catalog), including
+tables, namespaces and views. The tables below provide a quick reference to
+the available methods; each object's guide covers its setup and behavior.
 
-Operations that can take a while have an `_async` form returning a
-[job](/basics/jobs).
+Some long-running operations also provide a submission method that returns a
+[job](/basics/jobs). See the operation's guide for how to track completion.
 
-## The surface at a glance {#surface}
+## Management APIs {#surface}
 
 <Note>
-SQL requires a deployment -- a local database has no engine to plan a statement.
+SQL is available through the Enterprise Flight SQL endpoint.
 See [SQL](/basics/sql#sql-is-remote).
 </Note>
 
@@ -59,8 +59,8 @@ See [Tables](/management/table) for creating one and shaping its schema.
 | drop | `drop_table` | `dropTable` | `DROP TABLE` |
 
 <Note>
-`list_materialized_views` reads every table's schema to find them, so it costs
-one open per table. `SHOW MATERIALIZED VIEWS` asks the server instead.
+Local `list_materialized_views` reads table schemas to find views. On
+Enterprise, it requests the server's view listing.
 </Note>
 
 See [Materialized views](/management/materialized-view) for creating one, and
@@ -71,13 +71,15 @@ it current.
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
-| create | -- | -- | `CREATE VIEW` |
-| drop | -- | -- | `DROP VIEW` |
+| create | `create_view` | `createView` | `CREATE VIEW` |
+| list | `list_views` | `listViews` | -- |
+| drop | `drop_view`, `drop_view_async` | `dropView`, `dropViewAsync` | `DROP VIEW` |
 
-<Badge color="red">Enterprise</Badge> Views exist only in SQL -- there is no SDK
-method for them, because the thing a view stores *is* a SQL statement. See
+<Badge color="red">Enterprise</Badge> Views exist only on an Enterprise cluster that
+enables them; the SDK methods send the view's SQL query to the deployment. See
 [Views](/management/view).
 
+{/* if functions launched */}
 ### Functions {#functions}
 
 | | Python | TypeScript | SQL |
@@ -87,9 +89,11 @@ method for them, because the thing a view stores *is* a SQL statement. See
 | list | `list_functions` | -- | `SHOW FUNCTIONS` |
 | drop | `drop_function` | -- | -- |
 
-<Badge color="red">Enterprise</Badge> A function runs on the server, so there is
-no local form. The TypeScript SDK has no function methods; use Python or SQL.
+<Badge color="red">Enterprise</Badge> A function runs on the server, and only on
+a deployment that enables functions, so there is no local form. The TypeScript
+SDK has no function methods; use Python or SQL.
 See [Functions](/management/function).
+{/* end if */}
 
 ### Jobs {#jobs}
 
@@ -119,7 +123,7 @@ names it. For a multi-column or named index, use the SDK.
 Indexes are a performance decision rather than a structural one, so they are
 covered under [Maintenance](/indexing).
 
-## Namespaces qualify everything {#namespace-paths}
+## Work within a namespace {#namespace-paths}
 
 Most connection-level operations take a `namespace_path` (`namespacePath`) to
 act inside a namespace rather than at the database root:
@@ -131,8 +135,8 @@ tbl = db.open_table("clicks", namespace_path=["prod", "events"])
 ```
 
 ```typescript TypeScript icon="square-js"
-await db.tableNames({ namespacePath: ["prod", "events"] });
-const tbl = await db.openTable("clicks", { namespacePath: ["prod", "events"] });
+await db.tableNames(["prod", "events"]);
+const tbl = await db.openTable("clicks", ["prod", "events"]);
 ```
 
 ```sql SQL
@@ -142,7 +146,7 @@ SELECT * FROM prod.events.clicks
 
 In SQL the path is written as dotted identifiers instead.
 
-## Dropping is not undoable {#dropping}
+## Delete catalog objects {#dropping}
 
 <Warning>
 `drop_table` removes the table and every version of it. Table

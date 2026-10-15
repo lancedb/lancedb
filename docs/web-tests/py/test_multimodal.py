@@ -215,28 +215,18 @@ async def test_query_to_pandas_kwargs(db_path_factory):
         .to_pandas(blob_mode="bytes")
     )
 
-    # Vector / FTS / hybrid queries return "bytes" or "descriptions".
-    # Lazy BlobFile handles need a plain scan.
+    # Vector / FTS / hybrid queries can't materialize blob columns,
+    # so omit them from the projection
     df_vec = (
         tbl.search(query_vector)
         .limit(10)
-        .select(["id", "video"])
-        .to_pandas(blob_mode="bytes", split_blocks=True, self_destruct=True)
+        .select(["id", "vector"])
+        .to_pandas(split_blocks=True, self_destruct=True)
     )
-
-    # to_arrow and to_list take the same blob_mode
-    hits = tbl.search(query_vector).limit(2).select(["id", "video"])
-    arrow_bytes = hits.to_arrow(blob_mode="bytes")
-    rows = hits.to_list(blob_mode="bytes")
     # --8<-- [end:query_to_pandas_kwargs]
 
     assert len(df_lazy) == 1
     assert len(df_bytes) == 1
     assert df_bytes["video"].iloc[0] == b"fake_video_bytes_1"
     assert len(df_vec) == 10
-    assert all(
-        video == f"fake_video_bytes_{i}".encode()
-        for i, video in zip(df_vec["id"], df_vec["video"])
-    )
-    assert arrow_bytes["video"].to_pylist() == [row["video"] for row in rows]
-    assert all(isinstance(row["video"], bytes) for row in rows)
+    assert "video" not in df_vec.columns

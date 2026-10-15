@@ -1,94 +1,45 @@
 ---
 title: "SQL reference"
 sidebarTitle: "Overview"
-description: "The SQL surface: dialect, connecting a client, and a page per construct."
+description: "SQL statements, expressions and data types supported by LanceDB Enterprise."
 icon: table-list
 keywords: ["sql", "datafusion", "flight sql", "reference", "dialect"]
 ---
 
-<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local database
-has no engine to plan a statement, so `execute_query` raises there -- see
-[SQL](/basics/sql#sql-is-remote).
-
-This is a reference rather than a guide: one page per construct, syntax first.
-The guides elsewhere in these docs show the same operations from the SDKs.
+LanceDB Enterprise supports SQL through an Arrow Flight SQL endpoint. This
+reference covers statement syntax, data types and expressions. To set up a
+client and run your first query, see [SQL](/basics/sql).
 
 ## The dialect {#dialect}
 
-LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
-currently **version 54**. The grammar, built-in functions and type system are
-DataFusion's, so anything its reference documents for that version works here
-unchanged and is not reproduced.
-
-What these pages add is the part that is LanceDB's: how a query reaches the
-engine, how Lance columns appear to it, and the statements a lakehouse needs
-that DataFusion has no concept of.
+LanceDB uses [Apache DataFusion](https://datafusion.apache.org) for SQL planning
+and execution. These pages describe LanceDB's supported statements and
+extensions. DataFusion's reference is useful for expression syntax, but does
+not establish that every DataFusion statement or feature is exposed by
+LanceDB.
 
 ## Connecting {#connecting}
 
-SQL is served over an
-[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
-endpoint, so any Flight SQL client reaches it and results arrive as Arrow
-record batches -- nothing is converted to pandas or Python objects unless you
-ask.
-
-From Python, the connection runs SQL directly, without a separate client:
+Use Python's `execute_query` or a Flight SQL client after configuring the
+[Enterprise connection](/basics/sql#sql-is-remote). TypeScript applications
+use a Flight SQL client for SQL queries.
 
 ```python
 reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
-table = reader.read_all()
+for batch in reader:
+    print(batch)
 ```
 
-`execute_query` hands back a reader as soon as the first batch is ready rather
-than when the query finishes, so a large result set does not have to fit in
-memory before you start reading it. See [Queries](/basics/query).
-
-The TypeScript SDK has no SQL method; reach for a Flight SQL client instead --
-and in Python, reach for one too when the caller is outside the SDK's own
-process, such as a BI tool or a notebook in another language:
-
-```bash
-pip install flightsql-dbapi        # Python DB API 2 interface
-npm install --save @lancedb/flightsql-client
-```
-
-<CodeGroup>
-```python Python icon="python"
-from flightsql import FlightSQLClient
-
-client = FlightSQLClient(
-    host="your-enterprise-endpoint",
-    port=10025,
-    insecure=True,
-    token="DATABASE_TOKEN",
-    metadata={"database": "your-project-slug"},
-    features={"metadata-reflection": "true"},
-)
-
-info = client.execute("SELECT * FROM flights WHERE origin = 'SFO'")
-ticket = info.endpoints[0].ticket
-result = client.do_get(ticket).read_all()
-```
-
-```typescript TypeScript icon="square-js"
-import { Client } from "@lancedb/flightsql-client";
-
-const client = await Client.connect({
-    host: "your-enterprise-endpoint:10025",
-    username: "lancedb",
-    password: "password",
-});
-
-const result = await client.query("SELECT * FROM flights WHERE origin = 'SFO'");
-```
-</CodeGroup>
+SQL results arrive as Arrow record batches. Iterating over the reader avoids
+collecting the entire result in application memory. See
+[Queries](/basics/query) for result handling.
 
 ## Usage {#usage}
 
 The endpoint executes one statement per request and is meant for the queries
 and DDL/DML pages below. Reach for the SDKs instead for table-management
-operations that have no SQL form, such as building a vector index or a merge
-insert -- see [What SQL cannot do](#cannot).
+operations that have no SQL form, such as a merge insert -- see
+[What SQL cannot do](#cannot).
 
 ## Reference {#reference}
 
@@ -101,7 +52,7 @@ insert -- see [What SQL cannot do](#cannot).
 | [View](/sql/ddl/view) | `CREATE VIEW`, `DROP VIEW` |
 | [Materialized view](/sql/ddl/materialized-view) | `CREATE MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEWS` |
 | [Index](/sql/ddl/index) | `CREATE INDEX`, `DROP INDEX` |
-| [Function](/sql/ddl/function) | `CREATE FUNCTION`, `SHOW FUNCTIONS`, `DROP FUNCTION` |
+| [Function](/sql/ddl/function) {/* if functions launched */} | `CREATE FUNCTION`, `SHOW FUNCTIONS`, `DROP FUNCTION` |
 | [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
 
 ### DML {#dml}
@@ -111,7 +62,7 @@ insert -- see [What SQL cannot do](#cannot).
 | [Insert](/sql/dml/insert) | `INSERT INTO`, including `INSERT ... SELECT` |
 | [Update](/sql/dml/update) | `UPDATE ... SET` |
 | [Delete](/sql/dml/delete) | `DELETE FROM` |
-| [Copy](/sql/dml/copy) | `COPY INTO` / `COPY TO` |
+| [Copy](/sql/dml/copy) | `COPY` -- refused by recent deployment versions |
 | [Refresh](/sql/dml/refresh) | filling computed columns and materialized views |
 
 ### DQL {#dql}
@@ -135,15 +86,16 @@ insert -- see [What SQL cannot do](#cannot).
 | [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
 | [Functions](/sql/functions) | where to find each kind, and table functions |
 | [Scalar functions](/sql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
-| [Prepared statements](/sql/prepared-statements) | planning once, executing many times |
+| [Prepared statements](/sql/prepared-statements) | preparing through a Flight SQL client |
 
-## What SQL cannot do {#cannot}
+## SQL limitations and alternatives {#cannot}
 
 | | |
 | --- | --- |
-| Vector search | no SQL form -- a query-builder operation |
+| Vector search | See [SQL vector search](/basics/sql#no-vector-sql) for supported query forms and server-version requirements. The [SDK query builder](/search/vector-search) also supports vector search. |
 | Merge insert | no SQL form -- needs a source relation and a per-match policy |
 | `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
+| `COPY` | refused by recent deployment versions -- see [Copy](/sql/dml/copy) |
 | `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 
