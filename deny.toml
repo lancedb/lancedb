@@ -197,4 +197,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # releases are cut to crates.io. Allow that specific host.
 allow-git = [
     "https://github.com/lance-format/lance",
+    # Pinned by Lance for the multipart completion API.
+    "https://github.com/apache/arrow-rs-object-store",
 ]
