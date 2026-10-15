@@ -5,7 +5,7 @@ description: Integrate VoyageAI's cutting-edge reranking models with LanceDB. Fe
 
 ---
 
-import { PyRerankingVoyageaiUsage } from '/snippets/integrations.mdx';
+import { PyRerankingVoyageaiUsage } from '/snippets/provider_examples.mdx';
 
 # VoyageAI Reranker
 
@@ -16,6 +16,9 @@ This reranker uses the [VoyageAI](https://docs.voyageai.com/docs/) API to rerank
 
 > **Note:** Supported query types – Hybrid, Vector, and FTS.
 
+
+Replace `your-api-key` with your provider API key. In application code, load
+credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

@@ -10,6 +10,7 @@ arrow-schema = "58.3.0"
 futures = "0.3.31"
 futures-util = "0.3.31"
 lance-namespace = "8.0.0"
+lance-index = "=8.0.0"
 lancedb = { version = "0.31.0", features = ["polars", "remote"] }
 polars = ">=0.37,<0.40.0"
 polars-arrow = ">=0.37,<0.40.0"
@@ -41,3 +42,35 @@ path = "multimodal.rs"
 [[example]]
 name = "search"
 path = "search.rs"
+
+[[example]]
+name = "ingestion_examples"
+path = "ingestion_examples.rs"
+
+[[example]]
+name = "ingestion_delete"
+path = "ingestion_delete.rs"
+
+[[example]]
+name = "ingestion_progress"
+path = "ingestion_progress.rs"
+
+[[example]]
+name = "search_vector_search"
+path = "search_vector_search.rs"
+
+[[example]]
+name = "search_text_search"
+path = "search_text_search.rs"
+
+[[example]]
+name = "search_hybrid_search"
+path = "search_hybrid_search.rs"
+
+[[example]]
+name = "search_filter_search"
+path = "search_filter_search.rs"
+
+[[example]]
+name = "search_query_plan"
+path = "search_query_plan.rs"

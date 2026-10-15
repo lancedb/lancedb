@@ -5455,6 +5455,7 @@ dependencies = [
  "arrow-schema",
  "futures",
  "futures-util",
+ "lance-index",
  "lance-namespace",
  "lancedb",
  "polars",
