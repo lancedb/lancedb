@@ -332,6 +332,7 @@
               "management/namespace",
               "management/table",
               "tables/branching",
+              "tables/wal",
               "management/materialized-view",
               "management/view",
               "management/function"

@@ -1,0 +1,175 @@
+---
+title: "Write-ahead log (MemWAL)"
+sidebarTitle: "Write-Ahead Log"
+description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
+icon: "bolt"
+keywords: ["wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+## What is MemWAL? {#what-is-memwal}
+
+Every write to a LanceDB table is normally a commit to the underlying Lance
+dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
+stream of small commits, and each write is only visible once its commit lands.
+
+MemWAL puts an LSM-style write tier in front of the table. It turns many small
+writes into a few large commits, and makes each write **readable within
+milliseconds** of being acknowledged. It is enabled per table, and nothing
+about how you query that table changes.
+
+## How it works {#how-it-works}
+
+- **Writes.** A `merge_insert` or `delete` lands in an in-memory **memtable**
+  and is acknowledged once it is durable in the write-ahead log on object
+  storage.
+- **Flush and compaction.** Memtables seal into **SSTables**, which background
+  jobs compact into the base table, catching its indexes up as they go. See
+  [Background jobs](/maintenance/background-jobs#wal).
+- **Reads.** Every query runs against the base table and the fresh tier
+  (memtables and SSTables) in parallel. Fresh rows supersede base rows with the
+  same primary key, and the two are merged into one result.
+- **Indexes stay fresh.** Vector, full-text, and BTree indexes are maintained on
+  the memtable, so new rows are searchable through the index as soon as they
+  are written.
+
+## Getting started {#getting-started}
+
+### 1. Create a table with a primary key {#primary-key}
+
+MemWAL deduplicates writes by primary key. Declare it as field metadata when
+you create the table:
+
+```python
+import time
+from datetime import timedelta
+
+import lancedb
+import numpy as np
+import pyarrow as pa
+from lancedb import LsmWriteSpec
+from lancedb.index import FTS, IvfPq
+
+db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
+
+dim = 128
+schema = pa.schema([
+    pa.field(
+        "id",
+        pa.int64(),
+        nullable=False,
+        metadata={"lance-schema:unenforced-primary-key:position": "0"},
+    ),
+    pa.field("vector", pa.list_(pa.float32(), dim)),
+    pa.field("text", pa.utf8()),
+])
+table = db.create_table("docs", initial_data, schema=schema)
+```
+
+### 2. Create indexes {#indexes}
+
+Create indexes before enabling MemWAL, and wait for them to finish building.
+MemWAL maintains every index that exists when it is enabled.
+
+```python
+table.create_index("vector", config=IvfPq())
+table.create_index("text", config=FTS())
+table.create_index("id")  # BTree on the primary key
+table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(minutes=5))
+```
+
+### 3. Enable MemWAL {#enable}
+
+```python
+table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+
+# Wait for the table metadata to propagate before writing.
+time.sleep(30)
+```
+
+Or in SQL:
+
+```sql
+ALTER TABLE docs SET WAL
+```
+
+### 4. Write and query {#write-and-query}
+
+Writes go through `merge_insert` on the primary key, and are visible to queries
+immediately:
+
+```python
+table.merge_insert("id") \
+    .when_matched_update_all() \
+    .when_not_matched_insert_all() \
+    .execute(new_rows)
+
+table.search(query_vector).limit(10).to_list()
+table.search("charlie").limit(10).to_list()
+```
+
+**Partial updates.** Send the primary key plus only the columns you want to
+change; omitted columns keep their current values. This requires a scalar
+index on the primary key.
+
+```python
+patch = pa.table({"id": [0, 1], "text": ["doc 0 revised", "doc 1 revised"]})
+table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
+```
+
+**Deletes.** The predicate must bind the primary key to literal values. Ranges,
+`OR`, and filters on other columns are rejected.
+
+```python
+table.delete("id IN (2000, 2001)")
+```
+
+### Disabling MemWAL {#disable}
+
+Flush pending writes into the base table first, then disable:
+
+```python
+table.checkpoint_lsm()
+table.unset_lsm_write_spec()
+```
+
+## Performance {#performance}
+
+### Writes {#write-performance}
+
+{/* TODO: write benchmark results */}
+
+### Reads {#read-performance}
+
+Reads on a MemWAL table stay close to those on a fully compacted table, even
+with the fresh tier at its fullest before compaction.
+
+The table below compares a 5M-row table with a 128-dimension IVF-PQ index plus
+BTree and FTS indexes, with and without MemWAL. The MemWAL table holds one
+unflushed memtable and three SSTables, each from a 100k-row write wave, half of
+which are updates to existing rows. Latencies are p50 in milliseconds.
+
+| Query | Without MemWAL | With MemWAL |
+| --- | --: | --: |
+| Primary-key lookup | 62 | 63 |
+| Vector search | 68 | 71 |
+| Vector search with prefilter | 90 | 91 |
+| Full-text term | 63 | 64 |
+| Full-text phrase | 68 | 82 |
+| Hybrid search (RRF) | 68 | 83 |
+| SQL point lookup | 189 | 187 |
+
+Most queries are within a few milliseconds of the base table. Hybrid and phrase
+queries add roughly 15 ms to merge the two tiers.
+
+<Note>
+Support for all table operations on MemWAL tables is coming soon. Time travel
+and branching are among the features not yet available.
+</Note>
+
+## Next steps {#next-steps}
+
+- [Merge insert](/ingestion/merge-insert)
+- [Background jobs](/maintenance/background-jobs#wal)
+- [`ALTER TABLE ... SET WAL`](/sql/ddl/table#properties)
