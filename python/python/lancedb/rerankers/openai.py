@@ -129,4 +129,4 @@ class OpenaiReranker(Reranker):
                 "OPENAI_API_KEY not set. Either set it in your environment or \
                 pass it as `api_key` argument to the CohereReranker."
             )
-        return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or self.api_key)
+        return openai.OpenAI(api_key=self.api_key or os.environ.get("OPENAI_API_KEY"))
