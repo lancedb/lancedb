@@ -136,12 +136,11 @@ availability:
     LanceDB has no server to sign in to.
 ```
 
-The assembled site renders this as a label above the page's content, as a
-sidebar tag when only one offering has the feature, and as the page's row in
-the comparison on [OSS and Enterprise](docs/web/basics/offerings.mdx). Do not
-also open the page with a badge of its own, and keep a qualification that only
-one section needs in that section's text. A `mint dev` preview of `docs/web`
-alone renders neither the labels nor the comparison.
+The assembled site renders this as a label above the page's content and as a
+sidebar tag when only one offering has the feature. Do not also open the page
+with a badge of its own, and keep a qualification that only one section needs
+in that section's text. A `mint dev` preview of `docs/web` alone renders
+neither the labels nor the tags.
 
 **A feature can be documented before its release.** List a draft page in
 `docs/web/.mintignore`, keep it out of the navigation in `docs.json`, and do not
