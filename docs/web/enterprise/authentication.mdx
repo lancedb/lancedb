@@ -4,13 +4,14 @@ sidebarTitle: "Authentication"
 description: "Authentication modes for LanceDB Enterprise: API keys and OAuth credentials."
 icon: key
 keywords: ["authentication", "oauth", "api key", "azure managed identity", "client credentials"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Requests to a deployment carry an API key or an OAuth token, whichever it is
+    configured to accept. Embedded LanceDB has no server to sign in to; see
+    [Architecture](/architecture).
 ---
-
-<Badge color="red">Enterprise</Badge>
-
-This page describes a LanceDB Enterprise capability. The embedded form
-of LanceDB has no server to provide it -- see
-[Architecture](/architecture) for what differs between the two.
 
 A deployment authenticates every request before
 [authorization](/governance/authorization) decides what it may do, against a
@@ -49,6 +50,10 @@ The async Python client and the TypeScript client can obtain bearer tokens
 from an OIDC issuer and attach them to every request. Token acquisition,
 caching, and refresh are handled inside the client -- your application code
 only provides the configuration.
+
+A deployment accepts these tokens only when its administrator has configured
+it with your identity provider. Ask them for the issuer URL, client ID and
+scopes to use.
 
 <Info>
 In Python, OAuth is supported through `lancedb.connect_async`. The synchronous

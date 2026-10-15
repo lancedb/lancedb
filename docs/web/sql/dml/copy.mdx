@@ -6,7 +6,11 @@ icon: file-export
 keywords: ["copy", "export", "parquet", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Warning>
+Recent deployment versions refuse `COPY` over the SQL endpoint with "COPY is not
+supported". On those, export a result by reading it through a Flight SQL client
+or an SDK and writing the files from your application.
+</Warning>
 
 ```sql
 COPY (SELECT id, title FROM documents) TO 's3://bucket/export/' STORED AS PARQUET
