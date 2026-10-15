@@ -70,15 +70,18 @@ class OpenaiReranker(Reranker):
             ],
         )
         results = json.loads(response.choices[0].message.content)["documents"]
-        docs, scores = list(
-            zip(*[(result["content"], result["relevance_score"]) for result in results])
-        )  # tuples
-        # replace the self.column column with the docs
-        result_set = result_set.drop(self.column)
-        result_set = result_set.append_column(
-            self.column, pa.array(docs, type=pa.string())
-        )
-        # add the scores
+        # The model returns the documents in its own order, so match each score
+        # back to its row by content.
+        scores_by_content = {
+            result["content"]: result["relevance_score"] for result in results
+        }
+        missing = sum(doc not in scores_by_content for doc in docs)
+        if missing:
+            raise ValueError(
+                f"The model returned no relevance_score for {missing} of "
+                f"{len(docs)} documents"
+            )
+        scores = [scores_by_content[doc] for doc in docs]
         result_set = result_set.append_column(
             "_relevance_score", pa.array(scores, type=pa.float32())
         )
