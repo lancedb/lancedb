@@ -76,15 +76,15 @@ the query optimizer chooses a suboptimal path.
 
 ***
 
-### useLsm()
+### useMemWal()
 
 ```ts
-useLsm(enable): MergeInsertBuilder
+useMemWal(enable): MergeInsertBuilder
 ```
 
 Control MemWAL routing for this merge.
 
-By default (unset), a `mergeInsert` on a table with an LSM write spec is
+By default (unset), a `mergeInsert` on a table with a MemWAL write spec is
 routed through Lance's MemWAL shard writer, and a table without one uses the
 standard path.
 
@@ -92,7 +92,7 @@ standard path.
 
 * **enable**: `boolean`
     `true` forces MemWAL routing and errors if the table has no
-    LSM write spec. `false` forces the standard write path even when a spec is set.
+    MemWAL write spec. `false` forces the standard write path even when a spec is set.
 
 #### Returns
 
@@ -108,12 +108,12 @@ validateSingleShard(validateSingleShard): MergeInsertBuilder
 
 Controls how an LSM merge checks that its input targets a single shard.
 
-When a table has an LSM write spec, every row in a `mergeInsert` call must
+When a table has a MemWAL write spec, every row in a `mergeInsert` call must
 route to the same shard. When `true` (the default), every row is inspected
 to verify this. When `false`, only the first row is inspected and the
 shard it routes to is used for the whole input — a faster path for callers
 that have already pre-sharded their input. Has no effect on tables without
-an LSM write spec.
+a MemWAL write spec.
 
 #### Parameters
 
@@ -141,7 +141,7 @@ Currently this causes multiple copies of the row to be created
 but that behavior is subject to change.
 
 An optional condition may be specified.  If it is, then only
-matched rows that satisfy the condtion will be updated.  Any
+matched rows that satisfy the condition will be updated.  Any
 rows that do not satisfy the condition will be left as they
 are.  Failing to satisfy the condition does not cause a
 "matched row" to become a "not matched" row.

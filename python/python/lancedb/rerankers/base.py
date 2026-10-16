@@ -175,7 +175,7 @@ class Reranker(ABC):
             if the results haven't been executed yet or the results in arrow format.
         query : str or None,
             The input query. Some rerankers might not need the query to rerank.
-            In that case, it can be set to None explicitly. This is inteded to
+            In that case, it can be set to None explicitly. This is intended to
             be handled by the reranker implementations.
         deduplicate : bool, optional
             Whether to deduplicate the results based on the `_rowid` column,

@@ -1,0 +1,1194 @@
+---
+title: Full-Text Search (FTS)
+sidebarTitle: Full-Text Search (FTS)
+description: "Find records by words, phrases or partial matches using a full-text index."
+icon: "book"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Full-text search is available in OSS and Enterprise.
+---
+
+import {
+    PyFtsPrefiltering,
+    PyFtsPostfiltering,
+    PyFtsIncrementalIndex,
+} from '/snippets/search.mdx'
+import { PyFtsBooleanQueries } from '/snippets/doc_function_examples.mdx'
+
+import { PyTextSearch, TsTextSearchBody, TsTextSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsTextSearchBody, RsExampleTail as RsTextSearchTail } from '/snippets/search_text_search.mdx';
+
+Full-text search finds documents by matching words and ranks them with BM25.
+Use it to search for names, product codes, technical terms or phrases in your
+text columns. Create an FTS index on the column before running a query.
+
+You can also combine keyword matches with vector similarity using
+[hybrid search](/search/hybrid-search).
+
+<span id="create-an-index-and-run-a-text-query"></span>
+
+<Accordion title="Run a complete full-text search example">
+
+Each example creates a temporary local table, runs the query and removes the
+table when finished. No embedding model is needed for a text query.
+
+- **Python:** Install with `pip install lancedb`, save as `text_search.py`, then run `python text_search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `text_search.mts`, then run `node text_search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin text_search` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyTextSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsTextSearchBody + "\n" + TsTextSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsTextSearchBody + "\n" + RsTextSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+Each example searches the indexed `text` column and returns the puppy record.
+Higher `_score` values rank first; they are relevance scores, not probabilities.
+
+</Accordion>
+
+## Basic usage {#basic-usage}
+
+The steps below create a table, index its `text` column and search for a word.
+For a standalone program with imports and sample data, expand the complete
+example above.
+
+### Create the sample table {#table-setup}
+
+First, open or create the table you want to search:
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from lancedb.index import FTS
+
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+
+table = db.create_table(
+    "my_table_fts",
+    data=[
+        {"vector": [3.1, 4.1], "text": "Frodo was a happy puppy"},
+        {"vector": [5.9, 26.5], "text": "There are several kittens playing"},
+    ],
+)
+```
+
+```ts TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+const uri = "data/sample-lancedb"
+const db = await lancedb.connect(uri);
+
+const data = [
+    { vector: [3.1, 4.1], text: "Frodo was a happy puppy" },
+    { vector: [5.9, 26.5], text: "There are several kittens playing" },
+];
+const tbl = await db.createTable("my_table", data, { mode: "overwrite" });
+```
+
+```rust Rust icon="rust"
+let uri = "data/sample-lancedb";
+let db = connect(uri).execute().await?;
+let initial_data: Box<dyn RecordBatchReader + Send> = create_some_records()?;
+let tbl = db
+    .create_table("my_table", initial_data)
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+### Build the text index {#construct-fts-index}
+
+Create a full-text search index on your text column:
+
+For asynchronous Python index creation, use
+`await table.create_index("text", config=FTS())`. See [FTS index](/indexing/fts-index).
+
+<CodeGroup>
+```python Python icon="python"
+table.create_index("text", config=FTS())
+```
+
+```typescript TypeScript icon="square-js"
+await tbl.createIndex("text", {
+    config: lancedb.Index.fts(),
+});
+```
+
+```rust Rust icon="rust"
+tbl
+    .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+OSS builds the index before the call returns. Enterprise builds it in the
+background. Wait for completion with Python’s `table.wait_for_index(["text_idx"])`
+or TypeScript’s `await tbl.waitForIndex(["text_idx"], 300)` before querying it.
+Use your actual index name if you chose a different one.
+
+### Run the query {#full-text-search}
+
+Perform full-text search and retrieve results:
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search("puppy", query_type="fts", fts_columns="text")
+    .limit(10)
+    .select(["text", "_score"])
+    .to_list()
+)
+# Returns the puppy record with its BM25 score.
+```
+
+```typescript TypeScript icon="square-js"
+const results = await tbl
+    .search("puppy", "fts")
+    .select(["text"])
+    .limit(10)
+    .toArray();
+```
+
+```rust Rust icon="Rust"
+let results = tbl
+    .query()
+    .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["text".to_owned()]))
+    .limit(10)
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+Specify the text column with `fts_columns="text"` in synchronous Python,
+especially when the table contains multiple text indexes.
+
+<Note>
+A string query can also invoke an embedding function when the table has
+embedding metadata. Use `query_type="fts"` in Python when you specifically
+want full-text search.
+</Note>
+
+If a table has more than one FTS index, specify the indexed text column in the query. In Python you can use `fts_columns` or the query builder's `nearest_to_text(..., columns=...)`; in TypeScript, use `query().nearestToText(..., columns)`. The newer Lance-native FTS does not accept legacy Tantivy-only index parameters.
+
+BM25 scores depend on the indexed corpus and its term statistics. Compare
+rankings on the dataset you will search; treat scores as relative relevance
+values rather than probabilities.
+
+### Keeping the index up to date {#keeping-the-index-up-to-date}
+
+In OSS, new rows can remain outside the FTS index until you optimize the table.
+Search includes those rows by scanning them, but that work can increase query
+latency. Call `optimize()` to update the index:
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsIncrementalIndex}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl.add([{ vector: [3.1, 4.1], text: "Frodo was a happy puppy" }]);
+await tbl.optimize();
+```
+
+```rust Rust icon="rust"
+tbl.add(new_data).execute().await?;
+tbl.optimize(OptimizeAction::All).await?;
+```
+</CodeGroup>
+
+Choose an OSS maintenance schedule based on write volume and query latency.
+Inspect index coverage with `table.index_stats(...)` and optimize when the
+unindexed data adds too much work. `.fast_search()` skips unindexed rows, so
+use it only when omitting recent records is acceptable.
+
+Enterprise manages index updates automatically. You do not call `optimize()`
+on an Enterprise table.
+
+## Choose the matching behavior
+
+| You need | Use |
+|:---------|:----|
+| Words in any order | A terms query |
+| Words in a particular sequence | A [phrase query](#phrase-vs-terms-queries) and an index with token positions |
+| Tolerance for typing errors | [Fuzzy search](#fuzzy-search) |
+| Parts of words | An [n-gram index](#search-for-substring) |
+| Required, optional or excluded terms | [Boolean queries](#boolean-queries) |
+
+Use a metadata predicate to restrict qualifying records. See
+[filtering options](#filtering-options) for prefiltering and postfiltering.
+Enterprise SQL provides [`fts()`](/sql/functions#fts) for scored text retrieval.
+
+## Configure tokenization and matching {#advanced-usage}
+
+### Tokenize Table Data {#tokenize-table-data}
+
+The default tokenizer splits text at whitespace and punctuation, lowercases
+tokens and removes tokens longer than 40 characters. Stemming, stop-word
+removal and accent folding are also enabled by default.
+
+Stemming is useful for improving search results by reducing words to their root form, e.g. "running" to "run". LanceDB supports stemming for Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. You should set the `base_tokenizer` parameter rather than `tokenizer_name` because you cannot customize the tokenizer if `tokenizer_name` is specified.
+
+Tokenization and language filters are separate settings. `base_tokenizer` controls how text is split into searchable tokens. `language` controls stemming and stop-word removal when `stem=True` or `remove_stop_words=True`; choose the tokenizer for CJK or mixed-language segmentation.
+
+For example, to enable stemming for English:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index("text", language="English", replace=True)
+```
+</CodeGroup>
+
+Configure tokenization when you create the index. Rebuild the index to change
+how existing text is tokenized.
+
+**Default index parameters:**
+- `base_tokenizer`: `"simple"`
+- `language`: English
+- `with_position`: false
+- `max_token_length`: 40
+- `lower_case`: true
+- `stem`: true
+- `remove_stop_words`: true
+- `ascii_folding`: true
+- `custom_stop_words`: `None`; pass a `list[str]` to drop additional words beyond the language defaults. Requires `remove_stop_words=True`.
+
+For multilingual use cases, use `base_tokenizer="icu"` for unicode-aware word segmentation on mixed-language text. ICU stands for [International Components for Unicode](https://icu.unicode.org/). The ICU tokenizer uses bundled ICU4X segmenter data, so it does not require external tokenizer model files. It is a good default when documents mix languages or include scripts where the simple tokenizer would keep an unspaced span as one large token.
+
+The Python API also supports tokenizer implementations that load language model files. Use `base_tokenizer="jieba/default"` for Jieba tokenization, which segments Chinese text into searchable word tokens when the text is written without spaces between words. Use Lindera-backed tokenizers for dictionary-based East Asian morphological segmentation, such as `base_tokenizer="lindera/ipadic"` for Japanese or `base_tokenizer="lindera/ko-dic"` for Korean when you have installed and compiled that Lindera model. These are language-specific tokenizers; ICU is the broader mixed-language option.
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index(
+    "text",
+    base_tokenizer="jieba/default",
+    stem=False,
+    remove_stop_words=False,
+    ascii_folding=False,
+    replace=True,
+)
+```
+</CodeGroup>
+
+Model-backed tokenizers require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to a different model root:
+
+```bash
+export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
+```
+
+For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
+
+Model files must be installed where indexing and queries run: on your machine
+for OSS, or on the Enterprise cluster for a remote table.
+
+<Note>
+Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. If you use another stemming language, such as Arabic, Greek, Romanian, Tamil, or Turkish, set `remove_stop_words=False` or pass `custom_stop_words`.
+</Note>
+
+Use `ascii_folding=True` to match accented and unaccented forms, such as
+“é” and “e”:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_fts_index(
+        "text",
+        language="French",
+        stem=True,
+        ascii_folding=True,
+        replace=True,
+    )
+```
+</CodeGroup>
+
+### Filtering Options {#filtering-options}
+
+Use `where(...)` to restrict text results to rows that match a predicate.
+Prefiltering applies the restriction before retrieval; postfiltering removes
+nonmatching candidates afterward and can leave fewer results.
+ 
+With pre-filtering:
+
+<CodeGroup>
+
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsPrefiltering}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl
+.search("puppy")
+.select(["id", "doc"])
+.limit(10)
+.where("meta='foo'")
+.prefilter(true)
+.toArray();
+```
+
+```rust Rust icon="Rust"
+table
+    .query()
+    .full_text_search(FullTextSearchQuery::new("puppy".to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+    .limit(10)
+    .only_if("meta='foo'")
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+With post-filtering:
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFtsPostfiltering}
+</CodeBlock>
+
+```typescript TypeScript icon="square-js"
+await tbl
+.search("apple")
+.select(["id", "doc"])
+.limit(10)
+.where("meta='foo'")
+.prefilter(false)
+.toArray();
+```
+
+```rust Rust icon="Rust"
+table
+    .query()
+    .full_text_search(FullTextSearchQuery::new(words[0].to_owned()))
+    .select(lancedb::query::Select::Columns(vec!["doc".to_owned()]))
+    .postfilter()
+    .limit(10)
+    .only_if("meta='foo'")
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+### Phrase vs. Terms Queries {#phrase-vs-terms-queries}
+
+<Warning>
+Lance-based FTS doesn't support queries using boolean operators `OR`, `AND` in the search string.
+</Warning>
+
+For full-text search you can specify either a **phrase** query like `"the old man and the sea"`,
+or a **terms** search query like `old man sea`. 
+
+Enable token positions to search for phrases. Set `remove_stop_words=False` if you also need to match common words such as “the” and “and”:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.index import FTS
+
+table.create_index("text", config=FTS(with_position=True, remove_stop_words=False), replace=True)
+```
+</CodeGroup>
+
+Storing token positions increases the index size and adds indexing work.
+
+### Fuzzy Search {#fuzzy-search}
+
+Fuzzy search allows you to find matches even when the search terms contain typos or slight variations. 
+LanceDB uses the classic [Levenshtein distance](https://en.wikipedia.org/wiki/Levenshtein_distance) 
+to find similar terms within a specified edit distance.
+
+| Parameter      | Type | Default | Description                                                                                                                                                 |
+| -------------- | ---- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| fuzziness      | int  | 0       | Maximum edit distance allowed for each term. The default, `0`, requires an exact match; set `1` or `2` to allow typos. |
+| max_expansions | int  | 50      | Maximum number of terms to consider for fuzzy matching. Higher values may improve recall but increase search time                                           |
+
+For a complete walkthrough that creates a sample table and demonstrates fuzzy search and relevance boosting, see [the worked example below](#fuzzy-search-and-boosting-example).
+
+### Search for Substring {#search-for-substring}
+
+LanceDB supports searching for substrings in the text column, you can set the `base_tokenizer` parameter to `"ngram"` to enable this feature, and use the parameters `ngram_min_length` and `ngram_max_length` to control the length of the substrings:
+
+| Parameter        | Type | Default | Description                                        |
+| ---------------- | ---- | ------- | -------------------------------------------------- |
+| ngram_min_length | int  | 3       | Minimum length of the n-grams to search for        |
+| ngram_max_length | int  | 3       | Maximum length of the n-grams to search for        |
+| prefix_only      | bool | false   | Whether to only search for prefixes of the n-grams |
+
+
+## Fuzzy Search and Boosting Example {#fuzzy-search-and-boosting-example}
+
+<Accordion title="Worked examples: fuzzy, phrase, boosted and Boolean queries">
+
+
+### Generate Data {#generate-data}
+
+Run the following steps in order. They use a temporary local database with four records, so the same data is available for each query.
+
+<CodeGroup>
+```python Python icon="python"
+from tempfile import TemporaryDirectory
+
+import lancedb
+import pandas as pd
+from lancedb.index import FTS
+from lancedb.query import MatchQuery, PhraseQuery, BoostQuery, MultiMatchQuery
+
+directory = TemporaryDirectory()
+db = lancedb.connect(directory.name)
+table_name = "fts_examples"
+text = ["puppy runs merrily", "car drives crazily", "puppy jumps crazily", "car runs slowly"]
+text2 = ["rabbit jumps crazily", "girl runs merrily", "monkey jumps slowly", "rabbit runs merrily"]
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import { Index, MatchQuery, PhraseQuery, BoostQuery, MultiMatchQuery, BooleanQuery, Occur } from "@lancedb/lancedb";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const directory = await mkdtemp(join(tmpdir(), "lancedb-fts-"));
+const db = await lancedb.connect(directory);
+const tableName = "fts_examples";
+const text = ["puppy runs merrily", "car drives crazily", "puppy jumps crazily", "car runs slowly"];
+const text2 = ["rabbit jumps crazily", "girl runs merrily", "monkey jumps slowly", "rabbit runs merrily"];
+```
+</CodeGroup>
+
+### Create Table {#create-table}
+
+<CodeGroup>
+```python Python icon="python"
+# Create table with sample data
+table = db.create_table(
+    table_name,
+    data=pd.DataFrame({
+        "id": range(len(text)),
+        "text": text,
+        "text2": text2,
+    }),
+    mode="overwrite"
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Create table with sample data
+const data = text.map((value, i) => ({ id: i, text: value, text2: text2[i] }));
+
+const table = await db.createTable(tableName, data, { mode: "overwrite" });
+```
+</CodeGroup>
+
+### Construct the index for these examples {#example-construct-fts-index}
+
+Create a full-text search index on the first text column:
+
+<CodeGroup>
+```python Python icon="python"
+# Create FTS index on first text column
+table.create_index("text", config=FTS(with_position=True, remove_stop_words=False))
+table.wait_for_index(["text_idx"])
+```
+
+```typescript TypeScript icon="square-js"
+// Create FTS index on first text column
+await table.createIndex("text", { config: Index.fts({ withPosition: true, removeStopWords: false }) });
+await table.waitForIndex(["text_idx"], 300);
+```
+</CodeGroup>
+
+Then, create an index on the second text column:
+
+<CodeGroup>
+```python Python icon="python"
+# Create FTS index on second text column
+table.create_index("text2", config=FTS(with_position=True, remove_stop_words=False))
+table.wait_for_index(["text2_idx"])
+```
+
+```typescript TypeScript icon="square-js"
+// Create FTS index on second text column
+await table.createIndex("text2", { config: Index.fts({ withPosition: true, removeStopWords: false }) });
+await table.waitForIndex(["text2_idx"], 300);
+```
+</CodeGroup>
+
+### Basic and Fuzzy Search {#basic-and-fuzzy-search}
+
+Now we can perform basic, fuzzy, and prefix match searches:
+
+#### Basic Exact Search {#basic-exact-search}
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.query import MatchQuery
+
+# Basic match (exact search)
+basic_match_results = (
+    table.search(MatchQuery("crazily", "text"))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Basic match (exact search)
+const basicMatchResults = await table.query()
+    .fullTextSearch(new MatchQuery("crazily", "text"))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .toArray();
+```
+</CodeGroup>
+
+#### Fuzzy Search with Typos {#fuzzy-search-with-typos}
+
+<CodeGroup>
+```python Python icon="python"
+# Fuzzy match (allows typos)
+fuzzy_results = (
+    table.search(MatchQuery("craziou", "text", fuzziness=2))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Fuzzy match (allows typos)
+const fuzzyResults = await table.query()
+    .fullTextSearch(new MatchQuery("craziou", "text", {
+        fuzziness: 2,
+    }))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .toArray();
+```
+</CodeGroup>
+
+#### Require an exact prefix in fuzzy matching {#prefix-based-match}
+
+`prefix_length` keeps the first characters unchanged when matching a misspelled term. It does not turn a short query into a prefix-completion search.
+
+<CodeGroup>
+```python Python icon="python"
+# Fuzzy match (allows typos)
+prefix_results = (
+    table.search(MatchQuery("craziou", "text", fuzziness=2, prefix_length=3))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Fuzzy match (allows typos)
+const prefixResults = await table.query()
+    .fullTextSearch(new MatchQuery("craziou", "text", {
+        fuzziness: 2,
+        prefixLength: 3,
+    }))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .toArray();
+```
+</CodeGroup>
+
+### Phrase Match {#phrase-match}
+
+Phrase matching enables you to search for exact sequences of words. Unlike regular text search 
+which matches individual terms independently, phrase matching requires words to appear in the 
+specified order with no intervening terms. 
+
+<Note>
+Phrase queries are supported but only for a single column; providing multiple columns with a quoted phrase raises an error.
+</Note>
+
+Phrase matching is particularly useful for:
+
+- Searching for specific multi-word expressions
+- Matching exact titles or quotes  
+- Finding precise word combinations in a specific order
+
+<CodeGroup>
+```python Python icon="python"
+# Exact phrase match
+from lancedb.query import PhraseQuery
+
+phrase_results = (
+    table.search(PhraseQuery("puppy runs", "text"))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Exact phrase match
+const phraseResults = await table.query()
+  .fullTextSearch(new PhraseQuery("puppy runs", "text"))
+  .select(["id", "text", "_score"])
+  .limit(100)
+  .toArray();
+```
+</CodeGroup>
+
+#### Flexible Phrase Match {#flexible-phrase-match}
+To provide more flexible phrase matching, LanceDB supports the `slop` parameter. This allows you to match phrases where the terms appear close to each other, with gaps between them. The `slop` value limits the extra positions allowed in the phrase.
+
+For example, the phrase query "puppy merrily" would not return any results by default. However, if you set `slop=1`, it will match phrases like "puppy jumps merrily", "puppy runs merrily", and similar variations where one word appears between "puppy" and "merrily".
+
+<CodeGroup>
+```python Python icon="python"
+# Flexible phrase match with slop=1 for 'puppy merrily'
+from lancedb.query import PhraseQuery
+
+slop_results = (
+    table.search(PhraseQuery("puppy merrily", "text", slop=1))
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Flexible phrase match with slop=1 for 'puppy merrily'
+const slopResults = await table.query()
+  .fullTextSearch(new PhraseQuery("puppy merrily", "text", { slop: 1 }))
+  .select(["id", "text", "_score"])
+  .limit(100)
+  .toArray();
+```
+</CodeGroup>
+
+### Search with Boosting {#search-with-boosting}
+
+Boosting allows you to control the relative importance of different search terms or fields 
+in your queries. This feature is particularly useful when you need to:
+
+* Prioritize matches in certain columns
+* Promote specific terms while demoting others 
+* Fine-tune relevance scoring for better search results
+
+| Parameter      | Type  | Default  | Description                                                        |
+| -------------- | ----- | -------- | ------------------------------------------------------------------ |
+| positive       | Query | required | The primary query terms to match and promote in results            |
+| negative       | Query | required | Terms to demote in the search results                              |
+| negative_boost | float | 0.5      | Multiplier for negative matches (lower values = stronger demotion) |
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.query import MatchQuery, BoostQuery, MultiMatchQuery
+
+# Boost data with 'runs' in text more than 'puppy' in text
+boosting_results = (
+  table.search(
+      BoostQuery(
+          MatchQuery("runs", "text"),
+          MatchQuery("puppy", "text"),
+          negative_boost=0.2,
+      ),
+  )
+  .select(["id", "text", "_score"])
+  .limit(100)
+  .to_arrow().to_pandas()
+)
+
+# Search across both text and text2
+multi_match_results = (
+    table.search(MultiMatchQuery("crazily", ["text", "text2"]))
+    .select(["id", "text", "text2", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+
+# Search with field boosting
+multi_match_boosting_results = (
+    table.search(
+        MultiMatchQuery("crazily", ["text", "text2"], boosts=[1.0, 2.0]),
+    )
+    .select(["id", "text", "text2", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Boosting Example
+const boostingResults = await table.query()
+  .fullTextSearch(new BoostQuery(new MatchQuery("runs", "text"), new MatchQuery("puppy", "text"), {
+    negativeBoost: 0.2,
+  }))
+  .select(["id", "text", "_score"])
+  .limit(100)
+  .toArray();
+
+// Search across both text fields
+const multiMatchResults = await table.query()
+  .fullTextSearch(new MultiMatchQuery("crazily", ["text", "text2"]))
+  .select(["id", "text", "text2", "_score"])
+  .limit(100)
+  .toArray();
+
+// Search with field boosting
+const multiMatchBoostingResults = await table.query()
+  .fullTextSearch(new MultiMatchQuery("crazily", ["text", "text2"], {
+    boosts: [1.0, 2.0],
+  }))
+  .select(["id", "text", "text2", "_score"])
+  .limit(100)
+  .toArray();
+```
+</CodeGroup>
+
+
+### Boolean Queries {#boolean-queries}
+LanceDB supports boolean logic in full-text search, allowing you to combine multiple queries using `and` and `or` operators. This is useful when you want to match documents that satisfy multiple conditions (intersection) or at least one of several conditions (union).
+
+#### Combining Two Match Queries {#combining-two-match-queries}
+
+In Python, combine two `MatchQuery` objects with `&` for intersection or `|` for union. Python's `and` and `or` operators return one operand and do not construct a boolean query.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{PyFtsBooleanQueries}
+</CodeBlock>
+
+In TypeScript, pass `[Occur, subquery]` pairs to `BooleanQuery`. Use `Must` for required matches, `Should` for alternatives, and `MustNot` to exclude matches.
+
+<Info>
+**Which queries are allowed?**
+
+A boolean query must include at least one `SHOULD` or `MUST` clause. Queries that contain only a `MUST_NOT` clause are not allowed.
+</Info>
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.query import MatchQuery
+
+# Example: Find documents containing both "puppy" and "merrily"
+and_query = MatchQuery("puppy", "text") & MatchQuery("merrily", "text")
+and_results = (
+    table.search(and_query)
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+
+# Example: Find documents containing either "puppy" or "merrily"
+or_query = MatchQuery("puppy", "text") | MatchQuery("merrily", "text")
+or_results = (
+    table.search(or_query)
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .to_arrow().to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+// Flexible boolean queries with MatchQuery
+
+// Find documents containing both "puppy" and "merrily"
+const mustResults = await table
+    .search(
+      new BooleanQuery([
+        [Occur.Must, new MatchQuery("puppy", "text")],
+        [Occur.Must, new MatchQuery("merrily", "text")],
+      ]),
+    )
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .toArray();
+
+// Find documents containing either "puppy" or "merrily"
+const shouldResults = await table
+    .search(
+      new BooleanQuery([
+        [Occur.Should, new MatchQuery("puppy", "text")],
+        [Occur.Should, new MatchQuery("merrily", "text")],
+      ]),
+    )
+    .select(["id", "text", "_score"])
+    .limit(100)
+    .toArray();
+```
+</CodeGroup>
+
+<Info>
+**How to use booleans?**
+
+- Use `&` (Python), `Occur.Must`(Typescript) for intersection (documents must match all queries).
+- Use `|` (Python), `Occur.Should`(Typescript) for union (documents must match at least one query).
+</Info>
+
+
+### Clean up the example
+
+Remove the temporary database when you have finished running the queries.
+
+<CodeGroup>
+```python Python icon="python"
+directory.cleanup()
+```
+```typescript TypeScript icon="square-js"
+table.close();
+db.close();
+await rm(directory, { recursive: true, force: true });
+```
+</CodeGroup>
+
+</Accordion>
+
+## Substring Search Example {#substring-search-example}
+
+<Accordion title="Worked examples: substring search">
+
+
+LanceDB supports searching for substrings in text columns using n-gram tokenization. This is useful for finding partial matches within text content.
+
+### Setting Up the Table {#setting-up-the-table}
+
+First, create a table with sample text data and configure n-gram tokenization:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+import lancedb
+
+from tempfile import TemporaryDirectory
+from lancedb.index import FTS
+
+directory = TemporaryDirectory()
+db = lancedb.connect(directory.name)
+
+data = pa.table({"text": ["hello world", "lance database", "lance is cool"]})
+table = db.create_table("test", data=data)
+table.create_index("text", config=FTS(base_tokenizer="ngram"))
+```
+</CodeGroup>
+
+### Basic Substring Search {#basic-substring-search}
+
+With the default n-gram settings (minimum length of 3), you can search for substrings of length 3 or more:
+
+<CodeGroup>
+```python Python icon="python"
+results = table.search("lan", query_type="fts").limit(10).to_list()
+assert len(results) == 2
+assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+results = (
+    table.search("nce", query_type="fts").limit(10).to_list()
+)  # spellchecker:disable-line
+assert len(results) == 2
+assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+```
+</CodeGroup>
+
+### Handling Short Substrings {#handling-short-substrings}
+
+By default, the minimum n-gram length is 3, so shorter substrings like "la" won't match:
+
+<CodeGroup>
+```python Python icon="python"
+results = table.search("la", query_type="fts").limit(10).to_list()
+assert len(results) == 0
+```
+</CodeGroup>
+
+### Customizing N-gram Parameters {#customizing-n-gram-parameters}
+
+You can customize the n-gram behavior by adjusting the minimum length and using prefix-only matching:
+
+<CodeGroup>
+```python Python icon="python"
+table.create_index(
+    "text",
+    config=FTS(base_tokenizer="ngram", ngram_min_length=2, prefix_only=True),
+    replace=True,
+)
+```
+</CodeGroup>
+
+### Testing Custom N-gram Settings {#testing-custom-n-gram-settings}
+
+With the new settings, you can now search for shorter substrings and use prefix-only matching:
+
+<CodeGroup>
+```python Python icon="python"
+results = table.search("lan", query_type="fts").limit(10).to_list()
+assert len(results) == 2
+assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+
+results = (
+    table.search("nce", query_type="fts").limit(10).to_list()
+)  # spellchecker:disable-line
+assert len(results) == 0
+
+results = table.search("la", query_type="fts").limit(10).to_list()
+assert len(results) == 2
+assert set(r["text"] for r in results) == {"lance database", "lance is cool"}
+```
+</CodeGroup>
+
+
+```python Python icon="python"
+directory.cleanup()
+```
+
+</Accordion>
+
+## Full-Text Search on Array Fields {#full-text-search-on-array-fields}
+
+<Accordion title="Worked examples: searching string arrays">
+
+
+LanceDB supports full-text search on string array columns, enabling efficient keyword-based search across multiple values within a single field (e.g., tags, keywords).
+
+### Setting Up the Connection {#setting-up-the-connection}
+
+This example uses a temporary local database. Run the steps in order.
+
+<CodeGroup>
+```python Python icon="python"
+from tempfile import TemporaryDirectory
+
+import lancedb
+import pyarrow as pa
+from lancedb.index import FTS
+from lancedb.query import MatchQuery, PhraseQuery
+
+directory = TemporaryDirectory()
+db = lancedb.connect(directory.name)
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import { Index, MatchQuery, PhraseQuery, makeArrowTable } from "@lancedb/lancedb";
+import { Schema, Field, List, Utf8 } from "apache-arrow";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+const directory = await mkdtemp(join(tmpdir(), "lancedb-array-fts-"));
+const db = await lancedb.connect(directory);
+```
+</CodeGroup>
+
+### Defining the Schema {#defining-the-schema}
+
+Create a schema that includes an array field for tags:
+
+<CodeGroup>
+```python Python icon="python"
+table_name = "fts-array-field-test"
+schema = pa.schema([
+    pa.field("id", pa.string()),
+    pa.field("tags", pa.list_(pa.string())),
+    pa.field("description", pa.string())
+])
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+const tableName = "fts-array-field-test-ts";
+
+// Create schema
+const schema = new Schema([
+  new Field("id", new Utf8(), false),
+  new Field("tags", new List(new Field("item", new Utf8()))),
+  new Field("description", new Utf8(), false)
+]);
+```
+</CodeGroup>
+
+### Creating Sample Data {#creating-sample-data}
+
+Generate sample data with array fields containing tags:
+
+<CodeGroup>
+```python Python icon="python" expandable=true
+# Generate sample data
+data = {
+    "id": [f"doc_{i}" for i in range(10)],
+    "tags": [
+        ["python", "machine learning", "data science"],
+        ["deep learning", "neural networks", "AI"],
+        ["database", "indexing", "search"],
+        ["vector search", "embeddings", "AI"],
+        ["full text search", "indexing", "database"],
+        ["python", "web development", "flask"],
+        ["machine learning", "deep learning", "pytorch"],
+        ["database", "SQL", "postgresql"],
+        ["search engine", "elasticsearch", "indexing"],
+        ["AI", "transformers", "NLP"]
+    ],
+    "description": [
+        "Python for data science projects",
+        "Deep learning fundamentals",
+        "Database indexing techniques",
+        "Vector search implementations",
+        "Full-text search guide",
+        "Web development with Python",
+        "Machine learning with PyTorch",
+        "Database management systems",
+        "Search engine optimization",
+        "AI and NLP applications"
+    ]
+}
+```
+
+```typescript TypeScript icon="square-js" expandable=true
+// Generate sample data
+const data = makeArrowTable(
+  Array(10).fill(0).map((_, i) => ({
+    id: `doc_${i}`,
+    tags: [
+      ["python", "machine learning", "data science"],
+      ["deep learning", "neural networks", "AI"],
+      ["database", "indexing", "search"],
+      ["vector search", "embeddings", "AI"],
+      ["full text search", "indexing", "database"],
+      ["python", "web development", "flask"],
+      ["machine learning", "deep learning", "pytorch"],
+      ["database", "SQL", "postgresql"],
+      ["search engine", "elasticsearch", "indexing"],
+      ["AI", "transformers", "NLP"]
+    ][i],
+    description: [
+      "Python for data science projects",
+      "Deep learning fundamentals",
+      "Database indexing techniques",
+      "Vector search implementations",
+      "Full-text search guide",
+      "Web development with Python",
+      "Machine learning with PyTorch",
+      "Database management systems",
+      "Search engine optimization",
+      "AI and NLP applications"
+    ][i]
+  })),
+  { schema }
+);
+```
+</CodeGroup>
+
+### Creating the Table and Adding Data {#creating-the-table-and-adding-data}
+
+Create the table and populate it with the sample data:
+
+<CodeGroup>
+```python Python icon="python"
+# Create table and add data
+table = db.create_table(table_name, schema=schema, mode="overwrite")
+table_data = pa.Table.from_pydict(data, schema=schema)
+table.add(table_data)
+```
+
+```typescript TypeScript icon="square-js"
+// Create table
+const table = await db.createTable(tableName, data, { mode: "overwrite" });
+console.log(`Created table: ${tableName}`);
+```
+</CodeGroup>
+
+### Building the Full-Text Search Index {#building-the-full-text-search-index}
+
+Store token positions for phrase queries. This example disables stemming so fuzzy matching compares the original word forms:
+
+<CodeGroup>
+```python Python icon="python"
+# Create FTS index
+table.create_index("tags", config=FTS(with_position=True, stem=False))
+table.wait_for_index(["tags_idx"])
+```
+
+```typescript TypeScript icon="square-js"
+// Create FTS index
+console.log("Creating FTS index on 'tags' column...");
+await table.createIndex("tags", {
+  config: Index.fts({ withPosition: true, stem: false })
+});
+
+// Wait for index
+const ftsIndexName = "tags_idx";
+await table.waitForIndex([ftsIndexName], 300);
+```
+</CodeGroup>
+
+### Performing Fuzzy Search {#performing-fuzzy-search}
+
+Search for terms with typos using fuzzy matching:
+
+<CodeGroup>
+```python Python icon="python"
+# Search examples
+print("\nSearching for 'learning' in tags with a typo:")
+result = (
+    table.search(MatchQuery("learnin", column="tags", fuzziness=1))
+    .select(["id", "tags", "description", "_score"])
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Search examples
+console.log("\nSearching for 'learning' in tags with a typo:");
+const fuzzyResults = await table.query()
+  .fullTextSearch(new MatchQuery("learnin", "tags", {
+    fuzziness: 1,
+  }))
+  .select(["id", "tags", "description", "_score"])
+  .toArray();
+console.log(fuzzyResults);
+```
+</CodeGroup>
+
+A string-array query can return a row more than once when several elements match.
+Deduplicate by your record ID if your application needs one result per row.
+
+### Performing Phrase Search {#performing-phrase-search}
+
+Search for exact phrases within the array fields:
+
+<CodeGroup>
+```python Python icon="python"
+print("\nSearching for 'machine learning' in tags:")
+result = (
+    table.search(PhraseQuery("machine learning", column="tags"))
+    .select(["id", "tags", "description", "_score"])
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+console.log("\nSearching for 'machine learning' in tags:");
+const phraseResults = await table.query()
+  .fullTextSearch(new PhraseQuery("machine learning", "tags"))
+  .select(["id", "tags", "description", "_score"])
+  .toArray();
+console.log(phraseResults);
+```
+</CodeGroup>
+
+### Clean up the array example
+
+Remove the temporary database when you have finished running the queries.
+
+<CodeGroup>
+```python Python icon="python"
+directory.cleanup()
+```
+```typescript TypeScript icon="square-js"
+table.close();
+db.close();
+await rm(directory, { recursive: true, force: true });
+```
+</CodeGroup>
+
+</Accordion>

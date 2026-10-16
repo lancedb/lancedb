@@ -1,0 +1,132 @@
+---
+title: "Connect to LanceDB"
+sidebarTitle: "Connect"
+description: "Use the embedded LanceDB OSS library with tables in a local directory or object storage, or connect to LanceDB Enterprise."
+icon: plug
+keywords: ["connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
+---
+
+import {
+    PyConnect,
+    PyConnectAsync,
+    PyConnectEnterprisePlaceholders,
+    PyConnectEnterpriseQuickstart,
+    PyConnectObjectStorage,
+    PyConnectObjectStorageAsync,
+    RsConnect,
+    TsConnect,
+    TsConnectEnterprisePlaceholders,
+    TsConnectEnterpriseQuickstart,
+    TsConnectObjectStorage,
+} from '/snippets/connection.mdx';
+
+The URI you pass to `connect` decides where the work runs. The same Python,
+TypeScript and Rust SDKs open all three kinds;
+[OSS and Enterprise](/basics/offerings) describes how the two offerings differ.
+
+| URI | Where queries run |
+| --- | --- |
+| A local path, such as `./data` | OSS: in your process |
+| `s3://`, `gs://` or `az://` | OSS: in your process, reading object storage |
+| `db://` | LanceDB Enterprise: queries run on your cluster |
+
+## A local directory {#local}
+
+Embedded in your application, LanceDB reads and writes the tables in a
+directory on disk.
+
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnect}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    { "use lancedb::connect;\n" }
+    { "\n" }
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+## Object storage {#object-storage}
+
+With an object storage URI the library is still embedded: your process runs
+every query and reads and writes the bucket directly, with the credentials from
+its environment or its storage options. [Configuring storage](/deployment/storage)
+covers credentials, endpoints and provider options.
+
+<CodeGroup>
+    <CodeBlock filename="Python (sync)" language="Python" icon="python">
+    {PyConnectObjectStorage}
+    </CodeBlock>
+
+    <CodeBlock filename="Python (async)" language="Python" icon="python">
+    {PyConnectObjectStorageAsync}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectObjectStorage}
+    </CodeBlock>
+</CodeGroup>
+
+In Rust, pass the same URI to `connect`.
+
+## LanceDB Enterprise {#enterprise}
+
+A `db://` URI connects to LanceDB Enterprise, where your cluster runs queries
+and background work. Get the database URI, API key, region and endpoint from
+your administrator, then replace the placeholders below. Use your cluster's region
+in place of `us-east-1`. In application code, load credentials from environment
+variables or a secrets manager.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterprisePlaceholders}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterprisePlaceholders}
+    </CodeBlock>
+</CodeGroup>
+
+In Rust, enable the crate's `remote` feature; the connection builder then takes
+the same settings through `api_key`, `region` and `host_override`. To use OAuth
+instead of an API key, see
+[Authentication](/enterprise/authentication); for every connection option, see
+[Database](/management/database#deployment).
+
+
+<Accordion title="Load production credentials from your environment">
+
+Set these values in the shell that starts your application. Replace the URI, API
+key, region and endpoint with your Enterprise connection settings. In production, a secrets
+manager can supply these environment variables for you.
+
+```shell
+export LANCEDB_URI="db://your-database"
+export LANCEDB_API_KEY="your-api-key"
+export LANCEDB_REGION="us-east-1"
+export LANCEDB_HOST_OVERRIDE="https://your-endpoint"
+```
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterpriseQuickstart}
+  </CodeBlock>
+  <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
+    {TsConnectEnterpriseQuickstart}
+  </CodeBlock>
+</CodeGroup>
+
+</Accordion>

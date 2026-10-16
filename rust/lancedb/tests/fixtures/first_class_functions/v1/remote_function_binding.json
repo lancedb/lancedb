@@ -1,6 +1,6 @@
 {
   "binding_id": "fb_01K3TEXT",
-  "function": {"name": "text_features", "version": "fv_01K3TEXT"},
+  "function": {"name": "text_features", "version": "1", "object_id": "fixture", "location": "memory:///fixture", "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6"},
   "inputs": [
     {"parameter": "title", "field_id": 11, "field_path": "title", "arrow_type": "utf8", "nullable": true},
     {"parameter": "body", "field_id": 12, "field_path": "body", "arrow_type": "utf8", "nullable": true}

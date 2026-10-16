@@ -10,6 +10,10 @@ repos:
     rev: v0.9.9
     hooks:
       - id: ruff
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.26.0
+    hooks:
+      - id: typos
   # - repo: https://github.com/RobertCraigie/pyright-python
   #   rev: v1.1.395
   #   hooks:

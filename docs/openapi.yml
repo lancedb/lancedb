@@ -155,7 +155,7 @@ paths:
                 vector:
                   type: FixedSizeList
                   description: |
-                    The targetted vector to search for. Required.
+                    The targeted vector to search for. Required.
                 vector_column:
                   type: string
                   description: |

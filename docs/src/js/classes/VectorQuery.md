@@ -447,6 +447,8 @@ nprobes(nprobes): VectorQuery
 
 Set the number of partitions to search (probe)
 
+The number of probes must be greater than 0.
+
 This argument is only used when the vector column has an IVF PQ index.
 If there is no index then this value is ignored.
 
@@ -458,17 +460,16 @@ exhaustiely searched to find matches.  This parameter controls how many
 partitions should be searched.
 
 Increasing this value will increase the recall of your query but will
-also increase the latency of your query.  The default value is 20.  This
-default is good for many cases but the best value to use will depend on
-your data and the recall that you need to achieve.
+also increase the latency of your query. If this method is not called,
+Lance's adaptive probe defaults are used.
 
 For best results we recommend tuning this parameter with a benchmark against
 your actual data to find the smallest possible value that will still give
 you the desired recall.
 
-For more fine grained control over behavior when you have a very narrow filter
-you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-the minimum and maximum to the same value.
+The value is retained as `nprobes` through client and server request
+construction. Lance sets both probe bounds to this value. Explicit minimum
+or maximum settings can override their respective bounds.
 
 #### Parameters
 
@@ -645,6 +646,38 @@ rerank(reranker): VectorQuery
 
 ***
 
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The MemWAL LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
+
+***
+
 ### select()
 
 ```ts
@@ -673,7 +706,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -740,25 +773,27 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 `StandardQueryBase.toArrow`
 
 ***
 
-### useLsm()
+### useMemWal()
 
 ```ts
-useLsm(enable): this
+useMemWal(enable): this
 ```
 
 Control MemWAL read routing for this query.
 
 By default (unset), when the table carries a MemWAL write spec (see
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+[Table#enableMemWal](Table.md#enablememwal)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key; a table without a spec
+the SSTables), deduplicated by primary key; a table without a spec
 reads the base table.
 
 #### Parameters
@@ -769,7 +804,7 @@ reads the base table.
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
     hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useLsm(false)` is set, because a base-only read would silently exclude
+    `useMemWal(false)` is set, because a base-only read would silently exclude
     un-compacted MemWAL data.
 
 #### Returns
@@ -778,7 +813,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useLsm`
+`StandardQueryBase.useMemWal`
 
 ***
 
