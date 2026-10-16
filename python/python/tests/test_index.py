@@ -3,6 +3,7 @@
 
 from datetime import timedelta
 import random
+import struct
 from typing import get_args, get_type_hints
 
 import pyarrow as pa
@@ -334,14 +335,23 @@ async def test_create_rtree_index(point_table: AsyncTable):
     [
         (INTERSECTS_TRIANGLE, TRIANGLE_IDS),
         (f"ST_Within(geom, {TRIANGLE})", [11, 12, 21]),
+        (f"ST_CoveredBy(geom, {TRIANGLE})", TRIANGLE_IDS),
+        (
+            f"ST_Touches(geom, {TRIANGLE})",
+            [0, 1, 2, 3, 4, 10, 13, 20, 22, 30, 31, 40],
+        ),
         (f"ST_Intersects(geom, {TRIANGLE}) AND id > 20", [21, 22, 30, 31, 40]),
         ("ST_Intersects(geom, ST_Point(3.0, 3.0))", [33]),
-        ("geom IS NULL", []),
+        ("ST_Contains(geom, ST_Point(3.0, 3.0))", [33]),
+        ("ST_Covers(geom, ST_Point(3.0, 3.0))", [33]),
     ],
 )
 async def test_rtree_index_accelerates_spatial_filters(
     point_table: AsyncTable, predicate: str, expected_ids: list
 ):
+    unindexed = sorted(await query_ids(point_table.query().where(predicate)))
+    assert unindexed == expected_ids
+
     await point_table.create_index("geom", config=RTree())
     query = point_table.query().where(predicate)
     assert "ScalarIndexQuery" in await query.explain_plan(True)
@@ -368,12 +378,15 @@ async def test_rtree_index_prefilters_vector_search(point_table: AsyncTable):
     assert await query_ids(postfiltered) == []
 
 
-@pytest.mark.asyncio
-async def test_create_rtree_index_on_polygons(db_async):
-    def square(corner: float) -> list:
-        ring = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]
-        return [[{"x": corner + x, "y": corner + y} for x, y in ring]]
+def square(corner: float) -> list:
+    """A 2 x 2 square polygon with its lower left corner at ``(corner, corner)``."""
+    ring = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]
+    return [[{"x": corner + x, "y": corner + y} for x, y in ring]]
 
+
+@pytest_asyncio.fixture
+async def polygon_table(db_async):
+    """Ten overlapping squares; row ``i`` covers ``(i, i)`` to ``(i + 2, i + 2)``."""
     schema = pa.schema(
         [
             pa.field("id", pa.int64()),
@@ -387,22 +400,233 @@ async def test_create_rtree_index_on_polygons(db_async):
         ],
         schema=schema,
     )
-    table = await db_async.create_table("polygons", data)
-    await table.create_index("area", config=RTree(page_size=2))
-    assert (await table.list_indices())[0].index_type == "RTree"
+    return await db_async.create_table("polygons", data)
 
-    query = table.query().where(
-        "ST_Intersects(area, ST_GeomFromText('POINT (3.5 3.5)'))"
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "predicate, expected_ids",
+    [
+        ("ST_Intersects(area, ST_GeomFromText('POINT (3.5 3.5)'))", [2, 3]),
+        ("ST_Contains(area, ST_GeomFromText('POINT (3.5 3.5)'))", [2, 3]),
+        ("ST_Covers(area, ST_GeomFromText('POINT (3.5 3.5)'))", [2, 3]),
+        ("ST_Crosses(area, ST_GeomFromText('LINESTRING (2.5 2.5, 2.5 10)'))", [1, 2]),
+        (
+            "ST_Overlaps(area, ST_GeomFromText('POLYGON ((3 3, 5 3, 5 5, 3 5, 3 3))'))",
+            [2, 4],
+        ),
+        (
+            "ST_Touches(area, ST_GeomFromText('POLYGON ((3 3, 5 3, 5 5, 3 5, 3 3))'))",
+            [1, 5],
+        ),
+    ],
+)
+async def test_create_rtree_index_on_polygons(
+    polygon_table: AsyncTable, predicate: str, expected_ids: list
+):
+    assert sorted(await query_ids(polygon_table.query().where(predicate))) == (
+        expected_ids
     )
+
+    await polygon_table.create_index("area", config=RTree(page_size=2))
+    assert (await polygon_table.list_indices())[0].index_type == "RTree"
+
+    query = polygon_table.query().where(predicate)
     assert "ScalarIndexQuery" in await query.explain_plan(True)
-    assert sorted(await query_ids(query)) == [2, 3]
+    assert sorted(await query_ids(query)) == expected_ids
+
+
+@pytest.mark.asyncio
+async def test_rtree_index_with_null_geometries(db_async):
+    # Every third row has no geometry; the others sit on the diagonal at (i, i).
+    geom = pa.array(
+        [None if i % 3 == 0 else {"x": float(i), "y": float(i)} for i in range(10)],
+        POINT_TYPE,
+    )
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            geoarrow_field("geom", "geoarrow.point", POINT_TYPE),
+        ]
+    )
+    table = await db_async.create_table(
+        "nulls",
+        pa.Table.from_arrays([pa.array(range(10), pa.int64()), geom], schema=schema),
+    )
+    box = "ST_GeomFromText('POLYGON ((-1 -1, 1.5 -1, 1.5 1.5, -1 1.5, -1 -1))')"
+    expected = {
+        "geom IS NULL": [0, 3, 6, 9],
+        "geom IS NOT NULL": [1, 2, 4, 5, 7, 8],
+        # Row 0 is inside the box but has no geometry, so it matches neither.
+        f"ST_Intersects(geom, {box})": [1],
+        f"NOT ST_Intersects(geom, {box})": [2, 4, 5, 7, 8],
+    }
+    for predicate, ids in expected.items():
+        assert sorted(await query_ids(table.query().where(predicate))) == ids
+
+    await table.create_index("geom", config=RTree())
+    for predicate, ids in expected.items():
+        assert sorted(await query_ids(table.query().where(predicate))) == ids
+    for predicate in ["geom IS NULL", f"ST_Intersects(geom, {box})"]:
+        assert "ScalarIndexQuery" in await table.query().where(predicate).explain_plan(
+            True
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_rtree_index_on_wkb(db_async):
+    """GeoParquet and GeoPandas data usually arrives as well-known binary."""
+
+    def wkb_point(x: float, y: float) -> bytes:
+        # Byte order (1 = little endian), geometry type (1 = point), x, y.
+        return struct.pack("<BIdd", 1, 1, x, y)
+
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            geoarrow_field("geom", "geoarrow.wkb", pa.binary()),
+        ]
+    )
+    data = pa.Table.from_arrays(
+        [
+            pa.array(range(100), pa.int64()),
+            pa.array([wkb_point(i % 10, i // 10) for i in range(100)], pa.binary()),
+        ],
+        schema=schema,
+    )
+    table = await db_async.create_table("wkb", data)
+    assert sorted(await query_ids(table.query().where(INTERSECTS_TRIANGLE))) == (
+        TRIANGLE_IDS
+    )
+
+    await table.create_index("geom", config=RTree())
+    query = table.query().where(INTERSECTS_TRIANGLE)
+    assert "ScalarIndexQuery" in await query.explain_plan(True)
+    assert sorted(await query_ids(query)) == TRIANGLE_IDS
+
+
+@pytest.mark.asyncio
+async def test_rtree_index_after_append_and_optimize(point_table: AsyncTable):
+    await point_table.create_index("geom", config=RTree())
+    # Rows 100..199 continue the grid above the first one, at y = 10..19.
+    await point_table.add(grid_points(200).slice(100))
+    across_both = (
+        "ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 9, 2 9, 2 11, 0 11, 0 9))'))"
+    )
+    expected = [90, 91, 92, 100, 101, 102, 110, 111, 112]
+
+    stats = await point_table.index_stats("geom_idx")
+    assert stats is not None
+    assert (stats.num_indexed_rows, stats.num_unindexed_rows) == (100, 100)
+    assert sorted(await query_ids(point_table.query().where(across_both))) == expected
+
+    await point_table.optimize()
+    stats = await point_table.index_stats("geom_idx")
+    assert stats is not None
+    assert (stats.num_indexed_rows, stats.num_unindexed_rows) == (200, 0)
+    query = point_table.query().where(across_both)
+    assert "ScalarIndexQuery" in await query.explain_plan(True)
+    assert sorted(await query_ids(query)) == expected
+
+
+@pytest.mark.asyncio
+async def test_geoarrow_column_round_trips(point_table: AsyncTable):
+    """Enabling geo support must not change how GeoArrow columns are stored or read."""
+    expected = grid_points(100)
+    schema = await point_table.schema()
+    assert schema.field("geom").metadata == expected.schema.field("geom").metadata
+    assert schema.field("geom").type == POINT_TYPE
+
+    data = (await point_table.query().to_arrow()).sort_by("id")
+    assert data["geom"].to_pylist() == expected["geom"].to_pylist()
+    assert sorted(await query_ids(point_table.query().where("id < 3"))) == [0, 1, 2]
+
+
+# GeoDataFusion evaluates an asymmetric predicate with its arguments swapped when
+# the constant comes first, and panics on a NULL constant geometry without an index.
+# Both are fixed upstream; remove these markers when Lance picks up the fix.
+CONSTANT_FIRST_BUG = pytest.mark.xfail(
+    reason="GeoDataFusion relates the constant-first form with swapped arguments",
+    strict=True,
+)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
+@pytest.mark.parametrize(
+    "predicate, expected_ids",
+    [
+        pytest.param(
+            f"ST_Contains({TRIANGLE}, geom)", [11, 12, 21], marks=CONSTANT_FIRST_BUG
+        ),
+        pytest.param(
+            f"ST_Covers({TRIANGLE}, geom)", TRIANGLE_IDS, marks=CONSTANT_FIRST_BUG
+        ),
+        # Symmetric predicates already give the right answer either way.
+        (f"ST_Intersects({TRIANGLE}, geom)", TRIANGLE_IDS),
+    ],
+)
+async def test_spatial_filter_constant_first(
+    point_table: AsyncTable, indexed: bool, predicate: str, expected_ids: list
+):
+    if indexed:
+        await point_table.create_index("geom", config=RTree())
+    assert sorted(await query_ids(point_table.query().where(predicate))) == (
+        expected_ids
+    )
+
+
+@CONSTANT_FIRST_BUG
+@pytest.mark.asyncio
+async def test_delete_with_constant_first_spatial_filter(point_table: AsyncTable):
+    # Delete everything outside the triangle; the interior points must survive.
+    await point_table.delete(f"NOT ST_Contains({TRIANGLE}, geom)")
+    assert sorted(await query_ids(point_table.query())) == [11, 12, 21]
+
+
+@CONSTANT_FIRST_BUG
+@pytest.mark.asyncio
+async def test_update_with_constant_first_spatial_filter(point_table: AsyncTable):
+    await point_table.update({"id": "-id"}, where=f"ST_Contains({TRIANGLE}, geom)")
+    assert sorted(await query_ids(point_table.query().where("id < 0"))) == [
+        -21,
+        -12,
+        -11,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "indexed",
+    [
+        pytest.param(
+            False,
+            marks=pytest.mark.xfail(
+                reason="GeoDataFusion panics on a NULL constant geometry",
+                raises=Exception,
+                strict=True,
+            ),
+        ),
+        True,
+    ],
+)
+async def test_spatial_filter_with_null_constant(point_table: AsyncTable, indexed):
+    if indexed:
+        await point_table.create_index("geom", config=RTree())
+    null_geometry = "ST_GeomFromText(CAST(NULL AS VARCHAR))"
+    for predicate in [
+        f"ST_Intersects(geom, {null_geometry})",
+        f"ST_Within(geom, {null_geometry})",
+    ]:
+        assert await query_ids(point_table.query().where(predicate)) == []
 
 
 @pytest.mark.asyncio
 async def test_create_rtree_index_rejects_invalid_input(point_table: AsyncTable):
     with pytest.raises(ValueError, match="page_size must be at least 2"):
         await point_table.create_index("geom", config=RTree(page_size=1))
-    with pytest.raises(RuntimeError, match="GeoArrow"):
+    # Only the message is part of the contract, not the exception type.
+    with pytest.raises(Exception, match="GeoArrow"):
         await point_table.create_index("id", config=RTree())
     assert await point_table.list_indices() == []
 
@@ -410,8 +634,7 @@ async def test_create_rtree_index_rejects_invalid_input(point_table: AsyncTable)
 def test_create_rtree_index_sync(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("points", grid_points(100))
-    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
-        table.create_scalar_index("geom", index_type="RTREE")
+    table.create_index("geom", config=RTree())
     assert [index.index_type for index in table.list_indices()] == ["RTree"]
     table.create_index("geom", config=RTree(page_size=16), name="geom_rtree")
     assert table.index_stats("geom_rtree").index_type == "RTREE"

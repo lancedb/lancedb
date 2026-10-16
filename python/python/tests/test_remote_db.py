@@ -1512,8 +1512,6 @@ def test_remote_create_rtree_index():
         table = db.open_table("test")
         table.create_index("geom", config=RTree())
         table.create_index("geom", config=RTree(page_size=1024), name="geom_rtree")
-        with pytest.warns(DeprecationWarning, match="create_scalar_index"):
-            table.create_scalar_index("geom", index_type="RTREE")
         with pytest.raises(ValueError, match="page_size must be at least 2"):
             table.create_index("geom", config=RTree(page_size=1))
 
@@ -1525,7 +1523,6 @@ def test_remote_create_rtree_index():
             "name": "geom_rtree",
             "page_size": 1024,
         },
-        {"column": "geom", "index_type": "RTREE", "replace": False},
     ]
 
 

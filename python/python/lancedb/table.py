@@ -1625,12 +1625,11 @@ class Table(ABC):
         ----------
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
-            or string column, or a GeoArrow geometry column for ``"RTREE"``.
+            or string column.
         replace : bool, default True
             Replace the existing index if it exists.
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "RTREE"], default "BTREE"
-            The type of index to create. ``"RTREE"`` creates an
-            [RTree][lancedb.index.RTree] index for spatial filters.
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
+            The type of index to create.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         name: str, optional
@@ -3889,10 +3888,7 @@ class LanceTable(Table):
     @deprecation.deprecated(
         deprecated_in="0.25.0",
         current_version=__version__,
-        details=(
-            "Use create_index() with config=BTree()/Bitmap()/LabelList()/RTree()"
-            " instead."
-        ),
+        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
     )
     def create_scalar_index(
         self,
@@ -3905,8 +3901,7 @@ class LanceTable(Table):
         """Create a scalar index on a column.
 
         .. deprecated:: 0.25.0
-            Use :meth:`create_index` with a BTree, Bitmap, LabelList, or RTree
-            config instead.
+            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
             Example: ``table.create_index("column", config=BTree())``
         """
         if index_type == "BTREE":
@@ -3915,8 +3910,6 @@ class LanceTable(Table):
             config = Bitmap()
         elif index_type == "LABEL_LIST":
             config = LabelList()
-        elif index_type == "RTREE":
-            config = RTree()
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
