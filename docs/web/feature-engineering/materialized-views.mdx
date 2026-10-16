@@ -52,7 +52,7 @@ In Python SDK 0.40.0, create the source with
 above does. Stable row IDs let the view track source rows across updates and
 compaction. Set this option when creating the table; it cannot be added later.
 
-A source with an LSM write specification or retained, uncompacted write-ahead-log
+A source with a MemWAL write spec or retained, uncompacted write-ahead-log
 rows is not accepted by the local materialized-view implementation.
 
 ## Refresh behavior {#incremental}

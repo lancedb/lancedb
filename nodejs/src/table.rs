@@ -580,64 +580,60 @@ impl Table {
             .default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> napi::Result<()> {
-        let native_spec = lancedb::table::LsmWriteSpec::try_from(spec)?;
+    #[napi(catch_unwind, js_name = "enableMemWal")]
+    pub async fn enable_memwal(&self, spec: MemWalWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::MemWalWriteSpec::try_from(spec)?;
         self.inner_ref()?
-            .set_lsm_write_spec(native_spec)
+            .enable_memwal(native_spec)
             .await
             .default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn unset_lsm_write_spec(&self) -> napi::Result<()> {
+    #[napi(catch_unwind, js_name = "disableMemWal")]
+    pub async fn disable_memwal(&self) -> napi::Result<()> {
+        self.inner_ref()?.disable_memwal().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "getMemWalSpec")]
+    pub async fn get_memwal_spec(&self) -> napi::Result<Option<MemWalWriteSpec>> {
+        let spec = self.inner_ref()?.get_memwal_spec().await.default_error()?;
+        Ok(spec.map(MemWalWriteSpec::from))
+    }
+
+    #[napi(catch_unwind, js_name = "closeMemWalWriters")]
+    pub async fn close_memwal_writers(&self) -> napi::Result<()> {
         self.inner_ref()?
-            .unset_lsm_write_spec()
+            .close_memwal_writers()
             .await
             .default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn get_lsm_write_spec(&self) -> napi::Result<Option<LsmWriteSpec>> {
-        let spec = self
-            .inner_ref()?
-            .get_lsm_write_spec()
-            .await
-            .default_error()?;
-        Ok(spec.map(LsmWriteSpec::from))
+    #[napi(catch_unwind, js_name = "flushMemWal")]
+    pub async fn flush_memwal(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_memwal().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn close_lsm_writers(&self) -> napi::Result<()> {
-        self.inner_ref()?.close_lsm_writers().await.default_error()
+    #[napi(catch_unwind, js_name = "compactMemWal")]
+    pub async fn compact_memwal(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_memwal().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn flush_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.flush_lsm().await.default_error()
+    #[napi(catch_unwind, js_name = "checkpointMemWal")]
+    pub async fn checkpoint_memwal(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_memwal().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn compact_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.compact_lsm().await.default_error()
-    }
-
-    #[napi(catch_unwind)]
-    pub async fn checkpoint_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.checkpoint_lsm().await.default_error()
-    }
-
-    #[napi(catch_unwind)]
-    pub async fn get_lsm_stats(
+    #[napi(catch_unwind, js_name = "getMemWalStats")]
+    pub async fn get_memwal_stats(
         &self,
-        include_generation_rows: bool,
-    ) -> napi::Result<Option<LsmStats>> {
+        include_sstable_rows: bool,
+    ) -> napi::Result<Option<MemWalStats>> {
         let stats = self
             .inner_ref()?
-            .get_lsm_stats(include_generation_rows)
+            .get_memwal_stats(include_sstable_rows)
             .await
             .default_error()?;
-        Ok(stats.map(LsmStats::from))
+        Ok(stats.map(MemWalStats::from))
     }
 
     #[napi(catch_unwind)]
@@ -958,7 +954,7 @@ impl From<LanceDbFtsToken> for FtsToken {
 /// `column` is required.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct LsmWriteSpec {
+pub struct MemWalWriteSpec {
     /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
     pub spec_type: String,
     /// Bucket and identity variants: the sharding column.
@@ -972,31 +968,31 @@ pub struct LsmWriteSpec {
     pub writer_config_defaults: Option<HashMap<String, String>>,
 }
 
-impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+impl TryFrom<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
     type Error = napi::Error;
 
-    fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
+    fn try_from(value: MemWalWriteSpec) -> napi::Result<Self> {
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec bucket requires `column`")
+                    napi::Error::from_reason("MemWalWriteSpec bucket requires `column`")
                 })?;
                 let num_buckets = value.num_buckets.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec bucket requires `numBuckets`")
+                    napi::Error::from_reason("MemWalWriteSpec bucket requires `numBuckets`")
                 })?;
                 Self::bucket(column, num_buckets)
             }
             "identity" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec identity requires `column`")
+                    napi::Error::from_reason("MemWalWriteSpec identity requires `column`")
                 })?;
                 Self::identity(column)
             }
             "unsharded" => Self::unsharded(),
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "LsmWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    "MemWalWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
                     other
                 )));
             }
@@ -1007,9 +1003,9 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     }
 }
 
-impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
-    fn from(spec: lancedb::table::LsmWriteSpec) -> Self {
-        use lancedb::table::LsmWriteSpec as Native;
+impl From<lancedb::table::MemWalWriteSpec> for MemWalWriteSpec {
+    fn from(spec: lancedb::table::MemWalWriteSpec) -> Self {
+        use lancedb::table::MemWalWriteSpec as Native;
         match spec {
             Native::Bucket {
                 column,
@@ -1048,21 +1044,21 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
     }
 }
 
-/// One flushed L0 generation.
+/// One SSTable.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct GenerationStats {
-    /// The generation number. Increases as memtables are sealed into L0.
+pub struct SsTableStats {
+    /// The generation number. Increases as memtables are frozen into SSTables.
     pub generation: i64,
-    /// On-disk size of the generation.
+    /// On-disk size of the SSTable.
     pub bytes: i64,
-    /// Present only when `includeGenerationRows` was requested. Off by default
+    /// Present only when `includeSstableRows` was requested. Off by default
     /// because each count opens an uncached Lance dataset.
     pub rows: Option<i64>,
 }
 
-impl From<lancedb::table::GenerationStats> for GenerationStats {
-    fn from(g: lancedb::table::GenerationStats) -> Self {
+impl From<lancedb::table::SsTableStats> for SsTableStats {
+    fn from(g: lancedb::table::SsTableStats) -> Self {
         Self {
             generation: g.generation as i64,
             bytes: g.bytes as i64,
@@ -1075,7 +1071,7 @@ impl From<lancedb::table::GenerationStats> for GenerationStats {
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct MemtableStats {
-    /// The generation this memtable will become once sealed.
+    /// The generation this memtable will become once frozen.
     pub generation: i64,
     /// Rows currently buffered.
     pub rows: i64,
@@ -1100,13 +1096,13 @@ impl From<lancedb::table::MemtableStats> for MemtableStats {
     }
 }
 
-/// Live state of one bucket. A table is N buckets on one node; flattening to a
-/// single number hides the one hot bucket that is usually why someone opened
+/// Live state of one table shard. A table is N table shards on one node; flattening to a
+/// single number hides the one hot table shard that is usually why someone opened
 /// this endpoint.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct BucketStats {
-    /// The shard this bucket writes.
+pub struct TableShardStats {
+    /// The id of this table shard.
     pub shard_id: String,
     /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
     pub status: String,
@@ -1121,20 +1117,20 @@ pub struct BucketStats {
     /// Highest WAL position the writer has seen. The difference against
     /// `replayAfterWalEntryPosition` is the WAL lag.
     pub wal_entry_position_last_seen: i64,
-    /// Flushed L0 generations not yet merged into the base table.
-    pub generations: Vec<GenerationStats>,
-    /// Whether a pass owns this bucket's compaction latch right now. Says *a*
+    /// SSTables not yet merged into the base table.
+    pub sstables: Vec<SsTableStats>,
+    /// Whether a pass owns this table shard's compaction latch right now. Says *a*
     /// driver is running, not *whose*, and the latch is held from dispatch —
     /// including while the pass queues for a pod-wide compactor permit. Read it
     /// as "do not pile on", never as "mine is progressing".
     pub compacting: bool,
-    /// Oldest first, active last. Absent for a `"Sealed"` bucket, whose
+    /// Oldest first, active last. Absent for a `"Sealed"` table shard, whose
     /// in-memory state is torn down.
     pub memtables: Option<Vec<MemtableStats>>,
 }
 
-impl From<lancedb::table::BucketStats> for BucketStats {
-    fn from(b: lancedb::table::BucketStats) -> Self {
+impl From<lancedb::table::TableShardStats> for TableShardStats {
+    fn from(b: lancedb::table::TableShardStats) -> Self {
         Self {
             shard_id: b.shard_id,
             status: b.status,
@@ -1143,7 +1139,7 @@ impl From<lancedb::table::BucketStats> for BucketStats {
             current_generation: b.current_generation as i64,
             replay_after_wal_entry_position: b.replay_after_wal_entry_position as i64,
             wal_entry_position_last_seen: b.wal_entry_position_last_seen as i64,
-            generations: b.generations.into_iter().map(Into::into).collect(),
+            sstables: b.sstables.into_iter().map(Into::into).collect(),
             compacting: b.compacting,
             memtables: b
                 .memtables
@@ -1152,21 +1148,21 @@ impl From<lancedb::table::BucketStats> for BucketStats {
     }
 }
 
-/// Live per-bucket LSM state, as returned by `Table#getLsmStats`.
+/// Live per-table-shard MemWAL state, as returned by `Table#getMemWalStats`.
 ///
-/// Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are
+/// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct LsmStats {
-    /// One entry per bucket backing this table.
-    pub buckets: Vec<BucketStats>,
+pub struct MemWalStats {
+    /// One entry per table shard backing this table.
+    pub table_shards: Vec<TableShardStats>,
 }
 
-impl From<lancedb::table::LsmStats> for LsmStats {
-    fn from(stats: lancedb::table::LsmStats) -> Self {
+impl From<lancedb::table::MemWalStats> for MemWalStats {
+    fn from(stats: lancedb::table::MemWalStats) -> Self {
         Self {
-            buckets: stats.buckets.into_iter().map(Into::into).collect(),
+            table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }
     }
 }

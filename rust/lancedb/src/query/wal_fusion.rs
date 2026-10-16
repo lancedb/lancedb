@@ -54,7 +54,7 @@ fn wal_row_id_unsupported() -> Error {
     Error::NotSupported {
         message: "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has no \
                   stable row id, and the ids the fusion joins on are synthesized from the \
-                  primary key. Set use_lsm(false) to read the base table only (results will \
+                  primary key. Set use_memwal(false) to read the base table only (results will \
                   exclude un-compacted MemWAL data)"
             .to_string(),
     }
@@ -80,7 +80,7 @@ where
 {
     // A previous query on this table was already refused, so skip straight to
     // the key.
-    if query.request.base.use_lsm != Some(false) && query.parent.hybrid_pk_fusion_learned() {
+    if query.request.base.use_memwal != Some(false) && query.parent.hybrid_pk_fusion_learned() {
         return run(Some(PkFusion::resolve(query).await?)).await;
     }
     match run(None).await {

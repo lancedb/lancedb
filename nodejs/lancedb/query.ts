@@ -464,10 +464,10 @@ export class StandardQueryBase<
    * Control MemWAL read routing for this query.
    *
    * By default (unset), when the table carries a MemWAL write spec (see
-   * {@link Table#setLsmWriteSpec}), reads are routed through the LSM scanner so
+   * {@link Table#enableMemWal}), reads are routed through the LSM scanner so
    * they also return data written via the `mergeInsert` LSM path that has not yet
    * been compacted into the base table (the active/frozen in-memory memtables and
-   * the flushed generations), deduplicated by primary key; a table without a spec
+   * the SSTables), deduplicated by primary key; a table without a spec
    * reads the base table.
    *
    * @param enable - `true` forces the LSM scanner and errors if the table has no
@@ -476,11 +476,11 @@ export class StandardQueryBase<
    *
    * Note: the LSM scanner does not support every query shape (e.g. reranking,
    * hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-   * `useLsm(false)` is set, because a base-only read would silently exclude
+   * `useMemWal(false)` is set, because a base-only read would silently exclude
    * un-compacted MemWAL data.
    */
-  useLsm(enable: boolean): this {
-    this.doCall((inner: NativeQueryType) => inner.useLsm(enable));
+  useMemWal(enable: boolean): this {
+    this.doCall((inner: NativeQueryType) => inner.useMemWal(enable));
     return this;
   }
 }
@@ -871,8 +871,8 @@ export class TakeQuery extends QueryBase<NativeTakeQuery> {
    *
    * @param enable - `false` reads the base table only.
    */
-  useLsm(enable: boolean): this {
-    this.doCall((inner: NativeTakeQuery) => inner.useLsm(enable));
+  useMemWal(enable: boolean): this {
+    this.doCall((inner: NativeTakeQuery) => inner.useMemWal(enable));
     return this;
   }
 }

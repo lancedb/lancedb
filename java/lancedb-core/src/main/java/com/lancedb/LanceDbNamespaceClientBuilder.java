@@ -151,8 +151,8 @@ public class LanceDbNamespaceClientBuilder {
    * Build a {@link LanceDbRestClient} for the same endpoint.
    *
    * <p>Needed only for LanceDB routes that the Lance Namespace specification does not cover — the
-   * MemWAL LSM write path, reached through {@link LanceDbTableLsm}. Every other table operation
-   * belongs on the {@link LanceNamespace} from {@link #build()}.
+   * MemWAL write path, reached through {@link LanceDbTableMemWal}. Every other table
+   * operation belongs on the {@link LanceNamespace} from {@link #build()}.
    *
    * <p>The returned client owns an HTTP connection pool; close it when you are done with it.
    *

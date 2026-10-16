@@ -102,10 +102,10 @@ duplicates impossible. It tells the planner what to assume. The column must be
 declared `NOT NULL`.
 
 ```sql
-ALTER TABLE t SET WAL
-ALTER TABLE t SET WAL WITH (sharding = 'bucket', column = 'id', buckets = 4)
-ALTER TABLE t SET WAL WITH (maintained_indexes = '')
-ALTER TABLE t UNSET WAL
+ALTER TABLE t SET MEMWAL
+ALTER TABLE t SET MEMWAL WITH (sharding = 'bucket', column = 'id', buckets = 4)
+ALTER TABLE t SET MEMWAL WITH (maintained_indexes = '')
+ALTER TABLE t UNSET MEMWAL
 ```
 
 A write-ahead log makes small frequent writes cheap by batching them out of the
