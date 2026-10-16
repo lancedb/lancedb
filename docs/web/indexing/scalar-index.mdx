@@ -35,7 +35,7 @@ Scalar indexes accelerate filters on values such as numbers, categories and
 strings. Use them for selective table queries or metadata filters combined
 with vector and full-text search.
 
-LanceDB supports five types of scalar indexes:
+LanceDB supports these scalar index types, among others:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
@@ -227,8 +227,7 @@ built from them works the same way.
 
 Pass the `RTree` config in Python, `Index.rtree()` in TypeScript, or
 `Index::RTree` in Rust. The optional page size sets the maximum number of
-entries in each R-tree page; it must be at least 2 and defaults to 4096. The
-deprecated `create_scalar_index` method also accepts `index_type="RTREE"`.
+entries in each R-tree page; it must be at least 2 and defaults to 4096.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -287,8 +286,9 @@ Write the column as the first argument. With the constant first, as in
 `ST_Contains(<constant>, location)`, the index is not used, and the
 asymmetric predicates (`ST_Contains`, `ST_Within`, `ST_Covers`,
 `ST_CoveredBy`) currently evaluate with their arguments swapped and return
-wrong results. Write `ST_Within(location, <constant>)` instead of
-`ST_Contains(<constant>, location)`.
+wrong results. This applies to `delete()`, `update()` and `merge_insert()`
+conditions as well as queries. Write `ST_Within(location, <constant>)`
+instead of `ST_Contains(<constant>, location)`.
 </Warning>
 
 Other spatial functions, such as `ST_Distance(location, ST_Point(x, y)) < d`
@@ -296,6 +296,12 @@ for a radius filter, work in filters but are evaluated row by row, without the
 index. `ST_DWithin` is not available. To use the index for a radius filter,
 pair the distance check with an indexed predicate on a bounding polygon:
 `ST_Intersects(location, <box>) AND ST_Distance(location, <center>) < d`.
+
+Spatial functions are planar: they treat coordinates as points on a flat
+plane, and `ST_Distance` returns a distance in the units of the column's
+coordinates. For longitude and latitude, `d` is in degrees, not meters, and a
+degree of longitude shrinks toward the poles. Project the data to a metric
+coordinate system first if you need distances in meters.
 
 ### Combine with vector search {#rtree-vector-search}
 
@@ -326,9 +332,11 @@ query plan:
 
 <Note title="LanceDB Enterprise">
 On a remote table, `create_index` sends the request with the `RTREE` index
-type, and spatial filters are sent to the deployment as written. The
-deployment builds the index and evaluates the predicates if its version
-supports them.
+type, and spatial filters are sent to the deployment as written. Whether a
+deployment can build the index and evaluate `ST_*` functions depends on its
+server version. LanceDB Enterprise does not ship geospatial support yet (see
+[SQL data types](/sql/data-types#geospatial)), so the R-tree index and
+spatial filters are currently for local tables.
 </Note>
 
 ## Index UUID Columns

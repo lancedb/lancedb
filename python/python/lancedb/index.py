@@ -131,8 +131,10 @@ class RTree:
     Write the column first. The index is not used when the constant comes
     first, and asymmetric predicates in that form, such as
     ``ST_Contains(<constant>, geom)``, currently evaluate with their arguments
-    swapped; use ``ST_Within(geom, <constant>)`` instead. Other spatial
-    functions such as ``ST_Distance`` work in filters but scan every row.
+    swapped, in queries and in ``delete()`` or ``update()`` conditions alike;
+    use ``ST_Within(geom, <constant>)`` instead. Other spatial functions such
+    as ``ST_Distance`` work in filters but scan every row. Spatial functions
+    are planar, so distances are in the units of the column's coordinates.
     ``ST_DWithin`` is not available.
 
     On a vector search, a spatial prefilter (the default) uses the index to
@@ -142,7 +144,7 @@ class RTree:
     shows up as ``ScalarIndexQuery``.
 
     Remote tables send the ``RTREE`` index type to the server, which must
-    support it.
+    support it; LanceDB Enterprise does not support geospatial data yet.
 
     Examples
     --------
