@@ -5,7 +5,7 @@ description: Rerank LanceDB search results with the IBM watsonx.ai text rerank A
 
 ---
 
-import { PyRerankingWatsonxUsage } from '/snippets/integrations.mdx';
+import { PyRerankingWatsonxUsage } from '/snippets/provider_examples.mdx';
 
 # Watsonx Reranker
 
@@ -16,6 +16,8 @@ This reranker uses the [IBM watsonx.ai](https://cloud.ibm.com/docs/apis/watsonx-
 ```shell
 pip install ibm-watsonx-ai
 ```
+
+Replace the credential placeholders with your provider credentials. In application code, load credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

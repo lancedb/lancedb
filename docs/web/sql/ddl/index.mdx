@@ -1,30 +1,38 @@
 ---
 title: "Index"
 sidebarTitle: "Index"
-description: "CREATE INDEX and DROP INDEX — one column, server-chosen name."
+description: "CREATE INDEX and DROP INDEX — one column, with the algorithm chosen by USING."
 icon: bolt
 keywords: ["create index", "drop index", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ## CREATE INDEX {#create}
 
 ```sql
-CREATE INDEX ON documents (title)
+CREATE INDEX ON documents USING btree (title)
+CREATE INDEX text_search ON documents USING fts (text)
 ```
 
+`USING` is required: it names the algorithm. The scalar algorithms are `btree`,
+`bitmap` and `label_list`; `fts` builds a full-text index; and the vector
+algorithms are `ivf_pq`, `ivf_rq`, `ivf_flat`, `ivf_hnsw_sq` and `ivf_hnsw_pq`,
+where the deployment supports them. Index options go in a `WITH (...)` clause.
+
 <Note>
-SQL `CREATE INDEX` covers **one column** and takes **no user-chosen name** --
-the server names it. For a multi-column or explicitly-named index, or to
-choose the algorithm, use the SDK's
-[`create_index`](/indexing).
+In LanceDB Enterprise, SQL `CREATE INDEX` covers **one column**. A name between
+`INDEX` and `ON` names the index, where the deployment's configuration allows
+it; without one, the server names it after the column, as in `title_idx`. For a
+multi-column index, use the SDK's [`create_index`](/indexing).
 </Note>
 
 <Note>
-**Enterprise job type:** `create_ivf_pq`, `create_btree`, `create_fts`, and one
-more per algorithm -- the type names which algorithm is building, not a
-different feature. See [Build & Repair](/indexing/reindexing).
+**Enterprise job type:** `reindex_` followed by the algorithm, such as
+`reindex_btree` or `reindex_ivf_pq`; the name says which algorithm is building,
+not a different feature. An SDK build that must not replace an existing index
+runs as `create_` followed by the algorithm instead. See
+[Build & Repair](/indexing/reindexing).
 </Note>
 
 ## DROP INDEX {#drop}
@@ -35,7 +43,9 @@ DROP INDEX documents.title_idx
 
 Takes the qualified `table.index` name. Find it with the SDK's
 [`list_indices`](/indexing) if you created the index without
-naming it yourself.
+naming it yourself. A deployment builds the index in the background after
+`CREATE INDEX` returns; until that build finishes, the index is not listed and
+`DROP INDEX` reports it as not found.
 
 ## What to read next {#next}
 

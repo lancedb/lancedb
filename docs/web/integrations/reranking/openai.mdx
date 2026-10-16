@@ -5,7 +5,7 @@ description: Explore experimental search reranking using OpenAI's GPT models in 
 
 ---
 
-import { PyRerankingOpenaiUsage } from '/snippets/integrations.mdx';
+import { PyRerankingOpenaiUsage } from '/snippets/provider_examples.mdx';
 
 # OpenAI Reranker (Experimental)
 
@@ -13,6 +13,9 @@ This reranker uses OpenAI chat model to rerank the search results. You can use t
 > **Note:** Supported query types – Hybrid, Vector, and FTS.
 
 > **Warning:** This reranker is experimental. OpenAI does not have a dedicated reranking model, so it uses a chat model under the hood.
+
+Replace `your-api-key` with your provider API key. In application code, load
+credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

@@ -30,13 +30,14 @@ use crate::table::BranchDiff;
 use crate::table::CherryPickResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
-use crate::table::LsmStats;
-use crate::table::LsmWriteSpec;
+use crate::table::MemWalStats;
+use crate::table::MemWalWriteSpec;
 use crate::table::MergeResult;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::lsm_stats::GetLsmStatsResponse;
+use crate::table::memwal_stats::GetMemWalStatsResponse;
 use crate::table::merge::MergeFilter;
+use crate::table::primary_key;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
@@ -74,6 +75,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -1018,10 +1020,10 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<()> {
         params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
-        // Only forward use_lsm when explicitly set; a server that predates it
+        // Only forward use_memwal when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
-        if let Some(use_lsm) = params.use_lsm {
-            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        if let Some(use_memwal) = params.use_memwal {
+            body["use_memwal"] = serde_json::Value::Bool(use_memwal);
         }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -1057,6 +1059,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 );
             }
             Select::Dynamic(pairs) => {
+                // Keep the caller's alias order in the JSON object sent to the server.
+                // serde_json's preserve_order feature is required here.
                 let alias_map =
                     serde_json::Map::from_iter(pairs.iter().map(|(name, expr)| {
                         (name.clone(), serde_json::Value::String(expr.clone()))
@@ -1137,6 +1141,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
+        query.validate_search_effort()?;
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1154,6 +1159,9 @@ impl<S: HttpSend> RemoteTable<S> {
         }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
+        }
+        if let Some(search_effort) = query.search_effort {
+            body["search_effort"] = search_effort.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -1398,24 +1406,29 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        if let Some(timeout) = options.timeout {
+        let streams = if let Some(timeout) = options.timeout {
             let timeout_future = tokio::time::sleep(timeout);
             tokio::pin!(timeout_future);
             tokio::pin!(streams);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    Err(Error::Other {
+                    return Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
                     })
                 }
                 result = &mut streams => {
-                    Ok(result?)
+                    result?
                 }
             }
         } else {
-            Ok(streams.await?)
-        }
+            streams.await?
+        };
+
+        Ok(streams
+            .into_iter()
+            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .collect())
     }
 
     fn prepare_query_bodies(
@@ -1455,6 +1468,52 @@ impl<S: HttpSend> RemoteTable<S> {
             self.invalidate_schema_cache();
         }
     }
+}
+
+fn restore_projection_order(
+    stream: Pin<Box<dyn RecordBatchStream + Send>>,
+    select: &Select,
+) -> Pin<Box<dyn RecordBatchStream + Send>> {
+    let pairs = match select {
+        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        _ => return stream,
+    };
+
+    let schema = stream.schema();
+    let mut remaining = (0..schema.fields().len()).collect::<Vec<_>>();
+    let mut indices = Vec::with_capacity(remaining.len());
+    for name in pairs {
+        if let Some(position) = remaining
+            .iter()
+            .position(|&index| schema.field(index).name() == name)
+        {
+            indices.push(remaining.remove(position));
+        }
+    }
+    indices.extend(remaining);
+    if indices
+        .iter()
+        .enumerate()
+        .all(|(index, &field)| index == field)
+    {
+        return stream;
+    }
+
+    // Older servers may sort alias maps even when the request preserves their
+    // order. Reorder the schema and every batch while keeping server-added fields.
+    let fields = indices
+        .iter()
+        .map(|&index| schema.field(index).clone())
+        .collect::<Vec<_>>();
+    let schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ));
+    let batches = stream.map(move |batch| {
+        batch.and_then(|batch| batch.project(&indices).map_err(DataFusionError::from))
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, batches))
 }
 
 #[derive(Deserialize)]
@@ -3148,48 +3207,66 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported for remote tables.".into(),
-        })
+    /// The unenforced primary key is Lance schema field metadata, so this
+    /// installs it through the `update_field_metadata` endpoint. The commit
+    /// layer behind that endpoint is what actually installs and validates the
+    /// key, exactly as on a native table; the checks here only fail fast with
+    /// the same messages a native table gives.
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        self.check_mutable().await?;
+
+        let arrow_schema = self.schema().await?;
+        let schema = LanceSchema::try_from(arrow_schema.as_ref()).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+        primary_key::validate(&schema, columns)?;
+
+        self.update_field_metadata(&[FieldMetadataUpdate {
+            path: columns[0].to_string(),
+            metadata: primary_key::install_edit(),
+            replace: false,
+        }])
+        .await?;
+        Ok(())
     }
 
-    async fn flush_lsm(&self) -> Result<()> {
+    async fn flush_memwal(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/flush_lsm/", self.identifier));
+            .post(&format!("/v1/table/{}/flush_memwal/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn compact_lsm(&self) -> Result<()> {
+    async fn compact_memwal(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/compact_lsm/", self.identifier));
+            .post(&format!("/v1/table/{}/compact_memwal/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
-        // Read-semantics POST, like `get_lsm_write_spec`.
+    async fn get_memwal_stats(&self, include_sstable_rows: bool) -> Result<Option<MemWalStats>> {
+        // Read-semantics POST, like `get_memwal_spec`.
         let request = self
             .client
-            .post(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
+            .post(&format!("/v1/table/{}/get_memwal_stats/", self.identifier))
             .json(&serde_json::json!({
-                "include_generation_rows": include_generation_rows,
+                "include_sstable_rows": include_sstable_rows,
             }));
         let (request_id, response) = self.send_lsm_route(request).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-        let parsed: GetLsmStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse get_lsm_stats response: {e}").into(),
-            request_id,
-            status_code: None,
-        })?;
-        // `null` — and only — when the table has no LSM write path.
-        Ok(parsed.lsm_stats)
+        let parsed: GetMemWalStatsResponse =
+            serde_json::from_str(&body).map_err(|e| Error::Http {
+                source: format!("Failed to parse get_memwal_stats response: {e}").into(),
+                request_id,
+                status_code: None,
+            })?;
+        // `null` — and only — when the table has no MemWAL write path.
+        Ok(parsed.memwal_stats)
     }
 
-    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+    async fn enable_memwal(&self, spec: MemWalWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
@@ -3197,7 +3274,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // `maintained_indexes` asks the server to resolve every maintainable
         // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
-            LsmWriteSpec::Bucket {
+            MemWalWriteSpec::Bucket {
                 column,
                 num_buckets,
                 ..
@@ -3206,11 +3283,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "column": column,
                 "num_buckets": num_buckets,
             }),
-            LsmWriteSpec::Identity { column, .. } => serde_json::json!({
+            MemWalWriteSpec::Identity { column, .. } => serde_json::json!({
                 "mode": "identity",
                 "column": column,
             }),
-            LsmWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
+            MemWalWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
         };
         let body = serde_json::json!({
             "sharding": sharding,
@@ -3220,45 +3297,40 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = self
             .client
-            .post(&format!(
-                "/v1/table/{}/set_lsm_write_spec/",
-                self.identifier
-            ))
+            .post(&format!("/v1/table/{}/enable_memwal/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
 
-    async fn unset_lsm_write_spec(&self) -> Result<()> {
+    async fn disable_memwal(&self) -> Result<()> {
         self.check_mutable().await?;
-        let request = self.client.post(&format!(
-            "/v1/table/{}/unset_lsm_write_spec/",
-            self.identifier
-        ));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/disable_memwal/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         self.wal_pk_fusion.forget(); // WAL-PK-FUSION: delete.
         Ok(())
     }
 
-    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+    async fn get_memwal_spec(&self) -> Result<Option<MemWalWriteSpec>> {
         // Read counterpart to set/unset, resolved server-side against HEAD. The
         // server reads the spec from the `__lance_mem_wal` system index (shard
         // column mapped from its Lance field id against the current schema) and
         // re-encodes it into the same sophon-owned shape the set endpoint
-        // accepts — no lance/lancedb types cross the wire. `lsm_write_spec` is
-        // null when the LSM write path is not enabled for the table.
-        let request = self.client.post(&format!(
-            "/v1/table/{}/get_lsm_write_spec/",
-            self.identifier
-        ));
+        // accepts — no lance/lancedb types cross the wire. `memwal_spec` is
+        // null when the MemWAL write path is not enabled for the table.
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/get_memwal_spec/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         // Mirror of sophon's `Sharding` (internally tagged on `mode`) and
-        // `LsmWriteSpecBody` / `GetLsmWriteSpecResponse`.
+        // `MemWalWriteSpecBody` / `GetMemWalSpecResponse`.
         #[derive(Deserialize)]
         #[serde(tag = "mode", rename_all = "snake_case")]
         enum Sharding {
@@ -3267,7 +3339,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Identity { column: String },
         }
         #[derive(Deserialize)]
-        struct LsmWriteSpecBody {
+        struct MemWalWriteSpecBody {
             sharding: Sharding,
             /// `null` selects every index the table has; `[]` selects none.
             #[serde(default)]
@@ -3276,19 +3348,19 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             writer_config_defaults: std::collections::HashMap<String, String>,
         }
         #[derive(Deserialize)]
-        struct GetLsmWriteSpecResponse {
-            lsm_write_spec: Option<LsmWriteSpecBody>,
+        struct GetMemWalSpecResponse {
+            memwal_spec: Option<MemWalWriteSpecBody>,
         }
 
-        let parsed: GetLsmWriteSpecResponse =
+        let parsed: GetMemWalSpecResponse =
             serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse get_lsm_write_spec response: {}", e).into(),
+                source: format!("Failed to parse get_memwal_spec response: {}", e).into(),
                 request_id,
                 status_code: None,
             })?;
 
-        let Some(body) = parsed.lsm_write_spec else {
-            // The LSM write path is not enabled for this table.
+        let Some(body) = parsed.memwal_spec else {
+            // The MemWAL write path is not enabled for this table.
             return Ok(None);
         };
 
@@ -3296,9 +3368,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Sharding::Bucket {
                 column,
                 num_buckets,
-            } => LsmWriteSpec::bucket(column, num_buckets),
-            Sharding::Identity { column } => LsmWriteSpec::identity(column),
-            Sharding::Unsharded => LsmWriteSpec::unsharded(),
+            } => MemWalWriteSpec::bucket(column, num_buckets),
+            Sharding::Identity { column } => MemWalWriteSpec::identity(column),
+            Sharding::Unsharded => MemWalWriteSpec::unsharded(),
         }
         .with_maintained_indexes(body.maintained_indexes)
         .with_writer_config_defaults(body.writer_config_defaults);
@@ -3901,10 +3973,10 @@ pub struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
-    // Only serialize use_lsm when explicitly set (Some); a server that predates
+    // Only serialize use_memwal when explicitly set (Some); a server that predates
     // it ignores the field and routes as it would by default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    use_lsm: Option<bool>,
+    use_memwal: Option<bool>,
 }
 
 impl MergeInsertRequest {
@@ -3962,7 +4034,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
-            use_lsm: value.use_lsm,
+            use_memwal: value.use_memwal,
         })
     }
 }
@@ -5275,6 +5347,14 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn schema_describe_response(schema: &Schema) -> http::Response<String> {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
     fn blob_describe_response() -> http::Response<String> {
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -5282,11 +5362,7 @@ mod tests {
             Field::new("caption", DataType::Utf8, true),
             crate::blob("thumbnail", true),
         ]);
-        let json_schema = JsonSchema::try_from(&schema).unwrap();
-        http::Response::builder()
-            .status(200)
-            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
-            .unwrap()
+        schema_describe_response(&schema)
     }
 
     #[rstest]
@@ -5303,6 +5379,95 @@ mod tests {
 
         let columns = table.blob_columns().await.unwrap();
         assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_blob_paths_are_not_advertised_or_fetchable() {
+        let schema = Schema::new(vec![
+            crate::blob("thumbnail", true),
+            Field::new(
+                "imgs",
+                DataType::List(Arc::new(crate::blob("item", true))),
+                true,
+            ),
+        ]);
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&schema),
+                "/v1/table/my_table/fetch_blobs/" | "/v1/table/my_table/query/" => {
+                    http::Response::builder()
+                        .status(400)
+                        .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                        .unwrap()
+                }
+                path if path.starts_with("/v1/table/my_table/blob/") => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_eq!(table.blob_columns().await.unwrap(), vec!["thumbnail"]);
+        for column in ["imgs", "imgs.item"] {
+            let err = table.fetch_blobs(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table.fetch_blob_files(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blob_files_explains_uncached_list_descriptors() {
+        let list_field = Field::new(
+            "imgs",
+            DataType::List(Arc::new(crate::blob("item", true))),
+            true,
+        );
+        let schema = Schema::new(vec![list_field.clone()]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                list_field.clone(),
+                Field::new(lance::dataset::ROW_ID, DataType::UInt64, false),
+            ])),
+            vec![
+                arrow_array::new_null_array(list_field.data_type(), 1),
+                Arc::new(arrow_array::UInt64Array::from(vec![10])),
+            ],
+        )
+        .unwrap();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&schema).map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/query/" => http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .header(VERSION_HEADER, "1")
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        let error = table.fetch_blob_files("imgs", &[10]).await.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
     }
 
     #[tokio::test]
@@ -5538,7 +5703,7 @@ mod tests {
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
-                    "bytes=0-" => http::Response::builder()
+                    "bytes=0-9" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
@@ -5560,21 +5725,35 @@ mod tests {
         assert_eq!(blobs.value(4), b"bbb");
         let requests = requests.lock().unwrap();
         assert!(requests.contains(&"GET bytes=0-0".to_string()));
-        assert!(requests.contains(&"GET bytes=0-".to_string()));
+        assert!(requests.contains(&"GET bytes=0-9".to_string()));
     }
 
     #[tokio::test]
     async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = requests.clone();
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                http::Response::builder()
-                    .status(400)
-                    .body(b"unknown blob column".to_vec())
-                    .unwrap()
-            });
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
 
         assert_fetch_blobs_http_error(
             table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
@@ -5737,10 +5916,18 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
         let ipc = one_row_blob_ipc_stream("info.blob");
+        let schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(vec![crate::blob("blob", true)].into()),
+            true,
+        )]);
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return schema_describe_response(&schema).map(|body| body.into_bytes());
+                }
                 let body = request_body_json(&request);
                 assert_eq!(body["column"], "info.blob");
                 http::Response::builder()
@@ -5792,10 +5979,6 @@ mod tests {
         let mut fts = FullTextSearchQuery::new("test".into());
         fts.wand_factor = Some(1.0);
         let results = [
-            (
-                "set_unenforced_primary_key",
-                table.set_unenforced_primary_key(["id"]).await,
-            ),
             (
                 "optimize",
                 table.optimize(OptimizeAction::All).await.map(|_| ()),
@@ -6297,6 +6480,77 @@ mod tests {
         ));
     }
 
+    #[rstest]
+    #[case::unset(None)]
+    #[case::minimum(Some(0.0))]
+    #[case::low(Some(0.25))]
+    #[case::auto(Some(0.5))]
+    #[case::high(Some(0.75))]
+    #[case::maximum(Some(1.0))]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_wire(#[case] effort: Option<f64>) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            assert_eq!(body["nprobes"], 7);
+            assert_eq!(body["minimum_nprobes"], 2);
+            assert_eq!(body["maximum_nprobes"], 8);
+            if let Some(effort) = effort {
+                assert_eq!(body["search_effort"], effort);
+            } else {
+                assert!(body.get("search_effort").is_none());
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+        let batches = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort)
+            .unwrap()
+            .nprobes(7)
+            .unwrap()
+            .minimum_nprobes(2)
+            .unwrap()
+            .maximum_nprobes(Some(8))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[rstest]
+    #[case::negative(-0.1)]
+    #[case::too_large(1.1)]
+    #[case::nan(f64::NAN)]
+    #[case::infinity(f64::INFINITY)]
+    #[case::negative_infinity(f64::NEG_INFINITY)]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_invalid(#[case] effort: f64) {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("invalid search_effort must not send a request")
+        });
+        let result = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort);
+        assert!(matches!(result, Err(Error::InvalidInput { message })
+            if message.contains("search_effort must be finite and in [0, 1]")));
+    }
+
     #[tokio::test]
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -6380,6 +6634,72 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[rstest]
+    #[case::sql(Select::dynamic(&[("p", "x"), ("id", "id")]))]
+    #[case::typed(Select::expr_projection(&[
+        ("p", crate::expr::col("x")),
+        ("id", crate::expr::col("id")),
+    ]))]
+    #[tokio::test]
+    async fn test_query_dynamic_projection_order(#[case] select: Select) {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let aliases = body["columns"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(aliases, ["p", "id"]);
+
+            // Simulate a server that returns aliases in alphabetical order.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("p", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![7])),
+                    Arc::new(Int32Array::from(vec![42])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let batches = table
+            .query()
+            .select(select)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let schema = batches[0].schema();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["p", "id"]
+        );
+        let projected = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(projected.value(0), 42);
     }
 
     #[tokio::test]
@@ -9714,13 +10034,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_unsharded() {
+    async fn test_enable_memwal_unsharded() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(body["sharding"], serde_json::json!({ "mode": "unsharded" }));
@@ -9734,20 +10051,17 @@ mod tests {
                 .body(r#"{"maintained_indexes":["id_idx"]}"#)
                 .unwrap()
         });
-        let spec = crate::table::LsmWriteSpec::unsharded()
+        let spec = crate::table::MemWalWriteSpec::unsharded()
             .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
-        table.set_lsm_write_spec(spec).await.unwrap();
+        table.enable_memwal(spec).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_bucket() {
+    async fn test_enable_memwal_bucket() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -9759,14 +10073,14 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::bucket("id", 16))
+            .enable_memwal(crate::table::MemWalWriteSpec::bucket("id", 16))
             .await
             .unwrap();
     }
 
     /// `[]` (none) must stay distinguishable on the wire from null (all).
     #[tokio::test]
-    async fn test_set_lsm_write_spec_no_maintained_indexes() {
+    async fn test_enable_memwal_no_maintained_indexes() {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -9774,21 +10088,18 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(
-                crate::table::LsmWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
+            .enable_memwal(
+                crate::table::MemWalWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
             )
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_identity() {
+    async fn test_enable_memwal_identity() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -9798,38 +10109,32 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::identity("tenant"))
+            .enable_memwal(crate::table::MemWalWriteSpec::identity("tenant"))
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_unset_lsm_write_spec() {
+    async fn test_disable_memwal() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/unset_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/disable_memwal/");
             http::Response::builder().status(200).body("{}").unwrap()
         });
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_memwal().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_get_lsm_write_spec() {
+    async fn test_get_memwal_spec() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/get_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_spec/");
 
             // The server resolves the spec and re-encodes it into the same
             // sophon-owned shape the set endpoint accepts (`Sharding` internally
-            // tagged on `mode`, wrapped in `lsm_write_spec`).
+            // tagged on `mode`, wrapped in `memwal_spec`).
             let response = serde_json::json!({
-                "lsm_write_spec": {
+                "memwal_spec": {
                     "sharding": { "mode": "bucket", "column": "id", "num_buckets": 4 },
                     "maintained_indexes": ["id_idx"],
                     "writer_config_defaults": { "durable_write": "false" },
@@ -9842,12 +10147,12 @@ mod tests {
         });
 
         let spec = table
-            .get_lsm_write_spec()
+            .get_memwal_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
         match spec {
-            crate::table::LsmWriteSpec::Bucket {
+            crate::table::MemWalWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
@@ -9874,13 +10179,13 @@ mod tests {
     #[case::no_index(serde_json::json!([]), Some(vec![]))]
     #[case::named(serde_json::json!(["id_idx"]), Some(vec!["id_idx".to_string()]))]
     #[tokio::test]
-    async fn test_get_lsm_write_spec_round_trips_the_selection(
+    async fn test_get_memwal_spec_round_trips_the_selection(
         #[case] reported: serde_json::Value,
         #[case] expected: Option<Vec<String>>,
     ) {
         let table = Table::new_with_handler("my_table", move |_| {
             let response = serde_json::json!({
-                "lsm_write_spec": {
+                "memwal_spec": {
                     "sharding": { "mode": "unsharded" },
                     "maintained_indexes": reported,
                     "writer_config_defaults": {},
@@ -9893,7 +10198,7 @@ mod tests {
         });
 
         let spec = table
-            .get_lsm_write_spec()
+            .get_memwal_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
@@ -9905,35 +10210,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_lsm_write_spec_absent() {
+    async fn test_get_memwal_spec_absent() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/get_lsm_write_spec/"
-            );
-            // Null spec → the LSM write path is not enabled.
-            let response = serde_json::json!({ "lsm_write_spec": null });
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_spec/");
+            // Null spec → the MemWAL write path is not enabled.
+            let response = serde_json::json!({ "memwal_spec": null });
             http::Response::builder()
                 .status(200)
                 .body(response.to_string())
                 .unwrap()
         });
-        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+        assert!(table.get_memwal_spec().await.unwrap().is_none());
     }
 
-    /// Build a `get_lsm_stats` body for one bucket holding `generations`.
-    fn stats_body(generations: &[u64], compacting: bool) -> String {
+    /// Build a `get_memwal_stats` body for one table shard holding `sstables`.
+    fn stats_body(sstables: &[u64], compacting: bool) -> String {
         serde_json::json!({
-            "lsm_stats": {
-                "buckets": [{
+            "memwal_stats": {
+                "table_shards": [{
                     "shard_id": "b0",
                     "status": "Active",
                     "writer_epoch": 1,
                     "manifest_version": 1,
-                    "current_generation": generations.iter().max().copied().unwrap_or(0) + 1,
+                    "current_generation": sstables.iter().max().copied().unwrap_or(0) + 1,
                     "replay_after_wal_entry_position": 0,
                     "wal_entry_position_last_seen": 0,
-                    "generations": generations.iter()
+                    "sstables": sstables.iter()
                         .map(|g| serde_json::json!({ "generation": g, "bytes": 1 }))
                         .collect::<Vec<_>>(),
                     "compacting": compacting,
@@ -9944,7 +10246,7 @@ mod tests {
         .to_string()
     }
 
-    /// `flush_lsm` / `compact_lsm` answer 202 with no body at all.
+    /// `flush_memwal` / `compact_memwal` answer 202 with no body at all.
     fn accepted() -> http::Response<String> {
         http::Response::builder()
             .status(202)
@@ -9956,7 +10258,7 @@ mod tests {
         http::Response::builder().status(200).body(body).unwrap()
     }
 
-    /// A flush landing in an empty L0 finishes on the opening stats read
+    /// A flush landing in an empty SSTable tier finishes on the opening stats read
     /// alone. Asserting zero compacts is the point: "it returned Ok" is also
     /// true of a loop that ran a pointless pass.
     #[tokio::test(start_paused = true)]
@@ -9965,18 +10267,18 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 panic!("an already-converged table must issue no compact calls");
             }
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 return accepted();
             }
-            assert_eq!(path, "/v1/table/my_table/get_lsm_stats/");
+            assert_eq!(path, "/v1/table/my_table/get_memwal_stats/");
             ok_json(stats_body(&[], false))
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_memwal().await.unwrap();
         assert_eq!(compacts.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -9988,10 +10290,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10001,7 +10303,7 @@ mod tests {
             ok_json(stats_body(&left, false))
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_memwal().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             3,
@@ -10010,7 +10312,7 @@ mod tests {
     }
 
     /// Generations created *during* the checkpoint are not waited on, which
-    /// is what lets the loop terminate on a table taking writes where "L0 is
+    /// is what lets the loop terminate on a table taking writes where "the SSTable tier is
     /// empty" never becomes true.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_ignores_generations_created_while_it_runs() {
@@ -10018,10 +10320,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10035,11 +10337,11 @@ mod tests {
             ok_json(body)
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_memwal().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the loop must not chase generations written after it started"
+            "the loop must not chase SSTables written after it started"
         );
     }
 
@@ -10052,11 +10354,11 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
-                // First two triggers: every bucket already latched.
+            if path.contains("compact_memwal") {
+                // First two triggers: every table shard already latched.
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
                     return http::Response::builder()
                         .status(429)
@@ -10077,7 +10379,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("contention must not abort the checkpoint");
         assert_eq!(
@@ -10097,7 +10399,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+            if path.contains("flush_memwal") || path.contains("compact_memwal") {
                 return accepted();
             }
             // The opening read lands; the next two polls are latched out.
@@ -10112,7 +10414,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("a contended poll must be retried, not surfaced");
         assert_eq!(
@@ -10132,7 +10434,7 @@ mod tests {
         let seen = flushes.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5 {
                     return http::Response::builder()
                         .status(429)
@@ -10141,20 +10443,20 @@ mod tests {
                 }
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 return accepted();
             }
             ok_json(stats_body(&[], false))
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("contention must not be reported as a lost claim");
         assert_eq!(
             flushes.load(std::sync::atomic::Ordering::SeqCst),
             6,
-            "five retries against one seal, then it lands"
+            "five retries against one freeze, then it lands"
         );
     }
 
@@ -10173,7 +10475,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_memwal().await.unwrap_err();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 429),
             "the fault that spent the budget must be the one reported: {err:?}"
@@ -10203,7 +10505,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_memwal().await.unwrap_err();
         let message = err.to_string();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 503),
@@ -10223,7 +10525,7 @@ mod tests {
     /// A long stall with nothing compacting must keep waiting, not fail. The
     /// client cannot judge this: a checkpoint queued behind unrelated tables
     /// on the pod-wide compactor pool reports exactly these numbers — flat
-    /// generations, an idle latch — as one whose merges are failing. The
+    /// SSTable counts, an idle latch — as one whose merges are failing. The
     /// deadline is the caller's.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_waits_out_a_long_stall_rather_than_failing() {
@@ -10231,7 +10533,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+            if path.contains("flush_memwal") || path.contains("compact_memwal") {
                 return accepted();
             }
             // Flat for far longer than any bound this loop ever had, with
@@ -10241,7 +10543,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("a stall is the server being slow, not the client's call to make");
         assert!(
@@ -10250,7 +10552,7 @@ mod tests {
         );
     }
 
-    /// A pass already owns the latch on every outstanding bucket, so the loop
+    /// A pass already owns the latch on every outstanding table shard, so the loop
     /// waits rather than piling on triggers it would only refuse. This is the
     /// sole thing `compacting` is read for.
     #[tokio::test(start_paused = true)]
@@ -10261,10 +10563,10 @@ mod tests {
         let seen_compacts = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 seen_compacts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10278,32 +10580,32 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("a running pass is progress, not a stall");
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "never trigger against a bucket already compacting"
+            "never trigger against a table shard already compacting"
         );
     }
 
     /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
-    /// defaulting to a zero it did not measure. `include_generation_rows`
+    /// defaulting to a zero it did not measure. `include_sstable_rows`
     /// rides in the body and is off unless asked for.
     #[tokio::test]
-    async fn test_get_lsm_stats_round_trip() {
+    async fn test_get_memwal_stats_round_trip() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/get_lsm_stats/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_stats/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
-                body["include_generation_rows"], true,
+                body["include_sstable_rows"], true,
                 "the flag must reach the server, not be silently dropped"
             );
             let response = serde_json::json!({
-                "lsm_stats": {
-                    "buckets": [{
+                "memwal_stats": {
+                    "table_shards": [{
                         "shard_id": "b0",
                         "status": "Active",
                         "writer_epoch": 3,
@@ -10311,7 +10613,7 @@ mod tests {
                         "current_generation": 9,
                         "replay_after_wal_entry_position": 100,
                         "wal_entry_position_last_seen": 140,
-                        "generations": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
+                        "sstables": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
                         "compacting": false,
                         "memtables": [
                             { "generation": 9, "rows": 12, "bytes": 900, "batches": 2,
@@ -10327,19 +10629,19 @@ mod tests {
         });
 
         let stats = table
-            .get_lsm_stats(true)
+            .get_memwal_stats(true)
             .await
             .unwrap()
             .expect("a WAL-backed table reports Some");
-        let bucket = &stats.buckets[0];
-        assert_eq!(bucket.replay_after_wal_entry_position, 100);
-        assert_eq!(bucket.wal_entry_position_last_seen, 140);
-        assert!(!bucket.compacting);
-        assert_eq!(bucket.generations[0].generation, 8);
-        assert_eq!(bucket.generations[0].rows, Some(30));
+        let table_shard = &stats.table_shards[0];
+        assert_eq!(table_shard.replay_after_wal_entry_position, 100);
+        assert_eq!(table_shard.wal_entry_position_last_seen, 140);
+        assert!(!table_shard.compacting);
+        assert_eq!(table_shard.sstables[0].generation, 8);
+        assert_eq!(table_shard.sstables[0].rows, Some(30));
         // The line that answers "why is my fresh-tier vector search
         // brute-force" — an absent index name is the whole explanation.
-        let memtables = bucket.memtables.as_ref().unwrap();
+        let memtables = table_shard.memtables.as_ref().unwrap();
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 
@@ -10359,7 +10661,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_memwal().await.unwrap_err();
         assert!(
             matches!(err, Error::TableNotFound { .. }),
             "a missing table must say so: {err:?}"
@@ -10380,12 +10682,12 @@ mod tests {
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
             let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if path.contains("flush_lsm") {
+            if path.contains("flush_memwal") {
                 // First flush lands; the claim is then lost, and the
                 // re-issued flush succeeds.
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_memwal") {
                 if n < 4 {
                     return http::Response::builder()
                         .status(421)
@@ -10398,20 +10700,20 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_memwal()
             .await
             .expect("a lost claim must be recovered by re-flushing, not surfaced");
     }
 
     #[tokio::test]
-    async fn test_get_lsm_stats_absent_when_wal_off() {
+    async fn test_get_memwal_stats_absent_when_wal_off() {
         let table = Table::new_with_handler("my_table", |_request| {
             http::Response::builder()
                 .status(200)
-                .body(serde_json::json!({ "lsm_stats": null }).to_string())
+                .body(serde_json::json!({ "memwal_stats": null }).to_string())
                 .unwrap()
         });
-        assert!(table.get_lsm_stats(false).await.unwrap().is_none());
+        assert!(table.get_memwal_stats(false).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -13084,6 +13386,120 @@ mod tests {
         assert_eq!(result.version, 7);
     }
 
+    /// The unenforced primary key is field metadata, so the remote table
+    /// installs it through the `update_field_metadata` endpoint.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("name", DataType::Utf8, true),
+                    ]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/update_field_metadata/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["updates"].as_array().unwrap().len(), 1);
+                    let update = &body["updates"][0];
+                    assert_eq!(update["path"], "id");
+                    assert_eq!(update["replace"], json!(false));
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key:position"],
+                        "1"
+                    );
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key"],
+                        json!(null)
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3, "fields": {}}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+    }
+
+    /// Requests the native table rejects are rejected here too, before any
+    /// write reaches the server.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_rejects_invalid_requests() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("score", DataType::Float32, true),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for columns in [
+            vec![],
+            vec!["id", "score"],
+            vec!["nonexistent"],
+            vec!["score"],
+        ] {
+            let err = table
+                .set_unenforced_primary_key(columns.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "unexpected error for {:?}: {:?}",
+                columns,
+                err
+            );
+        }
+    }
+
+    /// The key is immutable once set, and the schema the server already
+    /// reports is enough to say so.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_already_set() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+                        "lance-schema:unenforced-primary-key:position".to_string(),
+                        "1".to_string(),
+                    )])),
+                    Field::new("name", DataType::Utf8, false),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for column in ["name", "id"] {
+            let err = table
+                .set_unenforced_primary_key([column])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("already set"),
+                "unexpected error: {:?}",
+                err
+            );
+        }
+    }
+
     // ----- Branch support -----
 
     /// Parse a request's in-memory JSON body. Only valid for JSON-body ops
@@ -14316,7 +14732,7 @@ mod tests {
 
     /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
     /// off this sentence, so a test that paraphrased it would prove nothing.
-    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_lsm(false) to read the base table only (results will exclude un-compacted MemWAL data)"}"#;
+    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_memwal(false) to read the base table only (results will exclude un-compacted MemWAL data)"}"#;
 
     use lance::dataset::ROW_ID;
 
@@ -14575,7 +14991,7 @@ mod tests {
         // Translated, not passed through: the caller gets the reason and the
         // way out, which a bare 400 does not carry.
         assert!(matches!(err, Error::NotSupported { .. }), "{err:?}");
-        assert!(err.to_string().contains("use_lsm(false)"), "{err}");
+        assert!(err.to_string().contains("use_memwal(false)"), "{err}");
         assert!(
             bodies
                 .lock()

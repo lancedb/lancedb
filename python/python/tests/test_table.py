@@ -4083,6 +4083,26 @@ def test_search_nested_vector_no_candidates(mem_db: DBConnection):
         table.search([0.0, 1.0]).limit(1).to_arrow()
 
 
+def test_search_single_vector_column_wrong_query_dim(mem_db: DBConnection):
+    """A query vector whose dimension doesn't match the (only) vector column
+    must still resolve that column, surfacing a dimension-mismatch error from
+    query execution rather than a misleading "no vector column" error."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+        ]
+    )
+    table = mem_db.create_table(
+        "wrong_query_dim",
+        data=[{"id": 1, "vector_col": [0.1] * 32}],
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="dim"):
+        table.search([0.01] * 120).limit(1).to_arrow()
+
+
 def test_compact_cleanup(tmp_db: DBConnection):
     pytest.importorskip("lance")
     table = tmp_db.create_table(

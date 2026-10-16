@@ -6,7 +6,7 @@ icon: map
 keywords: ["explain", "explain analyze", "explain verbose", "query plan"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 EXPLAIN SELECT * FROM documents WHERE identifier < 1000
@@ -23,9 +23,10 @@ The result is a small relation with `plan_type` and `plan` columns, read
 through the same client you use for regular queries -- see
 [Connecting](/sql#connecting).
 
-The operators are the same ones the SDK's
-[`explain_plan` and `analyze_plan`](/search/explain) methods produce, so the
-reasoning about index coverage and filter pushdown carries across unchanged:
+SQL plans and the SDK's
+[`explain_plan` and `analyze_plan`](/search/explain) output share scan and index
+operators. Use the same approach to inspect index coverage and filter pushdown;
+SQL can also add joins, aggregates and other operators:
 
 <CardGroup cols={2}>
   <Card title="What it shows" icon="map" href="/search/explain#inspect-a-query-plan">
@@ -41,7 +42,7 @@ reasoning about index coverage and filter pushdown carries across unchanged:
 | Sign | Means |
 | --- | --- |
 | `ScalarIndexQuery` | the predicate used a scalar index |
-| `LanceScan` with high `bytes_read` | no index, or too many columns selected |
+| `LanceScan` with high `bytes_read` | inspect the selected columns, filter pushdown and index use |
 | `FilterExec` above a search | the filter ran after search rather than pushing into it |
 | `ANNSubIndex` / `ANNIvfPartition` | the vector index was used |
 

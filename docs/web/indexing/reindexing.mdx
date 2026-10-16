@@ -4,6 +4,14 @@ sidebarTitle: "Build & Repair"
 description: "Learn how to keep your indexes up-to-date in LanceDB using incremental indexing, including best practices for adding new records without full reindexing."
 icon: "refresh"
 keywords: ["reindexing", "re-index", "incremental indexing", "reindex"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Indexes are kept up to date in the embedded library and in LanceDB Enterprise. In
+    the embedded library you add new rows to them with `optimize()`; a
+    deployment does it in the background, and `optimize()` is not available
+    there.
 ---
 
 import {
@@ -20,16 +28,19 @@ As data is being added and a reindex operation is running, LanceDB will combine 
 Rather than dropping an existing index entirely and reindexing from scratch, LanceDB supports **incremental indexing**.
 
 <Note>
-**Enterprise job types:** building an index runs as `create_ivf_pq`, `create_btree`,
-`create_fts`, and one more per index algorithm -- the type names the algorithm,
-not a separate feature. Folding new rows into an existing one runs as the
-matching `reindex_*` type instead.
+**Enterprise job types:** an index build runs as `reindex_` followed by the
+algorithm, such as `reindex_ivf_pq`, `reindex_btree` or `reindex_fts`, and so
+does folding new rows into an existing index. A create-only build, one that must
+not replace an existing index, runs as `create_` followed by the algorithm
+instead; Python's `create_scalar_index` and `create_fts_index` ask for that by
+default. The name says which algorithm is building, not a separate feature.
 </Note>
 
 ## Incremental Reindexing {#incremental-reindexing}
 
-You can manually trigger an incremental indexing operation on updated data
-using the `optimize()` method on a table.
+In the embedded library, you trigger an incremental indexing operation on
+updated data with the `optimize()` method on a table. A deployment does this
+for you and does not support `optimize()`, as described below.
 
 Table optimization performs three maintenance operations:
 
@@ -45,10 +56,12 @@ Table optimization performs three maintenance operations:
 
 <Badge color="red">Enterprise</Badge>
 
-LanceDB Enterprise support incremental reindexing through an automated background process. When new data is added to a table, the system automatically triggers a new index build. As the dataset grows, indexes are asynchronously updated in the background.
+LanceDB Enterprise supports incremental reindexing through an automated background process. Once enough new rows have been added to a table, the system automatically adds them to its indexes. As the dataset grows, indexes are asynchronously updated in the background.
 
-- While indexes are being rebuilt, queries use brute force methods on unindexed rows, which may temporarily increase latency. To avoid this, set `fast_search=True` to search only indexed data.
+- While indexes are being rebuilt, queries use brute force methods on unindexed rows, which may temporarily increase latency. If you can omit unindexed rows, set `fast_search=True` to search only indexed data.
+  This can return incomplete results while indexing catches up.
 - Use `index_stats()` to view the number of unindexed rows. This will be zero when indexes are fully up-to-date. If you call `wait_for_index(...)`, it polls the same status and can time out while continuous writes keep adding unindexed rows.
+- Rows below the deployment's threshold stay unindexed until more arrive, so the count can stay above zero without further writes. `FM` indexes are not updated in the background.
 
 The benefit of using LanceDB Enterprise is that it automates the reindexing process
 and operates continuously in the background, minimizing the impact on latency under high loads.
@@ -71,9 +84,9 @@ If you need to reclaim space more aggressively in OSS, use a shorter retention w
 
 ## Building on GPUs {#gpu}
 
-With LanceDB's GPU-powered vector indexing you can index very large datasets in far less time
-than you could with the default CPU-based indexing. In our tests, LanceDB
-is capable of indexing billions of rows in under four hours on a 1-8 GPU cluster.
+GPU acceleration can reduce the time needed to build vector indexes on large
+datasets. Actual build time depends on the index configuration, vector
+dimensions, storage throughput and available GPU resources.
 
 <Info>
 **Automatic GPU indexing**
@@ -82,9 +95,8 @@ is capable of indexing billions of rows in under four hours on a 1-8 GPU cluster
 Automatic GPU Indexing is currently only available in [LanceDB Enterprise](/enterprise/).
 Please [contact us](https://www.lancedb.com/contact) to enable this feature for your deployment.
 
-The vector index is created when you call `create_index`. The backend will use GPU resources
-to build either the IVF or HNSW indexes. The system automatically selects the optimal GPU
-configuration based on your data size and available hardware.
+The vector index is created when you call `create_index`. The backend uses GPU resources
+to build `IVF_PQ` indexes, with the number of GPUs set by the deployment's configuration.
 
 This process is also asynchronous by default, but you can use `wait_for_index` to convert it
 into a synchronous process by waiting until the index is built.
@@ -93,9 +105,9 @@ into a synchronous process by waiting until the index is built.
 
 `wait_for_index(...)` waits for the index to exist and for `index_stats(...)` to report `num_unindexed_rows == 0`. It can time out if the table is receiving continuous writes while the build is trying to catch up.
 
-GPU acceleration changes how the vector index is built, not the lifecycle after the build. Rows
-appended later still need `optimize()` before they are part of the index, and `fast_search()` only
-searches indexed rows.
+GPU acceleration changes how the vector index is built, not the lifecycle after the build. In the
+embedded library, rows appended later still need `optimize()` before they are part of the index; a
+deployment adds them in the background. `fast_search()` only searches indexed rows.
 
 ### Manual GPU indexing in LanceDB OSS {#gpu-manual-gpu-indexing-in-lancedb-oss}
 
@@ -125,9 +137,9 @@ to enable GPU training on your device.
 ### Performance considerations {#gpu-performance-considerations}
 
 - GPU memory usage scales with `num_partitions` and vector dimensions
-- For optimal performance, ensure GPU memory exceeds dataset size
-- Batch size is automatically tuned based on available GPU memory
-- Indexing speed improves with larger batch sizes
+- Size GPU memory for the training batches and index configuration
+- Monitor memory use while choosing training batch sizes
+- Measure build time and recall before changing training settings
 
 ### Troubleshooting {#gpu-troubleshooting}
 

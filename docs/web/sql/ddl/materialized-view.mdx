@@ -6,13 +6,13 @@ icon: table
 keywords: ["materialized view", "create materialized view", "show materialized views", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A materialized view stores a query's result as rows, kept current by a refresh
 -- the counterpart to a [view](/sql/ddl/view), which stores only the query.
 
 <Note>
-Materialized views are off by default on a deployment and have to be enabled
+Materialized views are off by default in LanceDB Enterprise and have to be enabled
 there. Which statements and query shapes a deployment accepts, whether it needs
 the source table to have stable row ids, and how it refreshes a view depend on
 its LanceDB Enterprise version and configuration.
@@ -24,10 +24,9 @@ its LanceDB Enterprise version and configuration.
 CREATE MATERIALIZED VIEW <name> AS SELECT ...
 ```
 
-On a `db://` connection, the SDK's
-[`create_materialized_view`](/management/materialized-view#create) sends this
-statement. Once created, a view is queried like a table, refreshed with SQL and
-listed with SQL.
+Once created, a materialized view can be queried like a table. Use the
+statements below to list, refresh and drop it. For SDK methods, see
+[Materialized views](/management/materialized-view#create).
 
 ## SHOW MATERIALIZED VIEWS {#show}
 
@@ -36,8 +35,8 @@ SHOW MATERIALIZED VIEWS
 ```
 
 <Note>
-Cheaper than the SDK equivalent. `list_materialized_views` finds views by
-reading every table's schema, costing one open per table; this asks the server.
+This asks the server for its views, as the SDK's `list_materialized_views` does
+on a `db://` connection.
 </Note>
 
 ## Refreshing one {#refresh}
@@ -47,7 +46,7 @@ REFRESH MATERIALIZED VIEW chunks
 ```
 
 See [REFRESH](/sql/dml/refresh#refresh-materialized-view) for the full syntax,
-including `CASCADE` and `full = true`.
+and compatibility notes for older server versions.
 
 ## Dropping one {#drop}
 
@@ -57,8 +56,8 @@ stored rows, unlike dropping a [view](/sql/ddl/view#drop).
 
 <Note>
 **Enterprise job type:** `mat_view_refresh` for a refresh, or `sql` on a
-deployment that rebuilds views through SQL; `drop_table` for dropping one, same
-as any table.
+deployment that rebuilds views through SQL. Dropping one runs the same job as
+dropping any table, `drop_table` or `drop_object`.
 </Note>
 
 ## What to read next {#next}
@@ -68,6 +67,6 @@ as any table.
     Creating one from the SDK.
   </Card>
   <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
-    How a refresh works, locally and on a deployment.
+    How a refresh works, locally and in LanceDB Enterprise.
   </Card>
 </CardGroup>
