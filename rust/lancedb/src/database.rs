@@ -559,6 +559,23 @@ pub trait Database:
     async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
         job_op_not_supported("open_job")
     }
+    /// Create a lazy handle, including for child diagnostic IDs which cannot be described.
+    fn job_handle(&self, _job_id: &str) -> Result<crate::job::Job> {
+        job_op_not_supported("job_handle")
+    }
+    async fn list_jobs_page(
+        &self,
+        _options: crate::job::JobListOptions,
+    ) -> Result<crate::job::JobListPage> {
+        job_op_not_supported("list_jobs_page")
+    }
+    async fn cancel_job_with_options(
+        &self,
+        _job_id: &str,
+        _options: crate::job::JobCancelOptions,
+    ) -> Result<bool> {
+        job_op_not_supported("cancel_job_with_options")
+    }
     /// Fetch one page of server-side jobs across the database's tables.
     async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         job_op_not_supported("list_jobs")
@@ -578,6 +595,12 @@ pub trait Database:
     /// their work back up from checkpoints; see [`ResumeJobStatus`].
     async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
         job_op_not_supported("resume_job")
+    }
+    /// Establish the SQL transport without executing a statement.
+    async fn check_sql_connection(&self) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "SQL is not supported by this database".into(),
+        })
     }
     /// Start executing a SQL statement on a remote database.
     async fn execute_query_async(

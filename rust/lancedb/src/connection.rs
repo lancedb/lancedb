@@ -528,6 +528,12 @@ impl Connection {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
     }
 
+    /// Establish the remote SQL transport without executing a statement.
+    /// This checks connectivity and TLS; authentication is checked by subsequent requests.
+    pub async fn check_sql_connection(&self) -> Result<()> {
+        self.internal.check_sql_connection().await
+    }
+
     /// Describe a submitted SQL query by its connection-scoped id.
     ///
     /// This performs one bounded status poll using state retained by this
@@ -1041,6 +1047,33 @@ impl Connection {
     /// ```
     pub async fn open_job(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
         self.internal.open_job(job_id.as_ref()).await
+    }
+
+    /// Create a handle without fetching a description. Use this for child diagnostic IDs,
+    /// which support event history but are not independently scheduled jobs.
+    /// Missing IDs are reported by the operation performed on the handle.
+    pub fn job_handle(&self, job_id: impl AsRef<str>) -> Result<crate::job::Job> {
+        self.internal.job_handle(job_id.as_ref())
+    }
+
+    /// Fetch one page of jobs with optional database, table, state and type filters.
+    /// With no filter this retains the server's authorized cluster-wide listing scope.
+    pub async fn list_jobs_page(
+        &self,
+        options: crate::job::JobListOptions,
+    ) -> Result<crate::job::JobListPage> {
+        self.internal.list_jobs_page(options).await
+    }
+
+    /// Cancel a job with an optional reason. Returns false for a missing job.
+    pub async fn cancel_job_with_options(
+        &self,
+        job_id: impl AsRef<str>,
+        options: crate::job::JobCancelOptions,
+    ) -> Result<bool> {
+        self.internal
+            .cancel_job_with_options(job_id.as_ref(), options)
+            .await
     }
 
     /// List server-side jobs across the database's tables.

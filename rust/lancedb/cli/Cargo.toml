@@ -1,0 +1,62 @@
+[package]
+name = "lancedb-cli"
+version = "0.1.0"
+edition = "2021"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "lancedb"
+path = "src/main.rs"
+
+[dependencies]
+tempfile.workspace = true
+which = "6"
+anyhow = "1"
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-cast = { workspace = true, features = ["prettyprint"] }
+arrow-flight.workspace = true
+arrow-ipc.workspace = true
+arrow-json = "58.0.0"
+arrow-schema.workspace = true
+async-stream = "0.3.6"
+async-trait.workspace = true
+chrono.workspace = true
+clap = { version = "4.5.13", features = ["derive", "env"] }
+directories = "5"
+futures.workspace = true
+http = "1"
+indicatif = "0.17"
+lance = { workspace = true, features = ["aws", "gcp", "azure"] }
+lance-namespace.workspace = true
+lancedb = { workspace = true, features = ["remote", "aws", "gcs", "azure"] }
+hf-hub = { version = "0.4", features = ["tokio"] }
+pager = "0.16"
+parquet = { version = "58.0.0", features = ["async"] }
+rustyline = "14"
+rustls = { version = "0.23", features = ["ring"] }
+serde = { workspace = true, features = ["derive"] }
+serde_ignored = "0.1.14"
+serde_json.workspace = true
+sha2 = "0.10"
+termsize = "0.1"
+thiserror = "1"
+tokio = { workspace = true, features = ["full"] }
+toml = "0.8"
+tonic.workspace = true
+tracing = "0.1"
+unicode-width = "0.2"
+url.workspace = true
+
+[dev-dependencies]
+rcgen = "0.12"
+tokio-stream = { version = "0.1", features = ["net"] }
+half.workspace = true
+axum = "0.8"
+base64 = "0.22"
+csv = "1"
+reqwest = { version = "0.12", features = ["json"] }
+serial_test = "3"
+tempfile.workspace = true

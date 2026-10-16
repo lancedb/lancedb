@@ -1,0 +1,44 @@
+name: CLI
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'rust/lancedb/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/cli.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler libssl-dev clang
+      - name: Install macOS prerequisites
+        if: runner.os == 'macOS'
+        run: brew install protobuf
+      - name: Build standalone CLI binary
+        run: cargo build --locked --profile ci -p lancedb-cli --bin lancedb
+      - name: Test standalone CLI
+        run: cargo test --locked --profile ci -p lancedb-cli
+      - name: Test SDK jobs and SQL
+        run: |
+          cargo test --locked --profile ci -p lancedb --features remote --lib job
+          cargo test --locked --profile ci -p lancedb --features remote --lib remote::db::tests
+          cargo test --locked --profile ci -p lancedb --features remote --lib remote::sql
+      - name: Lint CLI
+        run: cargo clippy --locked --profile ci -p lancedb-cli --all-targets --all-features -- -D warnings
+      - name: Check SDK without remote support
+        # Feature-disabled SDK code has existing unused-code warnings; this is a compile check.
+        env:
+          RUSTFLAGS: ""
+        run: cargo check --locked --profile ci -p lancedb --no-default-features --tests

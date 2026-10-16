@@ -1260,6 +1260,49 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         }
     }
 
+    fn job_handle(&self, job_id: &str) -> Result<Job> {
+        Ok(Job::new(Box::new(RemoteJob::new(
+            self.client.clone(),
+            job_id.to_owned(),
+        ))))
+    }
+
+    async fn list_jobs_page(
+        &self,
+        options: crate::job::JobListOptions,
+    ) -> Result<crate::job::JobListPage> {
+        let (id, response) = self
+            .client
+            .send(self.client.post("/v1/jobs/list").json(&options))
+            .await?;
+        self.client
+            .check_response(&id, response)
+            .await?
+            .json()
+            .await
+            .err_to_http(id)
+    }
+
+    async fn cancel_job_with_options(
+        &self,
+        job_id: &str,
+        options: crate::job::JobCancelOptions,
+    ) -> Result<bool> {
+        let request = self
+            .client
+            .post("/v1/jobs/cancel")
+            .json(&serde_json::json!({"job_id": job_id, "reason": options.reason}));
+        let (id, response) = self.client.send(request).await?;
+        match self.client.check_response(&id, response).await {
+            Ok(_) => Ok(true),
+            Err(Error::Http {
+                status_code: Some(StatusCode::NOT_FOUND),
+                ..
+            }) => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+
     async fn list_jobs(&self, options: ListingOptions) -> Result<ListingPage<JobInfo>> {
         let mut body = serde_json::json!({});
         if let Some(token) = options.page_token {
@@ -1337,6 +1380,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         } else {
             crate::database::ResumeJobStatus::NotPaused
         })
+    }
+
+    async fn check_sql_connection(&self) -> Result<()> {
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .check_connection()
+            .await
     }
 
     async fn execute_query_async(&self, request: ExecuteQueryRequest) -> Result<crate::sql::Query> {
@@ -3960,6 +4013,238 @@ mod tests {
             conn.resume_job("job-1").await.unwrap(),
             ResumeJobStatus::StillPausing
         );
+    }
+
+    #[tokio::test]
+    async fn job_page_filters_and_raw_metadata() {
+        use crate::job::details::{JobListOptions, TableRef};
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.url().path(), "/v1/jobs/list");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            assert_eq!(
+                body["table_ref"]["table_id"]["namespace_path"],
+                serde_json::json!(["product"])
+            );
+            assert_eq!(body["table_ref"]["branch_name"], "dev");
+            assert_eq!(body["job_type"], "refresh");
+            assert_eq!(body["state"], "in_progress");
+            assert_eq!(body["page_token"], "opaque:cursor");
+            assert!(body.get("database").is_none());
+            http::Response::builder().status(200).body(serde_json::json!({
+                "jobs": [{"job_id":"opaque:id", "table":"docs", "job_type":"refresh", "state":"in_progress", "created_at_millis":1, "paused":true, "initiated_by":"alice", "columns":["embedding"]}],
+                "page_token":"next"
+            }).to_string()).unwrap()
+        });
+        let page = conn
+            .list_jobs_page(JobListOptions {
+                table_ref: Some(
+                    TableRef::from_parts(
+                        "db",
+                        vec!["product".into()],
+                        "docs",
+                        Some("dev".into()),
+                        None,
+                    )
+                    .unwrap(),
+                ),
+                job_type: Some("refresh".into()),
+                state: Some("in_progress".into()),
+                page_token: Some("opaque:cursor".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(page.jobs[0].state, "in_progress");
+        assert!(page.jobs[0].paused);
+        assert_eq!(page.jobs[0].columns, ["embedding"]);
+        assert_eq!(page.page_token.as_deref(), Some("next"));
+    }
+
+    #[tokio::test]
+    async fn job_cancel_reason_and_missing_job() {
+        for status in [200, 404] {
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/jobs/cancel");
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(
+                    body,
+                    serde_json::json!({"job_id":"id", "reason":"operator request"})
+                );
+                http::Response::builder()
+                    .status(status)
+                    .body("{}".to_string())
+                    .unwrap()
+            });
+            assert_eq!(
+                conn.cancel_job_with_options(
+                    "id",
+                    crate::job::JobCancelOptions {
+                        reason: Some("operator request".into())
+                    }
+                )
+                .await
+                .unwrap(),
+                status == 200
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_events_paginate_without_describing_child() {
+        use crate::job::details::{
+            CHILD_AVAILABILITY_KEY, JOB_EVENT_PAGE_TOKEN_METADATA_KEY, JobEventOptions,
+            JobEventOrder,
+        };
+        for total_limit in [None, Some(10_001)] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let seen = calls.clone();
+            let conn = Connection::new_with_handler(move |request| {
+                assert_eq!(request.url().path(), "/v1/jobs/query_events");
+                let body: serde_json::Value =
+                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+                assert_eq!(body["job_id"], "opaque-child-id");
+                assert_eq!(body["order"], "oldest_first");
+                let page = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let (rows, token) = match page {
+                    0 => {
+                        assert!(body.get("page_token").is_none());
+                        (10_000, Some("next"))
+                    }
+                    1 => {
+                        assert_eq!(body["page_token"], "next");
+                        assert_eq!(body["limit"], total_limit.map(|_| 1).unwrap_or(10_000));
+                        (1, Some("last"))
+                    }
+                    2 => {
+                        assert!(total_limit.is_none());
+                        (0, None)
+                    }
+                    _ => panic!("unexpected event page"),
+                };
+                let mut metadata =
+                    HashMap::from([(CHILD_AVAILABILITY_KEY.into(), "available".into())]);
+                if let Some(token) = token {
+                    metadata.insert(JOB_EVENT_PAGE_TOKEN_METADATA_KEY.into(), token.into());
+                }
+                let schema = Arc::new(Schema::new_with_metadata(
+                    vec![Field::new("state", DataType::Utf8, false)],
+                    metadata,
+                ));
+                let batch = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![Arc::new(arrow_array::StringArray::from(vec![
+                        "completed";
+                        rows
+                    ]))],
+                )
+                .unwrap();
+                let mut bytes = Vec::new();
+                {
+                    let mut writer =
+                        arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &schema).unwrap();
+                    writer.write(&batch).unwrap();
+                    writer.finish().unwrap();
+                }
+                http::Response::builder().status(200).body(bytes).unwrap()
+            });
+            let job = conn.job_handle("opaque-child-id").unwrap();
+            let pages: Vec<_> = job
+                .event_pages(JobEventOptions {
+                    limit: total_limit,
+                    order: Some(JobEventOrder::OldestFirst),
+                    ..Default::default()
+                })
+                .try_collect()
+                .await
+                .unwrap();
+            assert_eq!(
+                pages
+                    .iter()
+                    .flatten()
+                    .map(RecordBatch::num_rows)
+                    .sum::<usize>(),
+                10_001
+            );
+            assert_eq!(
+                calls.load(std::sync::atomic::Ordering::SeqCst),
+                if total_limit.is_some() { 2 } else { 3 }
+            );
+            assert_eq!(
+                pages.last().unwrap()[0].schema().metadata()[CHILD_AVAILABILITY_KEY],
+                "available"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn diagnostic_event_walk_stops_on_repeated_tokens() {
+        use crate::job::details::{JOB_EVENT_PAGE_TOKEN_METADATA_KEY, JobEventOptions};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let conn = Connection::new_with_handler(move |_| {
+            assert_eq!(seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst), 0);
+            let schema = Arc::new(Schema::new_with_metadata(
+                vec![Field::new("state", DataType::Utf8, false)],
+                HashMap::from([(JOB_EVENT_PAGE_TOKEN_METADATA_KEY.into(), "same".into())]),
+            ));
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(arrow_array::StringArray::from(vec!["completed"]))],
+            )
+            .unwrap();
+            let mut bytes = Vec::new();
+            {
+                let mut writer =
+                    arrow_ipc::writer::StreamWriter::try_new(&mut bytes, &schema).unwrap();
+                writer.write(&batch).unwrap();
+                writer.finish().unwrap();
+            }
+            http::Response::builder().status(200).body(bytes).unwrap()
+        });
+        let job = conn.job_handle("child").unwrap();
+        let pages: Vec<_> = job
+            .event_pages(JobEventOptions::default().page_token("same"))
+            .try_collect()
+            .await
+            .unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn child_discovery_and_full_description() {
+        let conn = Connection::new_with_handler(|request| {
+            let body = match request.url().path() {
+                "/v1/jobs/list_children" => {
+                    serde_json::json!({"job_id":"parent", "history_availability":"unavailable", "children":[], "progress":null, "progress_updated_at_millis":null})
+                }
+                "/v1/jobs/describe" => {
+                    serde_json::json!({"job_id":"parent", "job_type":"refresh", "job_state":"IN_PROGRESS", "creation_ms":1, "paused_at_millis":2, "columns":["embedding"]})
+                }
+                path => panic!("unexpected route: {path}"),
+            };
+            http::Response::builder()
+                .status(200)
+                .body(body.to_string())
+                .unwrap()
+        });
+        let job = conn.job_handle("parent").unwrap();
+        let children = job
+            .children(crate::job::JobChildrenRequest {
+                job_id: "ignored".into(),
+                limit: None,
+                page_token: None,
+            })
+            .await
+            .unwrap();
+        assert!(children.children.is_empty());
+        assert_eq!(children.history_availability.as_str(), "unavailable");
+        let details = job.details().await.unwrap();
+        assert_eq!(details.job_state, "IN_PROGRESS");
+        assert_eq!(details.paused_at_millis, Some(2));
+        assert_eq!(details.columns, ["embedding"]);
     }
 
     #[tokio::test]
