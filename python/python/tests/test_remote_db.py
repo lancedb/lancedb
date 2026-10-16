@@ -1623,7 +1623,6 @@ def remote_unsupported_operations():
     return [
         ("uses_v2_manifest_paths", (), {}, "uses_v2_manifest_paths"),
         ("migrate_v2_manifest_paths", (), {}, "migrate_manifest_paths_v2"),
-        ("set_unenforced_primary_key", (["id"],), {}, "set_unenforced_primary_key"),
         ("fetch_blob_ranges", ("image", [(1, 0, 1)]), {}, "fetch_blob_ranges"),
         ("optimize", (), {}, "optimize"),
         ("create_index", ("vector",), {"config": HnswPq()}, "IVF_HNSW_PQ"),
