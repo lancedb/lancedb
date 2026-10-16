@@ -3105,6 +3105,19 @@ describe("when dealing with blob columns", () => {
       .where("id > 100")
       .toArrow({ blobMode: "bytes" });
     expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+  });
+
+  it("keeps the descriptor schema for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table.query().where("id > 100").toArrow();
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isStruct(field.type)).toBe(true);
   });
 
   it("rejects an unknown blobMode", async () => {

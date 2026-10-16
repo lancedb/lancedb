@@ -47,36 +47,6 @@ export async function* RecordBatchIterator(
   }
 }
 
-class RecordBatchIterable<
-  NativeQueryType extends NativeQuery | NativeVectorQuery | NativeTakeQuery,
-> implements AsyncIterable<RecordBatch>
-{
-  private inner: NativeQueryType;
-  private options?: QueryExecutionOptions;
-  private withRowId: boolean;
-
-  constructor(
-    inner: NativeQueryType,
-    options?: QueryExecutionOptions,
-    withRowId = false,
-  ) {
-    this.inner = inner;
-    this.options = options;
-    this.withRowId = withRowId;
-  }
-
-  // biome-ignore lint/suspicious/noExplicitAny: skip
-  [Symbol.asyncIterator](): AsyncIterator<RecordBatch<any>, any, undefined> {
-    return RecordBatchIterator(
-      this.inner.execute(
-        this.options?.maxBatchLength,
-        this.options?.timeoutMs,
-        this.withRowId,
-      ),
-    );
-  }
-}
-
 /**
  * How a query returns blob v2 columns. See {@link QueryExecutionOptions.blobMode}.
  */
@@ -411,9 +381,14 @@ export class QueryBase<
    */
   protected async nativeExecute(
     options?: Partial<QueryExecutionOptions>,
+    withRowId = false,
   ): Promise<NativeBatchIterator> {
     const inner = await this.getInner();
-    return inner.execute(options?.maxBatchLength, options?.timeoutMs);
+    return inner.execute(
+      options?.maxBatchLength,
+      options?.timeoutMs,
+      withRowId,
+    );
   }
 
   /**
@@ -447,7 +422,7 @@ export class QueryBase<
   async toArrow(options?: Partial<QueryExecutionOptions>): Promise<ArrowTable> {
     const context = this.blobBytesContext(options?.blobMode);
     if (context === undefined) {
-      return new ArrowTable(await this.collectBatches(options, false));
+      return this.collect(options, false);
     }
     for (let attempt = 1; ; attempt++) {
       // The snapshot pins the bytes. The query runs on the live table, so an
@@ -459,17 +434,12 @@ export class QueryBase<
         context.projection,
       );
       if (sources.size === 0) {
-        return new ArrowTable(await this.collectBatches(options, false));
+        return this.collect(options, false);
       }
       const addRowId = !context.withRowId;
-      const batches = await this.collectBatches(options, addRowId);
+      const table = await this.collect(options, addRowId);
       if ((await context.table.version()) === version) {
-        return readBlobBytes(
-          new ArrowTable(batches),
-          sources,
-          snapshot,
-          addRowId,
-        );
+        return readBlobBytes(table, sources, snapshot, addRowId);
       }
       if (attempt === BLOB_BYTES_ATTEMPTS) {
         throw new Error(
@@ -479,20 +449,19 @@ export class QueryBase<
     }
   }
 
-  private async collectBatches(
+  private async collect(
     options: Partial<QueryExecutionOptions> | undefined,
     withRowId: boolean,
-  ): Promise<RecordBatch[]> {
+  ): Promise<ArrowTable> {
     const batches = [];
-    const inner = await this.getInner();
-    for await (const batch of new RecordBatchIterable(
-      inner,
-      options,
-      withRowId,
-    )) {
+    const iterator = this.nativeExecute(options, withRowId);
+    for await (const batch of RecordBatchIterator(iterator)) {
       batches.push(batch);
     }
-    return batches;
+    if (batches.length === 0) {
+      return tableFromIPC((await iterator).schema());
+    }
+    return new ArrowTable(batches);
   }
 
   private blobBytesContext(
