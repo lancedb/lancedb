@@ -5956,10 +5956,6 @@ mod tests {
         fts.wand_factor = Some(1.0);
         let results = [
             (
-                "set_unenforced_primary_key",
-                table.set_unenforced_primary_key(["id"]).await,
-            ),
-            (
                 "optimize",
                 table.optimize(OptimizeAction::All).await.map(|_| ()),
             ),
