@@ -143,7 +143,8 @@ containing the new version number of the table after altering the columns.
 abstract blobColumns(): Promise<string[]>
 ```
 
-Blob v2 columns, including nested dotted paths.
+Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+Blobs inside lists are omitted because a row ID does not identify an element.
 
 #### Returns
 
@@ -527,6 +528,8 @@ table's current checkout.
 
 Preserves input order, duplicates, and nulls. Use this for large payloads.
 See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial handles are returned.
 
 #### Parameters
 
@@ -556,6 +559,10 @@ Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
 Reads the table's current checkout. IDs from another version can fail after
 compaction unless stable row ids are enabled. Results keep input order and
 duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial results are returned.
+Blobs inside lists cannot be fetched by row ID.
+
 Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
 The client splits requests automatically and reads an individual larger
 blob through the Range route. This method still materializes all bytes in
@@ -662,10 +669,9 @@ Read the [LsmWriteSpec](../interfaces/LsmWriteSpec.md) currently installed on th
 
 Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
 spec has been set, or it was removed with [Table#unsetLsmWriteSpec](Table.md#unsetlsmwritespec)).
-The returned spec mirrors what was passed to
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec), except that `maintainedIndexes` always
-reports the concrete list resolved when the spec was set — `undefined`
-never round-trips.
+The spec is the one installed, including its maintained-index selection:
+an absent `maintainedIndexes` for every index the table has, an empty
+array for none.
 
 #### Returns
 
@@ -1107,8 +1113,8 @@ All variants require the table to have an unenforced primary key
 ([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
 requires it to be the single column being bucketed.
 
-Omitting `maintainedIndexes` maintains every index on the table, resolved
-here, failing if one cannot be maintained — name them to install anyway.
+Omitting `maintainedIndexes` maintains every index the table has,
+including ones created later, and skips a kind the MemWAL cannot maintain.
 Naming them pins an exact set, and a still-building index is rejected
 rather than quietly omitted.
 
@@ -1381,7 +1387,7 @@ repeatedly calling this method.
 
 ##### Parameters
 
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
     the
     columns to update
 

@@ -1,8 +1,6 @@
-<a href="https://cloud.lancedb.com" target="_blank">
-  <img src="https://github.com/user-attachments/assets/92dad0a2-2a37-4ce1-b783-0d1b4f30a00c" alt="LanceDB Cloud Public Beta" width="100%" style="max-width: 100%;">
-</a>
 <div align="center">
 
+[![Reverie](docs/src/assets/reverie-banner.png)](https://www.reveriesummit.com/?utm_medium=social&utm_source=github&utm_campaign=reverie-2026)
 [![LanceDB](docs/src/assets/hero-header.png)](https://lancedb.com)
 [![Website](https://img.shields.io/badge/-Website-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://lancedb.com/)
 [![Blog](https://img.shields.io/badge/Blog-100000?style=for-the-badge&labelColor=645cfb&color=645cfb)](https://blog.lancedb.com/)
@@ -13,7 +11,7 @@
 
 <img src="docs/src/assets/lancedb.png" alt="LanceDB" width="50%">
 
-# **The Multimodal AI Lakehouse**
+# **The Multimodal Lakehouse for AI**
 
 [**How to Install** ](#how-to-install) ✦ [**Detailed Documentation**](https://docs.lancedb.com) ✦ [**Tutorials and Recipes**](https://github.com/lancedb/vectordb-recipes/tree/main) ✦  [**Contributors**](#contributors) 
 

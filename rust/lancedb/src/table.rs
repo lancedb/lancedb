@@ -19,6 +19,9 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+pub use lance::dataset::mem_wal::MemIndexRegistry;
+/// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
+pub use lance::dataset::mem_wal::index as mem_index;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::scalar::load_segment_params;
@@ -330,7 +333,8 @@ pub use self::merge::MergeResult;
 /// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// A fresh spec maintains every index on the table, resolved on install.
+/// A fresh spec maintains every index on the table, including ones created
+/// after it is installed.
 ///
 /// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
 /// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
@@ -348,9 +352,8 @@ pub enum LsmWriteSpec {
         num_buckets: u32,
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -363,9 +366,8 @@ pub enum LsmWriteSpec {
         column: String,
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -374,9 +376,8 @@ pub enum LsmWriteSpec {
     Unsharded {
         /// Indexes the MemWAL maintains in-memory as rows are appended.
         ///
-        /// `None` means every index it can maintain, resolved on install — a
-        /// snapshot, so indexes created later need the spec unset and re-set.
-        /// `Some([])` maintains nothing.
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
         maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
@@ -422,14 +423,16 @@ impl LsmWriteSpec {
 
     /// Set which indexes the MemWAL maintains.
     ///
-    /// `None` (the default) resolves to every index on the table at install,
-    /// failing if one cannot be maintained — name the set to install anyway. A
-    /// list is verbatim: each name must already exist and be maintainable, and
-    /// an empty list maintains nothing.
+    /// `None` (the default) is every index on the table, re-read as the table
+    /// changes, so an index created later is maintained too; one of a kind the
+    /// MemWAL cannot mirror is skipped rather than failing the table. A list is
+    /// verbatim: each name must already exist and be maintainable, and an empty
+    /// list maintains nothing. The maintainable kinds are Lance's built-ins plus
+    /// any added with [`NativeTable::set_mem_index_registry`].
     ///
     /// ```
     /// # use lancedb::table::LsmWriteSpec;
-    /// // Every index the table has when the spec is installed:
+    /// // Every index the table has, now and later:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(None);
     /// // Exactly these:
     /// LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
@@ -564,7 +567,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
-    /// Read this table's materialized-view definition and incarnation.
+    /// Read this table's materialized-view definition.
     #[doc(hidden)]
     async fn materialized_view_info(
         &self,
@@ -579,9 +582,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     #[doc(hidden)]
     async fn refresh_materialized_view_async(
         &self,
-        _full: bool,
         _source_version: Option<u64>,
-        _expected_incarnation: Option<&str>,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
             message: "remote materialized-view refresh is not supported on this table type".into(),
@@ -1240,10 +1241,11 @@ impl Table {
         self.inner.count_rows(filter).await
     }
 
-    /// Names of the blob v2 columns in this table, in declaration order.
+    /// Names of the row-addressable blob v2 columns, in declaration order.
     ///
-    /// Nested blobs use dotted paths (e.g. `info.blob`). Returns
-    /// [`Error::NotSupported`] on table types without blob support.
+    /// Blobs nested in structs use dotted paths (e.g. `info.blob`). Blobs
+    /// inside lists are omitted because row ids cannot identify their elements.
+    /// Returns [`Error::NotSupported`] on table types without blob support.
     pub async fn blob_columns(&self) -> Result<Vec<String>> {
         self.inner.blob_columns().await
     }
@@ -1258,7 +1260,8 @@ impl Table {
     /// [`Self::fetch_blob_files`] for large selections.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1282,9 +1285,10 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// Returns [`Error::InvalidInput`] when the column does not exist or is
-    /// not a blob v2 column, and [`Error::NotSupported`] on table types
-    /// without blob support.
+    /// Blobs inside lists cannot be fetched by row id. Returns
+    /// [`Error::InvalidInput`] for those paths, when the column does not exist,
+    /// or when it is not a blob v2 column. Returns [`Error::NotSupported`] on
+    /// table types without blob support.
     pub async fn fetch_blobs(
         &self,
         column: impl AsRef<str>,
@@ -1302,7 +1306,8 @@ impl Table {
     /// non-null blobs produce empty byte strings.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use lancedb::blob::BlobRangeRequest;
@@ -1341,9 +1346,13 @@ impl Table {
     ///
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
+    /// Remote blob requests share a connection-wide concurrency limit. Set
+    /// `ClientConfig::blob_request_concurrency` or the
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
-    /// row ids.
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial handles are returned.
     ///
     /// ```
     /// # use lancedb::Table;
@@ -1675,6 +1684,7 @@ impl Table {
     ///     .unwrap()
     ///     .refine_factor(5)
     ///     .nprobes(10)
+    ///     .unwrap()
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -1920,11 +1930,28 @@ impl Table {
         self.inner.function_errors(&request).await
     }
 
-    /// Change a column's name or nullability.
+    /// Change a column's name, data type, or nullability.
+    ///
+    /// Each alteration must specify at least one of `rename`, `data_type`, or
+    /// `nullable`. Returns [`Error::InvalidInput`] before applying any changes
+    /// if an alteration does not specify any of these fields.
     pub async fn alter_columns(
         &self,
         alterations: &[ColumnAlteration],
     ) -> Result<AlterColumnsResult> {
+        for alteration in alterations {
+            if alteration.rename.is_none()
+                && alteration.nullable.is_none()
+                && alteration.data_type.is_none()
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "One of rename, nullable or data_type must be specified for path '{}'",
+                        alteration.path
+                    ),
+                });
+            }
+        }
         self.inner.alter_columns(alterations).await
     }
 
@@ -1988,6 +2015,10 @@ impl Table {
     /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
     /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
     ///
+    /// A table carries one spec: this fails while one is installed, since the
+    /// generations already written were homed under it.
+    /// [`Table::unset_lsm_write_spec`] removes one.
+    ///
     /// # Example
     ///
     /// ```
@@ -2015,12 +2046,16 @@ impl Table {
 
     /// Read the [`LsmWriteSpec`] currently installed on this table.
     ///
-    /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
-    /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`], except that
-    /// [`LsmWriteSpec::maintained_indexes`] always reports the concrete list
-    /// resolved when the spec was set — `None` never round-trips.
+    /// `Ok(None)` means the LSM write path is not enabled at all — no spec has
+    /// been set, or one was removed with [`Table::unset_lsm_write_spec`]. That
+    /// is a different answer from a spec whose
+    /// [`LsmWriteSpec::maintained_indexes`] is `None`, which is an installed
+    /// spec selecting indexes automatically.
+    ///
+    /// The spec read back is the one that was installed, selection included:
+    /// `None` maintains every supported index the table has now or gains
+    /// later, `[]` maintains none, and a non-empty list maintains exactly
+    /// those. All three round-trip.
     ///
     /// # Example
     ///
@@ -2567,6 +2602,9 @@ pub struct NativeTable {
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Read-freshness baseline; `Some` only for namespace-backed tables.
     freshness: Option<TableFreshness>,
+    // Memtable index kinds this handle's LSM writes maintain, shared with its
+    // clones and branch handles.
+    mem_index_registry: Arc<std::sync::RwLock<MemIndexRegistry>>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -2733,7 +2771,49 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Maintain the memtable index kinds in `registry` when this table writes
+    /// through its [`LsmWriteSpec`], and accept them when
+    /// [`LsmWriteSpec::with_maintained_indexes`] names one.
+    ///
+    /// The registry belongs to this handle, its clones and its branch handles,
+    /// and is not stored with the table: a handle opened separately starts from
+    /// Lance's built-ins. Set it before the handle's first LSM write; writers
+    /// already open keep the registry they were opened with. Local tables only,
+    /// reached through [`Table::as_native`].
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use lancedb::Table;
+    /// # use lancedb::table::{LsmWriteSpec, MemIndexRegistry, mem_index::MemIndexPlugin};
+    /// # async fn example(
+    /// #     table: &Table,
+    /// #     plugin: Arc<dyn MemIndexPlugin>,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let registry = MemIndexRegistry::default().with_plugin(plugin)?;
+    /// if let Some(native) = table.as_native() {
+    ///     native.set_mem_index_registry(registry);
+    /// }
+    /// let spec = LsmWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+    /// table.set_lsm_write_spec(spec).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_mem_index_registry(&self, registry: MemIndexRegistry) {
+        *self
+            .mem_index_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = registry;
+    }
+
+    pub(crate) fn mem_index_registry(&self) -> MemIndexRegistry {
+        self.mem_index_registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Set the namespace client for server-side query execution.
@@ -2763,6 +2843,7 @@ impl NativeTable {
             namespace_client: self.namespace_client.clone(),
             pushdown_operations: self.pushdown_operations.clone(),
             freshness: self.freshness.clone(),
+            mem_index_registry: self.mem_index_registry.clone(),
         }
     }
 
@@ -2870,6 +2951,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -2961,6 +3043,7 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -3094,7 +3177,18 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Refuse `operation` when this table is a materialized view.
+    pub(crate) async fn ensure_not_a_view(&self, operation: &str) -> Result<()> {
+        let dataset = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &dataset.schema().metadata,
+            operation,
+        )
     }
 
     /// Merge new data into this table.
@@ -3105,6 +3199,7 @@ impl NativeTable {
         right_on: &str,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
+        self.ensure_not_a_view("merge into").await?;
         let mut dataset = (*self.dataset.get().await?).clone();
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset.update(dataset);
@@ -3407,6 +3502,7 @@ impl BaseTable for NativeTable {
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(&self.name, &ds.schema().metadata, "add to")?;
 
         let table_schema = Schema::from(&ds.schema().clone());
         computed_columns::ensure_supported_function_metadata(&table_schema)?;
@@ -3581,6 +3677,7 @@ impl BaseTable for NativeTable {
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
         let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        self.ensure_not_a_view("merge insert into").await?;
         computed_columns::ensure_not_written(
             &Schema::from(self.dataset.get().await?.schema()),
             source_schema.fields().iter().map(|f| f.name().as_str()),
@@ -3933,6 +4030,7 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
+        let num_deleted_rows = Some(ds.count_deleted_rows().await?);
         // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
         // would open every data file to read its column metadata, which costs one
         // IO per fragment and reports 0 for legacy v1 storage.
@@ -3997,6 +4095,7 @@ impl BaseTable for NativeTable {
         let stats = TableStatistics {
             total_bytes,
             num_rows,
+            num_deleted_rows,
             num_indices,
             fragment_stats: frag_stats,
         };
@@ -4009,6 +4108,11 @@ impl BaseTable for NativeTable {
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &ds.schema().metadata,
+            "insert into",
+        )?;
         let dataset = Arc::new((*ds).clone());
         Ok(Arc::new(datafusion::insert::InsertExec::new(
             self.dataset.clone(),
@@ -4032,6 +4136,20 @@ pub struct TableStatistics {
 
     /// The number of rows in the table
     pub num_rows: usize,
+
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// Deleted rows are only marked in deletion files and still occupy space on
+    /// disk until the table is compacted, so a large value here is a good
+    /// indication that [`Table::optimize`] should be called.
+    ///
+    /// These rows are not included in [`Self::num_rows`]. Fragments in which
+    /// every row was deleted are dropped outright rather than kept with a
+    /// deletion file, so their rows are not counted here either.
+    ///
+    /// `None` means the backend did not report a deletion count.
+    #[serde(default)]
+    pub num_deleted_rows: Option<usize>,
 
     /// The number of indices in the table
     pub num_indices: usize,
@@ -5664,29 +5782,22 @@ mod tests {
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
-        // A spec left at its default maintains every index on the table, so it
-        // reads back naming the one on the table rather than as "infer".
+        // A spec left at its default round-trips as the default: what is stored
+        // is the intent to maintain everything, not the set it resolves to now.
         let spec = LsmWriteSpec::identity("region");
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name.clone()]))
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
         table.unset_lsm_write_spec().await.unwrap();
 
         // Unsharded round-trips (no routing column).
         let spec = LsmWriteSpec::unsharded();
         table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(
-            table.get_lsm_write_spec().await.unwrap(),
-            Some(spec.with_maintained_indexes(vec![idx_name]))
-        );
+        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
     }
 
-    /// The maintained set defaults to every index on the table, resolved at
-    /// install. An index the memtable cannot build fails the install rather
-    /// than being dropped: maintaining it would take the table offline for
-    /// writes, dropping it would hide that from the caller.
+    /// The maintained set defaults to every index on the table. A named index
+    /// the memtable cannot build fails the install, because the caller asked
+    /// for it; an unnamed one is skipped, because it arrived by existing.
     #[tokio::test]
     async fn test_set_lsm_write_spec_infers_maintained_indexes() {
         let tmp_dir = tempdir().unwrap();
@@ -5739,19 +5850,27 @@ mod tests {
         );
         assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
-        // The default covers every index, so the bitmap fails it too.
-        let err = table
+        // The default names nothing, so the bitmap is skipped rather than
+        // refusing the table: it is maintained by existing, not by being asked
+        // for. The intent is what is stored, not the set it resolves to today.
+        table
             .set_lsm_write_spec(LsmWriteSpec::unsharded())
             .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidInput { ref message }
-                if message.contains("tag_bitmap") && message.contains("maintained_indexes")),
-            "expected the inferred set to be rejected, got {err:?}"
+            .unwrap();
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            None,
+            "an unnamed set is stored as the intent to maintain everything"
         );
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
 
-        // Naming the maintainable subset installs.
+        // Narrowing to a named subset: unset first, since an installed spec
+        // cannot be set over.
+        table.unset_lsm_write_spec().await.unwrap();
         table
             .set_lsm_write_spec(
                 LsmWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
@@ -5782,6 +5901,28 @@ mod tests {
                 .unwrap()
                 .maintained_indexes(),
             Some([].as_slice())
+        );
+
+        // An installed spec is never set over, whatever the new one asks for,
+        // and the refused call leaves it alone.
+        let err = table
+            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("already set")),
+            "expected the repeat to be refused, got {err:?}"
+        );
+        assert_eq!(
+            table
+                .get_lsm_write_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice()),
+            "a refused call changes nothing"
         );
     }
 
@@ -5838,6 +5979,7 @@ mod tests {
             res,
             TableStatistics {
                 num_rows: 250,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
                 total_bytes: 8969,
                 fragment_stats: FragmentStatistics {
@@ -5861,6 +6003,7 @@ mod tests {
             res,
             TableStatistics {
                 num_rows: 0,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
                 total_bytes: 0,
                 fragment_stats: FragmentStatistics {
@@ -6077,5 +6220,61 @@ mod tests {
             read_iops,
             stats.fragment_stats.num_fragments
         );
+    }
+
+    #[tokio::test]
+    pub async fn test_stats_num_deleted_rows() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_stats_deletions", batch(vec![0, 1]))
+            .execute()
+            .await
+            .unwrap();
+        // A second fragment, holding only rows that the delete below removes.
+        table.add(batch(vec![1])).execute().await.unwrap();
+        table.add(batch(vec![1, 2, 3])).execute().await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.fragment_stats.num_fragments, 3);
+
+        table.delete("id = 1").await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        // 6 rows are inserted over 3 fragments
+        // 3 rows with id = 1 are deleted (one in each fragment), and that empties the 2nd
+        // fragment, which is dropped outright rather than kept with a deletion
+        // file, so only the row marked in the surviving fragment are counted.
+        assert_eq!(res.num_deleted_rows, Some(2));
+        assert_eq!(res.num_rows, 3);
+        assert_eq!(res.fragment_stats.num_fragments, 2);
+        // The marked row is are physically there, so it counts towards the
+        // 3rd fragment length even though it is excluded from num_rows.
+        assert_eq!(res.fragment_stats.lengths.max, 3);
+
+        // Compaction materializes the deletions.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.num_rows, 3);
     }
 }

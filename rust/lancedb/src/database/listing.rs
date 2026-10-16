@@ -1107,6 +1107,21 @@ impl Database for ListingDatabase {
             ..Default::default()
         };
 
+        let target_uri = self.table_uri(&request.target_table_name)?;
+        match DatasetBuilder::from_uri(&target_uri)
+            .with_read_params(read_params.clone())
+            .load()
+            .await
+        {
+            Ok(_) => {
+                return Err(Error::TableAlreadyExists {
+                    name: request.target_table_name,
+                });
+            }
+            Err(lance::Error::DatasetNotFound { .. }) => {}
+            Err(err) => return Err(err.into()),
+        }
+
         let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
             .with_read_params(read_params.clone())
             .load()
@@ -1122,7 +1137,6 @@ impl Database for ListingDatabase {
             }),
         }?;
 
-        let target_uri = self.table_uri(&request.target_table_name)?;
         source_dataset
             .shallow_clone(&target_uri, version_ref, Some(storage_params))
             .await

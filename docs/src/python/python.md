@@ -26,6 +26,14 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
+Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
+::: lancedb.listing.Listing
+
 ::: lancedb.Session
 
 ## Catalogs (Synchronous)
@@ -37,7 +45,171 @@ are ordinary connections. Dropping a database requires it to be empty.
 
 ::: lancedb.catalog.Catalog
 
-::: lancedb.catalog.ListDatabasesResponse
+::: lancedb.catalog.DatabaseNames
+
+
+## Authorization
+
+Some catalogs support the authorization API. This is an API that can be used to
+bind access control lists (ACLs) to individual catalog objects.
+
+Each ACL contains a subject, an object, and privilege.
+
+### Subjects
+
+There are three kinds of subjects: principals, groups, and roles.
+
+A principal uniquely identifies each user accessing the system. Each LanceDB
+Enterprise API key corresponds to a unique principal, and each OpenID user has
+a unique principal.
+
+All principals have an immutable ID which never changes, and is safe to include
+in log files. For example, the API key
+`sk_AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYPQ====` maps to the
+principal ID `pk_aaaqeayeaudaocajbifqydiob4`. APIs such as `list_acls` will
+return the principal ID, never the API key.
+
+OpenID principals also typically have a human-readable name associated with
+them. For example, a principal might be named `bob@example.com` and might have
+a principal ID of `8a004400-9443-4fab-9997-b9372a7ca8fd`. Whenever
+possible, APIs will return the principal name for convenience. However,
+principal names are mutable and can be changed by the identity provider.
+
+Here is an example of getting information about an API key:
+```python
+from lancedb.authz import Subject
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+principal = catalog.authz.get_principal(Subject.principal_api_key(api_key))
+print(f"Found principal {principal.principal_id}")
+```
+
+OpenID principals can be members of groups. Like principals, groups also have
+IDs and human-readable names. It is not possible to modify group membership via
+this API; it is managed by the OpenID identity provider.
+
+Here is an example of getting information about a group based on its name:
+```python
+from lancedb.authz import Subject
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+group = catalog.authz.get_group(Subject.group_name("Engineering"))
+print(f"Found group {group.group_id} with name {group.group_name}")
+```
+
+Roles can contain either principals or groups. Unlike groups, they are managed
+by the catalog, not the identity provider. Roles can also contain API key
+principals.
+
+Here is an example of managing the `reader` role:
+```python
+from lancedb.authz import Subject
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+catalog.authz.add_role_binding(subject=Subject.principal_name("Alice"), role="reader")
+```
+It may take a few milliseconds for changes to role bindings to become visible
+to all clients.
+
+More subject types may be added in the future.
+
+### Objects
+
+An object is any resource in the system that we can attach authorization rules to.
+The Python builders and Rust client share resource validation and wire encoding.
+Methods also accept literal strings such as `table:tenant/db:public$events`;
+malformed names for known resource types raise `ValueError` locally before a
+request is sent. Unknown resource types are preserved for compatibility with
+newer servers.
+
+Object types include:
+
+The System object, a singleton which represents the entire system. You can
+refer to it as `Object.system()`.
+
+Database objects which represents specific databases. For example,
+`Object.database("analytics")` represents the "analytics" database.
+
+Table objects which represent specific tables. For example,
+`Object.table(database="analytics", name="events")` represents the "events"
+table inside the "analytics" database. Tables are in the default namespace (which
+is named "public") unless a specific namespace is given.
+
+Similarly, View objects represent specific views. For example,
+`Object.view(database="analytics", name="recent_events")` represents the
+"recent_events" view inside the "analytics" database. Views are in the default
+namespace (which is named "public") unless a specific namespace is given.
+
+Secret objects identify named credentials, for example,
+`Object.secret(database="analytics", name="api-key")`. Function objects identify
+registered functions, for example,
+`Object.function(database="analytics", name="caption")`. Both default to the
+`public` namespace. Pass `namespace_path=["platform", "ml"]` to select a nested
+namespace. These objects identify resources for ACL operations; a secret object
+contains the credential's name, not its value.
+
+More object types may be added in the future.
+
+### Access control lists
+
+An access control list attaches a specific set of privileges to a specific
+(subject, object) pair. So, for example, we might have an access control list
+that gives `bob@example.com` the ability to read the foo table, that looks like
+this:
+
+```python
+from lancedb.authz import Object, Subject, Privilege
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+catalog.authz.add_acl(
+    object=Object.table(database="analytics", name="foo"),
+    subject=Subject.principal_name("bob@example.com"),
+    privilege=Privilege.SELECT,
+)
+```
+
+Reading a table generally requires USAGE on its database and namespace, plus
+SELECT on the table. Each object has at most one owner.
+
+OWNERSHIP is a special privilege which grants all the other privileges. By
+default, the principal who created an object owns it. Only one subject can own
+an object; granting OWNERSHIP to a new subject removes it from the previous
+owner. OWNERSHIP cannot be deleted.
+
+To delegate secret or function creation, grant `CREATE_SECRET` or
+`CREATE_FUNCTION` on the containing namespace. This preserves namespace ownership:
+
+```python
+for privilege in [Privilege.CREATE_SECRET, Privilege.CREATE_FUNCTION]:
+    catalog.authz.add_acl(
+        object=Object.namespace(database="analytics", namespace_path=["public"]),
+        subject=Subject.role("developer"),
+        privilege=privilege,
+    )
+```
+
+Both privileges also accept their string names in synchronous and asynchronous
+ACL methods.
+
+By default, the `list_acls` function lists all the access control entries in
+the system. By adding a function parameter, the output is filtered to just ACLs
+matching that parameter. For example, this code lists all the ACLs for the
+"reader" role:
+
+```python
+from lancedb.authz import Subject
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+for entry in catalog.authz.list_acls(subject=Subject.role("reader")):
+    print(entry)
+```
+
+Or, when using the async API:
+```python
+catalog = await lancedb.connect_catalog_async(endpoint, api_key=api_key)
+async for entry in catalog.authz.list_acls(subject=Subject.role("reader")):
+    print(entry)
+```
 
 ## Remote SQL
 
@@ -76,6 +248,15 @@ print(query.id)
 print(query.describe().status)
 for batch in query.reader():
     print(batch.num_rows)
+
+# Values bind to $1 / $name placeholders and travel as Arrow, so a float32
+# stays a float32 and a vector stays a compact fixed-size list:
+import numpy as np
+
+reader = db.execute_query(
+    "SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k",
+    parameters={"vector": np.random.rand(768).astype(np.float32), "k": 10},
+)
 
 # The async connection exposes the same lifecycle without blocking:
 # async_db = await lancedb.connect_async(
@@ -192,38 +373,13 @@ listing a storage directory.
 
 ::: lancedb.sql.QueryDescription
 
+::: lancedb.sql.QueryParameters
+
 ## Materialized Views (Synchronous)
 
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition
-
-::: lancedb.vector_dedup
-
-::: lancedb.materialized_view.VectorDedupSource
-
-For an existing indexed source, declare and materialize a dedup result without
-writing SQL. Creation captures the source version once and waits for the complete
-result; remote connections use the service's MV jobs.
-
-```python
-from lancedb import vector_dedup
-
-view = db.create_materialized_view(
-    "images_clean",
-    vector_dedup("images", column="phash", distance_threshold=4),
-)
-cleaned = view.table
-```
-
-To submit without waiting, call `db.create_materialized_view_async(...)` with the
-same source expression and wait on the returned job. To declare only, pass
-`with_no_data=True`, then use `view.refresh_async().wait()` when ready. Pass
-`dataset_version=...` to `vector_dedup` for an explicit snapshot. The default
-policy retains direct representatives (A-B-C without A-C keeps A and C), preserves
-the source, and materializes its original columns. Only within-segment/partition
-pairs are covered, using the index's distance representation.
-
 
 ## Views
 
@@ -349,6 +505,12 @@ pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
 still work. Queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
+One missing or deleted row ID rejects the entire blob-read batch; the APIs do
+not return partial results.
+
+Blobs inside lists can be written and queried as descriptors. They are omitted
+from `blob_columns()` because row ids do not identify individual list elements,
+so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.blob
 
@@ -365,6 +527,8 @@ still work. Queries return descriptors. Call
 ::: lancedb.otel.instrument_lancedb_metrics
 
 ## Exceptions
+
+::: lancedb.remote.errors.HttpError
 
 ::: lancedb.exceptions.MissingValueError
 
@@ -440,12 +604,16 @@ latency on your workload before opting in.
 
 ::: lancedb.catalog.AsyncCatalog
 
+::: lancedb.catalog.AsyncDatabaseNames
+
 Connections represent a connection to a LanceDb database and
 can be used to create, list, or open tables.
 
 ::: lancedb.connect_async
 
 ::: lancedb.db.AsyncConnection
+
+::: lancedb.listing.AsyncListing
 
 ## Namespaces (Asynchronous)
 

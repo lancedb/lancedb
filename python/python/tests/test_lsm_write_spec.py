@@ -52,9 +52,9 @@ def test_set_lsm_write_spec_validates(tmp_path):
     with pytest.raises(Exception, match="num_buckets"):
         table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 1025))
 
-    # Happy path then mutation rejected.
+    # Happy path, then a set over the installed spec is refused.
     table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 4))
-    with pytest.raises(Exception, match="mutation"):
+    with pytest.raises(Exception, match="already set"):
         table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 8))
 
 
@@ -176,18 +176,18 @@ def test_get_lsm_write_spec(tmp_path):
     table.unset_lsm_write_spec()
     assert table.get_lsm_write_spec() is None
 
-    # Identity round-trips (column recovered from the schema). Leaving the
-    # maintained set to be inferred picks up the index on the table, so the
-    # spec reads back naming it rather than as "infer".
+    # Identity round-trips (column recovered from the schema). An unnamed
+    # maintained set reads back as None: what is stored is the intent to
+    # maintain every index, not the set it resolves to now.
     table.set_lsm_write_spec(LsmWriteSpec.identity("id"))
     spec = table.get_lsm_write_spec()
     assert spec.spec_type == "identity"
     assert spec.column == "id"
-    assert spec.maintained_indexes == [idx_name]
+    assert spec.maintained_indexes is None
     table.unset_lsm_write_spec()
 
     # Unsharded round-trips (no routing column). Opting out is distinct from
-    # the inferred default.
+    # the unnamed default.
     table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
     spec = table.get_lsm_write_spec()
     assert spec.spec_type == "unsharded"

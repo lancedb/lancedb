@@ -1,0 +1,399 @@
+---
+title: Hybrid Search
+sidebarTitle: "Hybrid Search"
+description: "Combine vector similarity and keyword matches in a single ranked result set."
+icon: "search"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Hybrid search is available in OSS and Enterprise.
+---
+
+import { PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
+
+import { PyHybridSearch, TsHybridSearchBody, TsHybridSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsHybridSearchBody, RsExampleTail as RsHybridSearchTail } from '/snippets/search_hybrid_search.mdx';
+
+Hybrid search combines vector similarity with keyword matching. It is useful
+when a query needs both: for example, finding products with a particular model
+number whose descriptions match what the customer is looking for.
+
+LanceDB runs a vector search and a full-text search, then merges their results
+with a reranker. Reciprocal Rank Fusion (RRF) is the default. It combines the
+positions of records in the two ranked lists.
+
+Before you query, store vectors and create an FTS index on the text column.
+
+<span id="run-a-hybrid-query-with-explicit-vectors"></span>
+
+<Accordion title="Run a complete hybrid search example">
+
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
+
+- **Python:** Install with `pip install lancedb`, save as `hybrid_search.py`, then run `python hybrid_search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `hybrid_search.mts`, then run `node hybrid_search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin hybrid_search` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyHybridSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsHybridSearchBody + "\n" + TsHybridSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsHybridSearchBody + "\n" + RsHybridSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+The puppy record ranks first because both searches place it first. The query
+returns `_relevance_score`, with higher values first. This small example shows
+the mechanics; evaluate retrieval quality with embeddings and queries from
+your own application.
+
+</Accordion>
+
+## Generate query embeddings automatically {#example-hybrid-search}
+
+### 1\. Setup {#1-setup}
+The following walkthrough uses Sentence Transformers in Python and OpenAI in
+TypeScript. Install the corresponding provider packages before starting.
+Python downloads a local model; TypeScript calls OpenAI. Install
+`lancedb sentence-transformers pandas` for Python, or
+`@lancedb/lancedb apache-arrow openai` for TypeScript. Set your OpenAI API key
+as described in the [OpenAI embedding setup](/integrations/embedding/openai).
+Run the steps for your chosen language in order, choosing one connection option.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from lancedb.index import FTS
+from lancedb.rerankers import RRFReranker
+from lancedb.embeddings import get_registry
+from lancedb.pydantic import LanceModel, Vector
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import "@lancedb/lancedb/embedding/openai";
+import { Utf8 } from "apache-arrow";
+```
+</CodeGroup>
+
+### 2\. Connect to LanceDB {#2-connect-to-lancedb}
+Choose a local OSS connection or use your Enterprise connection details.
+
+<Badge color="green">OSS</Badge>
+
+<CodeGroup>
+```python Python icon="python"
+uri = "data/sample-lancedb"
+db = lancedb.connect(uri)
+```
+
+```typescript TypeScript icon="square-js"
+const databaseDir = "data/sample-lancedb";
+const db = await lancedb.connect(databaseDir);
+```
+</CodeGroup>
+
+<Badge color="red">Enterprise</Badge>
+
+Replace the placeholders with your Enterprise database URI, API key, region and
+endpoint. In application code, load credentials from environment variables or a
+secrets manager.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterprisePlaceholders}
+  </CodeBlock>
+  <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsConnectEnterprisePlaceholders}
+  </CodeBlock>
+</CodeGroup>
+
+### 3\. Configure Embedding Model {#3-configure-embedding-model}
+Configure the model used for both document and query embeddings.
+
+<CodeGroup>
+```python Python icon="python"
+embeddings = get_registry().get("sentence-transformers").create()
+```
+
+```typescript TypeScript icon="square-js"
+const embedFunc = lancedb.embedding.getRegistry().get("openai")?.create({
+  model: "text-embedding-ada-002",
+}) as lancedb.embedding.EmbeddingFunction;
+```
+</CodeGroup>
+
+### 4\. Create Table and Schema {#4-create-table-and-schema}
+Define the data structure for your documents, including both the text content and its vector representation.
+
+<CodeGroup>
+```python Python icon="python"
+class Documents(LanceModel):
+    category: str
+    text: str = embeddings.SourceField()
+    vector: Vector(embeddings.ndims()) = embeddings.VectorField()
+
+table_name = "hybrid_search_example"
+table = db.create_table(table_name, schema=Documents, mode="overwrite")
+```
+
+```typescript TypeScript icon="square-js"
+const documentSchema = lancedb.embedding.LanceSchema({
+  category: new Utf8(),
+  text: embedFunc.sourceField(new Utf8()),
+  vector: embedFunc.vectorField(),
+});
+
+const tableName = "hybrid_search_example";
+const table = await db.createEmptyTable(tableName, documentSchema, {
+  mode: "overwrite",
+});
+```
+</CodeGroup>
+
+### 5\. Add Data {#5-add-data}
+Insert sample documents into your table, which will be used for both semantic and keyword search.
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {"text": "rebel spaceships striking from a hidden base", "category": "film"},
+    {"text": "have won their first victory against the evil Galactic Empire", "category": "film"},
+    {"text": "during the battle rebel spies managed to steal secret plans", "category": "film"},
+    {"text": "to the Empire's ultimate weapon the Death Star", "category": "film"},
+]
+table.add(data=data)
+```
+
+```typescript TypeScript icon="square-js"
+const data = [
+  { text: "rebel spaceships striking from a hidden base", category: "film" },
+  { text: "have won their first victory against the evil Galactic Empire", category: "film" },
+  { text: "during the battle rebel spies managed to steal secret plans", category: "film" },
+  { text: "to the Empire's ultimate weapon the Death Star", category: "film" },
+];
+await table.add(data);
+console.log(`Created table: ${tableName} with ${data.length} rows`);
+```
+</CodeGroup>
+
+### 6\. Build Full Text Index {#6-build-full-text-index}
+Create a full-text search index on the text column to enable keyword-based search capabilities.
+
+<CodeGroup>
+```python Python icon="python"
+table.create_index("text", config=FTS())
+table.wait_for_index(["text_idx"])
+```
+
+```typescript TypeScript icon="square-js"
+console.log("Creating full-text search index...");
+await table.createIndex("text", {
+  config: lancedb.Index.fts(),
+});
+await table.waitForIndex(["text_idx"], 300);
+```
+</CodeGroup>
+
+### 7\. Set Reranker [Optional] {#7-set-reranker-optional}
+RRF is the default. The examples below configure it explicitly. Other
+rerankers and their language support are described in [Reranking](/reranking).
+
+<CodeGroup>
+```python Python icon="python"
+reranker = RRFReranker()
+```
+
+```typescript TypeScript icon="square-js"
+const reranker = await lancedb.rerankers.RRFReranker.create();
+```
+</CodeGroup>
+
+### 8\. Hybrid Search {#8-hybrid-search}
+Perform a hybrid search query that combines semantic similarity with keyword matching, using the specified reranker to merge and rank the results.
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search(
+        "rebel spaceships",
+        query_type="hybrid",
+        vector_column_name="vector",
+        fts_columns="text",
+    )
+    .rerank(reranker)
+    .limit(10)
+    .to_pandas()
+)
+
+print("Hybrid search results:")
+print(results)
+```
+
+```typescript TypeScript icon="square-js"
+console.log("Performing hybrid search...");
+const queryVector = await embedFunc.computeQueryEmbeddings("rebel spaceships");
+const hybridResults = await table
+  .query()
+  .fullTextSearch("rebel spaceships")
+  .nearestTo(queryVector)
+  .rerank(reranker)
+  .select(["text"])
+  .limit(10)
+  .toArray();
+
+console.log("Hybrid search results:");
+console.log(hybridResults);
+```
+</CodeGroup>
+
+### 9\. Supply a vector and text separately {#9-hybrid-search-explicit-vector-and-text-query-pattern}
+You can supply the vector and text separately. The vector must use the same
+model and dimensions as the stored embeddings. This example reuses the model
+configured above; the complete example at the top also demonstrates this pattern
+in TypeScript and Rust.
+
+<CodeGroup>
+```python Python icon="python"
+text_query = "rebel spaceships"
+vector_query = embeddings.compute_query_embeddings(text_query)[0]
+(
+    table.search(query_type="hybrid")
+    .vector(vector_query)
+    .text(text_query)
+    .limit(5)
+    .to_pandas()
+)
+```
+</CodeGroup>
+
+## Control the candidate results {#query-controls}
+
+Use a result limit, metadata filters and vector distance bounds to control
+which candidates are available to the reranker. The examples below show each
+option on the query builder.
+
+<Info>
+Set `limit()` to the number of results your application needs. The default is 10.
+A larger candidate set can help a reranker find relevant records, but adds work.
+</Info>
+
+### Returning row IDs {#returning-row-ids}
+
+Pass `with_row_id(True)` (Python) or `withRowId()` (TypeScript) to include the internal `_rowid` column in the results. This is useful for joining hybrid results back to a primary table, or for deduping across multiple queries:
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search("rebel spaceships", query_type="hybrid")
+    .with_row_id(True)
+    .limit(10)
+    .to_pandas()
+)
+# results now contains a `_rowid` column alongside `_relevance_score`
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+    .query()
+    .fullTextSearch("rebel spaceships")
+    .nearestTo(queryVector)
+    .withRowId()
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+### Bounding vector distance {#bounding-vector-distance}
+
+`distance_range(lower, upper)` (Python) and `distanceRange(lower, upper)` (TypeScript) constrain the vector half of the hybrid query to the half-open interval `[lower, upper)`. This is helpful when you want to cap how far semantic candidates can drift from the query vector before reranking:
+
+<CodeGroup>
+```python Python icon="python"
+results = (
+    table.search("rebel spaceships", query_type="hybrid")
+    .distance_range(lower_bound=0.0, upper_bound=0.4)
+    .limit(10)
+    .to_pandas()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+    .query()
+    .fullTextSearch("rebel spaceships")
+    .nearestTo(queryVector)
+    .distanceRange(0.0, 0.4)
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+Either bound can be omitted to leave that side unbounded.
+
+### Prefilter vs. postfilter {#prefilter-vs-postfilter}
+
+A hybrid query applies its metadata filter to both the vector and full-text
+searches. Prefiltering, the default, restricts eligible rows before retrieval.
+Postfiltering removes candidates after retrieval and can leave fewer results
+than requested. See [Filtering](/search/filtering).
+
+<CodeGroup>
+```python Python icon="python"
+# Prefilter (default): filter applied before scoring
+table.search("rebel spaceships", query_type="hybrid") \
+    .where("category = 'film'", prefilter=True) \
+    .limit(10) \
+    .to_pandas()
+
+# Postfilter: filter applied after the sub-queries return top-k
+table.search("rebel spaceships", query_type="hybrid") \
+    .where("category = 'film'", prefilter=False) \
+    .limit(10) \
+    .to_pandas()
+```
+
+```typescript TypeScript icon="square-js"
+// Prefilter (default): just call .where(...)
+await table.query()
+    .fullTextSearch("rebel spaceships")
+    .nearestTo(queryVector)
+    .where("category = 'film'")
+    .limit(10)
+    .toArray();
+
+// Postfilter: chain .postfilter() after .where(...)
+await table.query()
+    .fullTextSearch("rebel spaceships")
+    .nearestTo(queryVector)
+    .where("category = 'film'")
+    .postfilter()
+    .limit(10)
+    .toArray();
+```
+</CodeGroup>
+
+In Python, use [`explain_plan`](/search/explain#analyzing-non-vector-queries) on a hybrid query to see whether the filter pushed into the scan or ran as a separate `FilterExec` step.
+
+## Choose and evaluate a reranker {#more-on-reranking}
+
+Start with RRF, then compare alternatives on representative queries. Review
+which relevant rows reach the candidate set before evaluating how a reranker
+orders them. Record latency as well as relevance: increasing candidate counts
+or applying a model-based reranker adds work.
+
+Reranking runs in the application for both OSS and Enterprise connections.
+See [Reranking](/reranking) for model-free fusion, model-based rerankers,
+custom implementations and score interpretation.
+
+In synchronous Python, `.rerank(...)` accepts a reranker and a `normalize`
+option (`"score"` or `"rank"`). Normalization matters for methods that blend
+raw scores; RRF uses rank positions. These are Python query options, not a
+shared signature across every SDK.
