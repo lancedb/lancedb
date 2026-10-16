@@ -542,7 +542,7 @@ class VideoFrames:
             windows.setdefault(row_id, []).append(
                 (min(frame_numbers), max(frame_numbers))
             )
-        self._prepare(windows)
+        decoders = self._prepare(windows)
 
         results: list[Any] = [None] * len(requests)
         by_row: dict[int, list[int]] = {}
@@ -551,7 +551,7 @@ class VideoFrames:
 
         def decode(row_id: int) -> None:
             # one thread per file: a decoder is not safe to share across threads
-            decoder, _ = self._cache.get(row_id)
+            decoder = decoders[row_id]
             for request_idx in by_row[row_id]:
                 batch = decoder.get_frames_at(indices=list(requests[request_idx][1]))
                 results[request_idx] = getattr(batch, "data", batch)
@@ -613,15 +613,21 @@ class VideoFrames:
         )
         return int(kf_positions[start]), min(end + _SLACK, meta["file_size"])
 
-    def _prepare(self, windows: dict[int, list[tuple[int, int]]]) -> None:
-        """Fetch every byte span this call needs at once, open missing decoders."""
+    def _prepare(self, windows: dict[int, list[tuple[int, int]]]) -> dict[int, Any]:
+        """Fetch every byte span this call needs at once, open missing decoders.
+
+        Returns the call's decoders by row id. The caller holds them for the
+        length of the call: with more files in one call than the cache keeps,
+        the LRU would otherwise drop one before it is used.
+        """
         self._load_index(list(windows))
         sources: dict[int, _SparseFile] = {}
+        decoders: dict[int, Any] = {}  # pinned now: a put below may evict them
         spans: dict[int, list[tuple[int, int]]] = {}
         for row_id, row_windows in windows.items():
             meta = self._index[row_id]
             if row_id in self._cache:
-                source = self._cache.get(row_id)[1]
+                decoders[row_id], source = self._cache.get(row_id)
             else:
                 source = _SparseFile(
                     meta["file_size"], lambda row=row_id: self._open_handle(row)
@@ -657,11 +663,15 @@ class VideoFrames:
             for (row_id, offset), payload in zip(targets, payloads):
                 sources[row_id].add(offset, payload.as_py())
 
-        for row_id, source in sources.items():
-            if row_id not in self._cache:
-                self._cache.put(
-                    row_id, (_open_decoder(source), source), nbytes=source.buffered
-                )
+        # open the new files in parallel: a probe each, independent of one another
+        to_open = [row_id for row_id in sources if row_id not in decoders]
+        opened = self._pool.map(lambda row: _open_decoder(sources[row]), to_open)
+        for row_id, decoder in zip(to_open, opened):
+            decoders[row_id] = decoder
+            self._cache.put(
+                row_id, (decoder, sources[row_id]), nbytes=sources[row_id].buffered
+            )
+        return decoders
 
     def _open_handle(self, row_id: int):
         return self._table.fetch_blob_files(self._column, [row_id])[0]

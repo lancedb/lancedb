@@ -268,3 +268,14 @@ def test_videogen_clips_with_captions(tmp_path):
     assert [i["caption"] for i in items] == ["cat", "cat", "dog"]
     assert tuple(items[1]["video"].shape) == (16, 3, 48, 64)
     assert np.abs(mean_color(items[1]["video"][3]) - solid_color(19)).max() < 12
+
+
+def test_more_files_in_one_call_than_the_decoder_cache_keeps(tmp_path):
+    table = lancedb.connect(tmp_path).create_table(
+        "clips", schema=video_schema([pa.field("name", pa.string())])
+    )
+    add_videos(table, [encode_video(12) for _ in range(4)], name=list("abcd"))
+    frames = VideoFrames(table, "video", key="name", decoder_cache_size=2)
+    clips = frames.fetch_frames([(n, [5]) for n in "abcd"])
+    assert len(clips) == 4 and all(tuple(c.shape) == (1, 3, 48, 64) for c in clips)
+    assert np.abs(mean_color(clips[3][0]) - solid_color(5)).max() < 12
