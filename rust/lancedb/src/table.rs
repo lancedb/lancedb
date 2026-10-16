@@ -2015,6 +2015,9 @@ impl Table {
     /// - [`MemWalWriteSpec::identity`] — shard by the raw value of a scalar column.
     /// - [`MemWalWriteSpec::unsharded`] — route every write to a single shard.
     ///
+    /// Every spec requires the table to declare an unenforced primary key
+    /// ([`Table::set_unenforced_primary_key`]); otherwise this fails.
+    ///
     /// A table carries one spec: this fails while one is installed, since the
     /// SSTables already written were homed under it.
     /// [`Table::disable_memwal`] removes one.
@@ -5541,6 +5544,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // Reject num_buckets out of range.
         for bad in [0u32, 1025] {
@@ -5585,6 +5589,56 @@ mod tests {
         assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
     }
 
+    /// A spec is refused on a table without an unenforced primary key, for every
+    /// sharding mode, and a refused spec leaves nothing installed.
+    #[tokio::test]
+    async fn test_enable_memwal_requires_primary_key() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let conn = ConnectBuilder::new(tmp_dir.path().to_str().unwrap())
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+        let installed = |table: &Table| {
+            let table = table.clone();
+            async move {
+                let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+                dataset.mem_wal_index_details().await.unwrap().is_some()
+            }
+        };
+
+        for spec in [
+            MemWalWriteSpec::unsharded(),
+            MemWalWriteSpec::bucket("id", 4),
+            MemWalWriteSpec::identity("id"),
+        ] {
+            let err = table.enable_memwal(spec).await.unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message } if message.contains("primary key")),
+                "got {err:?}"
+            );
+            assert!(!installed(&table).await);
+        }
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .enable_memwal(MemWalWriteSpec::unsharded())
+            .await
+            .unwrap();
+        assert!(installed(&table).await);
+    }
+
     #[tokio::test]
     async fn test_enable_memwal_unsharded() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
@@ -5606,6 +5660,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         table
             .enable_memwal(MemWalWriteSpec::unsharded())
@@ -5652,6 +5707,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         table
             .enable_memwal(
@@ -5703,6 +5759,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // unset errors when no spec is set.
         table.disable_memwal().await.unwrap_err();
@@ -5760,6 +5817,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // No spec installed yet.
         assert_eq!(table.get_memwal_spec().await.unwrap(), None);
@@ -5826,6 +5884,7 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         table
             .create_index(&["id"], Index::BTree(Default::default()))

@@ -127,6 +127,17 @@ pub(crate) async fn enable_memwal(table: &NativeTable, spec: MemWalWriteSpec) ->
                 .into(),
         });
     }
+    // Every MemWAL write and read resolves rows by the unenforced primary key,
+    // so a spec on a table without one leaves the table unwritable through the
+    // MemWAL path. A key cannot be removed once set, and an overwrite or restore
+    // of the table conflicts with the commit below.
+    if dataset.schema().unenforced_primary_key().is_empty() {
+        return Err(Error::InvalidInput {
+            message: "a MemWAL write spec requires the table to declare an unenforced \
+                      primary key; set one with set_unenforced_primary_key first"
+                .into(),
+        });
+    }
     let mut builder = dataset
         .initialize_mem_wal()
         .mem_index_registry(table.mem_index_registry());
