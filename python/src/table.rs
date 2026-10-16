@@ -1644,7 +1644,10 @@ impl Table {
         }
 
         future_into_py(self_.py(), async move {
-            let res = builder.execute(Box::new(batches)).await.infer_error()?;
+            let res = builder
+                .execute(Box::new(batches) as Box<dyn arrow::array::RecordBatchReader + Send>)
+                .await
+                .infer_error()?;
             Ok(MergeResult::from(res))
         })
     }
