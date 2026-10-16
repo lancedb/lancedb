@@ -45,6 +45,7 @@ def _make_table(tmp_path):
 
 def test_enable_memwal_validates(tmp_path):
     _db, table = _make_table(tmp_path)
+    table.set_unenforced_primary_key("id")
 
     # Out-of-range num_buckets.
     with pytest.raises(Exception, match="num_buckets"):
@@ -60,6 +61,7 @@ def test_enable_memwal_validates(tmp_path):
 
 def test_disable_memwal(tmp_path):
     _db, table = _make_table(tmp_path)
+    table.set_unenforced_primary_key("id")
 
     # unset errors when no spec is set.
     with pytest.raises(Exception, match="no MemWAL write spec"):
@@ -72,6 +74,18 @@ def test_disable_memwal(tmp_path):
     with pytest.raises(Exception, match="no MemWAL write spec"):
         table.disable_memwal()
     table.enable_memwal(MemWalWriteSpec.bucket("id", 8))
+
+
+def test_enable_memwal_requires_primary_key(tmp_path):
+    _db, table = _make_table(tmp_path)
+    for spec in (
+        MemWalWriteSpec.unsharded(),
+        MemWalWriteSpec.bucket("id", 4),
+        MemWalWriteSpec.identity("id"),
+    ):
+        with pytest.raises(Exception, match="primary key"):
+            table.enable_memwal(spec)
+    assert table.get_memwal_spec() is None
 
 
 def test_set_unsharded_spec(tmp_path):
@@ -206,6 +220,7 @@ async def test_async_get_memwal_spec(tmp_path):
     )
 
     assert await table.get_memwal_spec() is None
+    await table.set_unenforced_primary_key("id")
 
     # A real scalar index is needed to name it as a maintained index.
     await table.create_index("id", config=BTree())
