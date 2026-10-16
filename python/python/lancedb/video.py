@@ -29,14 +29,30 @@ For training, :class:`VideoTransform` turns rows of any table that points at
 (video, frame) into items with decoded clips. A video generation loader over a
 captioned video table, one sample per 16-frame window::
 
+    import pyarrow as pa
+    import lancedb
+    from lancedb.streaming import StreamingDataset, StreamingDataLoader
+    from lancedb.video import (
+        VideoTransform, add_videos, clip_windows, video_schema,
+    )
+
+    db = lancedb.connect(uri)
+
+    # videos: one row per file
+    #   caption: string | video: blob | file_size, header_offsets, header_lengths,
+    #   kf_indices, kf_positions, n_frames, fps: the index, filled by add_videos
     schema = video_schema([pa.field("caption", pa.string())])
     videos = db.create_table("videos", schema=schema)
     add_videos(videos, paths, caption=captions)
 
-    # one row per training sample: which video, which start frame, its caption
+    # clips: one row per training sample, a 16-frame window into one video
+    #   video_row: int64 (row id in videos) | start: int64 (first frame)
+    #   | caption: string, copied from the video's row
+    #   a 240-frame video gives 15 rows, no overlap; stride=8 would give 29
     windows = clip_windows(videos, 16, columns=["caption"])
     clips = db.create_table("clips", windows)
 
+    # item per clips row: {"caption": str, "video": uint8 (16, 3, H, W)}
     transform = VideoTransform(
         uri, "videos", fields={"video": ("video_row", "start")}, window=range(16)
     )
