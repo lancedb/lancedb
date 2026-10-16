@@ -2494,7 +2494,7 @@ mod tests {
     async fn test_open_table_checks_that_a_cached_table_still_exists() {
         let describe_calls = Arc::new(AtomicUsize::new(0));
         let calls = describe_calls.clone();
-        let conn = Connection::new_with_handler(move |request| {
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
             assert_eq!(request.url().path(), "/v1/table/table1/describe/");
             match calls.fetch_add(1, Ordering::SeqCst) {
                 0 => http::Response::builder()
@@ -2508,6 +2508,11 @@ mod tests {
                 call => panic!("unexpected describe call: {call}"),
             }
         });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
 
         conn.open_table("table1").execute().await.unwrap();
         let result = conn.open_table("table1").execute().await;
