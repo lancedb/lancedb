@@ -6,6 +6,7 @@
 These tests verify model registration and configuration without requiring API calls.
 """
 
+import pyarrow as pa
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -45,12 +46,19 @@ class TestVoyageAIModelRegistration:
         "model_name,expected_dims",
         [
             # Voyage-4 series (all 1024 dims)
+            ("voyage-4-large", 1024),
             ("voyage-4", 1024),
             ("voyage-4-lite", 1024),
-            ("voyage-4-large", 1024),
+            ("voyage-4-nano", 1024),
+            ("voyage-code-4", 1024),
+            # Contextualized models
+            ("voyage-context-4", 1024),
+            ("voyage-context-3", 1024),
             # Voyage-3 series
+            ("voyage-3-large", 1024),
             ("voyage-3", 1024),
             ("voyage-3-lite", 512),
+            ("voyage-code-3", 1024),
             # Domain-specific models
             ("voyage-finance-2", 1024),
             ("voyage-multilingual-2", 1024),
@@ -122,3 +130,126 @@ class TestVoyageAIModelRegistration:
         assert "voyage-4" not in func.multimodal_embedding_models
         assert "voyage-4-lite" not in func.multimodal_embedding_models
         assert "voyage-4-large" not in func.multimodal_embedding_models
+
+    @pytest.mark.parametrize("model_name", ["voyage-context-4", "voyage-context-3"])
+    def test_context_models_classified_as_contextual(
+        self, model_name, mock_voyageai_client
+    ):
+        """voyage-context-* models must route through the contextual API."""
+        registry = get_registry()
+        func = registry.get("voyageai").create(name=model_name)
+        assert model_name in func.contextual_embedding_models
+        assert func._is_contextual_model(model_name)
+        assert not func._is_multimodal_model(model_name)
+
+
+def _make_contextual_result(vectors):
+    """Build a mock contextualized_embed response: one document per vector,
+    each document carrying a single chunk embedding."""
+    result = MagicMock()
+    result.results = [MagicMock(embeddings=[vec]) for vec in vectors]
+    return result
+
+
+class TestVoyageAIContextualEmbeddings:
+    """Tests for the contextualized (voyage-context-*) embedding paths."""
+
+    @pytest.fixture
+    def mock_voyageai_client(self):
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "test-key"}):
+            with patch("lancedb.embeddings.voyageai.attempt_import_or_raise") as mock:
+                mock_client = MagicMock()
+                mock_voyageai = MagicMock()
+                mock_voyageai.Client.return_value = mock_client
+                mock.return_value = mock_voyageai
+                yield mock_client
+
+    def test_document_path_embeds_each_input_independently(self, mock_voyageai_client):
+        """Document-side inputs are sent as a flat list with auto-chunking, so
+        each string is embedded as its own document -> one embedding per input."""
+        mock_voyageai_client.tokenize.return_value = [["a"], ["b"]]
+        mock_voyageai_client.contextualized_embed.return_value = (
+            _make_contextual_result([[0.1] * 1024, [0.2] * 1024])
+        )
+
+        func = get_registry().get("voyageai").create(name="voyage-context-4")
+        embeddings = func.compute_source_embeddings(pa.array(["hello", "world"]))
+
+        assert embeddings == [[0.1] * 1024, [0.2] * 1024]
+        mock_voyageai_client.contextualized_embed.assert_called_once_with(
+            inputs=["hello", "world"],
+            model="voyage-context-4",
+            input_type="document",
+            enable_auto_chunking=True,
+            chunk_size=32000,
+        )
+
+    def test_query_path_disables_auto_chunking(self, mock_voyageai_client):
+        """The query path must NOT send enable_auto_chunking/chunk_size, since the
+        API rejects auto-chunking when input_type is 'query'."""
+        mock_voyageai_client.contextualized_embed.return_value = (
+            _make_contextual_result([[0.3] * 1024])
+        )
+
+        func = get_registry().get("voyageai").create(name="voyage-context-4")
+        embeddings = func.compute_query_embeddings("find me")
+
+        assert embeddings == [[0.3] * 1024]
+        call = mock_voyageai_client.contextualized_embed.call_args
+        assert call.kwargs["inputs"] == [["find me"]]
+        assert call.kwargs["input_type"] == "query"
+        assert "enable_auto_chunking" not in call.kwargs
+        assert "chunk_size" not in call.kwargs
+
+
+class TestVoyageAITokenBatching:
+    """Tests for token-aware batching of the plain text embedding path."""
+
+    @pytest.fixture
+    def mock_voyageai_client(self):
+        with patch.dict("os.environ", {"VOYAGE_API_KEY": "test-key"}):
+            with patch("lancedb.embeddings.voyageai.attempt_import_or_raise") as mock:
+                mock_client = MagicMock()
+                mock_voyageai = MagicMock()
+                mock_voyageai.Client.return_value = mock_client
+                mock.return_value = mock_voyageai
+                yield mock_client
+
+    def test_splits_at_token_boundary(self, mock_voyageai_client):
+        """Batches split once the per-request token limit would be exceeded."""
+        # voyage-3 has a 120K per-request token budget.
+        mock_voyageai_client.tokenize.return_value = [
+            ["x"] * 50_000,
+            ["x"] * 50_000,
+            ["x"] * 50_000,
+        ]
+        func = get_registry().get("voyageai").create(name="voyage-3")
+
+        batches = list(func._build_batches(mock_voyageai_client, ["t1", "t2", "t3"]))
+
+        # 50K + 50K fits (100K); adding the third (150K) exceeds 120K -> new batch.
+        assert batches == [["t1", "t2"], ["t3"]]
+
+    def test_single_oversized_text_goes_through_alone(self, mock_voyageai_client):
+        """A single text above the token limit is still emitted as its own batch."""
+        mock_voyageai_client.tokenize.return_value = [["x"] * 200_000]
+        func = get_registry().get("voyageai").create(name="voyage-3")
+
+        batches = list(func._build_batches(mock_voyageai_client, ["huge"]))
+
+        assert batches == [["huge"]]
+
+    def test_item_count_cap_respected(self, mock_voyageai_client):
+        """The fixed item-count cap (BATCH_SIZE) still bounds batches even when
+        the token budget is not reached."""
+        from lancedb.embeddings.voyageai import BATCH_SIZE
+
+        n = BATCH_SIZE + 1
+        mock_voyageai_client.tokenize.return_value = [["x"]] * n
+        func = get_registry().get("voyageai").create(name="voyage-3")
+
+        batches = list(func._build_batches(mock_voyageai_client, ["t"] * n))
+
+        assert len(batches) == 2
+        assert len(batches[0]) == BATCH_SIZE
+        assert len(batches[1]) == 1
