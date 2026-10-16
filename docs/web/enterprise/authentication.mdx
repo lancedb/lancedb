@@ -3,7 +3,7 @@ title: "Authentication"
 sidebarTitle: "Authentication"
 description: "Authentication modes for LanceDB Enterprise: API keys and OAuth credentials."
 icon: key
-keywords: ["authentication", "oauth", "api key", "azure managed identity", "client credentials"]
+keywords: ["authentication", "oauth", "api key", "authorization code", "device code", "azure managed identity", "client credentials"]
 availability:
   oss: unavailable
   enterprise: available
@@ -13,9 +13,9 @@ availability:
     [Architecture](/architecture).
 ---
 
-A deployment authenticates every request before
-[authorization](/governance/authorization) decides what it may do, against a
-`db://` remote table, in one of two ways:
+A deployment authenticates each request over a `db://` connection before
+[authorization](/governance/authorization) decides what it may do.
+Choose one of these methods:
 
 - **API keys**: a long-lived shared secret passed as `api_key` on connect. Works in every SDK.
 - **OAuth 2.0**: short-lived bearer tokens obtained from your identity provider, refreshed automatically by the client.
@@ -28,21 +28,36 @@ identities so no secret material lives on the client.
 
 Pass the API key from your Enterprise tenant on `connect`. This works with
 both the synchronous and asynchronous Python clients, as well as TypeScript
-and Rust.
+and Rust. Load the key from an environment variable or secret manager.
 
-```python
+<CodeGroup>
+```python Python icon="python"
+import os
 import lancedb
 
 db = lancedb.connect(
     uri="db://your-database-uri",
-    api_key="your-api-key",
+    api_key=os.environ["LANCEDB_API_KEY"],
     region="us-east-1",
     host_override="https://your-enterprise-endpoint.com",
 )
 ```
 
-An API key belongs in the environment rather than in source. See
-[Database](/management/database#deployment) for the connection options.
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+
+const apiKey = process.env.LANCEDB_API_KEY;
+if (!apiKey) throw new Error("LANCEDB_API_KEY is required");
+
+const db = await lancedb.connect("db://your-database-uri", {
+  apiKey,
+  region: "us-east-1",
+  hostOverride: "https://your-enterprise-endpoint.com",
+});
+```
+</CodeGroup>
+
+See [Database](/management/database#deployment) for the connection options.
 
 ## OAuth {#oauth}
 
@@ -52,8 +67,10 @@ caching, and refresh are handled inside the client. Your application code
 only provides the configuration.
 
 A deployment accepts these tokens only when its administrator has configured
-it with your identity provider. Ask them for the issuer URL, client ID and
-scopes to use.
+it with your identity provider. Ask them for the issuer URL, client ID, scopes,
+and any resource or audience required by the provider. For Authorization Code,
+register the loopback redirect URI with the provider. For Device Code, enable
+the provider's device authorization grant for your application.
 
 <Info>
 In Python, OAuth is supported through `lancedb.connect_async`. The synchronous
@@ -68,7 +85,9 @@ URIs. In TypeScript, `lancedb.connect` accepts `oauthConfig` directly.
 | Flow | Python value | TypeScript value | When to use |
 | --- | --- | --- | --- |
 | Client Credentials | `OAuthFlowType.CLIENT_CREDENTIALS` | `OAuthFlowType.ClientCredentials` | Service-to-service / machine-to-machine. Requires a client ID and client secret registered with your identity provider. |
-| Azure Managed Identity | `OAuthFlowType.AZURE_MANAGED_IDENTITY` | `OAuthFlowType.AzureManagedIdentity` | Workloads running on Azure compute (VMs, AKS, App Service, Container Apps). Tokens are fetched from the Azure IMDS endpoint, so no client secret is stored on the client. |
+| Authorization Code | `OAuthFlowType.AUTHORIZATION_CODE` | `OAuthFlowType.AuthorizationCode` | Interactive user sign-in through a browser and local callback server. Uses S256 PKCE by default. |
+| Device Code | `OAuthFlowType.DEVICE_CODE` | `OAuthFlowType.DeviceCode` | CLI or headless sign-in. The client displays a verification URL and user code for the user to enter on another device. |
+| Azure Managed Identity | `OAuthFlowType.AZURE_MANAGED_IDENTITY` | `OAuthFlowType.AzureManagedIdentity` | Azure workloads with access to the IMDS endpoint. Tokens are fetched from IMDS, so no client secret is stored on the client. |
 
 ### Configure OAuth {#configure-oauth}
 
@@ -77,6 +96,7 @@ Build an OAuth config and pass it on connect. Use `oauth_config` in Python and
 
 <CodeGroup>
 ```python Python icon="python"
+import os
 import lancedb
 from lancedb.remote import OAuthConfig, OAuthFlowType
 
@@ -84,7 +104,7 @@ from lancedb.remote import OAuthConfig, OAuthFlowType
 oauth_config = OAuthConfig(
     issuer_url="https://login.microsoftonline.com/{tenant}/v2.0",
     client_id="your-application-client-id",
-    client_secret="your-application-client-secret",
+    client_secret=os.environ["LANCEDB_OAUTH_CLIENT_SECRET"],
     scopes=["api://lancedb-api/.default"],
     flow=OAuthFlowType.CLIENT_CREDENTIALS,
 )
@@ -101,11 +121,14 @@ db = await lancedb.connect_async(
 import * as lancedb from "@lancedb/lancedb";
 import { OAuthConfig, OAuthFlowType } from "@lancedb/lancedb";
 
+const clientSecret = process.env.LANCEDB_OAUTH_CLIENT_SECRET;
+if (!clientSecret) throw new Error("LANCEDB_OAUTH_CLIENT_SECRET is required");
+
 // Client Credentials (service-to-service)
 const oauthConfig: OAuthConfig = {
   issuerUrl: "https://login.microsoftonline.com/{tenant}/v2.0",
   clientId: "your-application-client-id",
-  clientSecret: "your-application-client-secret",
+  clientSecret,
   scopes: ["api://lancedb-api/.default"],
   flow: OAuthFlowType.ClientCredentials,
 };
@@ -118,7 +141,7 @@ const db = await lancedb.connect("db://your-database-uri", {
 ```
 </CodeGroup>
 
-For workloads running on Azure compute, use a managed identity instead of a
+For Azure workloads with access to IMDS, use a managed identity instead of a
 client secret:
 
 <CodeGroup>
@@ -130,8 +153,8 @@ oauth_config = OAuthConfig(
     client_id="your-application-client-id",
     scopes=["api://lancedb-api/.default"],
     flow=OAuthFlowType.AZURE_MANAGED_IDENTITY,
-    # Optional: required only for user-assigned managed identities.
-    managed_identity_client_id="your-user-assigned-identity-client-id",
+    # Set only for a user-assigned managed identity:
+    # managed_identity_client_id="your-user-assigned-identity-client-id",
 )
 ```
 
@@ -143,11 +166,114 @@ const oauthConfig: OAuthConfig = {
   clientId: "your-application-client-id",
   scopes: ["api://lancedb-api/.default"],
   flow: OAuthFlowType.AzureManagedIdentity,
-  // Optional: required only for user-assigned managed identities.
-  managedIdentityClientId: "your-user-assigned-identity-client-id",
+  // Set only for a user-assigned managed identity:
+  // managedIdentityClientId: "your-user-assigned-identity-client-id",
 };
 ```
 </CodeGroup>
+
+`managed_identity_client_id` / `managedIdentityClientId` selects a user-assigned
+identity. Omit it for a system-assigned identity. The required `client_id` /
+`clientId` field does not select the Azure managed identity.
+
+For interactive sign-in, configure Authorization Code or Device Code. The
+authorization URL or device verification instructions are written to standard
+error. Authorization Code also tries to open a browser and listens for the
+callback at `http://127.0.0.1:8400/callback` by default. Register that redirect
+URI with your identity provider. Public clients can omit `client_secret`;
+request a refresh token from your provider (often by including
+`offline_access`) if you want to reuse the session.
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from lancedb.remote import OAuthConfig, OAuthFlowType, TokenCacheOptions
+
+# Use DEVICE_CODE for a CLI without a local browser or callback server.
+oauth_config = OAuthConfig(
+    issuer_url="https://your-issuer.example.com",
+    client_id="your-public-client-id",
+    scopes=["openid", "offline_access", "lancedb.read"],
+    flow=OAuthFlowType.AUTHORIZATION_CODE,
+    token_cache=TokenCacheOptions(),
+)
+
+db = await lancedb.connect_async(
+    uri="db://your-database-uri",
+    region="us-east-1",
+    host_override="https://your-enterprise-endpoint.com",
+    oauth_config=oauth_config,
+)
+```
+
+```typescript TypeScript icon="square-js"
+import * as lancedb from "@lancedb/lancedb";
+import { OAuthFlowType, type OAuthConfig } from "@lancedb/lancedb";
+
+// Use OAuthFlowType.DeviceCode for a CLI without a local browser or callback server.
+const oauthConfig: OAuthConfig = {
+  issuerUrl: "https://your-issuer.example.com",
+  clientId: "your-public-client-id",
+  scopes: ["openid", "offline_access", "lancedb.read"],
+  flow: OAuthFlowType.AuthorizationCode,
+  tokenCache: {},
+};
+
+const db = await lancedb.connect("db://your-database-uri", {
+  region: "us-east-1",
+  hostOverride: "https://your-enterprise-endpoint.com",
+  oauthConfig,
+});
+```
+</CodeGroup>
+
+With `DEVICE_CODE` / `DeviceCode`, the same configuration and connection calls
+apply; only the `flow` value changes.
+
+### Reuse an interactive session {#reuse-an-interactive-session}
+
+By default, tokens stay in process memory. Set `token_cache` / `tokenCache`
+for Authorization Code or Device Code to keep refresh tokens across process
+restarts. Only refresh tokens are persisted; access tokens and client secrets
+are not written to the cache. Set `cache_dir` / `cacheDir` to choose the
+directory, or leave it unset to use the platform cache directory. Your
+identity provider must issue a refresh token for a later process to sign in
+without prompting again.
+
+Use `OAuthSession` with the same config to log in before connecting, inspect
+whether a refresh token is cached, or remove the local cached credential:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.remote import OAuthSession
+
+session = OAuthSession(oauth_config)
+status = await session.login()
+print(status.refreshable)
+status = await session.status()  # Does not contact the provider.
+print(status.refreshable)
+logout = await session.logout()
+print(logout.removed)
+```
+
+```typescript TypeScript icon="square-js"
+import { OAuthSession } from "@lancedb/lancedb";
+
+const session = new OAuthSession(oauthConfig);
+const status = await session.login();
+console.log(status.refreshable);
+const current = await session.status(); // Does not contact the provider.
+console.log(current.refreshable);
+const logout = await session.logout();
+console.log(logout.removed);
+```
+</CodeGroup>
+
+`login()` runs the interactive flow even when a session is cached. `logout()`
+removes the local cache entry; it does not revoke the provider's token or end
+a browser sign-in. `OAuthSession` requires a persistent cache and supports
+only Authorization Code and Device Code. A cache is unused for Client
+Credentials and rejected for Azure Managed Identity.
 
 ### Configuration reference {#configuration-reference}
 
@@ -160,9 +286,20 @@ field names; TypeScript uses `camelCase`.
 | `client_id` / `clientId` | Yes | Application / client ID registered with your identity provider. |
 | `scopes` | Yes | List of OAuth scopes to request. For Azure managed identity, provide exactly one scope or resource, for example `["api://your-app-id/.default"]`. |
 | `flow` | No | Selects the OAuth flow. Defaults to Client Credentials. |
-| `client_secret` / `clientSecret` | Conditional | Required for Client Credentials. Redacted from the config's `repr` (Python) and `Debug` output (TypeScript native binding) so it does not leak into logs. |
+| `client_secret` / `clientSecret` | Conditional | Required for Client Credentials; optional for Authorization Code and Device Code when the provider registers a confidential client. Redacted from the config's `repr` (Python) and `Debug` output (TypeScript native binding). |
+| `client_auth_method` / `clientAuthMethod` | No | Token endpoint authentication: `ClientAuthMethod.NONE` / `ClientAuthMethod.None` for a public client, `ClientAuthMethod.CLIENT_SECRET_BASIC` / `ClientAuthMethod.ClientSecretBasic`, or `ClientAuthMethod.CLIENT_SECRET_POST` / `ClientAuthMethod.ClientSecretPost`. Defaults to Basic when a client secret is set and no client authentication otherwise. The secret methods require `client_secret` / `clientSecret`. Omit for Azure Managed Identity. |
+| `redirect_uri` / `redirectUri` | No | Authorization Code loopback callback URI. Defaults to `http://127.0.0.1:{callback_port}/callback`; register it with the provider. |
+| `callback_port` / `callbackPort` | No | Authorization Code callback server port (default 8400). If `redirect_uri` / `redirectUri` has an explicit port, the two ports must match. |
+| `use_pkce` / `usePkce` | No | Enable S256 PKCE for Authorization Code (default `true`). |
 | `managed_identity_client_id` / `managedIdentityClientId` | No | Client ID of a user-assigned managed identity. Only used with Azure Managed Identity; omit for system-assigned identities. |
+| `resource` | No | RFC 8707 resource indicator, an absolute URI without a fragment. Sent to authorization and token endpoints, including refresh requests. Not supported for Azure Managed Identity. |
+| `audience` | No | Provider-specific audience sent to authorization and token endpoints, including refresh requests. Not supported for Azure Managed Identity. |
 | `refresh_buffer_secs` / `refreshBufferSecs` | No | How many seconds before token expiry to proactively refresh. Defaults to 300. Keep this well below the token TTL: setting it greater than or equal to the TTL forces a refresh on every request. |
+| `token_cache` / `tokenCache` | No | Opt in to a persistent refresh-token cache for Authorization Code or Device Code. Use `TokenCacheOptions()` in Python or `{}` in TypeScript. Defaults to an in-memory session. |
+
+`TokenCacheOptions` also accepts `cache_dir` / `cacheDir` to select a cache
+directory and `lock_timeout_secs` / `lockTimeoutSecs` to set the wait for a
+cross-process refresh lock (default 30 seconds).
 
 <Warning>
 Treat the client secret like any other production credential. Load it from a
