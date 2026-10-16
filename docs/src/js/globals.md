@@ -161,6 +161,7 @@
 - [BaseTokenizer](type-aliases/BaseTokenizer.md)
 - [BlobData](type-aliases/BlobData.md)
 - [BlobInput](type-aliases/BlobInput.md)
+- [BlobMode](type-aliases/BlobMode.md)
 - [BlobOptions](type-aliases/BlobOptions.md)
 - [BlobRange](type-aliases/BlobRange.md)
 - [BlobReadOptions](type-aliases/BlobReadOptions.md)
