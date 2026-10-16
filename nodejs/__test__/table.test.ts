@@ -1865,9 +1865,11 @@ describe("When creating an index", () => {
     });
 
     test("reject invalid RTree options", async () => {
-      expect(() => Index.rtree({ pageSize: 1 })).toThrow(
-        "page_size must be at least 2",
-      );
+      for (const pageSize of [1, 0, -1, 2.5, Number.NaN, 2 ** 32]) {
+        expect(() => Index.rtree({ pageSize })).toThrow(
+          "page_size must be at least 2",
+        );
+      }
       await expect(
         geoTbl.createIndex("id", { config: Index.rtree() }),
       ).rejects.toThrow("GeoArrow");
