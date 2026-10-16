@@ -153,6 +153,7 @@ export {
   HnswPqOptions,
   HnswSqOptions,
   FtsOptions,
+  RTreeOptions,
   BaseTokenizer,
 } from "./indices";
 
