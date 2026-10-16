@@ -141,10 +141,10 @@ table.unset_lsm_write_spec()
 MemWAL acknowledges a write as soon as it is durable in the write-ahead log, so
 ingest is no longer limited by how fast the table can commit.
 
-**Compared with writing directly to the table.** Across mixes of inserts,
-updates, and deletes, on tables ranging from hundreds of thousands to tens of
-millions of rows, MemWAL consistently delivered at least 4× the write
-throughput and at least 24× lower p99 write latency.
+**Compared with writing directly to the table.** On tables ranging from
+hundreds of thousands to tens of millions of rows, MemWAL delivered 4–12× the
+write throughput and 24–52× lower p99 write latency, depending on the mix of
+inserts, updates, and deletes.
 
 **Scaling with shards.** A MemWAL table can be split into
 [shards](/sql/ddl/table#properties) that write independently, and a single
