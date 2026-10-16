@@ -14,14 +14,12 @@ The video index is five plain columns next to the blob, so it travels with the
 table and needs no sidecar::
 
     import lancedb
-    from lancedb.video import VIDEO_INDEX_SCHEMA, VideoFrames, with_video_index
+    from lancedb.video import VideoFrames, add_videos, video_schema
 
-    schema = pa.schema(
-        [pa.field("name", pa.string()), lancedb.blob("video"), *VIDEO_INDEX_SCHEMA]
-    )
+    db = lancedb.connect("s3://bucket/clips")
+    schema = video_schema([pa.field("name", pa.string())])
     table = db.create_table("clips", schema=schema)
-    videos = pa.array([p.read_bytes() for p in paths], pa.large_binary())
-    table.add(with_video_index(pa.table({"name": names, "video": videos}), "video"))
+    add_videos(table, paths, name=names)  # reads, indexes and writes the files
 
     frames = VideoFrames(table, "video")
     row_ids = table.search().select(["name"]).with_row_id(True).to_arrow()["_rowid"]
@@ -161,6 +159,37 @@ def video_index(source: str | Path | bytes | io.IOBase) -> dict[str, Any]:
         "kf_indices": [index for index, _ in keyframes],
         "kf_positions": [position for _, position in keyframes],
     }
+
+
+def video_schema(
+    fields: Sequence[pa.Field] = (), column: str = "video", **blob_options: Any
+) -> pa.Schema:
+    """A table schema with a video blob column and its index columns.
+
+    ``fields`` are the caller's own columns (``pa.field("name", pa.string())``);
+    ``blob_options`` go to :func:`lancedb.blob`.
+    """
+    from .schema import blob
+
+    return pa.schema([*fields, blob(column, **blob_options), *VIDEO_INDEX_SCHEMA])
+
+
+def add_videos(
+    table,
+    videos: Sequence[str | Path | bytes],
+    column: str = "video",
+    **columns: Sequence[Any],
+) -> None:
+    """Read, index and append video files to a table made with :func:`video_schema`.
+
+    ``videos`` are paths or bytes; ``columns`` are the caller's own columns,
+    one value per video, e.g. ``add_videos(table, paths, name=names)``.
+    """
+    data = [
+        v if isinstance(v, (bytes, bytearray)) else Path(v).read_bytes() for v in videos
+    ]
+    rows = pa.table({**columns, column: pa.array(data, pa.large_binary())})
+    table.add(with_video_index(rows, column))
 
 
 def with_video_index(data: pa.Table | pa.RecordBatch, column: str) -> pa.Table:

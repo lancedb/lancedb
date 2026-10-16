@@ -13,6 +13,8 @@ from lancedb.video import (
     VIDEO_INDEX_COLUMNS,
     VIDEO_INDEX_SCHEMA,
     VideoFrames,
+    add_videos,
+    video_schema,
     _DecoderCache,
     _merge_spans,
     video_index,
@@ -195,3 +197,23 @@ def test_other_containers_and_codecs(tmp_path, container_format, codec):
     assert tuple(clip.shape) == (2, 3, 48, 64)
     assert np.abs(mean_color(clip[0]) - solid_color(5)).max() < 16
     assert np.abs(mean_color(clip[1]) - solid_color(33)).max() < 16
+
+
+def test_video_schema_and_add_videos(tmp_path):
+    (tmp_path / "a.mp4").write_bytes(encode_video(30))
+    table = lancedb.connect(tmp_path / "db").create_table(
+        "clips", schema=video_schema([pa.field("name", pa.string())])
+    )
+    add_videos(table, [tmp_path / "a.mp4", encode_video(20)], name=["a", "b"])
+    assert table.count_rows() == 2
+    assert all(c in table.schema.names for c in ("name", "video", *VIDEO_INDEX_COLUMNS))
+    [row_id] = (
+        table.search()
+        .where("name = 'b'")
+        .select(["name"])
+        .with_row_id(True)
+        .to_arrow()["_rowid"]
+        .to_pylist()
+    )
+    [clip] = VideoFrames(table, "video").fetch_frames([(row_id, [7])])
+    assert np.abs(mean_color(clip[0]) - solid_color(7)).max() < 12
