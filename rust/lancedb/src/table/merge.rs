@@ -179,12 +179,22 @@ impl MergeInsertBuilder {
 
     /// Controls whether to use indexes for the merge operation.
     ///
-    /// When set to `true` (the default), the operation will use an index if available
-    /// on the join key for improved performance. When set to `false`, it forces a full
-    /// table scan even if an index exists. This can be useful for benchmarking or when
-    /// the query optimizer chooses a suboptimal path.
+    /// On the standard (non-MemWAL) merge path, `true` (the default) allows an
+    /// indexed probe when every join key has a usable scalar index. `false`
+    /// forces a full-table join even when those indexes exist.
     ///
-    /// If not set, defaults to `true` (use index if available).
+    /// The indexed path also scans fragments not covered by every join-key
+    /// index and combines those rows with index matches. Appends and updates
+    /// that remove join-key index coverage can therefore add scan cost to
+    /// later merges, even when index use is enabled.
+    ///
+    /// For a partial-column update, the indexed path patches the supplied
+    /// columns for every row in each fragment with a match. Scalar indexes on
+    /// patched columns lose coverage for those fragments. The full-table path
+    /// instead rewrites matched rows as complete rows, but its join can
+    /// materialize the entire target table in memory. Do not use `false` as a
+    /// general optimization for sparse updates on large tables. See the
+    /// [merge execution guide](https://docs.lancedb.com/tables/update/#how-merge-insert-executes).
     pub fn use_index(&mut self, use_index: bool) -> &mut Self {
         self.use_index = use_index;
         self
