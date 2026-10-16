@@ -1,8 +1,9 @@
 name: Docs prose style
 
 # Vale checks the mechanical rules in the LanceDB style guide
-# (lancedb/docs, STYLE.md) with the package pinned in .vale.ini. It annotates
-# only the lines a pull request adds or changes and never fails the build.
+# (lancedb/docs, STYLE.md) with the package pinned in .vale.ini. Its findings
+# are advisory annotations on the lines a pull request adds or changes and
+# never fail the job; an install, sync or configuration error still does.
 on:
   pull_request:
     paths:
