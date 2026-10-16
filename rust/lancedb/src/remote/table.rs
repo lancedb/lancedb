@@ -37,6 +37,7 @@ use crate::table::Tags;
 use crate::table::UpdateResult;
 use crate::table::memwal_stats::GetMemWalStatsResponse;
 use crate::table::merge::MergeFilter;
+use crate::table::primary_key;
 use crate::table::query::create_multi_vector_plan;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
@@ -74,6 +75,7 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
@@ -1057,6 +1059,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 );
             }
             Select::Dynamic(pairs) => {
+                // Keep the caller's alias order in the JSON object sent to the server.
+                // serde_json's preserve_order feature is required here.
                 let alias_map =
                     serde_json::Map::from_iter(pairs.iter().map(|(name, expr)| {
                         (name.clone(), serde_json::Value::String(expr.clone()))
@@ -1402,24 +1406,29 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        if let Some(timeout) = options.timeout {
+        let streams = if let Some(timeout) = options.timeout {
             let timeout_future = tokio::time::sleep(timeout);
             tokio::pin!(timeout_future);
             tokio::pin!(streams);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    Err(Error::Other {
+                    return Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
                     })
                 }
                 result = &mut streams => {
-                    Ok(result?)
+                    result?
                 }
             }
         } else {
-            Ok(streams.await?)
-        }
+            streams.await?
+        };
+
+        Ok(streams
+            .into_iter()
+            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .collect())
     }
 
     fn prepare_query_bodies(
@@ -1459,6 +1468,52 @@ impl<S: HttpSend> RemoteTable<S> {
             self.invalidate_schema_cache();
         }
     }
+}
+
+fn restore_projection_order(
+    stream: Pin<Box<dyn RecordBatchStream + Send>>,
+    select: &Select,
+) -> Pin<Box<dyn RecordBatchStream + Send>> {
+    let pairs = match select {
+        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        _ => return stream,
+    };
+
+    let schema = stream.schema();
+    let mut remaining = (0..schema.fields().len()).collect::<Vec<_>>();
+    let mut indices = Vec::with_capacity(remaining.len());
+    for name in pairs {
+        if let Some(position) = remaining
+            .iter()
+            .position(|&index| schema.field(index).name() == name)
+        {
+            indices.push(remaining.remove(position));
+        }
+    }
+    indices.extend(remaining);
+    if indices
+        .iter()
+        .enumerate()
+        .all(|(index, &field)| index == field)
+    {
+        return stream;
+    }
+
+    // Older servers may sort alias maps even when the request preserves their
+    // order. Reorder the schema and every batch while keeping server-added fields.
+    let fields = indices
+        .iter()
+        .map(|&index| schema.field(index).clone())
+        .collect::<Vec<_>>();
+    let schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ));
+    let batches = stream.map(move |batch| {
+        batch.and_then(|batch| batch.project(&indices).map_err(DataFusionError::from))
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, batches))
 }
 
 #[derive(Deserialize)]
@@ -3149,10 +3204,27 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported for remote tables.".into(),
-        })
+    /// The unenforced primary key is Lance schema field metadata, so this
+    /// installs it through the `update_field_metadata` endpoint. The commit
+    /// layer behind that endpoint is what actually installs and validates the
+    /// key, exactly as on a native table; the checks here only fail fast with
+    /// the same messages a native table gives.
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        self.check_mutable().await?;
+
+        let arrow_schema = self.schema().await?;
+        let schema = LanceSchema::try_from(arrow_schema.as_ref()).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+        primary_key::validate(&schema, columns)?;
+
+        self.update_field_metadata(&[FieldMetadataUpdate {
+            path: columns[0].to_string(),
+            metadata: primary_key::install_edit(),
+            replace: false,
+        }])
+        .await?;
+        Ok(())
     }
 
     async fn flush_memwal(&self) -> Result<()> {
@@ -5247,6 +5319,14 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn schema_describe_response(schema: &Schema) -> http::Response<String> {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
     fn blob_describe_response() -> http::Response<String> {
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -5254,11 +5334,7 @@ mod tests {
             Field::new("caption", DataType::Utf8, true),
             crate::blob("thumbnail", true),
         ]);
-        let json_schema = JsonSchema::try_from(&schema).unwrap();
-        http::Response::builder()
-            .status(200)
-            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
-            .unwrap()
+        schema_describe_response(&schema)
     }
 
     #[rstest]
@@ -5275,6 +5351,95 @@ mod tests {
 
         let columns = table.blob_columns().await.unwrap();
         assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_blob_paths_are_not_advertised_or_fetchable() {
+        let schema = Schema::new(vec![
+            crate::blob("thumbnail", true),
+            Field::new(
+                "imgs",
+                DataType::List(Arc::new(crate::blob("item", true))),
+                true,
+            ),
+        ]);
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&schema),
+                "/v1/table/my_table/fetch_blobs/" | "/v1/table/my_table/query/" => {
+                    http::Response::builder()
+                        .status(400)
+                        .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                        .unwrap()
+                }
+                path if path.starts_with("/v1/table/my_table/blob/") => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_eq!(table.blob_columns().await.unwrap(), vec!["thumbnail"]);
+        for column in ["imgs", "imgs.item"] {
+            let err = table.fetch_blobs(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table.fetch_blob_files(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blob_files_explains_uncached_list_descriptors() {
+        let list_field = Field::new(
+            "imgs",
+            DataType::List(Arc::new(crate::blob("item", true))),
+            true,
+        );
+        let schema = Schema::new(vec![list_field.clone()]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                list_field.clone(),
+                Field::new(lance::dataset::ROW_ID, DataType::UInt64, false),
+            ])),
+            vec![
+                arrow_array::new_null_array(list_field.data_type(), 1),
+                Arc::new(arrow_array::UInt64Array::from(vec![10])),
+            ],
+        )
+        .unwrap();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&schema).map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/query/" => http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .header(VERSION_HEADER, "1")
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        let error = table.fetch_blob_files("imgs", &[10]).await.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
     }
 
     #[tokio::test]
@@ -5510,7 +5675,7 @@ mod tests {
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
-                    "bytes=0-" => http::Response::builder()
+                    "bytes=0-9" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
@@ -5532,21 +5697,35 @@ mod tests {
         assert_eq!(blobs.value(4), b"bbb");
         let requests = requests.lock().unwrap();
         assert!(requests.contains(&"GET bytes=0-0".to_string()));
-        assert!(requests.contains(&"GET bytes=0-".to_string()));
+        assert!(requests.contains(&"GET bytes=0-9".to_string()));
     }
 
     #[tokio::test]
     async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = requests.clone();
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                http::Response::builder()
-                    .status(400)
-                    .body(b"unknown blob column".to_vec())
-                    .unwrap()
-            });
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
 
         assert_fetch_blobs_http_error(
             table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
@@ -5709,10 +5888,18 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
         let ipc = one_row_blob_ipc_stream("info.blob");
+        let schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(vec![crate::blob("blob", true)].into()),
+            true,
+        )]);
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return schema_describe_response(&schema).map(|body| body.into_bytes());
+                }
                 let body = request_body_json(&request);
                 assert_eq!(body["column"], "info.blob");
                 http::Response::builder()
@@ -5764,10 +5951,6 @@ mod tests {
         let mut fts = FullTextSearchQuery::new("test".into());
         fts.wand_factor = Some(1.0);
         let results = [
-            (
-                "set_unenforced_primary_key",
-                table.set_unenforced_primary_key(["id"]).await,
-            ),
             (
                 "optimize",
                 table.optimize(OptimizeAction::All).await.map(|_| ()),
@@ -6423,6 +6606,72 @@ mod tests {
             .execute()
             .await
             .unwrap();
+    }
+
+    #[rstest]
+    #[case::sql(Select::dynamic(&[("p", "x"), ("id", "id")]))]
+    #[case::typed(Select::expr_projection(&[
+        ("p", crate::expr::col("x")),
+        ("id", crate::expr::col("id")),
+    ]))]
+    #[tokio::test]
+    async fn test_query_dynamic_projection_order(#[case] select: Select) {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let aliases = body["columns"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(aliases, ["p", "id"]);
+
+            // Simulate a server that returns aliases in alphabetical order.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("p", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![7])),
+                    Arc::new(Int32Array::from(vec![42])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let batches = table
+            .query()
+            .select(select)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let schema = batches[0].schema();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["p", "id"]
+        );
+        let projected = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(projected.value(0), 42);
     }
 
     #[tokio::test]
@@ -13107,6 +13356,120 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.version, 7);
+    }
+
+    /// The unenforced primary key is field metadata, so the remote table
+    /// installs it through the `update_field_metadata` endpoint.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("name", DataType::Utf8, true),
+                    ]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/update_field_metadata/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["updates"].as_array().unwrap().len(), 1);
+                    let update = &body["updates"][0];
+                    assert_eq!(update["path"], "id");
+                    assert_eq!(update["replace"], json!(false));
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key:position"],
+                        "1"
+                    );
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key"],
+                        json!(null)
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3, "fields": {}}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+    }
+
+    /// Requests the native table rejects are rejected here too, before any
+    /// write reaches the server.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_rejects_invalid_requests() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("score", DataType::Float32, true),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for columns in [
+            vec![],
+            vec!["id", "score"],
+            vec!["nonexistent"],
+            vec!["score"],
+        ] {
+            let err = table
+                .set_unenforced_primary_key(columns.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "unexpected error for {:?}: {:?}",
+                columns,
+                err
+            );
+        }
+    }
+
+    /// The key is immutable once set, and the schema the server already
+    /// reports is enough to say so.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_already_set() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+                        "lance-schema:unenforced-primary-key:position".to_string(),
+                        "1".to_string(),
+                    )])),
+                    Field::new("name", DataType::Utf8, false),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for column in ["name", "id"] {
+            let err = table
+                .set_unenforced_primary_key([column])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("already set"),
+                "unexpected error: {:?}",
+                err
+            );
+        }
     }
 
     // ----- Branch support -----

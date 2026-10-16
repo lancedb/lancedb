@@ -526,7 +526,8 @@ export abstract class Table {
   abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
-   * Blob v2 columns, including nested dotted paths.
+   * Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+   * Blobs inside lists are omitted because a row ID does not identify an element.
    */
   abstract blobColumns(): Promise<string[]>;
 
@@ -536,6 +537,10 @@ export abstract class Table {
    * Reads the table's current checkout. IDs from another version can fail after
    * compaction unless stable row ids are enabled. Results keep input order and
    * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial results are returned.
+   * Blobs inside lists cannot be fetched by row ID.
+   *
    * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
    * The client splits requests automatically and reads an individual larger
    * blob through the Range route. This method still materializes all bytes in
@@ -553,6 +558,8 @@ export abstract class Table {
    *
    * Preserves input order, duplicates, and nulls. Use this for large payloads.
    * See {@link Table.fetchBlobs} for row-ID validity across versions.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial handles are returned.
    */
   abstract fetchBlobFiles(
     column: string,

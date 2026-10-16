@@ -3,9 +3,16 @@ title: "PyTorch Integration"
 sidebarTitle: "PyTorch"
 description: Learn how to use LanceDB with PyTorch for training and inference.
 icon: fire
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    The PyTorch integration works with local, object-storage and deployment
+    tables in the Python SDK.
 ---
 
-LanceDB provides a seamless integration with PyTorch for training and inference. This allows you to use LanceDB as a backend for your PyTorch models, and to use PyTorch for training and inference. You can use LanceDB to store your data, and PyTorch to train your models.
+Use LanceDB tables as input to a PyTorch `DataLoader`. Select the columns you
+need, choose a batch format, and read data in parallel for training or inference.
 
 ## Quickstart {#quickstart}
 
@@ -68,7 +75,7 @@ entire Arrow batch to a _column-major_ `torch.Tensor`.  In other words, given C 
 Tensor will have shape `(C, R)`.  However, this format generates an error if you are using a
 `torch.utils.data.DataLoader` with the default collation function:
 
-```py Python icon=Python 
+```text
 TypeError: stack(): argument 'tensors' (position 1) must be tuple of Tensors, not Tensor
 ```
 
@@ -93,25 +100,45 @@ a subset of columns, you can significantly reduce your I/O requirements by selec
 `Permutation` class provides a `select_columns` method that provides this functionality.
 
 ```py Python icon=Python 
+import lancedb
+import pyarrow as pa
+import torch
 from lancedb.permutation import Permutation
 
-permutation = Permutation.identity(table).select_columns(["id", "prompt"])
+db = lancedb.connect("memory://")
+prompts = db.create_table(
+    "prompts",
+    pa.table(
+        {
+            "id": range(4),
+            "prompt": ["north", "south", "east", "west"],
+            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]],
+        }
+    ),
+)
+
+permutation = Permutation.identity(prompts).select_columns(["id", "prompt"])
 dataloader = torch.utils.data.DataLoader(
     permutation, batch_size=1024, shuffle=True
 )
 
 for batch in dataloader:
-    print(batch.schema)
+    print(sorted(batch))  # ['id', 'prompt']: the embedding is never read
 ```
+
+Each batch is a dict of the selected columns, the default `Permutation` format
+described above.
 
 ## Using multiple DataLoader workers {#using-multiple-dataloader-workers}
 
-Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. LanceDB tables and `Permutation` objects are picklable, so each worker reopens the table after it starts.
+Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. `Permutation` objects and tables in LanceDB Enterprise are picklable, so each worker reopens the table after it starts. A local table is not, so wrap it in a `Permutation`, as below, to read it from several workers.
 
-Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and it is set to become the Python default. See [the performance guide](/search#performance) for more multiprocessing guidance.
+Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and became the default on Linux and other supported POSIX platforms in Python
+3.14. macOS and Windows default to `spawn`. See
+[Python's start-method documentation](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods). See [the performance guide](/search#performance) for more multiprocessing guidance.
 
 <Note>
-`forkserver` is only available on POSIX systems (Linux and macOS). On Windows, use `spawn` instead — it is the only start method available there.
+`forkserver` is only available on POSIX systems (Linux and macOS). On Windows, use `spawn`, the only available start method.
 </Note>
 
 ```py Python icon=Python 
@@ -131,7 +158,7 @@ dataloader = torch.utils.data.DataLoader(
 
 ### Remote tables in DataLoader workers {#remote-tables-in-dataloader-workers}
 
-Remote LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state.
+Remote LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state. Replace the URI, API key, region and endpoint below with your deployment details. In application code, load credentials from environment variables or a secrets manager.
 
 ```py Python icon=Python 
 import lancedb
@@ -140,8 +167,9 @@ from lancedb.util import tbl_to_tensor
 
 db = lancedb.connect(
     "db://my-database",
-    api_key="sk-...",
+    api_key="your-api-key",
     region="us-east-1",
+    host_override="https://your-endpoint",
 )
 table = db.open_table("my_table")
 
@@ -162,6 +190,14 @@ This sends the connection state, including the API key, to each worker. Use a co
 
 `Permutation.with_connection_factory` lets each worker reopen the base table with custom logic. The factory takes the table name, returns a LanceDB table, and must be picklable.
 
+This example loads the API key inside each worker. Set it in the shell before
+starting the Python program, then replace the database URI, region and endpoint
+in the factory with your deployment details:
+
+```shell
+export LANCEDB_API_KEY="your-api-key"
+```
+
 ```py Python icon=Python 
 import os
 import lancedb
@@ -173,6 +209,7 @@ def open_table(name: str):
         "db://my-database",
         api_key=os.environ["LANCEDB_API_KEY"],
         region="us-east-1",
+        host_override="https://your-endpoint",
     )
     return db.open_table(name)
 

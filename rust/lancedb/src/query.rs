@@ -3806,8 +3806,12 @@ mod tests {
         assert_eq!(results[0].num_columns(), 1);
     }
 
+    #[rstest::rstest]
+    #[case::single_row(1)]
+    #[case::two_rows(2)]
+    #[case::three_rows(3)]
     #[tokio::test]
-    async fn test_take_offsets_preserves_duplicate_multiplicity() {
+    async fn test_take_offsets_preserves_duplicate_multiplicity(#[case] max_batch_length: u32) {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
@@ -3815,7 +3819,7 @@ mod tests {
             .take_offsets(vec![5, 1, 5, 17])
             .select(Select::Columns(vec!["id".to_string()]))
             .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 2,
+                max_batch_length,
                 ..Default::default()
             })
             .await
@@ -3824,7 +3828,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|batch| batch.num_rows() <= max_batch_length as usize)
+        );
         assert!(results.iter().all(|batch| batch.num_columns() == 1));
         let mut ids = results
             .iter()

@@ -6,11 +6,10 @@ icon: layer-group
 keywords: ["group by", "having", "count", "sum", "avg", "aggregate", "approximate"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-Aggregation is one of the two main reasons to reach for SQL rather than a query
-builder -- the SDKs project, filter and search, but they do not group. The other
-is [joins](/sql/dql/join).
+Use SQL aggregates to summarize records, either across a whole table or
+within groups. Common examples include counts by category, totals and averages.
 
 ## Grouping {#grouping}
 
@@ -22,9 +21,8 @@ HAVING count(*) > 10
 ORDER BY n DESC
 ```
 
-`WHERE` filters rows before grouping; `HAVING` filters groups after. Putting a
-row-level predicate in `HAVING` still gives the right answer but does more work,
-because rows that could have been discarded early are grouped first.
+`WHERE` filters rows before grouping; `HAVING` filters groups after. Use `WHERE` for row-level conditions and `HAVING` for conditions on aggregate
+results. The planner may push eligible predicates earlier in the query.
 
 Grouping by several expressions produces one row per distinct combination:
 
@@ -83,8 +81,8 @@ array_agg  string_agg
 
 The approximate functions are the ones worth reaching for on a large table.
 `approx_distinct` answers "roughly how many distinct values" for a fraction of
-what `count(DISTINCT ...)` costs, which matters most where it is most expensive
-— a high-cardinality column.
+what `count(DISTINCT ...)` costs, which can help with high-cardinality columns. Measure the accuracy and runtime
+for your workload.
 
 `DISTINCT` works inside an aggregate: `count(DISTINCT category)`. `FILTER`
 narrows one aggregate without narrowing the others:
@@ -107,12 +105,16 @@ FROM documents TABLESAMPLE (1)
 GROUP BY category
 ```
 
-Scale the result by the inverse of the sample fraction, and treat it as an
-estimate -- a 1% sample of a skewed column will miss rare categories entirely.
+For a uniform percentage sample, counts and sums can be scaled by the inverse
+of the sample fraction to estimate whole-table values. Do not apply that scaling
+to averages, minima or maxima. Small samples can miss rare categories; consider
+the sampling method and uncertainty when interpreting the result.
 
 ## What aggregation does not do {#not}
 
-Aggregates run over rows the query already produced. They cannot combine with
-[vector search](/search/vector-search) in one statement, because similarity
-search has no SQL form. Run the search in an SDK and aggregate its result, or
-materialize the search output first.
+Aggregates run over rows the query already produced. Whether a statement can
+include [vector search](/search/vector-search)
+is described under [SQL vector search](/basics/sql#no-vector-sql). If your server
+does not support that query form, run the
+search in an SDK and aggregate its result, or materialize the search output
+first.

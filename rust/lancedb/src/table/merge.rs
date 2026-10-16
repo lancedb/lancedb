@@ -1350,6 +1350,41 @@ mod lsm_tests {
     }
 
     #[tokio::test]
+    async fn base_table_adapter_use_memwal_false_scans_the_base_only() {
+        use crate::table::datafusion::BaseTableAdapter;
+        use datafusion::prelude::SessionContext;
+
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await; // base: ids 1,2,3
+        table
+            .enable_memwal(MemWalWriteSpec::unsharded())
+            .await
+            .unwrap();
+        // Ids 4,5 land in the active memtable, not the base table.
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_use_memwal(Some(false));
+        let ctx = SessionContext::new();
+        ctx.register_table("base_only", Arc::new(adapter)).unwrap();
+        let batches = ctx
+            .sql("SELECT id FROM base_only")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let mut ids: Vec<i64> = batches
+            .iter()
+            .flat_map(|b| b.column(0).as_primitive::<Int64Type>().values().to_vec())
+            .collect();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 3]);
+    }
+
+    #[tokio::test]
     async fn query_snapshot_preserves_lsm_read_semantics() {
         let dir = tempdir().unwrap();
         let table = id_value_table(&dir).await;
@@ -2000,10 +2035,12 @@ mod lsm_tests {
         );
     }
 
-    /// Claims the base table's bitmap index and keeps it as a B-tree, whose
-    /// flush rows are in the shape the bitmap trainer takes.
+    /// Claims the base table's bitmap index and keeps it as a B-tree.
     #[derive(Debug)]
     struct BitmapAsBTree;
+
+    #[derive(Debug)]
+    struct BitmapAsBTreeIndex(lance::dataset::mem_wal::index::BTreeMemIndex);
 
     fn btree_plugin() -> Arc<dyn lance::dataset::mem_wal::index::MemIndexPlugin> {
         lance::dataset::mem_wal::MemIndexRegistry::default()
@@ -2024,7 +2061,8 @@ mod lsm_tests {
             lance_index::IndexType::Bitmap
         }
         fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
-            btree_plugin().training_criteria()
+            use lance_index::scalar::registry::{TrainingCriteria, TrainingOrdering};
+            TrainingCriteria::new(TrainingOrdering::Values).with_row_id()
         }
         fn validate(
             &self,
@@ -2036,7 +2074,57 @@ mod lsm_tests {
             &self,
             ctx: &lance::dataset::mem_wal::index::MemIndexBuildContext<'_>,
         ) -> lance_core::Result<Arc<dyn lance::dataset::mem_wal::index::MemIndex>> {
-            btree_plugin().create(ctx)
+            let (column, field_id) = ctx.single_column()?;
+            Ok(Arc::new(BitmapAsBTreeIndex(
+                lance::dataset::mem_wal::index::BTreeMemIndex::new(field_id, column.to_string()),
+            )))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl lance::dataset::mem_wal::index::MemIndex for BitmapAsBTreeIndex {
+        fn columns(&self) -> &[String] {
+            self.0.columns()
+        }
+        fn can_answer(&self, query: &dyn lance::dataset::mem_wal::index::MemQuery) -> bool {
+            self.0.can_answer(query)
+        }
+        fn insert(&self, batch: &RecordBatch, row_offset: u64) -> lance_core::Result<()> {
+            self.0.insert(batch, row_offset)
+        }
+        fn resident_bytes(&self) -> usize {
+            self.0.resident_bytes()
+        }
+        fn search(
+            &self,
+            query: &dyn lance::dataset::mem_wal::index::MemQuery,
+            ctx: &lance::dataset::mem_wal::index::SearchContext,
+        ) -> lance_core::Result<Option<lance::dataset::mem_wal::index::MemMatches>> {
+            self.0.search(query, ctx)
+        }
+        async fn flush(
+            &self,
+            ctx: &lance::dataset::mem_wal::index::FlushContext<'_>,
+        ) -> lance_core::Result<lance::dataset::mem_wal::index::FlushOutcome> {
+            // BTree now trains on row addresses, while Bitmap still takes row IDs.
+            // These coincide in the flushed generation, which uses physical IDs.
+            assert!(!ctx.generation()?.dataset.manifest().uses_stable_row_ids());
+            let batches = self
+                .0
+                .to_training_batches(ctx.batch_size)?
+                .into_iter()
+                .map(|batch| {
+                    assert_eq!(batch.schema().field(1).name(), lance_core::ROW_ADDR);
+                    let schema = Arc::new(Schema::new(vec![
+                        batch.schema().field(0).clone(),
+                        Field::new(lance_core::ROW_ID, DataType::UInt64, false),
+                    ]));
+                    RecordBatch::try_new(schema, batch.columns().to_vec())
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            Ok(lance::dataset::mem_wal::index::FlushOutcome::from_batches(
+                batches,
+            ))
         }
     }
 

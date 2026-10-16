@@ -22,6 +22,7 @@ use table::{
 };
 
 pub mod arrow;
+pub mod authz;
 pub mod catalog;
 pub mod connection;
 pub mod error;
@@ -70,6 +71,10 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<listing::FunctionListing>()?;
     m.add_class::<listing::JobListing>()?;
 
+    m.add_class::<authz::AuthorizationClient>()?;
+    m.add_class::<authz::AuthzSubject>()?;
+    m.add_class::<authz::AuthzObject>()?;
+    m.add_class::<authz::AuthzPrivilege>()?;
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
