@@ -13,6 +13,7 @@ from lancedb.video import (
     VIDEO_INDEX_COLUMNS,
     VIDEO_INDEX_SCHEMA,
     VideoFrames,
+    VideoTransform,
     add_videos,
     video_schema,
     _DecoderCache,
@@ -207,13 +208,39 @@ def test_video_schema_and_add_videos(tmp_path):
     add_videos(table, [tmp_path / "a.mp4", encode_video(20)], name=["a", "b"])
     assert table.count_rows() == 2
     assert all(c in table.schema.names for c in ("name", "video", *VIDEO_INDEX_COLUMNS))
-    [row_id] = (
-        table.search()
-        .where("name = 'b'")
-        .select(["name"])
-        .with_row_id(True)
-        .to_arrow()["_rowid"]
-        .to_pylist()
-    )
-    [clip] = VideoFrames(table, "video").fetch_frames([(row_id, [7])])
+    frames = VideoFrames(table, "video", key="name")  # rows named by a column
+    [clip] = frames.fetch_frames([("b", [7])])
     assert np.abs(mean_color(clip[0]) - solid_color(7)).max() < 12
+    with pytest.raises(KeyError):
+        frames.fetch_frames([("nope", [0])])
+
+
+def test_video_transform_decodes_fields_from_a_frames_table(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    clips = db.create_table(
+        "clips", schema=video_schema([pa.field("name", pa.string())])
+    )
+    add_videos(clips, [encode_video(30), encode_video(25)], name=["cam_a", "cam_b"])
+    frames = pa.table(
+        {
+            "state": [[0.1, 0.2], [0.3, 0.4]],
+            "file_a": ["cam_a", "cam_a"],
+            "frame_a": [3, 17],
+            "file_b": ["cam_b", "cam_b"],
+            "frame_b": [20, 1],
+        }
+    )
+    transform = VideoTransform(
+        str(tmp_path / "db"),
+        "clips",
+        key="name",
+        fields={"a": ("file_a", "frame_a"), "b": ("file_b", "frame_b")},
+        window=[0, 1],
+        columns={"state": "state"},
+    )
+    assert set(transform.columns) == {"state", "file_a", "frame_a", "file_b", "frame_b"}
+    items = transform(frames.to_batches()[0])
+    assert len(items) == 2 and tuple(items[0]["a"].shape) == (2, 3, 48, 64)
+    assert np.abs(mean_color(items[1]["a"][0]) - solid_color(17)).max() < 12
+    assert np.abs(mean_color(items[0]["b"][1]) - solid_color(21)).max() < 12
+    assert list(items[0]["state"].shape) == [2]

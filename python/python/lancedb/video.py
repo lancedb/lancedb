@@ -21,11 +21,8 @@ table and needs no sidecar::
     table = db.create_table("clips", schema=schema)
     add_videos(table, paths, name=names)  # reads, indexes and writes the files
 
-    frames = VideoFrames(table, "video")
-    row_ids = table.search().select(["name"]).with_row_id(True).to_arrow()["_rowid"]
-    clips = frames.fetch_frames(
-        [(row_ids[0].as_py(), [0, 1, 2]), (row_ids[3].as_py(), [120])]
-    )
+    frames = VideoFrames(table, "video", key="name")  # one per process or worker
+    clips = frames.fetch_frames([("clip_0", [0, 1, 2]), ("clip_3", [120])])
     # clips[0]: uint8 tensor (3, 3, H, W); clips[1]: (1, 3, H, W)
 
 Requires ``av`` (PyAV) to build the index. Decoding uses torchcodec when it is
@@ -392,9 +389,12 @@ class _PyAVDecoder:
 class VideoFrames:
     """Keyframe-aware frame reads from a table's video blob column.
 
-    One instance per process (or DataLoader worker). It holds no copy of the
-    table: a table handle, the keyframe index of recently used files (bounded
-    to 2,048 files), and open decoders in an LRU bounded by ``decoder_cache_size``
+    One instance per process (or DataLoader worker). Requests name a row by
+    row id, or by a value of ``key`` (a column that identifies the file, say
+    ``"name"``), resolved with one filtered read of that column each. It holds
+    no copy of the table: a table handle, the keyframe index of recently used
+    files (bounded to 2,048 files), and open decoders in an LRU bounded by
+    ``decoder_cache_size``
     and ``byte_budget`` of fetched bytes, so a worker's memory is at most
     that budget plus the decoders' own state. Repeated reads from the same file
     reuse its header and already-fetched spans. ``probe_bytes`` is how much of
@@ -411,9 +411,12 @@ class VideoFrames:
         byte_budget: int | None = 2 << 30,
         decode_threads: int = 8,
         probe_bytes: int = _PROBE_BYTES,
+        key: str | None = None,
     ) -> None:
         self._table = table
         self._column = column
+        self._key = key
+        self._key_rows: dict[Any, int] = {}
         self._probe = probe_bytes
         self._cache = _DecoderCache(decoder_cache_size, byte_budget)
         self._lock = (
@@ -427,13 +430,33 @@ class VideoFrames:
     def fetch_frames(self, requests: Sequence[tuple[int, Sequence[int]]]) -> list[Any]:
         """Decode frames by row id and frame number.
 
-        ``requests`` is a list of ``(row_id, frame_numbers)``. Returns one
+        ``requests`` is a list of ``(row, frame_numbers)`` where ``row`` is a
+        row id, or a value of the ``key`` column when one was given. Returns one
         ``(T, 3, H, W)`` uint8 array per request, in order: a torch tensor with
-        torchcodec, a numpy array with the PyAV fallback. Row ids come from
-        ``with_row_id(True)`` on a query. Safe to call from several threads.
+        torchcodec, a numpy array with the PyAV fallback. Safe to call from
+        several threads.
         """
         with self._lock:
+            if self._key is not None:
+                requests = [(self._row_id(k), frames) for k, frames in requests]
             return self._fetch_frames(requests)
+
+    def _row_id(self, key_value: Any) -> int:
+        """Row id for a key value: one filtered read of the key column, cached."""
+        if key_value not in self._key_rows:
+            literal = repr(key_value) if isinstance(key_value, str) else key_value
+            hits = (
+                self._table.search()
+                .where(f"{self._key} = {literal}")
+                .select([self._key])
+                .with_row_id(True)
+                .limit(2)
+                .to_arrow()
+            )
+            if hits.num_rows != 1:
+                raise KeyError(f"{hits.num_rows} rows have {self._key} = {key_value!r}")
+            self._key_rows[key_value] = hits["_rowid"][0].as_py()
+        return self._key_rows[key_value]
 
     def _fetch_frames(self, requests: Sequence[tuple[int, Sequence[int]]]) -> list[Any]:
         windows: dict[int, list[tuple[int, int]]] = {}
@@ -564,3 +587,93 @@ class VideoFrames:
 
     def _open_handle(self, row_id: int):
         return self._table.fetch_blob_files(self._column, [row_id])[0]
+
+
+# ---------------------------------------------------------------------------
+# Batch transform for lancedb.StreamingDataset / torch DataLoader
+# ---------------------------------------------------------------------------
+
+
+class VideoTransform:
+    """Turn rows of a per-frame table into training items with decoded frames.
+
+    A declarative field spec, usable as ``StreamingDataset(..., transform=...)``
+    or inside a map-style ``__getitems__``::
+
+        transform = VideoTransform(
+            videos_uri, "videos", column="video",
+            fields={"laptop": ("video_row_laptop", "frame_laptop"),
+                    "phone": ("video_row_phone", "frame_phone")},
+            window=[0],  # frame offsets; [-1, 0, 1] gives a 3-frame clip
+            columns={"state": "observation_state", "action": "action_chunk"},
+        )
+        ds = StreamingDataset(
+            frames_table, columns=transform.columns, transform=transform
+        )
+
+    ``fields`` maps an output name to the two row columns that locate the frame:
+    the videos-table row id (or ``key`` value) and the frame number. Every
+    camera of the batch is fetched in one call. One ``VideoFrames`` is opened
+    per process on first use, so the transform pickles into DataLoader workers.
+    """
+
+    def __init__(
+        self,
+        uri: str,
+        table: str,
+        *,
+        fields: dict[str, tuple[str, str]],
+        column: str = "video",
+        window: Sequence[int] = (0,),
+        columns: dict[str, str] | None = None,
+        key: str | None = None,
+        decode_threads: int = 16,
+        **reader_options: Any,
+    ) -> None:
+        self.uri, self.table, self.column, self.key = uri, table, column, key
+        self.fields, self.window = dict(fields), list(window)
+        self.pass_through = dict(columns or {})
+        self.reader_options = {"decode_threads": decode_threads, **reader_options}
+        self._video: VideoFrames | None = None
+
+    @property
+    def columns(self) -> list[str]:
+        """Row columns the transform reads, for ``StreamingDataset(columns=)``."""
+        return [
+            *self.pass_through.values(),
+            *{c for pair in self.fields.values() for c in pair},
+        ]
+
+    def __call__(self, batch: pa.RecordBatch | pa.Table) -> list[dict[str, Any]]:
+        if self._video is None:
+            import lancedb
+
+            videos = lancedb.connect(self.uri).open_table(self.table)
+            self._video = VideoFrames(
+                videos, self.column, key=self.key, **self.reader_options
+            )
+        rows = batch.to_pylist()
+        items = [
+            {out: _to_tensor(r[src]) for out, src in self.pass_through.items()}
+            for r in rows
+        ]
+        names = list(self.fields)
+        requests = [
+            (r[file_col], [r[frame_col] + o for o in self.window])
+            for name in names
+            for file_col, frame_col in [self.fields[name]]
+            for r in rows
+        ]
+        clips = self._video.fetch_frames(requests)
+        for k, name in enumerate(names):
+            for item, clip in zip(items, clips[k * len(rows) : (k + 1) * len(rows)]):
+                item[name] = clip if len(self.window) > 1 else clip[0]
+        return items
+
+
+def _to_tensor(value: Any) -> Any:
+    try:
+        import torch
+    except ImportError:
+        return value
+    return torch.as_tensor(value) if isinstance(value, (list, int, float)) else value
