@@ -12,7 +12,7 @@ Sentence transformer embeddings are normalized by default. It is recommended to 
 </Info>
 
 <Warning>
-The `trust_remote_code` parameter defaults to `True`, which allows models to execute arbitrary code from their Hugging Face repository during loading. If you are loading untrusted models, set `trust_remote_code=False` to prevent remote code execution.
+Setting `trust_remote_code=True` allows the model to execute arbitrary code from its Hugging Face repository during loading. Only enable it for repositories you trust, and pin `revision` to a commit hash. When a table using such a model is opened in a new process, the model must be approved with `get_registry().allow_remote_code(...)`. See [Trusting remote code and custom endpoints](/embedding#trusting-remote-code-and-custom-endpoints).
 </Warning>
 
 | Parameter | Type | Default Value | Description |
@@ -20,7 +20,8 @@ The `trust_remote_code` parameter defaults to `True`, which allows models to exe
 | `name` | `str` | `all-MiniLM-L6-v2` | The name of the model |
 | `device` | `str` | `cpu` | The device to run the model on (can be `cpu` or `gpu`) |
 | `normalize` | `bool` | `True` | Whether to normalize the input text before feeding it to the model |
-| `trust_remote_code` | `bool` | `True` | Whether to trust and execute remote code from the model's Huggingface repository |
+| `trust_remote_code` | `bool` | `False` | Whether to trust and execute remote code from the model's Huggingface repository |
+| `revision` | `str` | `None` | The model revision to load, such as a commit hash |
 
 
 <Details title="Check out available sentence-transformer models here!">
