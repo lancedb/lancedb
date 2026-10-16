@@ -1,0 +1,96 @@
+---
+title: "Materialized view"
+sidebarTitle: "Materialized View"
+description: "Create, open, list and drop a table whose contents are defined by a query."
+icon: table
+keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Both offerings support materialized views. See [Enterprise compatibility](#deployment) for connection and server requirements.
+---
+
+A materialized view is a table whose contents are defined by a query over
+another table. The query is recorded in the view's schema, and a refresh
+brings its stored rows up to date with the source.
+
+The result is an ordinary table -- queryable, indexable, searchable, and present
+in `table_names()`. Nothing about reading it is special.
+
+This page covers creating and managing one. Keeping it current is
+[Refresh a materialized view](/feature-engineering/materialized-views).
+
+<Note>
+In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view) and [`SHOW MATERIALIZED VIEWS`](/sql/ddl/materialized-view#show).
+</Note>
+
+## Create a materialized view {#create}
+
+<CodeGroup>
+```python Python icon="python"
+view = db.create_materialized_view(
+    "recent_docs",
+    source="documents",
+    select=["id", "title", "embedding"],
+    where="created_at > TIMESTAMP '2026-01-01 00:00:00'",
+)
+```
+
+```typescript TypeScript icon="square-js"
+const view = await db.createMaterializedView("recent_docs", "documents", {
+  select: ["id", "title", "embedding"],
+  where: "created_at > TIMESTAMP '2026-01-01 00:00:00'",
+});
+```
+</CodeGroup>
+
+`source` names the table the view reads. With Python SDK 0.40.0, create that
+table with stable row IDs before creating the view. The
+[complete example](/feature-engineering/materialized-views#create-and-refresh)
+shows the setup. `select`, `where` and `limit` define the query.
+
+## Open, list and drop views {#manage}
+
+| | Python | TypeScript | SQL |
+| --- | --- | --- | --- |
+| create | `create_materialized_view` | `createMaterializedView` | `CREATE MATERIALIZED VIEW` |
+| open | `open_materialized_view` | `openMaterializedView` | -- |
+| list | `list_materialized_views` | `listMaterializedViews` | `SHOW MATERIALIZED VIEWS` |
+| refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
+| drop | `drop_table` | `dropTable` | `DROP TABLE` |
+
+<Note>
+On a local database, `list_materialized_views` reads table schemas to find
+views. On Enterprise, it asks the server for the view listing, as
+`SHOW MATERIALIZED VIEWS` does.
+</Note>
+
+A view is dropped with `drop_table`, because a materialized view **is** a table.
+That also means dropping one removes stored rows -- unlike dropping a
+[view](/management/view), which removes only a saved query.
+
+## Read the view and its definition {#working}
+
+`view.table` is the underlying table, for querying, indexing, or search.
+`view.definition` contains the query's select list, predicate and limit. Both are properties; on an async view, the definition is read with
+`await view.definition()`.
+
+## Enterprise compatibility {#deployment}
+
+Enterprise supports creating and refreshing materialized views on remote
+compute. Use the SDK version supported by your deployment, or the
+[SQL interface](/sql/ddl/materialized-view). See
+[Enterprise refreshes](/feature-engineering/materialized-views#availability)
+for compatibility considerations when upgrading an existing pipeline.
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+    How a refresh works, and what it writes.
+  </Card>
+  <Card title="Views" icon="eye" href="/management/view">
+    The non-materialized counterpart, defined in SQL.
+  </Card>
+</CardGroup>

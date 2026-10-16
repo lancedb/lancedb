@@ -47,6 +47,21 @@ fn binary_input_batch(ids: &[i64], payloads: &[Option<&[u8]>]) -> RecordBatch {
     .unwrap()
 }
 
+/// What pyarrow infers for a batch of dicts whose blob values are all `None`.
+fn null_typed_input_batch(ids: &[i64]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Null, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            new_null_array(&DataType::Null, ids.len()),
+        ],
+    )
+    .unwrap()
+}
+
 async fn create_inline_blob_table(
     db: &Connection,
     name: &str,
@@ -255,6 +270,38 @@ async fn add_accepts_null_blob_rows() -> Result<()> {
     Ok(())
 }
 
+/// A batch whose blob values are all null carries no type information — pyarrow infers
+/// `DataType::Null` for it, which is what a row-at-a-time insert of an optional blob column
+/// looks like. Such a batch must be accepted, both as the first write and after bytes have
+/// already been written.
+#[tokio::test]
+async fn add_accepts_all_null_typed_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table.add(null_typed_input_batch(&[1])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 1);
+    assert!(query_image_struct(&table).await.is_null(0));
+
+    table
+        .add(binary_input_batch(&[2], &[Some(b"bytes".as_slice())]))
+        .execute()
+        .await?;
+    table.add(null_typed_input_batch(&[3])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 3);
+
+    let row_ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert!(bytes.is_null(0));
+    assert_eq!(bytes.value(1), b"bytes");
+    assert!(bytes.is_null(2));
+    Ok(())
+}
+
 #[tokio::test]
 async fn add_rejects_uncoercible_blob_input() -> Result<()> {
     let tmp = tempdir().unwrap();
@@ -454,17 +501,23 @@ async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
 fn assert_missing_blob_row_ids(err: &Error) {
     assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
     let message = err.to_string();
-    assert!(message.contains("row ids"), "{message}");
+    assert!(
+        message.contains("row ids but some do not exist in the table"),
+        "{message}"
+    );
     assert!(!message.contains("rowaddr"), "{message}");
     assert!(!message.contains("fragment"), "{message}");
 }
 
 async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let expected = format!("first missing row ids: [{}]", row_ids[0]);
     let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
 
     let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
 
     let err = table
         .fetch_blob_ranges(
@@ -477,6 +530,7 @@ async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]
         .await
         .unwrap_err();
     assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
     Ok(())
 }
 
@@ -561,6 +615,47 @@ async fn blob_columns_lists_nested_dotted_paths() -> Result<()> {
     ]));
     let table = db.create_empty_table("t", schema).execute().await?;
     assert_eq!(table.blob_columns().await?, vec!["thumbnail", "info.blob"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_columns_excludes_list_elements_and_fetches_explain_limitation() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("thumbnail", true),
+        Field::new("imgs", DataType::List(Arc::new(blob("item", true))), true),
+    ]));
+    let table = db
+        .create_empty_table("list_blobs", schema)
+        .execute()
+        .await?;
+
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail"]);
+    for column in ["imgs", "imgs.item"] {
+        let err = table.fetch_blobs(column, &[0]).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table.fetch_blob_files(column, &[0]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table
+            .fetch_blob_ranges(column, [BlobRangeRequest::new(0, 0, 1)])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+    }
     Ok(())
 }
 
@@ -744,6 +839,30 @@ async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
 }
 
 #[tokio::test]
+async fn fetch_blob_apis_reject_row_past_fragment_end() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2, 3], &[Some(b"a"), Some(b"b"), Some(b"c")])
+            .await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3]).await?;
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3, 0]).await
+}
+
+#[tokio::test]
+async fn fetch_blobs_identifies_multiple_missing_ids_without_partial_results() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"a"), Some(b"b")]).await?;
+
+    let err = table.fetch_blobs("image", &[0, 2, 3]).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains("first missing row ids: [2, 3]"));
+    Ok(())
+}
+
+#[tokio::test]
 async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap()).execute().await?;
@@ -782,6 +901,23 @@ async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
     table.delete("id = 2").await?;
 
     assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one"), Some(b"two")]).await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_id = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_id = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
+
+    table.delete("id = 2").await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_id, live_row_id]).await
 }
 
 #[tokio::test]

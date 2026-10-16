@@ -19,7 +19,7 @@ instead.
 optional limit: number;
 ```
 
-An optional limit to the number of results to return.
+The maximum number of names to return. Omitted returns all names; zero returns none.
 
 ***
 

@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.39.0-beta.6"
+version = "0.41.0-beta.7"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -8,13 +8,14 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 
 [lib]
 name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
+arc-swap = "1.9"
 arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true

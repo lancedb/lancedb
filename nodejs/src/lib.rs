@@ -10,12 +10,15 @@ use std::collections::HashMap;
 use env_logger::Env;
 use napi_derive::*;
 
+mod blob;
+mod catalog;
 mod connection;
 mod error;
 mod header;
 mod index;
 mod iterator;
 mod job;
+mod listing;
 pub mod merge;
 pub mod otel;
 pub mod permutation;

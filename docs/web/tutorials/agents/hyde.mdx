@@ -1,0 +1,24 @@
+---
+title: "HyDE: hypothetical document embeddings"
+sidebarTitle: "HyDE"
+description: "Generate a hypothetical answer, then retrieve documents similar to it."
+---
+
+An LLM writes a hypothetical document answering the query, and that document --
+not the query -- is embedded and used for retrieval. It works because a
+plausible answer sits nearer the real answers in embedding space than a question
+does.
+
+<Note>
+This example is a runnable notebook in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository rather than a page here.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Advance-RAG-with-HyDE/main.ipynb">
+    Run it end to end in the browser.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/lancedb/vectordb-recipes/tree/main/examples/Advance-RAG-with-HyDE">
+    Read the source.
+  </Card>
+</CardGroup>

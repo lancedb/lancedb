@@ -8,6 +8,18 @@
 
 ## Properties
 
+### blobRequestConcurrency?
+
+```ts
+optional blobRequestConcurrency: number;
+```
+
+Maximum number of concurrent blob HTTP requests across all tables and
+blob handles on this connection. Defaults to 8. Can also be set with
+`LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`. Must be greater than zero.
+
+***
+
 ### extraHeaders?
 
 ```ts
@@ -21,6 +33,10 @@ optional extraHeaders: Record<string, string>;
 ```ts
 optional idDelimiter: string;
 ```
+
+The delimiter joining a namespace path and a name into one object
+identifier. `"$"` is the only supported value, and leaving this unset is
+how to get it; anything else is rejected when the connection is created.
 
 ***
 
