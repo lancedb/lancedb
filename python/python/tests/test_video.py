@@ -236,11 +236,10 @@ def test_video_transform_decodes_fields_from_a_frames_table(tmp_path):
         key="name",
         fields={"a": ("file_a", "frame_a"), "b": ("file_b", "frame_b")},
         window=[0, 1],
-        columns={"state": "state"},
     )
-    assert set(transform.columns) == {"state", "file_a", "frame_a", "file_b", "frame_b"}
     items = transform(frames.to_batches()[0])
     assert len(items) == 2 and tuple(items[0]["a"].shape) == (2, 3, 48, 64)
     assert np.abs(mean_color(items[1]["a"][0]) - solid_color(17)).max() < 12
     assert np.abs(mean_color(items[0]["b"][1]) - solid_color(21)).max() < 12
-    assert list(items[0]["state"].shape) == [2]
+    assert list(items[0]["state"].shape) == [2]  # passed through as a tensor
+    assert set(items[0]) == {"state", "a", "b"}  # the locating columns are consumed

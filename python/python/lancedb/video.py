@@ -597,24 +597,23 @@ class VideoFrames:
 class VideoTransform:
     """Turn rows of a per-frame table into training items with decoded frames.
 
-    A declarative field spec, usable as ``StreamingDataset(..., transform=...)``
-    or inside a map-style ``__getitems__``::
+    Pass it to ``StreamingDataset(..., transform=)`` or call it on the batch a
+    map-style ``__getitems__`` fetched::
 
-        transform = VideoTransform(
-            videos_uri, "videos", column="video",
-            fields={"laptop": ("video_row_laptop", "frame_laptop"),
-                    "phone": ("video_row_phone", "frame_phone")},
-            window=[0],  # frame offsets; [-1, 0, 1] gives a 3-frame clip
-            columns={"state": "observation_state", "action": "action_chunk"},
-        )
-        ds = StreamingDataset(
-            frames_table, columns=transform.columns, transform=transform
-        )
+        transform = VideoTransform(uri, "videos", fields={
+            "laptop": ("video_row_laptop", "frame_laptop"),
+            "phone": ("video_row_phone", "frame_phone"),
+        })
+        ds = StreamingDataset(frames_table, transform=transform)
 
-    ``fields`` maps an output name to the two row columns that locate the frame:
-    the videos-table row id (or ``key`` value) and the frame number. Every
-    camera of the batch is fetched in one call. One ``VideoFrames`` is opened
-    per process on first use, so the transform pickles into DataLoader workers.
+    ``fields`` is ``{output name: (which video, which frame)}``: the two
+    columns of the frames table that say which row of the videos table the
+    image comes from (a row id, or a ``key`` value) and its frame number. Every
+    other column of the batch passes through under its own name, as a tensor
+    when it is numeric. ``window`` lists frame offsets, so ``[-1, 0, 1]`` gives
+    a 3-frame clip per field. All images of the batch are fetched in one call.
+    One ``VideoFrames`` is opened per process on first use, so the transform
+    pickles into DataLoader workers.
     """
 
     def __init__(
@@ -625,24 +624,14 @@ class VideoTransform:
         fields: dict[str, tuple[str, str]],
         column: str = "video",
         window: Sequence[int] = (0,),
-        columns: dict[str, str] | None = None,
         key: str | None = None,
         decode_threads: int = 16,
         **reader_options: Any,
     ) -> None:
         self.uri, self.table, self.column, self.key = uri, table, column, key
         self.fields, self.window = dict(fields), list(window)
-        self.pass_through = dict(columns or {})
         self.reader_options = {"decode_threads": decode_threads, **reader_options}
         self._video: VideoFrames | None = None
-
-    @property
-    def columns(self) -> list[str]:
-        """Row columns the transform reads, for ``StreamingDataset(columns=)``."""
-        return [
-            *self.pass_through.values(),
-            *{c for pair in self.fields.values() for c in pair},
-        ]
 
     def __call__(self, batch: pa.RecordBatch | pa.Table) -> list[dict[str, Any]]:
         if self._video is None:
@@ -653,9 +642,9 @@ class VideoTransform:
                 videos, self.column, key=self.key, **self.reader_options
             )
         rows = batch.to_pylist()
+        used = {c for pair in self.fields.values() for c in pair}
         items = [
-            {out: _to_tensor(r[src]) for out, src in self.pass_through.items()}
-            for r in rows
+            {c: _to_tensor(v) for c, v in r.items() if c not in used} for r in rows
         ]
         names = list(self.fields)
         requests = [
