@@ -98,9 +98,6 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
-
-    { crate = "zip@7.2.0", reason = "This version is yanked but candle relies on it.  Acceptable risk until candle upgrades." }
-
 ]
 
 # ---------------------------------------------------------------------------
