@@ -5,7 +5,7 @@ description: Integrate Cohere's powerful reranking API with LanceDB for enhanced
 
 ---
 
-import { PyRerankingCohereUsage } from '/snippets/integrations.mdx';
+import { PyRerankingCohereUsage } from '/snippets/provider_examples.mdx';
 
 # Cohere Reranker
 
@@ -17,6 +17,8 @@ This reranker uses the [Cohere](https://cohere.ai/) API to rerank the search res
 ```shell
 pip install cohere
 ```
+
+Replace the credential placeholders with your provider credentials. In application code, load credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

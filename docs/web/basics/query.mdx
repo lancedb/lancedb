@@ -1,94 +1,55 @@
 ---
 title: "Queries"
 sidebarTitle: "Query"
-description: "Running a query, and reading its results before it finishes."
+description: "Choose how to query your data and read the results."
 icon: magnifying-glass
-keywords: ["query", "async", "streaming", "arrow", "reader", "execute_query"]
+keywords: ["query", "search", "SQL", "async", "streaming", "results"]
 ---
 
-A query returns rows. How you get them depends on two choices that are easy to
-conflate: whether **your thread** blocks, and whether you take the results all
-at once or stream them as they arrive.
+## Querying tables {#queries}
 
-## Blocking or not is a language concern {#async-client}
+A query selects data from your tables. You can filter rows, choose columns,
+search for similar content or combine those operations. For example, a video
+application might find clips similar to a sample and return only those recorded
+in the last month.
 
-A concern of your language, not of LanceDB. The work is identical either way.
+## SDK searches and SQL queries {#searches}
 
-<CodeGroup>
-```python Python icon="python"
-db = lancedb.connect("db://my-db", api_key="...")         # blocking
-tbl = db.open_table("documents")
+| Interface | When to use it |
+| --- | --- |
+| **SDK query builders** | Build vector, full-text and hybrid searches, apply filters and choose the fields to return. Available in OSS and Enterprise. |
+| **Enterprise SQL** | Write SQL queries for filtering, aggregation, joins and other data curation tasks. Connect through Python or a Flight SQL client. |
 
-db = await lancedb.connect_async("db://my-db", api_key="...")   # coroutines
-tbl = await db.open_table("documents")
-```
+Both interfaces work with LanceDB tables. Choose the one that supports your
+operation and fits your application. See [SQL](/basics/sql) for connection
+instructions and SQL search support, and [Search](/search) for the query builders.
 
-```typescript TypeScript icon="square-js"
-// TypeScript is async throughout; there is no blocking form.
-const db = await lancedb.connect("db://my-db", { apiKey: "..." });
-const tbl = await db.openTable("documents");
-```
-</CodeGroup>
+## Collect or stream results {#results}
 
-Python offers both. `AsyncConnection` exposes the same surface as coroutines, so
-choosing between them is about the program you are writing -- a service wants
-the async form, a script does not care.
+- **Collect the results** when you want a list, Arrow table or DataFrame that
+  fits in memory. Use a result limit and select only the columns you need.
+- **Read batches** when you want to process a large result incrementally.
+  Reading batches avoids loading the entire result into application memory.
+  It does not guarantee that the query can return its first batch immediately.
 
-## Reading before the query finishes {#queries}
+### Asynchronous clients {#async-client}
 
-A query is not a job, but it has the same shape of choice: wait for everything,
-or take a handle and start reading.
+An async client lets your application do other work while a request is waiting.
+That is separate from whether you collect results or read them in batches.
+Python offers synchronous and asynchronous clients; TypeScript uses async APIs.
+Check the SDK reference for the methods available in your client.
 
-<CodeGroup>
-```python Python icon="python"
-reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 1000")
-table = reader.read_all()
+### Query handles and background jobs {#jobs}
 
-query = db.execute_query_async("SELECT id, text FROM my_docs")
-```
+An Enterprise SQL query handle lets you inspect query execution and request
+cancellation. Background operations such as index builds return a
+[job](/basics/jobs) handle instead. Use the API for the returned handle to
+check status and retrieve results.
 
-```sql SQL
-SELECT id, text FROM my_docs LIMIT 1000
-```
-</CodeGroup>
+## Learn more {#next}
 
-`execute_query` returns a blocking Arrow reader **once results start arriving**
--- it does not wait for the whole query to finish. Results stream as record
-batches, so a large result set does not have to fit in memory before you see its
-first row.
-
-`execute_query_async` returns the query handle instead:
-
-```python
-query = db.execute_query_async("SELECT id, text FROM my_docs")
-
-query.id            # identifies it on the server
-query.describe()    # what it is doing, without consuming results
-reader = query.reader()   # stream the rows when you want them
-query.cancel()      # stop it
-```
-
-`describe_query(id)` reports on one from elsewhere, the way `open_job(id)` does
-for a job.
-
-<Note>
-SQL requires a deployment. See [SQL](/basics/sql#sql-is-remote).
-</Note>
-
-Query-builder searches -- vector, full-text, hybrid -- are ordinary calls that
-return results. They are fast enough not to need a handle. See
-[Query](/search).
-
-## Searches are ordinary calls {#searches}
-
-Query-builder searches -- [vector](/search/vector-search),
-[full-text](/search/full-text-search), [hybrid](/search/hybrid-search) -- return
-results directly. They are fast enough not to need a handle, and they have no
-SQL form. See [Semantic Search](/search).
-
-## When the work outlives the call {#jobs}
-
-Some operations take longer than a query should: building an index, refreshing a
-computed column, registering a function. Those return a **job** rather than
-rows, and a job is a different handle with a different shape. See
-[Jobs](/basics/jobs).
+- [Quickstart](/quickstart): run a complete create, insert and search example.
+- [Search](/search): choose vector, full-text or hybrid retrieval.
+- [Filtering](/search/filtering): narrow results with predicates.
+- [SQL](/basics/sql): connect a client and run SQL queries.
+- [SDKs](/basics/sdk): choose a language and find its API reference.

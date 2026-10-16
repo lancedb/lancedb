@@ -4,6 +4,8 @@
 from pathlib import Path
 import shutil
 
+import pytest
+
 
 def test_connection():
     # --8<-- [start:connect]
@@ -29,19 +31,16 @@ async def connect_async_example():
 
 
 def connect_enterprise_quickstart_config():
+    # --8<-- [start:connect_enterprise_quickstart]
+    import os
+
     import lancedb
 
-    # --8<-- [start:connect_enterprise_quickstart]
-    uri = "db://your-database-uri"
-    api_key = "your-api-key"
-    region = "us-east-1"
-    host_override = "https://your-enterprise-endpoint.com"
-
     db = lancedb.connect(
-        uri=uri,
-        api_key=api_key,
-        region=region,
-        host_override=host_override,
+        uri=os.environ["LANCEDB_URI"],  # db://your-database
+        api_key=os.environ["LANCEDB_API_KEY"],
+        region=os.environ.get("LANCEDB_REGION", "us-east-1"),
+        host_override=os.environ["LANCEDB_HOST_OVERRIDE"],  # https://your-endpoint
     )
     # --8<-- [end:connect_enterprise_quickstart]
     return db
@@ -57,15 +56,27 @@ def test_connect_enterprise_quickstart(monkeypatch):
         return object()
 
     monkeypatch.setattr(lancedb, "connect", fake_connect)
+    monkeypatch.setenv("LANCEDB_URI", "db://your-database")
+    monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
+    monkeypatch.delenv("LANCEDB_REGION", raising=False)
+    monkeypatch.setenv("LANCEDB_HOST_OVERRIDE", "https://your-endpoint")
 
-    db = connect_enterprise_quickstart_config()
-    assert db is not None
+    assert connect_enterprise_quickstart_config() is not None
     assert captured == {
-        "uri": "db://your-database-uri",
+        "uri": "db://your-database",
         "api_key": "your-api-key",
         "region": "us-east-1",
-        "host_override": "https://your-enterprise-endpoint.com",
+        "host_override": "https://your-endpoint",
     }
+
+
+def test_connect_enterprise_quickstart_requires_an_endpoint(monkeypatch):
+    monkeypatch.setenv("LANCEDB_URI", "db://your-database")
+    monkeypatch.setenv("LANCEDB_API_KEY", "your-api-key")
+    monkeypatch.delenv("LANCEDB_HOST_OVERRIDE", raising=False)
+
+    with pytest.raises(KeyError, match="LANCEDB_HOST_OVERRIDE"):
+        connect_enterprise_quickstart_config()
 
 
 def connect_object_storage_config():
@@ -105,12 +116,24 @@ def namespace_table_ops_example():
         mode="create",  # use "overwrite" only if you want to replace existing table
     )
 
-    # Verify
-    print(db.list_namespaces())  # ['prod']
-    print(db.list_namespaces(namespace_path=["prod"]))  # ['recommendations', 'search']
-    print(db.list_tables(namespace_path=["prod", "search"]))  # ['user']
-    print(db.list_tables(namespace_path=["prod", "recommendations"]))  # ['user']
+    # Verify: listings return a response with the names and a page token
+    print(db.list_namespaces().namespaces)  # ['prod']
+    print(db.list_namespaces(namespace_path=["prod"]).namespaces)
+    # ['recommendations', 'search']
+    print(db.list_tables(namespace_path=["prod", "search"]).tables)  # ['user']
+    print(db.list_tables(namespace_path=["prod", "recommendations"]).tables)  # ['user']
     # --8<-- [end:namespace_table_ops]
+
+
+def test_namespace_table_ops(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    namespace_table_ops_example()
+    assert capsys.readouterr().out.splitlines() == [
+        "['prod']",
+        "['recommendations', 'search']",
+        "['user']",
+        "['user']",
+    ]
 
 
 def namespace_admin_ops_example():
@@ -124,8 +147,8 @@ def namespace_admin_ops_example():
     db.create_namespace(["prod", "search"])
 
     child_namespaces = db.list_namespaces(namespace_path=["prod"]).namespaces
-    print(f"Child namespaces under {namespace}: {child_namespaces}")
-    # Child namespaces under ['prod', 'search']: ['search']
+    print(f"Child namespaces under ['prod']: {child_namespaces}")
+    # Child namespaces under ['prod']: ['search']
 
     metadata = db.describe_namespace(["prod", "search"])
     print(f"Metadata for namespace {namespace}: {metadata}")
@@ -134,7 +157,17 @@ def namespace_admin_ops_example():
     db.drop_namespace(["prod", "search"], mode="skip")
     db.drop_namespace(["prod"], mode="skip")
     # --8<-- [end:namespace_admin_ops]
-    return child_namespaces, metadata
+    return db, child_namespaces, metadata
+
+
+def test_namespace_admin_ops(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    db, child_namespaces, metadata = namespace_admin_ops_example()
+    assert child_namespaces == ["search"]
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "Child namespaces under ['prod']: ['search']"
+    )
+    assert db.list_namespaces().namespaces == []
 
 async def connect_object_storage_config_async():
     # --8<-- [start:connect_object_storage_async]
@@ -146,3 +179,32 @@ async def connect_object_storage_config_async():
     # --8<-- [end:connect_object_storage_async]
 
     return async_db
+
+
+def test_connect_enterprise_placeholders(monkeypatch):
+    import lancedb
+
+    captured = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(lancedb, "connect", fake_connect)
+    # --8<-- [start:connect_enterprise_placeholders]
+    import lancedb
+
+    db = lancedb.connect(
+        uri="db://your-database",
+        api_key="your-api-key",
+        region="us-east-1",
+        host_override="https://your-endpoint",
+    )
+    # --8<-- [end:connect_enterprise_placeholders]
+    assert db is not None
+    assert captured == {
+        "uri": "db://your-database",
+        "api_key": "your-api-key",
+        "region": "us-east-1",
+        "host_override": "https://your-endpoint",
+    }

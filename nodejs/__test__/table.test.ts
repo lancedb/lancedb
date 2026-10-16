@@ -10,6 +10,7 @@ import * as tmp from "tmp";
 import {
   AutoQuery,
   type BlobInput,
+  type BlobMode,
   Connection,
   MatchQuery,
   PhraseQuery,
@@ -18,6 +19,7 @@ import {
   VectorQuery,
   blob,
   connect,
+  isBlobField,
   tokenize,
 } from "../lancedb";
 import {
@@ -640,11 +642,11 @@ describe.each(arrowVersions)(
       );
     });
 
-    it("should expose useLsm on takeRowIds as the base-only escape hatch", async () => {
+    it("should expose useMemWal on takeRowIds as the base-only escape hatch", async () => {
       await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
-      // useLsm(false) is reachable on TakeQuery (the escape hatch for MemWAL tables,
+      // useMemWal(false) is reachable on TakeQuery (the escape hatch for MemWAL tables,
       // where take-by-row-id auto-routes to the LSM scanner and is rejected).
-      const res = await table.takeRowIds([0, 2]).useLsm(false).toArray();
+      const res = await table.takeRowIds([0, 2]).useMemWal(false).toArray();
       expect(res.map((r) => r.id)).toEqual([1, 3]);
     });
 
@@ -2817,6 +2819,18 @@ describe("when dealing with blob columns", () => {
     expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
   });
 
+  it("rejects a whole blob read batch when one row ID was deleted", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await table.delete("id = 2");
+
+    await expect(table.fetchBlobs("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+    await expect(table.fetchBlobFiles("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+  });
+
   it("adds a LargeBinary Arrow column to a blob table", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([new Field("id", new Int64()), blob("image")]);
@@ -3004,6 +3018,161 @@ describe("when dealing with blob columns", () => {
     expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
   });
 
+  it("toArrow returns blob bytes with blobMode bytes", async () => {
+    const { table, alpha, beta } = await openBlobTable();
+    const result = await table.query().toArrow({ blobMode: "bytes" });
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const byId = new Map(
+      result.toArray().map((row) => [Number(row.id), row.image]),
+    );
+    expect(Buffer.from(byId.get(1)!)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!)).toEqual(beta);
+    expect(byId.get(3)).toBeNull();
+  });
+
+  it("toArray returns blob bytes and keeps _rowid only when asked", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [plain] = await table
+      .query()
+      .where("id = 1")
+      .select(["id", "image"])
+      .toArray({ blobMode: "bytes" });
+    expect(Object.keys(plain)).toEqual(["id", "image"]);
+    expect(Buffer.from(plain.image)).toEqual(alpha);
+
+    const [withRowId] = await table
+      .query()
+      .where("id = 1")
+      .withRowId()
+      .toArray({ blobMode: "bytes" });
+    expect(withRowId._rowid).toBe(rowIds[0]);
+    expect(Buffer.from(withRowId.image)).toEqual(alpha);
+  });
+
+  it("fills a renamed blob column with bytes", async () => {
+    const { table, beta } = await openBlobTable();
+    const [row] = await table
+      .query()
+      .where("id = 2")
+      .select(
+        new Map([
+          ["key", "id"],
+          ["picture", "image"],
+        ]),
+      )
+      .toArray({ blobMode: "bytes" });
+    expect(Number(row.key)).toBe(2);
+    expect(Buffer.from(row.picture)).toEqual(beta);
+  });
+
+  it("returns blob bytes from a take query", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const rows = await table
+      .takeRowIds([rowIds[1], rowIds[0]])
+      .toArray({ blobMode: "bytes" });
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(Buffer.from(byId.get(1)!.image)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!.image)).toEqual(beta);
+    expect(Object.keys(rows[0])).not.toContain("_rowid");
+  });
+
+  it("does not change later executions of the same query", async () => {
+    const { table } = await openBlobTable();
+    const query = table.query().where("id = 1");
+    await query.toArray({ blobMode: "bytes" });
+    const [row] = await query.toArray();
+    expect(Object.keys(row)).not.toContain("_rowid");
+    expect(Number(row.image.size)).toBe(5);
+  });
+
+  it("skips row ids when no blob column is selected", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .select(["id"])
+      .toArrow({ blobMode: "bytes" });
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id"]);
+    expect(result.numRows).toBe(3);
+  });
+
+  it("returns an empty bytes column for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .where("id > 100")
+      .toArrow({ blobMode: "bytes" });
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+  });
+
+  it("keeps the descriptor schema for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table.query().where("id > 100").toArrow();
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isStruct(field.type)).toBe(true);
+  });
+
+  it("rejects an unknown blobMode", async () => {
+    const { table } = await openBlobTable();
+    await expect(
+      table.query().toArray({ blobMode: "lazy" as BlobMode }),
+    ).rejects.toThrow(/blobMode must be/);
+  });
+
+  it("reruns the query when the table changes before the version check", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      await update(2n, "new");
+      return liveVersion();
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(2n);
+    expect(Buffer.from(row.image).toString()).toBe("new");
+  });
+
+  it("reads bytes from the query's version when a write lands before the fetch", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      const version = await liveVersion();
+      await update(2n, "new");
+      return version;
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(1n);
+    expect(Buffer.from(row.image).toString()).toBe("old");
+  });
+
+  it("fails when the table changes during every attempt", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    let generation = 1n;
+    native.version = async () => {
+      generation += 1n;
+      await update(generation, `generation ${generation}`);
+      return liveVersion();
+    };
+    try {
+      await expect(
+        table.query().toArray({ blobMode: "bytes" }),
+      ).rejects.toThrow(/changed during each of 3 attempts/);
+      expect(generation).toBe(4n);
+    } finally {
+      native.version = liveVersion;
+    }
+  });
+
   it("rejects fetchBlobs on a non-blob column", async () => {
     const { table, rowIds } = await openBlobTable();
     await expect(table.fetchBlobs("id", rowIds)).rejects.toThrow(/blob/i);
@@ -3029,7 +3198,7 @@ describe("when dealing with blob columns", () => {
     expect(bytes[0]!.equals(payload)).toBe(true);
   });
 
-  it("creates and adds list blob columns", async () => {
+  it("creates list blobs without advertising unfetchable elements", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([
       new Field("id", new Int64(), true),
@@ -3048,7 +3217,16 @@ describe("when dealing with blob columns", () => {
       { id: 3n, images: [gamma, null] },
       { id: 4n, images: [] },
     ]);
-    expect(await table.blobColumns()).toEqual(["images.image"]);
+    expect(await table.blobColumns()).toEqual([]);
+    const [first] = await table.query().withRowId().toArray();
+    for (const column of ["images", "images.image"]) {
+      await expect(
+        table.fetchBlobs(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+      await expect(
+        table.fetchBlobFiles(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+    }
     const rows = await table.query().toArray();
     const byId = new Map(rows.map((row) => [Number(row.id), row]));
     expect(descriptorSizes(byId.get(1)!.images)).toEqual([
@@ -3094,6 +3272,7 @@ describe("when dealing with blob columns", () => {
         ],
       },
     ]);
+    expect(await table.blobColumns()).toEqual([]);
     const rows = await table.query().toArray();
     const byId = new Map(rows.map((row) => [Number(row.id), row]));
     expect(
@@ -3174,6 +3353,32 @@ describe("when dealing with blob columns", () => {
     return Array.from(
       values as Iterable<{ size?: bigint | number } | null>,
     ).map((value) => (value == null ? null : Number(value.size)));
+  }
+
+  async function openVersionedBlobTable() {
+    const db = await connect(tmpDir.name, {
+      storageOptions: { newTableEnableStableRowIds: "true" },
+    });
+    const schema = new Schema([
+      new Field("id", new Int64(), false),
+      new Field("generation", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "versions",
+      [{ id: 1n, generation: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    const native = (
+      table as unknown as { inner: { version: () => Promise<number> } }
+    ).inner;
+    const update = async (generation: bigint, image: string) => {
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .execute([{ id: 1n, generation, image: Buffer.from(image) }]);
+    };
+    return { table, native, update };
   }
 
   async function openBlobTable() {
@@ -4606,7 +4811,7 @@ describe("setUnenforcedPrimaryKey", () => {
   });
 });
 
-describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
+describe("enableMemWal / disableMemWal", () => {
   let tmpDir: tmp.DirResult;
 
   beforeEach(() => {
@@ -4626,16 +4831,16 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
     });
-    await table.unsetLsmWriteSpec();
+    await table.disableMemWal();
     // A second unset errors — there is no spec left to remove.
-    await expect(table.unsetLsmWriteSpec()).rejects.toThrow();
+    await expect(table.disableMemWal()).rejects.toThrow();
     // A fresh spec can be installed after unset.
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 8,
@@ -4647,8 +4852,8 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "unsharded" });
-    await table.unsetLsmWriteSpec();
+    await table.enableMemWal({ specType: "unsharded" });
+    await table.disableMemWal();
   });
 
   it("installs an identity spec", async () => {
@@ -4656,8 +4861,8 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     const table = await makeTable(conn);
 
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
-    await table.unsetLsmWriteSpec();
+    await table.enableMemWal({ specType: "identity", column: "id" });
+    await table.disableMemWal();
   });
 
   it("rejects an invalid spec", async () => {
@@ -4667,7 +4872,7 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     await table.setUnenforcedPrimaryKey("id");
     // num_buckets out of range.
     await expect(
-      table.setLsmWriteSpec({
+      table.enableMemWal({
         specType: "bucket",
         column: "id",
         numBuckets: 0,
@@ -4675,7 +4880,7 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     ).rejects.toThrow();
     // Column mismatch.
     await expect(
-      table.setLsmWriteSpec({
+      table.enableMemWal({
         specType: "bucket",
         column: "missing",
         numBuckets: 4,
@@ -4683,13 +4888,13 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     ).rejects.toThrow();
   });
 
-  it("reads back the installed spec via getLsmWriteSpec", async () => {
+  it("reads back the installed spec via getMemWalSpec", async () => {
     const conn = await connect(tmpDir.name);
     const table = await makeTable(conn);
     await table.setUnenforcedPrimaryKey("id");
 
     // Nothing installed yet.
-    expect(await table.getLsmWriteSpec()).toBeUndefined();
+    expect(await table.getMemWalSpec()).toBeUndefined();
 
     // A real scalar index is needed to name it as a maintained index.
     await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
@@ -4700,14 +4905,14 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     // defaults. Lance writer-config keys are canonically snake_case.
     // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
     const writerConfigDefaults = { durable_write: "false" };
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 4,
       maintainedIndexes: [indexName],
       writerConfigDefaults,
     });
-    const spec = await table.getLsmWriteSpec();
+    const spec = await table.getMemWalSpec();
     expect(spec).toBeDefined();
     expect(spec?.specType).toBe("bucket");
     expect(spec?.column).toBe("id");
@@ -4716,19 +4921,19 @@ describe("setLsmWriteSpec / unsetLsmWriteSpec", () => {
     expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
 
     // After unset, undefined again.
-    await table.unsetLsmWriteSpec();
-    expect(await table.getLsmWriteSpec()).toBeUndefined();
+    await table.disableMemWal();
+    expect(await table.getMemWalSpec()).toBeUndefined();
 
     // Identity round-trips (column recovered from the schema).
-    await table.setLsmWriteSpec({ specType: "identity", column: "id" });
-    const identity = await table.getLsmWriteSpec();
+    await table.enableMemWal({ specType: "identity", column: "id" });
+    const identity = await table.getMemWalSpec();
     expect(identity?.specType).toBe("identity");
     expect(identity?.column).toBe("id");
-    await table.unsetLsmWriteSpec();
+    await table.disableMemWal();
 
     // Unsharded round-trips (no routing column).
-    await table.setLsmWriteSpec({ specType: "unsharded" });
-    const unsharded = await table.getLsmWriteSpec();
+    await table.enableMemWal({ specType: "unsharded" });
+    const unsharded = await table.getMemWalSpec();
     expect(unsharded?.specType).toBe("unsharded");
     expect(unsharded?.column).toBeFalsy();
   });
@@ -4757,7 +4962,7 @@ describe("LSM merge insert", () => {
     ]);
     await table.setUnenforcedPrimaryKey("id");
     // numBuckets = 1: every row routes to the single bucket.
-    await table.setLsmWriteSpec({
+    await table.enableMemWal({
       specType: "bucket",
       column: "id",
       numBuckets: 1,
@@ -4782,17 +4987,17 @@ describe("LSM merge insert", () => {
     expect(res.version).toBe(0);
     expect(res.numInsertedRows).toBe(0);
 
-    await table.closeLsmWriters();
+    await table.closeMemWalWriters();
   });
 
-  it("falls back to the standard path with useLsm(false)", async () => {
+  it("falls back to the standard path with useMemWal(false)", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
     const res = await table
       .mergeInsert("id")
       .whenNotMatchedInsertAll()
-      .useLsm(false)
+      .useMemWal(false)
       .execute([
         { id: "b", value: 9 },
         { id: "e", value: 5 },
@@ -4815,7 +5020,7 @@ describe("LSM merge insert", () => {
     expect(res.numRows).toBe(1);
   });
 
-  it("rejects a non-upsert merge under an LSM spec", async () => {
+  it("rejects a non-upsert merge under a MemWAL spec", async () => {
     const conn = await connect(tmpDir.name);
     const table = await bucketTable(conn);
 
@@ -4841,22 +5046,24 @@ describe("LSM merge insert", () => {
     const lsm = await table.query().toArray();
     expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
 
-    // useLsm(false) bypasses the MemWAL and reads the base table only.
-    const baseOnly = await table.query().useLsm(false).toArray();
+    // useMemWal(false) bypasses the MemWAL and reads the base table only.
+    const baseOnly = await table.query().useMemWal(false).toArray();
     expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
   });
 
-  it("reads the base table when no LSM spec is installed", async () => {
+  it("reads the base table when no MemWAL spec is installed", async () => {
     const conn = await connect(tmpDir.name);
     const table = await conn.createEmptyTable(
       "plain",
       new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
     );
-    // No spec: default read and useLsm(false) both succeed against the base table.
+    // No spec: default read and useMemWal(false) both succeed against the base table.
     await expect(table.query().toArray()).resolves.toBeDefined();
-    await expect(table.query().useLsm(false).toArray()).resolves.toBeDefined();
-    // useLsm(true) demands MemWAL routing; without a spec it errors.
-    await expect(table.query().useLsm(true).toArray()).rejects.toThrow();
+    await expect(
+      table.query().useMemWal(false).toArray(),
+    ).resolves.toBeDefined();
+    // useMemWal(true) demands MemWAL routing; without a spec it errors.
+    await expect(table.query().useMemWal(true).toArray()).rejects.toThrow();
   });
 });
 
@@ -4874,7 +5081,7 @@ describe("LSM convergence and stats", () => {
       new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
     );
     await table.setUnenforcedPrimaryKey("id");
-    await table.setLsmWriteSpec({ specType: "unsharded" });
+    await table.enableMemWal({ specType: "unsharded" });
     return table;
   }
 
@@ -4882,34 +5089,34 @@ describe("LSM convergence and stats", () => {
   // rejects them rather than answering. What is asserted here is that the
   // bindings reach the core at all; the behavior against a real endpoint is
   // covered by the mocked endpoint tests in rust/lancedb/src/remote/table.rs.
-  it("rejects flushLsm on a local table", async () => {
+  it("rejects flushMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.flushLsm()).rejects.toThrow(/not supported/i);
+    await expect(table.flushMemWal()).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects compactLsm on a local table", async () => {
+  it("rejects compactMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.compactLsm()).rejects.toThrow(/not supported/i);
+    await expect(table.compactMemWal()).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects getLsmStats on a local table", async () => {
+  it("rejects getMemWalStats on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    await expect(table.getLsmStats()).rejects.toThrow(/not supported/i);
-    await expect(table.getLsmStats(true)).rejects.toThrow(/not supported/i);
+    await expect(table.getMemWalStats()).rejects.toThrow(/not supported/i);
+    await expect(table.getMemWalStats(true)).rejects.toThrow(/not supported/i);
   });
 
-  it("rejects checkpointLsm on a local table", async () => {
+  it("rejects checkpointMemWal on a local table", async () => {
     const conn = await connect(tmpDir.name);
     const table = await lsmTable(conn);
 
-    // checkpointLsm seals first, so it surfaces flushLsm's rejection.
-    await expect(table.checkpointLsm()).rejects.toThrow(/not supported/i);
+    // checkpointMemWal freezes first, so it surfaces flushMemWal's rejection.
+    await expect(table.checkpointMemWal()).rejects.toThrow(/not supported/i);
   });
 });
 

@@ -6,7 +6,7 @@ icon: shapes
 keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "blob", "json"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 There is no SQL type layer over Lance storage. The table provider hands
 DataFusion the dataset's Arrow schema directly, so a column is the same object
@@ -77,7 +77,7 @@ SELECT id FROM documents WHERE vector IS NOT NULL
 <Warning>
 A list representation does not imply that ordinary arithmetic operators
 perform vector arithmetic. Use supported distance functions for similarity
-calculations. SQL vector search depends on the deployment version and query
+calculations. SQL vector search depends on the Enterprise server version and query
 plan; see [SQL](/basics/sql#no-vector-sql).
 </Warning>
 

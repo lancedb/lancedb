@@ -4,6 +4,11 @@ sidebarTitle: "Cleanup"
 description: "Pruning old versions and the files only they referenced."
 icon: broom
 keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Both offerings support cleanup. Embedded `optimize()` uses a retention window of 7 days by default; Enterprise uses configured background cleanup and retention, and does not support `optimize()`.
 ---
 
 Every write keeps the version before it, which is what makes
@@ -14,7 +19,8 @@ those versions referenced.
 <Note>
 **Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
 merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
-Enterprise schedules them as separate jobs.
+Enterprise schedules them as separate jobs, and runs cleanup only when the
+deployment's configuration enables it.
 </Note>
 
 ## Retention {#retention}
@@ -26,17 +32,43 @@ table.optimize(cleanup_older_than=timedelta(days=30))
 ```
 
 `cleanup_older_than` defaults to **7 days**. Versions older than that are
-removed, along with the files only they referenced.
+removed, along with the files only they referenced. In LanceDB Enterprise, the
+retention period comes from its configuration instead.
 
-The latest version is never removed, whatever you pass -- `timedelta(0)` prunes
-everything except it.
+The latest version is never removed, whatever you pass. `timedelta(0)` makes
+every older version eligible for removal, but cleanup still keeps tagged
+versions and the files branches still read, as the warning below describes.
 
 <Warning>
-Pruning is what makes [time travel](/management/table#versioning) finite. A
-version outside the retention window is gone, and a tag or branch pointing at
-it no longer resolves.
+Pruning is what makes [time travel](/management/table#versioning) finite: an
+eligible version outside the retention window is gone. Cleanup keeps a version,
+whatever its age, when it is:
 
-If you rely on reading old versions, set the window to cover the range you
+- the **latest** version;
+- a **tagged** version.
+
+Cleanup also keeps the files a **branch** still reads, and the version the
+branch was forked from while the branch's remaining versions read the parent's
+files. That does not keep the fork for good: once the branch has replaced the
+data it inherited and its own older versions are pruned, cleanup prunes the
+fork version like any other. To keep a version recoverable, tag it, subject to
+the policy below, or keep the window wide enough to cover it.
+
+Under the default policy, a tag can also stop cleanup. When a tagged version is
+older than the window and is not the latest, cleanup refuses to run: it raises
+an error naming the tag and prunes nothing. To let it proceed, move the tag to a
+version inside the window, delete the tag, or widen the window.
+
+A tag on the latest version does not stop cleanup. But `optimize()` compacts
+before it prunes, and compacting commits a new version whenever it merges
+files, so a tag on what was the latest version can become an older one by the
+time cleanup runs. `optimize()` then raises after compacting, and its index
+update does not run.
+
+A deployment's background cleanup follows the same rules. Its own background
+jobs, such as compaction and index updates, also commit new versions, so a tag
+on what is now the latest version can become an older one without a call from
+you. If you rely on reading old versions, set the window to cover the range you
 need before running this, not after.
 </Warning>
 
@@ -46,8 +78,8 @@ Compaction writes new, merged files before the old ones are removed, so disk
 usage can rise before it falls. Space is reclaimed only when cleanup prunes the
 versions that referenced the superseded files.
 
-If you need to reclaim space aggressively, shorten the retention window rather
-than waiting for the default:
+If you need to reclaim space aggressively in the embedded library, shorten the
+retention window rather than waiting for the default:
 
 ```python
 table.optimize(cleanup_older_than=timedelta(days=1))
@@ -62,6 +94,9 @@ old, because it cannot tell them apart from a live write.
 ```python
 table.optimize(delete_unverified=True)
 ```
+
+This option belongs to `optimize()` in the embedded library. A deployment's
+cleanup jobs never set it.
 
 <Warning>
 `delete_unverified=True` removes them regardless of age. Only set it when you

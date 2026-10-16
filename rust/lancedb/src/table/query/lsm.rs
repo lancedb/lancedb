@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! MemWAL LSM read path.
+//! MemWAL read path.
 //!
-//! When a table has an LSM write spec installed (see [`set_lsm_write_spec`]),
+//! When a table has a MemWAL write spec installed (see [`enable_memwal`]),
 //! reads are routed through Lance's [`LsmScanner`] instead of the plain
 //! base-table scan unless the query sets
-//! [`use_lsm(false)`](crate::query::QueryBase::use_lsm). This makes data
+//! [`use_memwal(false)`](crate::query::QueryBase::use_memwal). This makes data
 //! written via the LSM `merge_insert` path — which lives in the active/frozen
-//! in-memory memtables and the flushed SSTable generations until an external
+//! in-memory memtables and the SSTables until an external
 //! compaction merges it into the base table — visible to queries, deduplicated by
 //! primary key (newest generation wins).
 //!
@@ -17,10 +17,10 @@
 //! three run through a single [`LsmScanner`], so a `where` filter is honored as a
 //! prefilter uniformly — including for vector search, where `LsmScanner` threads
 //! it into the vector planner's prefilter. Shapes the LSM path cannot honor are
-//! rejected with [`Error::NotSupported`]; the caller must set `use_lsm(false)` to
+//! rejected with [`Error::NotSupported`]; the caller must set `use_memwal(false)` to
 //! run those against the base table.
 //!
-//! [`set_lsm_write_spec`]: crate::Table::set_lsm_write_spec
+//! [`enable_memwal`]: crate::Table::enable_memwal
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ const LSM_OVERFETCH_FACTOR: f64 = 2.0;
 /// The caller guarantees `ds_ref` carries a MemWAL write spec (routing is decided
 /// in [`create_plan`](super::create_plan)). Errors with [`Error::NotSupported`]
 /// for query shapes the LSM scanner cannot honor — the caller must set
-/// `use_lsm(false)` to run those against the base table.
+/// `use_memwal(false)` to run those against the base table.
 pub(super) async fn create_lsm_plan(
     table: &NativeTable,
     ds_ref: Arc<Dataset>,
@@ -67,11 +67,11 @@ pub(super) async fn create_lsm_plan(
 
     // A time-traveled (checked-out) handle pins an older dataset version, but the
     // WAL manifests and cached writer expose current live state — mixing them would
-    // surface WAL rows written after the requested version. `use_lsm(false)` reads
+    // surface WAL rows written after the requested version. `use_memwal(false)` reads
     // the base table at the pinned version.
     if table.dataset.time_travel_version().is_some() {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner cannot read from a time-traveled dataset version; set use_lsm(false) to read the base table at this version".to_string(),
+            message: "the MemWAL LSM scanner cannot read from a time-traveled dataset version; set use_memwal(false) to read the base table at this version".to_string(),
         });
     }
 
@@ -80,7 +80,7 @@ pub(super) async fn create_lsm_plan(
         .mem_wal_index_details()
         .await?
         .ok_or_else(|| Error::Runtime {
-            message: "the MemWAL LSM write spec disappeared during read planning".to_string(),
+            message: "the MemWAL write spec disappeared during read planning".to_string(),
         })?;
 
     let pk_columns = pk_columns(&ds_ref)?;
@@ -135,10 +135,10 @@ pub(super) async fn create_lsm_plan(
     restore_projection(plan, &query, &pk_columns)
 }
 
-/// Reject query shapes the LSM read path does not implement. On a MemWAL table
+/// Reject query shapes the MemWAL read path does not implement. On a MemWAL table
 /// reads route through the LSM scanner by default, so an unsupported shape is a
 /// hard error rather than a silent fallback to the base-only scan — which would
-/// exclude un-compacted MemWAL data. The caller must set `use_lsm(false)` to
+/// exclude un-compacted MemWAL data. The caller must set `use_memwal(false)` to
 /// run these against the base table, accepting that the results omit un-compacted
 /// MemWAL data.
 ///
@@ -148,7 +148,7 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     let unsupported = |what: &str| {
         Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner does not support {what}; set use_lsm(false) to read the base table only (results will exclude un-compacted MemWAL data)"
+                "the MemWAL LSM scanner does not support {what}; set use_memwal(false) to read the base table only (results will exclude un-compacted MemWAL data)"
             ),
         })
     };
@@ -173,6 +173,9 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     // brute-force search the index-only base arm can't do. (ef / approx_mode are
     // recall/speed knobs and are left to no-op.)
     if !query.query_vector.is_empty() {
+        if query.search_effort.is_some() {
+            return unsupported("search_effort on vector search");
+        }
         if query.lower_bound.is_some() || query.upper_bound.is_some() {
             return unsupported("distance_range on vector search");
         }
@@ -272,7 +275,7 @@ fn exclusion_watermarks(
     exclude
 }
 
-/// Assemble the per-shard snapshots (flushed SSTable generations) and the
+/// Assemble the per-shard snapshots (SSTables) and the
 /// in-memory memtables (active + frozen) for the table.
 ///
 /// Snapshots for all shards come from their on-disk manifests; for the shard
@@ -410,7 +413,7 @@ fn base_scanner(
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),
             QueryFilter::Substrait(_) => {
                 return Err(Error::NotSupported {
-                    message: "the MemWAL LSM scanner does not support Substrait filters; set use_lsm(false) to read the base table only".to_string(),
+                    message: "the MemWAL LSM scanner does not support Substrait filters; set use_memwal(false) to read the base table only".to_string(),
                 });
             }
         };
@@ -455,11 +458,11 @@ async fn fts_plan(
     offset: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Pre-check for a lancedb-flavored error; `LsmScanner` also validates the
-    // single-column requirement, but without the `use_lsm(false)` guidance.
+    // single-column requirement, but without the `use_memwal(false)` guidance.
     let columns: Vec<String> = fts.columns().into_iter().collect();
     if columns.len() > 1 {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner full-text search supports a single column; set use_lsm(false) to read the base table only".to_string(),
+            message: "the MemWAL LSM scanner full-text search supports a single column; set use_memwal(false) to read the base table only".to_string(),
         });
     }
     let column = columns.first().ok_or_else(|| Error::NotSupported {
@@ -474,12 +477,12 @@ async fn fts_plan(
     // omits un-compacted documents. Reject rather than mislead.
     if !index_maintained(dataset, column, details, "InvertedIndexDetails").await?
         || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_fts_by_column(column).is_some()
+            !memtable.index_store.fts_granularities_on(column).is_empty()
         })
     {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise un-compacted documents are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (MemWalWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise un-compacted documents are omitted. set use_memwal(false) to read the base table only"
             ),
         });
     }
@@ -630,7 +633,7 @@ fn resolve_single_index(
     if names.len() > 1 {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner cannot resolve the {arm} index catch-up watermark for '{column}': it has multiple {arm} indexes; set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner cannot resolve the {arm} index catch-up watermark for '{column}': it has multiple {arm} indexes; set use_memwal(false) to read the base table only"
             ),
         });
     }
@@ -679,7 +682,7 @@ fn restore_projection(
 ///
 /// Note: the base and SSTable arms use `fast_search` (indexed data only), so a
 /// base-table row not covered by a vector index is invisible here — it surfaces
-/// only via the memtable or `use_lsm(false)`.
+/// only via the memtable or `use_memwal(false)`.
 #[allow(clippy::too_many_arguments)]
 async fn vector_plan(
     dataset: &Dataset,
@@ -707,17 +710,14 @@ async fn vector_plan(
 
     // The base arm relies on the column's vector index (`fast_search`). Unmaintained,
     // its catch-up is untracked and exclusion falls back to the compaction watermark,
-    // dropping compacted SSTables the lagging base index has not re-indexed; and a
-    // resident MemTable built before the index joined the set carries none either.
+    // dropping compacted SSTables the lagging base index has not re-indexed.
     // Reject rather than silently omit rows, mirroring the FTS arm.
-    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await?
-        || !resident_memtables_carry(&in_memory, |memtable| {
-            memtable.index_store.get_hnsw_by_column(&column).is_some()
-        })
-    {
+    // A resident MemTable needs no index of its own: one that cannot answer
+    // compares every row.
+    if !index_maintained(dataset, &column, details, "VectorIndexDetails").await? {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (LsmWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise compacted rows not yet re-indexed are omitted. set use_lsm(false) to read the base table only"
+                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (MemWalWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_memwal(false) to read the base table only"
             ),
         });
     }
@@ -726,7 +726,7 @@ async fn vector_plan(
     // clear error rather than failing deep in the planner.
     if is_binary_vector_column(&arrow_schema, &column) {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set use_lsm(false) to read the base table only".to_string(),
+            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set use_memwal(false) to read the base table only".to_string(),
         });
     }
 
@@ -805,10 +805,57 @@ mod tests {
     use lance_index::mem_wal::{CompactedSsTable, IndexCatchupProgress};
 
     #[test]
+    fn search_effort_is_not_silently_ignored() {
+        let query = VectorQueryRequest {
+            query_vector: vec![Arc::new(arrow_array::Float32Array::from(vec![1.0, 0.0]))],
+            search_effort: Some(0.5),
+            ..Default::default()
+        };
+        assert!(
+            matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
+            if message.contains("search_effort") && message.contains("un-compacted MemWAL"))
+        );
+    }
+
+    #[test]
+    fn resident_fts_check_distinguishes_columns() {
+        use arrow_schema::Field;
+        use lance::dataset::mem_wal::index::{IndexStore, MemIndexSpec};
+
+        let schema = ArrowSchema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+            Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                true,
+            ),
+        ]);
+        let schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let specs = vec![
+            MemIndexSpec::btree("id_idx", 0, "id"),
+            MemIndexSpec::fts("text_idx", 1, "text"),
+            MemIndexSpec::hnsw(
+                "vector_idx",
+                2,
+                "vector",
+                lance_linalg::distance::DistanceType::Cosine,
+            ),
+        ];
+        let store = IndexStore::from_specs(&specs, &schema, 1_000, 16).unwrap();
+        assert!(!store.fts_granularities_on("text").is_empty());
+        for column in ["id", "vector", "missing"] {
+            assert!(store.fts_granularities_on(column).is_empty());
+        }
+        let empty = IndexStore::from_specs(&[], &schema, 1_000, 16).unwrap();
+        assert!(empty.fts_granularities_on("text").is_empty());
+    }
+
+    #[test]
     fn exclusion_watermark_gates_on_lagging_index_catchup() {
         let shard = Uuid::from_u128(1);
         let details = MemWalIndexDetails {
-            // Compaction has drained generations through 5 into the base table...
+            // Compaction has drained SSTables through generation 5 into the base table...
             compacted_sstables: vec![CompactedSsTable::new(shard, 5)],
             // ...but the FTS index has only caught up through generation 2.
             index_catchup: vec![IndexCatchupProgress::new(

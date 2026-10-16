@@ -223,7 +223,7 @@ if TYPE_CHECKING:
         DeleteResult,
         DropColumnsResult,
         FtsToken,
-        LsmWriteSpec,
+        MemWalWriteSpec,
         MergeResult,
         UpdateResult,
     )
@@ -576,6 +576,55 @@ def _cast_to_target_schema(
     return pa.RecordBatchReader.from_batches(reordered_schema, gen())
 
 
+def _preserve_blob_v2_fields(
+    inferred_schema: pa.Schema, existing_schema: pa.Schema
+) -> pa.Schema:
+    """Keep existing blob fields when an overwrite infers a replacement schema."""
+    existing_fields = {field.name: field for field in existing_schema}
+    fields = [
+        _preserve_blob_v2_field(field, existing_fields[field.name])
+        if field.name in existing_fields
+        else field
+        for field in inferred_schema
+    ]
+    return pa.schema(fields, metadata=inferred_schema.metadata)
+
+
+def _preserve_blob_v2_field(inferred: pa.Field, existing: pa.Field) -> pa.Field:
+    if is_blob_v2_field(existing):
+        return existing
+
+    inferred_type, existing_type = inferred.type, existing.type
+    if pa.types.is_struct(inferred_type) and pa.types.is_struct(existing_type):
+        existing_children = {field.name: field for field in existing_type}
+        children = [
+            _preserve_blob_v2_field(field, existing_children[field.name])
+            if field.name in existing_children
+            else field
+            for field in inferred_type
+        ]
+        return inferred.with_type(pa.struct(children))
+
+    if _is_list_like(inferred_type) and _is_list_like(existing_type):
+        value_field = _preserve_blob_v2_field(
+            inferred_type.value_field, existing_type.value_field
+        )
+        if value_field == inferred_type.value_field:
+            return inferred
+        value_field = value_field.with_name(existing_type.value_field.name)
+        if pa.types.is_fixed_size_list(inferred_type):
+            value_type = pa.list_(value_field, inferred_type.list_size)
+        elif pa.types.is_large_list(inferred_type):
+            value_type = pa.large_list(value_field)
+        else:
+            value_type = pa.list_(value_field)
+        return inferred.with_type(value_type)
+
+    if blob_v2_column_paths(pa.schema([existing])):
+        return existing
+    return inferred
+
+
 def _coerce_blob_write_columns(
     batch: pa.RecordBatch, target_schema: pa.Schema
 ) -> pa.RecordBatch:
@@ -691,12 +740,7 @@ def _coerce_blob_list_values(
 
 
 def _coerce_value_to_blob(values: pa.Array, target_field: pa.Field) -> pa.Array:
-    if pa.types.is_null(values.type):
-        data = pa.nulls(len(values), type=pa.large_binary())
-    elif pa.types.is_large_binary(values.type):
-        data = values
-    else:
-        data = values.cast(pa.large_binary())
+    value_field = "uri" if _is_string_like(values.type) else "data"
     length = len(values)
     storage_type = target_field.type
     if isinstance(storage_type, pa.ExtensionType):
@@ -704,8 +748,11 @@ def _coerce_value_to_blob(values: pa.Array, target_field: pa.Field) -> pa.Array:
     storage_fields = list(storage_type)
     children = []
     for storage_field in storage_fields:
-        if storage_field.name == "data":
-            children.append(data)
+        if storage_field.name == value_field and not pa.types.is_null(values.type):
+            if values.type == storage_field.type:
+                children.append(values)
+            else:
+                children.append(values.cast(storage_field.type))
         else:
             children.append(pa.nulls(length, type=storage_field.type))
     storage = pa.StructArray.from_arrays(
@@ -725,7 +772,19 @@ def _physical_array_and_type(array: pa.Array) -> tuple[pa.Array, pa.DataType]:
 
 
 def _can_coerce_to_blob(data_type: pa.DataType) -> bool:
-    return _is_binary_like(data_type) or pa.types.is_null(data_type)
+    return (
+        _is_binary_like(data_type)
+        or _is_string_like(data_type)
+        or pa.types.is_null(data_type)
+    )
+
+
+def _is_string_like(data_type: pa.DataType) -> bool:
+    return (
+        pa.types.is_string(data_type)
+        or pa.types.is_large_string(data_type)
+        or pa.types.is_string_view(data_type)
+    )
 
 
 def _is_binary_like(data_type: pa.DataType) -> bool:
@@ -887,6 +946,24 @@ def _arrow_json_storage_type(input_type: pa.DataType) -> Optional[pa.DataType]:
 
 
 def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
+    if is_blob_v2_field(target_field):
+        source_type = field.type
+        if pa.types.is_struct(source_type):
+            if not any(child.name in ("data", "uri") for child in source_type):
+                raise ValueError(
+                    f"blob struct input for column '{field.name}' must contain "
+                    "a 'data' or 'uri' child"
+                )
+        elif not _can_coerce_to_blob(source_type) and not isinstance(
+            source_type, pa.ExtensionType
+        ):
+            raise ValueError(
+                f"cannot coerce column '{field.name}' with type {source_type} "
+                "into a blob v2 struct. expected binary bytes "
+                "(Binary, LargeBinary, BinaryView), strings "
+                "(Utf8, LargeUtf8, Utf8View), or a Struct with a "
+                "'data' or 'uri' child"
+            )
     # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
     # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
@@ -1322,8 +1399,16 @@ class Table(ABC):
         return self.to_arrow().to_pandas(**kwargs)
 
     @abstractmethod
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
@@ -1738,7 +1823,8 @@ class Table(ABC):
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -2054,19 +2140,30 @@ class Table(ABC):
 
     @abstractmethod
     def blob_columns(self) -> list[str]:
-        """Names of the blob v2 columns declared on this table."""
+        """Names of blob v2 columns that can be fetched by row id.
+
+        Struct-nested blobs use dotted paths. Blobs inside lists are omitted
+        because a row id does not identify an individual list element.
+        """
 
     @abstractmethod
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
-        ``_rowid`` values stay valid after compaction when the table has stable
-        row ids.
+        ``row_ids`` may be a list, an integer Arrow array or chunked array,
+        or a query table with row ids. ``_rowid`` values stay valid after
+        compaction when the table has stable row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
+
+        Blobs inside lists cannot be fetched by row id yet.
 
         Remote servers limit each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
@@ -2078,17 +2175,20 @@ class Table(ABC):
     def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         """Materialize row-specific byte ranges from a blob v2 column.
 
-        Each request is a ``(row_id, offset, length)`` tuple. Requests may be
-        repeated or reordered, including multiple ranges for the same blob.
+        Each request is a three-item ``(row_id, offset, length)`` sequence.
+        Requests may be repeated or reordered, including multiple ranges for
+        the same blob.
         The result has the same length and order as ``requests``; null blobs
         produce null slots and empty ranges on non-null blobs produce ``b""``.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``. This
         API is currently supported only by local tables.
@@ -2096,18 +2196,22 @@ class Table(ABC):
 
     @abstractmethod
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
-        a ``list[int]`` or a query ``pyarrow.Table`` carrying row identity via
-        ``_rowid`` or a ``_lance_row_id`` field on the blob descriptor. Null
-        rows are ``None``. Remote tables require LanceDB Cloud server 0.5.0 or
-        newer.
+        a ``list[int]``, an integer Arrow array or chunked array, or a query
+        ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
+        ``_lance_row_id`` field on the blob descriptor. Null blob values return
+        ``None``. Remote tables require LanceDB Cloud server 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
+        One missing or deleted row ID rejects the entire batch; no partial
+        handles are returned.
         """
 
     @abstractmethod
@@ -2865,6 +2969,8 @@ class LanceTable(Table):
                     managed_versioning=managed_versioning,
                 )
             )
+        # Take queries read the pushdown set from the inner table.
+        self._table._pushdown_operations = self._pushdown_operations
 
     @property
     def name(self) -> str:
@@ -3013,19 +3119,23 @@ class LanceTable(Table):
         return LOOP.run(self._table.blob_columns())
 
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
     def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
@@ -3239,12 +3349,23 @@ class LanceTable(Table):
 
         return self.to_lance().to_pandas(blob_mode=blob_mode, **kwargs)
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
         pa.Table"""
+        validate_blob_mode(blob_mode)
+        if blob_mode != "lazy" and schema_has_blob_field(self.schema):
+            return self.search().to_arrow(blob_mode=blob_mode)
         if (
             _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
@@ -3980,7 +4101,8 @@ class LanceTable(Table):
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".
@@ -4440,6 +4562,7 @@ class LanceTable(Table):
             and not self._route_pushdown_to_rust
             and self.current_branch() is None
             and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -4704,47 +4827,47 @@ class LanceTable(Table):
         [`AsyncTable.set_unenforced_primary_key`][lancedb.AsyncTable.set_unenforced_primary_key]."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec. See
-        [`AsyncTable.set_lsm_write_spec`][lancedb.AsyncTable.set_lsm_write_spec]."""
-        return LOOP.run(self._table.set_lsm_write_spec(spec))
+    def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
+        """Install an MemWalWriteSpec. See
+        [`AsyncTable.enable_memwal`][lancedb.AsyncTable.enable_memwal]."""
+        return LOOP.run(self._table.enable_memwal(spec))
 
-    def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec. See
-        [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
-        return LOOP.run(self._table.unset_lsm_write_spec())
+    def disable_memwal(self) -> None:
+        """Remove the MemWalWriteSpec. See
+        [`AsyncTable.disable_memwal`][lancedb.AsyncTable.disable_memwal]."""
+        return LOOP.run(self._table.disable_memwal())
 
-    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the installed LsmWriteSpec, or ``None``. See
-        [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
-        return LOOP.run(self._table.get_lsm_write_spec())
+    def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
+        """Read the installed MemWalWriteSpec, or ``None``. See
+        [`AsyncTable.get_memwal_spec`][lancedb.AsyncTable.get_memwal_spec]."""
+        return LOOP.run(self._table.get_memwal_spec())
 
-    def checkpoint_lsm(self) -> None:
+    def checkpoint_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
-        return LOOP.run(self._table.checkpoint_lsm())
+        [`AsyncTable.checkpoint_memwal`][lancedb.AsyncTable.checkpoint_memwal]."""
+        return LOOP.run(self._table.checkpoint_memwal())
 
-    def flush_lsm(self) -> None:
+    def flush_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
-        return LOOP.run(self._table.flush_lsm())
+        [`AsyncTable.flush_memwal`][lancedb.AsyncTable.flush_memwal]."""
+        return LOOP.run(self._table.flush_memwal())
 
-    def compact_lsm(self) -> None:
+    def compact_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
-        return LOOP.run(self._table.compact_lsm())
+        [`AsyncTable.compact_memwal`][lancedb.AsyncTable.compact_memwal]."""
+        return LOOP.run(self._table.compact_memwal())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_memwal_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        [`AsyncTable.get_memwal_stats`][lancedb.AsyncTable.get_memwal_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_memwal_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_lsm_writers(self) -> None:
+    def close_memwal_writers(self) -> None:
         """Close cached MemWAL shard writers. See
-        [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
-        return LOOP.run(self._table.close_lsm_writers())
+        [`AsyncTable.close_memwal_writers`][lancedb.AsyncTable.close_memwal_writers]."""
+        return LOOP.run(self._table.close_memwal_writers())
 
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -5402,18 +5525,18 @@ class AsyncTable:
             columns = list(columns)
         await self._inner.set_unenforced_primary_key(columns)
 
-    async def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec on this table.
+    async def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
+        """Install an MemWalWriteSpec on this table.
 
         The spec selects Lance's MemWAL LSM-style write path for future
-        `merge_insert` calls. ``LsmWriteSpec`` chooses one of three sharding
+        `merge_insert` calls. ``MemWalWriteSpec`` chooses one of three sharding
         strategies:
 
-        - ``LsmWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
+        - ``MemWalWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
           the single-column unenforced primary key.
-        - ``LsmWriteSpec.identity(column)`` — shard by the raw value of a
+        - ``MemWalWriteSpec.identity(column)`` — shard by the raw value of a
           scalar column.
-        - ``LsmWriteSpec.unsharded()`` — route every write to a single shard.
+        - ``MemWalWriteSpec.unsharded()`` — route every write to a single shard.
 
         All variants require the table to have an unenforced primary key set
         via [`set_unenforced_primary_key`]; bucket sharding additionally
@@ -5428,30 +5551,30 @@ class AsyncTable:
 
         Parameters
         ----------
-        spec : LsmWriteSpec
+        spec : MemWalWriteSpec
             The sharding spec to install.
 
         Examples
         --------
-        >>> from lancedb import LsmWriteSpec
+        >>> from lancedb import MemWalWriteSpec
         >>> # table.set_unenforced_primary_key("id")
-        >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
+        >>> # table.enable_memwal(MemWalWriteSpec.bucket("id", 16))
         """
-        await self._inner.set_lsm_write_spec(spec)
+        await self._inner.enable_memwal(spec)
 
-    async def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec from this table.
+    async def disable_memwal(self) -> None:
+        """Remove the MemWalWriteSpec from this table.
 
         Reverts to the standard `merge_insert` write path. Errors if no spec
         is currently set.
         """
-        await self._inner.unset_lsm_write_spec()
+        await self._inner.disable_memwal()
 
-    async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the LsmWriteSpec currently installed on this table.
+    async def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
+        """Read the MemWalWriteSpec currently installed on this table.
 
-        Returns ``None`` when the LSM write path is not enabled at all — no
-        spec has been set, or one was removed with `unset_lsm_write_spec`.
+        Returns ``None`` when the MemWAL write path is not enabled at all — no
+        spec has been set, or one was removed with `disable_memwal`.
         That is a different answer from a spec whose ``maintained_indexes``
         is ``None``, which is an installed spec selecting indexes
         automatically.
@@ -5461,7 +5584,7 @@ class AsyncTable:
         or gains later, ``[]`` maintains none, and a non-empty list maintains
         exactly those. All three round-trip.
         """
-        return await self._inner.get_lsm_write_spec()
+        return await self._inner.get_memwal_spec()
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
@@ -5472,19 +5595,19 @@ class AsyncTable:
         """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
         self._inner.note_hybrid_pk_fusion()
 
-    async def checkpoint_lsm(self) -> None:
-        """Converge this table's LSM write path into its base table.
+    async def checkpoint_memwal(self) -> None:
+        """Converge this table's MemWAL write path into its base table.
 
-        One flush, sealing every memtable into L0, then compaction triggers
-        until every generation that existed at that moment has reached base.
-        The loop runs client-side, reading progress from ``get_lsm_stats``.
+        One flush, freezing every memtable into an SSTable, then compaction triggers
+        until every SSTable that existed at that moment has reached base.
+        The loop runs client-side, reading progress from ``get_memwal_stats``.
 
-        Best-effort: generations created *while* it runs are deliberately not
+        Best-effort: SSTables created *while* it runs are deliberately not
         waited on, which is what lets it terminate on a table taking writes.
         Idempotent and safe on a cadence.
 
         There is no deadline, and the caller owns that. It returns when the
-        target generations are gone, raises on a terminal server fault, and
+        target SSTables are gone, raises on a terminal server fault, and
         otherwise waits however long the server takes. A slow table and a
         stuck one are the same picture from the client: the compactor pool is
         shared across every table on the node, so a checkpoint queued behind
@@ -5492,56 +5615,56 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_memwal()
 
-    async def flush_lsm(self) -> None:
-        """Seal every bucket's active memtable into L0.
+    async def flush_memwal(self) -> None:
+        """Freeze every table shard's active memtable into an SSTable.
 
-        Does not touch the base table — moving L0 into base is
-        `compact_lsm`. On a node that has not claimed this table, this claims
+        Does not touch the base table — compacting SSTables into base is
+        `compact_memwal`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        await self._inner.flush_lsm()
+        await self._inner.flush_memwal()
 
-    async def compact_lsm(self) -> None:
-        """Trigger a background L0 to base compaction pass per bucket.
+    async def compact_memwal(self) -> None:
+        """Trigger a background SSTable compaction pass per table shard.
 
         Returns once the passes are dispatched, not once they finish: watch
-        ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
-        until the current L0 has reached base.
+        ``get_memwal_stats`` for progress, or use ``checkpoint_memwal`` to loop
+        until the current SSTables have reached base.
         """
-        await self._inner.compact_lsm()
+        await self._inner.compact_memwal()
 
-    async def get_lsm_stats(
-        self, *, include_generation_rows: bool = False
+    async def get_memwal_stats(
+        self, *, include_sstable_rows: bool = False
     ) -> Optional[dict]:
-        """Read live per-bucket LSM state.
+        """Read live per-table-shard MemWAL state.
 
-        Answers "how far behind is my fresh tier", "which bucket is hot", and
+        Answers "how far behind is my fresh tier", "which table shard is hot", and
         "why is my fresh-tier vector search brute-force". Mutates no table
         state, though on a node that has not claimed this table it claims it,
         exactly as a read would.
 
-        Returns ``None`` only when the LSM write path is not enabled.
+        Returns ``None`` only when the MemWAL write path is not enabled.
 
         Parameters
         ----------
-        include_generation_rows
-            Report a row count per L0 generation. Off by default: each count
-            opens an uncached Lance dataset, and ``checkpoint_lsm`` polls this
+        include_sstable_rows
+            Report a row count per SSTable. Off by default: each count
+            opens an uncached Lance dataset, and ``checkpoint_memwal`` polls this
             needing only generation numbers.
         """
-        return await self._inner.get_lsm_stats(include_generation_rows)
+        return await self._inner.get_memwal_stats(include_sstable_rows)
 
-    async def close_lsm_writers(self) -> None:
+    async def close_memwal_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
 
-        When an LSM write spec is installed, `merge_insert` opens MemWAL shard
+        When a MemWAL write spec is installed, `merge_insert` opens MemWAL shard
         writers and caches them for reuse across calls. This closes them,
         flushing pending data; writers reopen lazily on the next
         `merge_insert`. It is a no-op when no writers are cached.
         """
-        await self._inner.close_lsm_writers()
+        await self._inner.close_memwal_writers()
 
     @property
     def name(self) -> str:
@@ -5686,22 +5809,37 @@ class AsyncTable:
             return await self.query().to_pandas(blob_mode=blob_mode, **kwargs)
         return (await self.to_lance()).to_pandas(blob_mode=blob_mode, **kwargs)
 
-    async def to_arrow(self) -> pa.Table:
+    async def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """Return the table as a pyarrow Table.
+
+        Parameters
+        ----------
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
 
         Returns
         -------
         pa.Table
         """
+        validate_blob_mode(blob_mode)
+        schema = await self.schema()
+        fetches_bytes = blob_mode == "bytes" and schema_has_blob_field(schema)
         if (
-            _should_push_down_query_table(
+            not fetches_bytes
+            and _should_push_down_query_table(
                 self._namespace_client, self._pushdown_operations
             )
             and not self._route_pushdown_to_rust
         ):
-            return (await self._execute_query(Query())).read_all()
-
-        return await self.query().to_arrow()
+            tbl = (await self._execute_query(Query())).read_all()
+            if blob_mode == "descriptions":
+                tbl = strip_auto_row_ids(tbl, row_addressable_blob_v2_paths(schema))
+            return tbl
+        # The query builder refuses bytes under pushdown before running the query.
+        return await self.query().to_arrow(blob_mode=blob_mode)
 
     async def create_index(
         self,
@@ -5997,7 +6135,8 @@ class AsyncTable:
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite".
+            "append" and "overwrite". Overwrite infers a replacement schema
+            but preserves existing blob v2 fields present in the new data.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".
@@ -6035,6 +6174,11 @@ class AsyncTable:
             data, _ = sanitize_create_table(
                 data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
             )
+            if blob_v2_column_paths(schema):
+                # Plain bytes cannot be inferred as blob v2. Keep matching blob
+                # fields while allowing other columns to use the inferred schema.
+                target_schema = _preserve_blob_v2_fields(data.schema, schema)
+                data = _cast_to_target_schema(data, target_schema)
         elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
@@ -6409,8 +6553,8 @@ class AsyncTable:
             take_query = self.take_offsets(query.take_offsets)
             if query.columns:
                 take_query = take_query.select(query.columns)
-            if query.use_lsm is not None:
-                take_query = take_query.use_lsm(query.use_lsm)
+            if query.use_memwal is not None:
+                take_query = take_query.use_memwal(query.use_memwal)
             if query.with_row_id:
                 take_query = take_query.with_row_id()
             return take_query
@@ -6426,8 +6570,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
-        if query.use_lsm is not None:
-            async_query = async_query.use_lsm(query.use_lsm)
+        if query.use_memwal is not None:
+            async_query = async_query.use_memwal(query.use_memwal)
         if query.with_row_id:
             async_query = async_query.with_row_id()
         if query.order_by:
@@ -6441,6 +6585,8 @@ class AsyncTable:
                 async_query = async_query.distance_type(query.distance_type)
             if query.nprobes is not None:
                 async_query = async_query.nprobes(query.nprobes)
+            if query.search_effort is not None:
+                async_query = async_query.search_effort(query.search_effort)
             if query.minimum_nprobes is not None and query.maximum_nprobes is not None:
                 async_query = async_query.minimum_nprobes(
                     query.minimum_nprobes
@@ -6481,6 +6627,7 @@ class AsyncTable:
             )
             and not self._route_pushdown_to_rust
             and query.take_offsets is None
+            and query.search_effort is None
         ):
             from lancedb.namespace import _execute_server_side_query
 
@@ -6550,7 +6697,7 @@ class AsyncTable:
                 when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
-                use_lsm=merge._use_lsm,
+                use_memwal=merge._use_memwal,
                 validate_single_shard=merge._validate_single_shard,
             ),
         )
@@ -7075,7 +7222,9 @@ class AsyncTable:
         return await self._inner.blob_columns()
 
     async def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return await self._inner.fetch_blobs(
             column, _normalize_blob_row_ids(row_ids, column)
@@ -7084,12 +7233,14 @@ class AsyncTable:
     async def fetch_blob_ranges(
         self,
         column: str,
-        requests: Sequence[Tuple[int, int, int]],
+        requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
         return await self._inner.fetch_blob_ranges(column, list(requests))
 
     async def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         handles = await self._inner.fetch_blob_files(
             column, _normalize_blob_row_ids(row_ids, column)

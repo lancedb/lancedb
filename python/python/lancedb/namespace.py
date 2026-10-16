@@ -105,6 +105,11 @@ def _query_to_namespace_request(
 
     if not isinstance(query, Query):
         raise TypeError(f"Expected Query, got {type(query)}")
+    if query.search_effort is not None:
+        raise ValueError(
+            "namespace QueryTable does not support search_effort; "
+            "execute the query locally"
+        )
 
     vector_request = None
     if query.vector is not None:

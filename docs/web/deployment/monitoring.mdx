@@ -11,10 +11,10 @@ LanceDB emits internal metrics (currently object store request counts, bytes tra
 The bridge is available in the Python and TypeScript SDKs. It is a thin wrapper over LanceDB's `metrics` recorder; your application supplies and configures the OpenTelemetry SDK.
 
 <Note>
-This page covers LanceDB OSS instrumentation. LanceDB Enterprise clusters emit their own metrics from the server side — see [Enterprise monitoring](#enterprise) below.
+This page covers LanceDB OSS instrumentation. LanceDB Enterprise clusters emit their own metrics from the server side. See [Enterprise monitoring](#enterprise) below.
 </Note>
 
-## What you get {#what-you-get}
+## Available metrics {#what-you-get}
 
 Once instrumented, LanceDB registers one observable instrument per metric on your `MeterProvider`. The current catalog covers the object store layer:
 
@@ -22,8 +22,10 @@ Once instrumented, LanceDB registers one observable instrument per metric on you
 |--------|------|-------------|
 | `lance_object_store_requests_total` | Counter | Total object store requests, labelled by `operation` and `base` (store scheme). |
 | `lance_object_store_request_duration_seconds` | Histogram | Request latency in seconds. |
-| `lance_object_store_bytes_transferred_total` | Counter | Bytes read from or written to the store. |
-| `lance_object_store_retryable_responses_total` | Counter | Requests that returned a retryable error (throttles, transient failures). |
+| `lance_object_store_request_bytes_total` | Counter | Bytes read from or written to the store. |
+| `lance_object_store_errors_total` | Counter | Object store requests that failed. |
+| `lance_object_store_retryable_responses_total` | Counter | Retryable HTTP responses (5xx, 429 and 408) from a store reached over HTTP. |
+| `lance_object_store_throttle_total` | Counter | Throttle responses (429 and 503) from a store reached over HTTP. |
 | `lance_object_store_in_flight_requests` | Gauge | Currently outstanding object store requests. |
 
 The recorder is process-global and pull-based: your configured `MetricReader` collects on its own schedule, so there is no hot-path overhead beyond the atomic aggregation that LanceDB does anyway.
@@ -37,7 +39,7 @@ The recorder is process-global and pull-based: your configured `MetricReader` co
 Install LanceDB with the `otel` extra to pull in the OpenTelemetry API, plus an OpenTelemetry SDK of your choice. The SDK is intentionally not bundled, so you configure it and its readers and exporters however your platform expects.
 
 ```bash
-pip install "lancedb[otel]" opentelemetry-sdk
+pip install "lancedb[otel]" opentelemetry-sdk opentelemetry-exporter-otlp-proto-grpc
 ```
 
 Call `instrument_lancedb_metrics()` once at startup, before opening any tables. It returns `True` when the recorder is installed and instruments are registered.
@@ -70,7 +72,7 @@ If you omit `meter_provider`, LanceDB uses the global provider returned by `open
 
 ## TypeScript {#typescript}
 
-The Node SDK depends on `@opentelemetry/api` directly, so no extra install step is needed to expose the entry point. You still need an OpenTelemetry SDK to actually export.
+Install the OpenTelemetry SDK and exporter in your application:
 
 ```bash
 npm install @opentelemetry/sdk-metrics @opentelemetry/exporter-metrics-otlp-grpc
@@ -93,7 +95,7 @@ const db = await connect("s3://my-bucket/lancedb");
 
 `instrumentLanceDbMetrics()` also accepts no arguments, in which case it uses the global provider from `@opentelemetry/api`. Calling it more than once is safe: instruments are created only on the first successful call.
 
-## What to watch {#what-to-watch}
+## Build dashboards and alerts {#what-to-watch}
 
 A few starting points for dashboards and alerts:
 
@@ -116,7 +118,7 @@ export them with data enrichment -- no client-side instrumentation needed.
 [Contact support](/deployment/support) for the comprehensive metric list and
 help integrating them with your monitoring dashboard.
 
-## Where to go next {#where-to-go-next}
+## Related guides {#where-to-go-next}
 
 <Columns cols={2}>
   <Card title="Performance tips" icon="gauge-high" href="/search#performance">

@@ -125,10 +125,6 @@ describe("remote connection", () => {
         const cases: [() => Promise<unknown>, string][] = [
           [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
           [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
-          [
-            () => table.setUnenforcedPrimaryKey("id"),
-            "set_unenforced_primary_key",
-          ],
           [() => table.optimize(), "optimize"],
           [
             () => table.createIndex("vector", { config: Index.hnswPq() }),
@@ -478,6 +474,15 @@ describe("remote connection", () => {
         },
       },
     );
+  });
+
+  it("rejects a zero blob request concurrency limit", async () => {
+    await expect(
+      connect("db://dev", {
+        apiKey: "fake",
+        clientConfig: { blobRequestConcurrency: 0 },
+      }),
+    ).rejects.toThrow("blob_request_concurrency");
   });
 
   it("shows the full error messages on retry errors", async () => {

@@ -6,7 +6,7 @@ icon: folder-tree
 keywords: ["namespace", "schema", "create schema", "drop schema", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A [namespace](/management/namespace) is addressed in SQL as a `SCHEMA` -- the
 standard's name for the same concept.
@@ -14,14 +14,16 @@ standard's name for the same concept.
 ## CREATE SCHEMA {#create}
 
 ```sql
-CREATE SCHEMA public
-CREATE SCHEMA db1.ns1.ns2
+CREATE SCHEMA analytics
+CREATE SCHEMA db1.`ns1$ns2`
 CREATE SCHEMA IF NOT EXISTS `ns1$ns2`
 ```
 
-A dotted path creates the whole chain: `db1.ns1.ns2` creates `ns2` inside
-`ns1` inside `db1`, provided the parents already exist. A name containing the
-namespace path delimiter itself is backtick-quoted, as in `` `ns1$ns2` `` above.
+A nested namespace is one backtick-quoted name with `$` between its
+components: `` db1.`ns1$ns2` `` creates `ns2` inside `ns1` in database `db1`,
+provided `ns1` already exists. The part before the dot is the database, so a
+three-part path such as `db1.ns1.ns2` is rejected. `public` is the database's
+root namespace, which is never created or dropped.
 
 `IF NOT EXISTS` makes the statement a no-op rather than an error when the
 namespace is already there.
@@ -29,14 +31,14 @@ namespace is already there.
 ## DROP SCHEMA {#drop}
 
 ```sql
-DROP SCHEMA db1.public
+DROP SCHEMA db1.analytics
 DROP SCHEMA IF EXISTS `a$b`
 DROP SCHEMA `a$b` RESTRICT
 ```
 
 <Warning>
 `CASCADE` is rejected: **"DROP SCHEMA CASCADE is not supported; drop the
-objects inside first."** A namespace's tables, views and functions must be
+objects inside first."** A namespace's tables, views and other objects must be
 dropped explicitly before the namespace itself can go. `RESTRICT` -- the
 default -- states that requirement rather than changing it.
 </Warning>
