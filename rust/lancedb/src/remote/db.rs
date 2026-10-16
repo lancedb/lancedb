@@ -1575,6 +1575,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
         // Every open gets its own checkout, schema cache, and freshness state.
         if let Some(version) = self.table_cache.get(&cache_key).await {
+            // A cached version can outlive a drop from another connection. Verify that
+            // the table still exists before returning a handle for it.
+            let req = self
+                .client
+                .post(&format!("/v1/table/{}/describe/", identifier));
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+            let rsp =
+                RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
+            self.client.check_response(&request_id, rsp).await?;
+
             Ok(Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name,
@@ -2478,6 +2488,32 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(table.name(), "table1");
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checks_that_a_cached_table_still_exists() {
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let calls = describe_calls.clone();
+        let conn = Connection::new_with_handler(move |request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1}"#.to_string())
+                    .unwrap(),
+                1 => http::Response::builder()
+                    .status(404)
+                    .body("table not found".to_string())
+                    .unwrap(),
+                call => panic!("unexpected describe call: {call}"),
+            }
+        });
+
+        conn.open_table("table1").execute().await.unwrap();
+        let result = conn.open_table("table1").execute().await;
+
+        assert!(matches!(result, Err(Error::TableNotFound { .. })));
+        assert_eq!(describe_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
