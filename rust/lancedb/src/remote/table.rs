@@ -2884,12 +2884,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
     async fn fetch_blob_ranges(
         &self,
-        _column: &str,
-        _requests: &[crate::blob::BlobRangeRequest],
+        column: &str,
+        requests: &[crate::blob::BlobRangeRequest],
     ) -> Result<LargeBinaryArray> {
-        Err(Error::NotSupported {
-            message: "fetch_blob_ranges is not supported for remote tables.".into(),
-        })
+        self.fetch_blob_ranges_impl(column, requests).await
     }
 
     async fn fetch_blob_files(
@@ -5394,6 +5392,14 @@ mod tests {
                 err.to_string()
                     .contains("blobs inside lists cannot be fetched")
             );
+            let err = table
+                .fetch_blob_ranges(column, [crate::blob::BlobRangeRequest::new(10, 0, 1)])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
         }
     }
 
@@ -5954,10 +5960,6 @@ mod tests {
             (
                 "optimize",
                 table.optimize(OptimizeAction::All).await.map(|_| ()),
-            ),
-            (
-                "fetch_blob_ranges",
-                table.fetch_blob_ranges("image", []).await.map(|_| ()),
             ),
             (
                 "Wand factor",
