@@ -339,6 +339,8 @@ pub struct IvfRqIndexBuilder {
     pub(crate) num_partitions: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) num_bits: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) layered: Option<bool>,
     pub(crate) sample_rate: u32,
     pub(crate) max_iterations: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -351,6 +353,7 @@ impl Default for IvfRqIndexBuilder {
             distance_type: DistanceType::L2,
             num_partitions: None,
             num_bits: None,
+            layered: None,
             sample_rate: 256,
             max_iterations: 50,
             target_partition_size: None,
@@ -362,8 +365,21 @@ impl IvfRqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
 
+    /// Bits per dimension, defaulting to 5 in both OSS and Enterprise.
     pub fn num_bits(mut self, num_bits: u32) -> Self {
         self.num_bits = Some(num_bits);
+        self
+    }
+
+    /// Override the prefix-plane layout default (false in OSS, true in Enterprise).
+    /// Ignored for 1-bit and 2-bit codes. Leaving this unset preserves the product default.
+    ///
+    /// ```
+    /// use lancedb::index::vector::IvfRqIndexBuilder;
+    /// let index = IvfRqIndexBuilder::default().num_bits(5).layered(false);
+    /// ```
+    pub fn layered(mut self, layered: bool) -> Self {
+        self.layered = Some(layered);
         self
     }
 }

@@ -137,8 +137,12 @@ impl Index {
         num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
+        layered: Option<bool>,
     ) -> napi::Result<Self> {
         let mut ivf_rq_builder = IvfRqIndexBuilder::default();
+        if let Some(layered) = layered {
+            ivf_rq_builder = ivf_rq_builder.layered(layered);
+        }
         if let Some(distance_type) = distance_type {
             let distance_type = parse_distance_type(distance_type)?;
             ivf_rq_builder = ivf_rq_builder.distance_type(distance_type);

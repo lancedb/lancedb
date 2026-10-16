@@ -33,6 +33,17 @@ The following distance types are available:
 
 ***
 
+### layered?
+
+```ts
+optional layered: boolean;
+```
+
+Use prefix planes. Unset uses the product default: false in OSS and true
+in Enterprise. Ignored for 1-bit and 2-bit codes.
+
+***
+
 ### maxIterations?
 
 ```ts
@@ -58,7 +69,7 @@ Number of bits per dimension for residual quantization.
 
 This value controls how much each residual component is compressed. The more
 bits, the more accurate the index will be but the slower search. Typical values
-are small integers; the default is 1 bit per dimension.
+are small integers; the default is 5 bits per dimension.
 
 ***
 

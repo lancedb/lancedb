@@ -15,7 +15,7 @@ use lance::index::vector::utils::infer_vector_dim;
 use lance_arrow::json::is_json_field;
 use lance_index::IndexType;
 use lance_index::scalar::{BuiltinIndexType, ScalarIndexParams};
-use lance_index::vector::bq::RQBuildParams;
+use lance_index::vector::bq::{RABIT_DEFAULT_NUM_BITS, RQBuildParams};
 use lance_index::vector::hnsw::builder::HnswBuildParams;
 use lance_index::vector::ivf::IvfBuildParams;
 use lance_index::vector::pq::PQBuildParams;
@@ -355,7 +355,10 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let mut rq_params = RQBuildParams::new(
+                    index.num_bits.unwrap_or(u32::from(RABIT_DEFAULT_NUM_BITS)) as u8,
+                );
+                rq_params.layered = index.layered;
                 let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
                     ivf_params,
@@ -469,6 +472,7 @@ impl NativeTable {
 #[cfg(test)]
 mod tests {
     use lance::index::DatasetIndexExt;
+    use lance::index::vector::{StageParams, VectorIndexParams};
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -492,7 +496,7 @@ mod tests {
         FtsIndexBuilder, ZoneMapIndexBuilder,
     };
     use crate::index::vector::{
-        IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+        IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfRqIndexBuilder,
     };
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::table::optimize::{CompactionOptions, OptimizeAction};
@@ -514,6 +518,52 @@ mod tests {
             .unwrap();
 
         Ok(FixedSizeListArray::from(data))
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_rq_params_preserve_product_default(
+        #[values(None, Some(1), Some(2), Some(5))] num_bits: Option<u32>,
+        #[values(None, Some(false), Some(true))] layered: Option<bool>,
+    ) {
+        let dir = tempdir().unwrap();
+        let connection = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let field = Field::new(
+            "vector",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 8),
+            true,
+        );
+        let table = connection
+            .create_empty_table("test", Arc::new(Schema::new(vec![field.clone()])))
+            .execute()
+            .await
+            .unwrap();
+        let mut builder = IvfRqIndexBuilder::default();
+        if let Some(num_bits) = num_bits {
+            builder = builder.num_bits(num_bits);
+        }
+        if let Some(layered) = layered {
+            builder = builder.layered(layered);
+        }
+        let params = table
+            .as_native()
+            .unwrap()
+            .make_index_params(&field, Index::IvfRq(builder))
+            .await
+            .unwrap();
+        let params = params.as_any().downcast_ref::<VectorIndexParams>().unwrap();
+        let Some(StageParams::RQ(rq)) = params.stages.last() else {
+            panic!("expected RQ stage");
+        };
+        assert_eq!(u32::from(rq.num_bits), num_bits.unwrap_or(5));
+        assert_eq!(rq.layered, layered);
+        assert_eq!(
+            rq.is_layered(),
+            num_bits.unwrap_or(5) > 2 && layered.unwrap_or(false)
+        );
     }
 
     #[tokio::test]
