@@ -6171,8 +6171,12 @@ class AsyncTable:
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
             # so vector columns are inferred as FixedSizeList.
-            data, _ = sanitize_create_table(
-                data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, _ = await asyncio.to_thread(
+                sanitize_create_table,
+                data,
+                None,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
             if blob_v2_column_paths(schema):
                 # Plain bytes cannot be inferred as blob v2. Keep matching blob
@@ -6182,7 +6186,8 @@ class AsyncTable:
         elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
-            data = _sanitize_data(
+            data = await asyncio.to_thread(
+                _sanitize_data,
                 data,
                 schema,
                 metadata=schema.metadata,
@@ -6191,7 +6196,10 @@ class AsyncTable:
                 allow_subschema=True,
             )
         _register_optional_converters()
-        data = to_scannable(data)
+        # Converting an iterator peeks at its first item.  A synchronous query in
+        # that iterator schedules work on LOOP, so peeking on LOOP's own thread
+        # would deadlock waiting for itself.
+        data = await asyncio.to_thread(to_scannable, data)
         progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
