@@ -1778,6 +1778,102 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  describe("on a GeoArrow column", () => {
+    // Row `10 * y + x` sits at (x, y). The triangle's bounding box covers the
+    // 25 points with x <= 4 and y <= 4, but only the 15 with x + y <= 4
+    // intersect the triangle itself.
+    const inTriangle =
+      "ST_Intersects(geom, ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))'))";
+    const triangleIds = [0, 1, 2, 3, 4, 10, 11, 12, 13, 20, 21, 22, 30, 31, 40];
+    let geoTbl: Table;
+
+    beforeEach(async () => {
+      const point = new Struct([
+        new Field("x", new Float64(), false),
+        new Field("y", new Float64(), false),
+      ]);
+      const geoSchema = new Schema([
+        new Field("id", new Int32(), false),
+        new Field(
+          "geom",
+          point,
+          true,
+          new Map([
+            ["ARROW:extension:name", "geoarrow.point"],
+            ["ARROW:extension:metadata", "{}"],
+          ]),
+        ),
+        new Field(
+          "vec",
+          new FixedSizeList(2, new Field("item", new Float32())),
+        ),
+      ]);
+      const data = makeArrowTable(
+        Array.from({ length: 100 }, (_, i) => ({
+          id: i,
+          geom: { x: i % 10, y: Math.floor(i / 10) },
+          vec: [i, i],
+        })),
+        { schema: geoSchema },
+      );
+      const db = await connect(tmpDir.name);
+      geoTbl = await db.createTable("points", data);
+    });
+
+    const ids = (rows: { id: number }[]) => rows.map((row) => row.id);
+
+    test("create an RTree index and filter with it", async () => {
+      await geoTbl.createIndex("geom", { config: Index.rtree() });
+      expect(await geoTbl.listIndices()).toEqual([
+        expect.objectContaining({
+          name: "geom_idx",
+          indexType: "RTree",
+          columns: ["geom"],
+        }),
+      ]);
+      const stats = await geoTbl.indexStats("geom_idx");
+      expect(stats?.indexType).toEqual("RTREE");
+      expect(stats?.numIndexedRows).toEqual(100);
+
+      const query = geoTbl.query().where(inTriangle);
+      expect(await query.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await query.toArray()).sort((a, b) => a - b)).toEqual(
+        triangleIds,
+      );
+    });
+
+    test("prefilter a vector search with an RTree index", async () => {
+      await geoTbl.createIndex("geom", {
+        config: Index.rtree({ pageSize: 16 }),
+      });
+      // Row 99 sits outside the triangle; its nearest vectors are 98, 97, ...
+      const prefiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .limit(5);
+      expect(await prefiltered.explainPlan(true)).toContain("ScalarIndexQuery");
+      expect(ids(await prefiltered.toArray())).toEqual([40, 31, 30, 22, 21]);
+
+      const postfiltered = geoTbl
+        .query()
+        .nearestTo([99, 99])
+        .where(inTriangle)
+        .postfilter()
+        .limit(5);
+      expect(await postfiltered.toArray()).toEqual([]);
+    });
+
+    test("reject invalid RTree options", async () => {
+      expect(() => Index.rtree({ pageSize: 1 })).toThrow(
+        "page_size must be at least 2",
+      );
+      await expect(
+        geoTbl.createIndex("id", { config: Index.rtree() }),
+      ).rejects.toThrow("GeoArrow");
+    });
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 

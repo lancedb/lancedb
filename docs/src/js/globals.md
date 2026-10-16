@@ -126,6 +126,7 @@
 - [OptimizeOptions](interfaces/OptimizeOptions.md)
 - [OptimizeStats](interfaces/OptimizeStats.md)
 - [QueryExecutionOptions](interfaces/QueryExecutionOptions.md)
+- [RTreeOptions](interfaces/RTreeOptions.md)
 - [RefreshColumnResult](interfaces/RefreshColumnResult.md)
 - [RefreshMaterializedViewResult](interfaces/RefreshMaterializedViewResult.md)
 - [RemovalStats](interfaces/RemovalStats.md)

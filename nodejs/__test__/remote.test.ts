@@ -715,6 +715,87 @@ describe("remote connection", () => {
     expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
   });
 
+  it("sends RTree options to remote tables", async () => {
+    const createIndexBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "geom",
+                    type: {
+                      type: "struct",
+                      fields: [
+                        {
+                          name: "x",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                        {
+                          name: "y",
+                          type: { type: "double" },
+                          nullable: false,
+                        },
+                      ],
+                    },
+                    nullable: true,
+                    metadata: { "ARROW:extension:name": "geoarrow.point" },
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBodies.push(JSON.parse(raw));
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("geom", { config: Index.rtree() });
+        await table.createIndex("geom", {
+          config: Index.rtree({ pageSize: 1024 }),
+          name: "geom_rtree",
+        });
+      },
+    );
+
+    expect(createIndexBodies).toEqual([
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+      },
+      {
+        column: "geom",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        index_type: "RTREE",
+        name: "geom_rtree",
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        page_size: 1024,
+      },
+    ]);
+  });
+
   it("diffs and cherry-picks remote branches", async () => {
     const sampleDiff = {
       fromBranch: "exp",
