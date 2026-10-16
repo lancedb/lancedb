@@ -101,6 +101,15 @@ increase memory use. TypeScript does not expose that manual option.
 Measure with realistic row sizes and storage. Avoid one write per row when a
 batch will do, and avoid a large worker count for a small input.
 
+### Compact after a large load {#compact-after-load}
+
+After a large ingestion job, compact the new fragments so later queries read
+fewer files:
+
+```python
+table.optimize()
+```
+
 ## Track completion and progress {#tracking-ingestion-progress}
 
 Python, TypeScript and Rust support progress callbacks when adding data.
