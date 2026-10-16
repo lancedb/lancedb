@@ -91,19 +91,13 @@ def test_quickstart(tmp_path):
         }
     )
     # --8<-- [end:alter_columns_vector]
-    # Change it back since we can get a panic with fp16
-    tbl.alter_columns(
-        {
-            "path": "vector",
-            "data_type": pa.list_(pa.float32(), list_size=2),
-        }
-    )
     # --8<-- [start:drop_columns]
     tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns]
     # --8<-- [start:create_index]
     tbl.create_index(num_sub_vectors=1)
     # --8<-- [end:create_index]
+    tbl.search([100, 100]).limit(2).to_pandas()
     # --8<-- [start:delete_rows]
     tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_rows]
@@ -185,13 +179,6 @@ async def test_quickstart_async(tmp_path):
         }
     )
     # --8<-- [end:alter_columns_async_vector]
-    # Change it back since we can get a panic with fp16
-    await tbl.alter_columns(
-        {
-            "path": "vector",
-            "data_type": pa.list_(pa.float32(), list_size=2),
-        }
-    )
     # --8<-- [start:drop_columns_async]
     await tbl.drop_columns(["dbl_price"])
     # --8<-- [end:drop_columns_async]
@@ -200,6 +187,7 @@ async def test_quickstart_async(tmp_path):
     # --8<-- [start:create_index_async]
     await tbl.create_index("vector")
     # --8<-- [end:create_index_async]
+    await tbl.vector_search([100, 100]).limit(2).to_pandas()
     # --8<-- [start:delete_rows_async]
     await tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_rows_async]
