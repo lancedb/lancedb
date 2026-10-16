@@ -101,6 +101,17 @@ increase memory use. TypeScript does not expose that manual option.
 Measure with realistic row sizes and storage. Avoid one write per row when a
 batch will do, and avoid a large worker count for a small input.
 
+### Compact after a large load {#compact-after-load}
+
+When several workers append to the same table, have each worker reclaim
+space as soon as its batch is written:
+
+```python
+from datetime import timedelta
+
+table.optimize(cleanup_older_than=timedelta(0), delete_unverified=True)
+```
+
 ## Track completion and progress {#tracking-ingestion-progress}
 
 Python, TypeScript and Rust support progress callbacks when adding data.
