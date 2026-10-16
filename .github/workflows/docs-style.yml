@@ -1,0 +1,45 @@
+name: Docs prose style
+
+# Vale checks the mechanical rules in the LanceDB style guide
+# (lancedb/docs, STYLE.md) with the package pinned in .vale.ini. It annotates
+# only the lines a pull request adds or changes and never fails the build.
+on:
+  pull_request:
+    paths:
+      - "docs/web/**/*.mdx"
+      - ".vale.ini"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+env:
+  VALE_VERSION: 3.24.0
+  VALE_SHA256: 867534ddb678abca7f214bc4706ead0922bd5252ffe8035fc227013f66c8b214
+
+jobs:
+  prose:
+    name: Lint changed prose
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Vale
+        run: |
+          archive="vale_${VALE_VERSION}_Linux_64-bit.tar.gz"
+          curl --fail --location --silent --show-error --output "$RUNNER_TEMP/$archive" \
+            "https://github.com/vale-cli/vale/releases/download/v${VALE_VERSION}/$archive"
+          echo "${VALE_SHA256}  $RUNNER_TEMP/$archive" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP" vale
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Annotate changed lines
+        uses: vale-cli/vale-action@518a9136acc6e6668ce7c00d367051e0941e87ff # v3.0.0
+        with:
+          version: none
+          files: docs/web
+          reporter: github-pr-annotations
+          filter_mode: added
+          fail_on_error: false
