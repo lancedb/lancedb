@@ -46,6 +46,7 @@ from lancedb.index import (
     BTree,
     Bitmap,
     LabelList,
+    RTree,
 )
 from lancedb.job import Job
 from lancedb.functions import (
@@ -358,7 +359,10 @@ class RemoteTable(Table):
     @deprecation.deprecated(
         deprecated_in="0.25.0",
         current_version=__version__,
-        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
+        details=(
+            "Use create_index() with config=BTree()/Bitmap()/LabelList()/RTree()"
+            " instead."
+        ),
     )
     def create_scalar_index(
         self,
@@ -372,7 +376,8 @@ class RemoteTable(Table):
         """Create a scalar index on a column.
 
         .. deprecated:: 0.25.0
-            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
+            Use :meth:`create_index` with a BTree, Bitmap, LabelList, or RTree
+            config instead.
             Example: ``table.create_index("column", config=BTree())``
         """
         if index_type == "scalar":
@@ -388,6 +393,8 @@ class RemoteTable(Table):
             config = Bitmap()
         elif index_type == "LABEL_LIST":
             config = LabelList()
+        elif index_type == "RTREE":
+            config = RTree()
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
