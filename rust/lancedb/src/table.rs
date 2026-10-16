@@ -2257,7 +2257,11 @@ impl Table {
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
-    /// same tokenizer model files must also exist locally.
+    /// same tokenizer model files must also exist locally, and must match the
+    /// files the server uses: the client cannot detect a mismatch, so it may
+    /// return tokens the server's index never produces. If the model files are
+    /// missing, this returns an error naming the tokenizer and
+    /// `LANCE_LANGUAGE_MODEL_HOME`.
     pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
         let indices = self.inner.list_indices().await?;
         let matches = indices
@@ -2291,7 +2295,8 @@ impl Table {
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
     /// index metadata. For remote tables, this means the same tokenizer model
-    /// files must also exist locally.
+    /// files must also exist locally, and must match the files the server uses
+    /// (see [`Self::tokenize`]).
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
         let schema = self.inner.schema().await?;
         let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
@@ -2347,13 +2352,30 @@ impl Table {
                 ),
             }
         })?;
+        let model_backed_tokenizer = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|details| {
+                let tokenizer = details.get("base_tokenizer")?.as_str()?.to_string();
+                (tokenizer.starts_with("jieba/") || tokenizer.starts_with("lindera/"))
+                    .then_some(tokenizer)
+            });
         tokenize(query, &params).map_err(|err| match err {
-            Error::InvalidInput { message } => Error::InvalidInput {
-                message: format!(
+            Error::InvalidInput { message } => {
+                let mut message = format!(
                     "{} for full text search index '{}' for {}",
                     message, index.name, selector_description
-                ),
-            },
+                );
+                if let Some(tokenizer) = model_backed_tokenizer {
+                    message.push_str(&format!(
+                        ". tokenize() runs on the client: the '{}' tokenizer is rebuilt \
+                         in this process from the index metadata, so its model files must \
+                         be available under LANCE_LANGUAGE_MODEL_HOME and, for remote \
+                         tables, match the files the server uses",
+                        tokenizer
+                    ));
+                }
+                Error::InvalidInput { message }
+            }
             err => err,
         })
     }

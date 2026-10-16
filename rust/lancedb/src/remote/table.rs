@@ -8375,6 +8375,131 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial(language_model_env)]
+    async fn test_tokenize_model_backed_tokenizer_without_model_files() {
+        let model_home = tempfile::tempdir().unwrap();
+        // SAFETY: This is only called in tests, serialized on the env key.
+        unsafe {
+            std::env::set_var("LANCE_LANGUAGE_MODEL_HOME", model_home.path());
+        }
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let index_details = serde_json::json!({
+            "base_tokenizer": "jieba/default",
+            "language": "English",
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": false,
+            "ascii_folding": false,
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_details": index_details,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let result = table.tokenize("我们是中国人", "text_idx").await;
+        // SAFETY: This is only called in tests, serialized on the env key.
+        unsafe {
+            std::env::remove_var("LANCE_LANGUAGE_MODEL_HOME");
+        }
+
+        let err = result.unwrap_err();
+        let Error::InvalidInput { message } = err else {
+            panic!("expected InvalidInput, got {err:?}");
+        };
+        // The original cause and the index context are preserved...
+        assert!(message.contains("Invalid directory path"), "{message}");
+        assert!(
+            message.contains("full text search index 'text_idx'"),
+            "{message}"
+        );
+        // ...and the message explains that this is a client-side limitation.
+        assert!(
+            message.contains("tokenize() runs on the client"),
+            "{message}"
+        );
+        assert!(message.contains("'jieba/default'"), "{message}");
+        assert!(message.contains("LANCE_LANGUAGE_MODEL_HOME"), "{message}");
+        assert!(
+            message.contains("match the files the server uses"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tokenize_unknown_tokenizer_error_has_no_model_files_hint() {
+        let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
+        let index_details = serde_json::json!({
+            "base_tokenizer": "no_such_tokenizer",
+            "language": "English",
+            "with_position": false,
+            "max_token_length": 40,
+            "lower_case": true,
+            "stem": false,
+            "remove_stop_words": false,
+            "ascii_folding": false,
+        })
+        .to_string();
+        let table = Table::new_with_handler("my_table", move |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap(),
+                "/v1/table/my_table/index/list/" => {
+                    let body = serde_json::json!({
+                        "indexes": [
+                            {
+                                "index_name": "text_idx",
+                                "columns": ["text"],
+                                "index_type": "FTS",
+                                "index_details": index_details,
+                            },
+                        ]
+                    });
+                    http::Response::builder()
+                        .status(200)
+                        .body(serde_json::to_string(&body).unwrap())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        let err = table.tokenize("hello", "text_idx").await.unwrap_err();
+        let message = err.to_string();
+        assert!(
+            !message.contains("tokenize() runs on the client"),
+            "{message}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_tokenize_requires_existing_index_name() {
         let schema = Schema::new(vec![Field::new("text", DataType::Utf8, false)]);
         let table = Table::new_with_handler("my_table", move |request| -> http::Response<String> {
