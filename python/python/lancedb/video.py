@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import bisect
 import io
+import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -380,6 +381,9 @@ class VideoFrames:
         self._column = column
         self._probe = probe_bytes
         self._cache = _DecoderCache(decoder_cache_size, byte_budget)
+        self._lock = (
+            threading.Lock()
+        )  # one fetch at a time; files decode in parallel inside
         self._index: dict[int, dict[str, Any]] = {}
         self._pool = ThreadPoolExecutor(max_workers=decode_threads)
 
@@ -389,8 +393,12 @@ class VideoFrames:
         ``requests`` is a list of ``(row_id, frame_numbers)``. Returns one
         ``(T, 3, H, W)`` uint8 array per request, in order: a torch tensor with
         torchcodec, a numpy array with the PyAV fallback. Row ids come from
-        ``with_row_id(True)`` on a query.
+        ``with_row_id(True)`` on a query. Safe to call from several threads.
         """
+        with self._lock:
+            return self._fetch_frames(requests)
+
+    def _fetch_frames(self, requests: Sequence[tuple[int, Sequence[int]]]) -> list[Any]:
         windows: dict[int, list[tuple[int, int]]] = {}
         for row_id, frame_numbers in requests:
             windows.setdefault(row_id, []).append(
