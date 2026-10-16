@@ -8,6 +8,7 @@ from typing import get_args, get_type_hints
 import pyarrow as pa
 import pytest
 import pytest_asyncio
+import lancedb
 from lancedb import AsyncConnection, AsyncTable, connect_async
 from lancedb.index import (
     BTree,
@@ -21,6 +22,7 @@ from lancedb.index import (
     Bitmap,
     LabelList,
     Fm,
+    RTree,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -246,6 +248,177 @@ async def test_create_fm_index(some_table: AsyncTable):
     assert len(indices) == 1
     assert indices[0].index_type == "Fm"
     assert indices[0].columns == ["data"]
+
+
+POINT_TYPE = pa.struct([("x", pa.float64()), ("y", pa.float64())])
+POLYGON_TYPE = pa.list_(pa.field("rings", pa.list_(pa.field("vertices", POINT_TYPE))))
+
+
+def geoarrow_field(name: str, extension: str, data_type: pa.DataType) -> pa.Field:
+    return pa.field(
+        name,
+        data_type,
+        metadata={
+            "ARROW:extension:name": extension,
+            "ARROW:extension:metadata": "{}",
+        },
+    )
+
+
+# The triangle's bounding box covers the 25 grid points with x <= 4 and y <= 4,
+# but only the 15 with x + y <= 4 intersect the triangle itself.
+TRIANGLE = "ST_GeomFromText('POLYGON ((0 0, 4 0, 0 4, 0 0))')"
+INTERSECTS_TRIANGLE = f"ST_Intersects(geom, {TRIANGLE})"
+TRIANGLE_IDS = [10 * y + x for y in range(10) for x in range(10) if x + y <= 4]
+
+
+def grid_points(nrows: int) -> pa.Table:
+    """A grid of GeoArrow points in which row ``10 * y + x`` sits at ``(x, y)``."""
+    ids = list(range(nrows))
+    geom = pa.StructArray.from_arrays(
+        [
+            pa.array([float(i % 10) for i in ids]),
+            pa.array([float(i // 10) for i in ids]),
+        ],
+        names=["x", "y"],
+    )
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            geoarrow_field("geom", "geoarrow.point", POINT_TYPE),
+            pa.field("vector", pa.list_(pa.float32(), DIM)),
+        ]
+    )
+    return pa.Table.from_arrays(
+        [pa.array(ids, pa.int64()), geom, sample_fixed_size_list_array(nrows, DIM)],
+        schema=schema,
+    )
+
+
+@pytest_asyncio.fixture
+async def point_table(db_async):
+    return await db_async.create_table("point_table", grid_points(100))
+
+
+async def query_ids(query) -> list:
+    return (await query.to_arrow())["id"].to_pylist()
+
+
+@pytest.mark.asyncio
+async def test_create_rtree_index(point_table: AsyncTable):
+    assert sorted(await query_ids(point_table.query().where(INTERSECTS_TRIANGLE))) == (
+        TRIANGLE_IDS
+    )
+
+    await point_table.create_index("geom", config=RTree())
+    indices = await point_table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].name == "geom_idx"
+    assert indices[0].index_type == "RTree"
+    assert indices[0].columns == ["geom"]
+    stats = await point_table.index_stats("geom_idx")
+    assert stats.index_type == "RTREE"
+    assert stats.num_indexed_rows == 100
+    assert stats.num_unindexed_rows == 0
+
+    # The index narrows the scan to the bounding box; the exact predicate then
+    # drops the candidates that fall outside the triangle.
+    query = point_table.query().where(INTERSECTS_TRIANGLE)
+    assert "ScalarIndexQuery" in await query.explain_plan(True)
+    assert sorted(await query_ids(query)) == TRIANGLE_IDS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "predicate, expected_ids",
+    [
+        (INTERSECTS_TRIANGLE, TRIANGLE_IDS),
+        (f"ST_Within(geom, {TRIANGLE})", [11, 12, 21]),
+        (f"ST_Intersects(geom, {TRIANGLE}) AND id > 20", [21, 22, 30, 31, 40]),
+        ("ST_Intersects(geom, ST_Point(3.0, 3.0))", [33]),
+        ("geom IS NULL", []),
+    ],
+)
+async def test_rtree_index_accelerates_spatial_filters(
+    point_table: AsyncTable, predicate: str, expected_ids: list
+):
+    await point_table.create_index("geom", config=RTree())
+    query = point_table.query().where(predicate)
+    assert "ScalarIndexQuery" in await query.explain_plan(True)
+    assert sorted(await query_ids(query)) == expected_ids
+
+
+@pytest.mark.asyncio
+async def test_rtree_index_prefilters_vector_search(point_table: AsyncTable):
+    await point_table.create_index("geom", config=RTree())
+    # Row 99 sits outside the triangle, and its nearest vectors are rows 98, 97, ...
+    far_corner = list(range(99 * DIM, 100 * DIM))
+
+    prefiltered = point_table.query().nearest_to(far_corner).where(INTERSECTS_TRIANGLE)
+    assert "ScalarIndexQuery" in await prefiltered.explain_plan(True)
+    assert await query_ids(prefiltered.limit(5)) == [40, 31, 30, 22, 21]
+
+    postfiltered = (
+        point_table.query()
+        .nearest_to(far_corner)
+        .where(INTERSECTS_TRIANGLE)
+        .postfilter()
+        .limit(5)
+    )
+    assert await query_ids(postfiltered) == []
+
+
+@pytest.mark.asyncio
+async def test_create_rtree_index_on_polygons(db_async):
+    def square(corner: float) -> list:
+        ring = [(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)]
+        return [[{"x": corner + x, "y": corner + y} for x, y in ring]]
+
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            geoarrow_field("area", "geoarrow.polygon", POLYGON_TYPE),
+        ]
+    )
+    data = pa.Table.from_arrays(
+        [
+            pa.array(range(10), pa.int64()),
+            pa.array([square(float(i)) for i in range(10)], POLYGON_TYPE),
+        ],
+        schema=schema,
+    )
+    table = await db_async.create_table("polygons", data)
+    await table.create_index("area", config=RTree(page_size=2))
+    assert (await table.list_indices())[0].index_type == "RTree"
+
+    query = table.query().where(
+        "ST_Intersects(area, ST_GeomFromText('POINT (3.5 3.5)'))"
+    )
+    assert "ScalarIndexQuery" in await query.explain_plan(True)
+    assert sorted(await query_ids(query)) == [2, 3]
+
+
+@pytest.mark.asyncio
+async def test_create_rtree_index_rejects_invalid_input(point_table: AsyncTable):
+    with pytest.raises(ValueError, match="page_size must be at least 2"):
+        await point_table.create_index("geom", config=RTree(page_size=1))
+    with pytest.raises(RuntimeError, match="GeoArrow"):
+        await point_table.create_index("id", config=RTree())
+    assert await point_table.list_indices() == []
+
+
+def test_create_rtree_index_sync(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("points", grid_points(100))
+    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+        table.create_scalar_index("geom", index_type="RTREE")
+    assert [index.index_type for index in table.list_indices()] == ["RTree"]
+    table.create_index("geom", config=RTree(page_size=16), name="geom_rtree")
+    assert table.index_stats("geom_rtree").index_type == "RTREE"
+
+    query = table.search().where(INTERSECTS_TRIANGLE).limit(100)
+    assert "ScalarIndexQuery" in query.explain_plan(True)
+    assert sorted(query.to_arrow()["id"].to_pylist()) == TRIANGLE_IDS
 
 
 @pytest.mark.asyncio
@@ -525,6 +698,7 @@ def test_index_statistics_index_type_lists_all_supported_values():
         "BTREE",
         "BITMAP",
         "LABEL_LIST",
+        "RTREE",
     }
 
     assert (

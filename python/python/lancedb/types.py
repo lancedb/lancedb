@@ -40,7 +40,7 @@ VectorIndexType = Literal[
     "IVF_HNSW_FLAT",
     "IVF_RQ",
 ]
-ScalarIndexType = Literal["BTREE", "BITMAP", "LABEL_LIST"]
+ScalarIndexType = Literal["BTREE", "BITMAP", "LABEL_LIST", "RTREE"]
 IndexType = Literal[
     "IVF_PQ",
     "IVF_HNSW_PQ",
@@ -51,6 +51,7 @@ IndexType = Literal[
     "BTREE",
     "BITMAP",
     "LABEL_LIST",
+    "RTREE",
     "IVF_RQ",
 ]
 

@@ -109,6 +109,56 @@ class Fm:
 
 
 @dataclass
+class RTree:
+    """Describe an RTree index configuration.
+
+    `RTree` is a scalar index on a GeoArrow geometry column, that is, a column
+    whose Arrow field metadata sets ``ARROW:extension:name`` to a GeoArrow type
+    such as ``geoarrow.point``, ``geoarrow.polygon`` or ``geoarrow.wkb``. It
+    stores the bounding box of each geometry and accelerates spatial filters
+    passed to ``where()``.
+
+    The index answers ``ST_Intersects``, ``ST_Contains``, ``ST_Within``,
+    ``ST_Touches``, ``ST_Crosses``, ``ST_Overlaps``, ``ST_Covers`` and
+    ``ST_CoveredBy`` when the indexed column is the first argument and the
+    second is a constant geometry, for example
+    ``ST_Within(geom, ST_GeomFromText('POLYGON ((...))'))``, as well as
+    ``geom IS NULL``. These filters can be combined with other conditions
+    using ``AND``. Bounding boxes only narrow the scan to candidate rows; the
+    exact predicate is then evaluated on those rows, so the results are the
+    same with or without the index.
+
+    Write the column first. The index is not used when the constant comes
+    first, and asymmetric predicates in that form, such as
+    ``ST_Contains(<constant>, geom)``, currently evaluate with their arguments
+    swapped; use ``ST_Within(geom, <constant>)`` instead. Other spatial
+    functions such as ``ST_Distance`` work in filters but scan every row.
+    ``ST_DWithin`` is not available.
+
+    On a vector search, a spatial prefilter (the default) uses the index to
+    restrict the candidates before the nearest neighbors are found. A
+    postfilter is evaluated on the search results instead. Use
+    ``explain_plan()`` to check that a query uses the index: an indexed filter
+    shows up as ``ScalarIndexQuery``.
+
+    Remote tables send the ``RTREE`` index type to the server, which must
+    support it.
+
+    Examples
+    --------
+    >>> config = RTree(page_size=1024)
+
+    Attributes
+    ----------
+    page_size : int, optional
+        The maximum number of entries in each R-tree page. Must be at least 2.
+        ``None`` uses Lance's default of 4096.
+    """
+
+    page_size: Optional[int] = None
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
@@ -926,4 +976,5 @@ __all__ = [
     "Bitmap",
     "LabelList",
     "Fm",
+    "RTree",
 ]

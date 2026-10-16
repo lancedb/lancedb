@@ -49,6 +49,7 @@ from lancedb.index import (
     IvfRq,
     IvfSq,
     LabelList,
+    RTree,
 )
 from lancedb.job import Job
 from lancedb.functions import FunctionApplication, RefreshColumnResult
@@ -293,12 +294,17 @@ class RemoteTable(Table):
     @deprecation.deprecated(
         deprecated_in="0.25.0",
         current_version=__version__,
-        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
+        details=(
+            "Use create_index() with config=BTree()/Bitmap()/LabelList()/RTree()"
+            " instead."
+        ),
     )
     def create_scalar_index(
         self,
         column: str,
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "scalar"] = "scalar",
+        index_type: Literal[
+            "BTREE", "BITMAP", "LABEL_LIST", "RTREE", "scalar"
+        ] = "scalar",
         *,
         replace: bool = False,
         wait_timeout: Optional[timedelta] = None,
@@ -307,17 +313,18 @@ class RemoteTable(Table):
         """Creates a scalar index.
 
         .. deprecated:: 0.25.0
-            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
+            Use :meth:`create_index` with a BTree, Bitmap, LabelList, or RTree
+            config instead.
             Example: ``table.create_index("column", config=BTree())``
 
         Parameters
         ----------
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
+            or string column, or a GeoArrow geometry column for "RTREE".
         index_type : str
             The index type of the scalar index. Must be "scalar" (BTREE),
-            "BTREE", "BITMAP", or "LABEL_LIST",
+            "BTREE", "BITMAP", "LABEL_LIST", or "RTREE".
         replace : bool
             If True, replace the existing index with the new one.
         """
@@ -327,6 +334,8 @@ class RemoteTable(Table):
             config = Bitmap()
         elif index_type == "LABEL_LIST":
             config = LabelList()
+        elif index_type == "RTREE":
+            config = RTree()
         else:
             raise ValueError(f"Unknown index type: {index_type}")
 
