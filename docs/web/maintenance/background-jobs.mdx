@@ -32,7 +32,7 @@ log from growing without bound:
 
 | Job type | What it does |
 | --- | --- |
-| `sstable_compaction` | Folds a WAL bucket's SSTables into the base table by primary key. Distinct from `compact`, which merges base-table fragments -- the two are unrelated. |
+| `sstable_compaction` | Folds a table shard's SSTables into the base table by primary key. Distinct from `compact`, which merges base-table fragments -- the two are unrelated. |
 | `wal_index_catchup` | Extends a base-table index over the rows `sstable_compaction` just folded in, and records how far the index has caught up. Nothing else advances that record. |
 
 ## Index maintenance {#index}

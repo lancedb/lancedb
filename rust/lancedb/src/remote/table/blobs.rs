@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use arrow_array::builder::LargeBinaryBuilder;
 use arrow_array::{Array, LargeBinaryArray, StructArray, UInt8Array, UInt64Array};
 use arrow_schema::DataType;
 use bytes::Bytes;
@@ -20,7 +21,7 @@ use reqwest::{Response, StatusCode, header};
 use tokio::sync::{Mutex, OwnedSemaphorePermit};
 
 use crate::Error;
-use crate::blob::BlobFile;
+use crate::blob::{BlobFile, BlobRangeRequest};
 use crate::error::Result;
 use crate::query::{QueryFilter, QueryRequest, Select};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
@@ -538,6 +539,37 @@ impl<S: HttpSend> RemoteTable<S> {
         Ok(blobs)
     }
 
+    /// Materialize ranges through version-pinned handles, preserving nulls and order.
+    pub(super) async fn fetch_blob_ranges_impl(
+        &self,
+        column: &str,
+        requests: &[BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        let row_ids = requests
+            .iter()
+            .map(|request| request.row_id)
+            .collect::<Vec<_>>();
+        let files = self.fetch_blob_files_impl(column, &row_ids).await?;
+        let mut builder = LargeBinaryBuilder::with_capacity(requests.len(), 0);
+        for (file, request) in files.into_iter().zip(requests) {
+            let end =
+                request
+                    .offset
+                    .checked_add(request.length)
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "blob range offset + length overflows u64".into(),
+                    })?;
+            match file {
+                Some(file) => {
+                    let bytes = file.read_range(request.offset..end).await?;
+                    builder.append_value(bytes);
+                }
+                None => builder.append_null(),
+            }
+        }
+        Ok(builder.finish())
+    }
+
     /// Open seekable handles for `row_ids`.
     ///
     /// Descriptors for the requested rows come from one `_rowid` take query per
@@ -685,7 +717,7 @@ impl<S: HttpSend> RemoteTable<S> {
             select: Select::columns(&[column]),
             with_row_id: true,
             // Row ids name base-table rows, and the MemWAL scanner has no stable `_rowid`.
-            use_lsm: Some(false),
+            use_memwal: Some(false),
             ..Default::default()
         });
         let body = self
@@ -1121,7 +1153,7 @@ mod tests {
                             .unwrap();
                     assert_eq!(body["columns"], serde_json::json!(["image"]));
                     assert_eq!(body["with_row_id"], serde_json::json!(true));
-                    assert_eq!(body["use_lsm"], serde_json::json!(false));
+                    assert_eq!(body["use_memwal"], serde_json::json!(false));
                     let requested = filter_row_ids(body["filter"].as_str().unwrap());
                     captured.lock().unwrap().push(TakeMockRequest::Query {
                         row_ids: requested.clone(),
@@ -1189,6 +1221,123 @@ mod tests {
             Some(Version::new(0, 5, 0)),
         );
         (table, requests)
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_preserve_order_nulls_and_empty_ranges() {
+        let (table, requests) = mock_take_blob_table(
+            vec![
+                (10, Some((BlobKind::Inline, PAYLOAD.len() as u64))),
+                (20, None),
+                (30, Some((BlobKind::Packed, PAYLOAD.len() as u64))),
+                (40, Some((BlobKind::Inline, 0))),
+            ],
+            Some("7"),
+        );
+
+        let ranges = table
+            .fetch_blob_ranges(
+                "image",
+                &[
+                    BlobRangeRequest::new(30, 6, 5),
+                    BlobRangeRequest::new(10, 0, 3),
+                    BlobRangeRequest::new(20, 0, 1),
+                    BlobRangeRequest::new(10, 2, 2),
+                    BlobRangeRequest::new(40, 0, 0),
+                    BlobRangeRequest::new(10, PAYLOAD.len() as u64, 0),
+                    BlobRangeRequest::new(30, 6, 5),
+                ],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            ranges,
+            LargeBinaryArray::from(vec![
+                Some(&PAYLOAD[6..11]),
+                Some(&PAYLOAD[0..3]),
+                None,
+                Some(&PAYLOAD[2..4]),
+                Some(b"".as_slice()),
+                Some(b"".as_slice()),
+                Some(&PAYLOAD[6..11]),
+            ])
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(
+            requests[0],
+            TakeMockRequest::Query {
+                row_ids: vec![10, 20, 30, 40],
+                version: None,
+            }
+        );
+        // Only nonempty, non-null ranges are read, at the descriptor take's version.
+        let reads = requests[1..]
+            .iter()
+            .map(|request| match request {
+                TakeMockRequest::Range {
+                    row_id,
+                    range,
+                    version,
+                } => {
+                    assert_eq!(version.as_deref(), Some("7"));
+                    (*row_id, range.as_str())
+                }
+                other => panic!("unexpected request: {other:?}"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reads,
+            [
+                (30, "bytes=6-10"),
+                (10, "bytes=0-2"),
+                (10, "bytes=2-3"),
+                (30, "bytes=6-10")
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_reject_missing_rows_and_invalid_ranges() {
+        for (ranges, message) in [
+            (
+                vec![
+                    BlobRangeRequest::new(10, 0, 1),
+                    BlobRangeRequest::new(99, 0, 1),
+                ],
+                "only 1 exist",
+            ),
+            (vec![BlobRangeRequest::new(10, 35, 2)], "exceeds blob size"),
+            (vec![BlobRangeRequest::new(10, 37, 0)], "exceeds blob size"),
+            (
+                vec![BlobRangeRequest::new(10, u64::MAX, 1)],
+                "overflows u64",
+            ),
+            (
+                vec![BlobRangeRequest::new(20, u64::MAX, 1)],
+                "overflows u64",
+            ),
+        ] {
+            let (table, requests) = mock_take_blob_table(
+                vec![
+                    (10, Some((BlobKind::Inline, PAYLOAD.len() as u64))),
+                    (20, None),
+                ],
+                Some("7"),
+            );
+            let error = table.fetch_blob_ranges("image", &ranges).await.unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+            // Missing rows and invalid ranges fail without reading any bytes.
+            assert_eq!(requests.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn remote_blob_ranges_accept_empty_requests_without_http() {
+        let (table, requests) = mock_take_blob_table(vec![], Some("7"));
+        let ranges = table.fetch_blob_ranges("image", &[]).await.unwrap();
+        assert!(ranges.is_empty());
+        assert!(requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
