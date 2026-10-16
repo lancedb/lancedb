@@ -77,6 +77,8 @@ dev = [
 ]
 docs = ["mkdocs", "mkdocs-jupyter", "mkdocs-material", "mkdocstrings-python"]
 clip = ["torch", "pillow>=12.1.1", "open-clip-torch"]
+# lancedb.video: index mp4 blobs at ingest (av) and read frame spans; torchcodec is used for decoding when installed
+video = ["av>=12.0.0", "numpy"]
 siglip = ["torch", "pillow>=12.1.1", "transformers>=4.41.0","sentencepiece"]
 embeddings = [
     "requests>=2.31.0",
