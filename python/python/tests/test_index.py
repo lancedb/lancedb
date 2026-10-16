@@ -364,6 +364,8 @@ async def test_create_vector_index(some_table: AsyncTable):
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
 
+    await some_table.prewarm_index(indices[0].name)
+
     stats = await some_table.index_stats("vector_idx")
     assert stats.index_type == "IVF_PQ"
     assert stats.distance_type == "l2"
