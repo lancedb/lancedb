@@ -8,7 +8,9 @@ use lancedb::index::vector::{
 };
 use lancedb::index::{
     Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder},
+    scalar::{
+        BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder, RTreeIndexBuilder,
+    },
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -40,6 +42,16 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
+            "RTree" => {
+                let params = source.extract::<RTreeParams>()?;
+                let mut builder = RTreeIndexBuilder::default();
+                if let Some(page_size) = params.page_size {
+                    builder = builder
+                        .page_size(page_size)
+                        .map_err(|err| PyValueError::new_err(err.to_string()))?;
+                }
+                Ok(LanceDbIndex::RTree(builder))
+            }
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
                 let mut inner_opts = FtsIndexBuilder::default()
@@ -203,7 +215,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
             }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, RTree, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
@@ -230,6 +242,11 @@ struct FtsParams {
     memory_limit: Option<u64>,
     num_workers: Option<usize>,
     document_granularity: String,
+}
+
+#[derive(FromPyObject)]
+struct RTreeParams {
+    page_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]

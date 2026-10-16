@@ -1477,6 +1477,55 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
+def test_remote_create_rtree_index():
+    from lancedb.index import RTree
+
+    received_requests = []
+
+    def handler(request):
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        if request.path == "/v1/table/test/describe/":
+            point = {
+                "name": "geom",
+                "type": {
+                    "type": "struct",
+                    "fields": [
+                        {"name": "x", "type": {"type": "double"}, "nullable": False},
+                        {"name": "y", "type": {"type": "double"}, "nullable": False},
+                    ],
+                },
+                "nullable": True,
+                "metadata": {"ARROW:extension:name": "geoarrow.point"},
+            }
+            request.wfile.write(
+                json.dumps({"version": 1, "schema": {"fields": [point]}}).encode()
+            )
+        elif request.path == "/v1/table/test/create_index/":
+            received_requests.append(read_json_body(request))
+            request.wfile.write(b"{}")
+        else:
+            raise AssertionError(f"Unexpected request: {request.path}")
+
+    with mock_lancedb_connection(handler) as db:
+        table = db.open_table("test")
+        table.create_index("geom", config=RTree())
+        table.create_index("geom", config=RTree(page_size=1024), name="geom_rtree")
+        with pytest.raises(ValueError, match="page_size must be at least 2"):
+            table.create_index("geom", config=RTree(page_size=1))
+
+    assert received_requests == [
+        {"column": "geom", "index_type": "RTREE"},
+        {
+            "column": "geom",
+            "index_type": "RTREE",
+            "name": "geom_rtree",
+            "page_size": 1024,
+        },
+    ]
+
+
 def test_remote_create_index_new_api(caplog):
     received_requests = []
 

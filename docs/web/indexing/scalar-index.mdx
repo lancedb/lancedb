@@ -24,18 +24,24 @@ import {
     PyScalarIndexUuidWait as ScalarIndexUuidWait,
     PyScalarIndexUuidUpsert as ScalarIndexUuidUpsert,
     PyScalarIndexNestedFields as ScalarIndexNestedFields,
+    PyScalarIndexRtreeData as ScalarIndexRtreeData,
+    PyScalarIndexRtreeCreate as ScalarIndexRtreeCreate,
+    PyScalarIndexRtreeFilter as ScalarIndexRtreeFilter,
+    PyScalarIndexRtreeVector as ScalarIndexRtreeVector,
+    PyScalarIndexRtreeExplain as ScalarIndexRtreeExplain,
 } from '/snippets/indexing.mdx';
 
 Scalar indexes accelerate filters on values such as numbers, categories and
 strings. Use them for selective table queries or metadata filters combined
 with vector and full-text search.
 
-LanceDB supports four types of scalar indexes:
+LanceDB supports these scalar index types, among others:
 
 - `BTREE`: Stores column data in sorted order for binary search. Best for columns with many unique values.
 - `BITMAP`: Uses bitmaps to track value presence. Ideal for columns with few unique values (e.g., categories, tags).
 - `LABEL_LIST`: Special index for `List<T>` and `LargeList<T>` columns of primitive values supporting `array_contains_all` and `array_contains_any` queries.
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
+- `RTREE`: R-tree over GeoArrow geometry columns that accelerates spatial filters such as `ST_Intersects` and `ST_Within`.
 
 <Tip title="Working with scalar indices">
 Use scalar indexes with:
@@ -54,6 +60,7 @@ Use scalar indexes with:
 | Boolean, numbers or strings with fewer than 1,000 unique values | `<`, `=`, `>`, `in`, `between`, `is null` | `BITMAP`     |
 | List of low cardinality of numbers or strings                   | `array_has_any`, `array_has_all`          | `LABEL_LIST` |
 | String or binary (`Utf8`, `LargeUtf8`, `Binary`, `LargeBinary`) | `contains(col, 'needle')`                 | `FM`         |
+| GeoArrow geometry (`geoarrow.point`, `geoarrow.polygon`, `geoarrow.wkb`, ...) | `ST_Intersects`, `ST_Within`, `ST_Contains` and other spatial relationships, `is null` | `RTREE` |
 
 ## Scalar Index Operations
 
@@ -186,6 +193,151 @@ table.search().where("contains(text, 'needle')").limit(10).to_pandas()
 ```
 
 `list_indices()` reports the index type as `"Fm"`.
+
+## R-tree index for geospatial filters {#rtree}
+
+The `RTREE` index is a scalar index over a column of GeoArrow geometries. It
+stores the bounding box of every geometry and accelerates spatial filters, on
+their own or as the prefilter of a vector search. Use it when queries restrict
+results to a region, such as the scenes over an area of interest, the places
+inside a city, or the log records along a route.
+
+### Store geometry as GeoArrow {#rtree-geoarrow}
+
+A column holds geometry when its Arrow field carries GeoArrow extension
+metadata: `ARROW:extension:name` names the geometry type, such as
+`geoarrow.point`, `geoarrow.linestring`, `geoarrow.polygon` or
+`geoarrow.multipolygon` for native coordinates, or `geoarrow.wkb` for
+well-known binary. LanceDB keeps that metadata when it stores the column.
+
+You can build the field with PyArrow alone. A point is a struct of `x` and `y`
+coordinates:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ScalarIndexRtreeData}
+    </CodeBlock>
+</CodeGroup>
+
+Libraries such as [`geoarrow-rust-core`](https://pypi.org/project/geoarrow-rust-core/)
+(`geoarrow.rust.core`) produce arrays with this metadata already, so a table
+built from them works the same way.
+
+### Create an R-tree index {#rtree-create}
+
+Pass the `RTree` config in Python, `Index.rtree()` in TypeScript, or
+`Index::RTree` in Rust. The optional page size sets the maximum number of
+entries in each R-tree page; it must be at least 2 and defaults to 4096.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ScalarIndexRtreeCreate}
+    </CodeBlock>
+
+```typescript TypeScript icon="square-js"
+import { Index } from "@lancedb/lancedb";
+
+await table.createIndex("location", { config: Index.rtree() });
+```
+
+```rust Rust icon="rust"
+use lancedb::index::Index;
+use lancedb::index::scalar::RTreeIndexBuilder;
+
+table
+    .create_index(&["location"], Index::RTree(RTreeIndexBuilder::default()))
+    .execute()
+    .await?;
+```
+</CodeGroup>
+
+`list_indices()` reports the index type as `"RTree"`, and `index_stats()`
+reports it as `"RTREE"`. In the Rust crate, building the index on a local
+table requires the `geo` feature; the Python and TypeScript packages include
+it. In the embedded library, `optimize()` adds new rows to the index. Rows
+that are not indexed yet are still filtered, just without the index.
+
+### Filter with spatial predicates {#rtree-filter}
+
+Spatial predicates go in `where()` like any other filter. Build constant
+geometries with `ST_GeomFromText('<WKT>')` or `ST_Point(x, y)`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ScalarIndexRtreeFilter}
+    </CodeBlock>
+</CodeGroup>
+
+The index answers `ST_Intersects`, `ST_Contains`, `ST_Within`, `ST_Touches`,
+`ST_Crosses`, `ST_Overlaps`, `ST_Covers` and `ST_CoveredBy` when the indexed
+column is the **first** argument and the second argument is a constant
+geometry, as well as `IS NULL` on the column. A spatial predicate combined
+with other conditions through `AND` still uses the index; one combined through
+`OR` with a condition on an unindexed column does not.
+
+The R-tree compares bounding boxes, so it returns a superset of the answer:
+every row whose bounding box overlaps the query geometry's bounding box. LanceDB
+then evaluates the exact predicate on those candidate rows, so the results are
+the same with or without the index. A point just outside a triangle but inside
+the triangle's bounding box is read, then discarded.
+
+<Warning>
+Write the column as the first argument. With the constant first, as in
+`ST_Contains(<constant>, location)`, the index is not used, and the
+asymmetric predicates (`ST_Contains`, `ST_Within`, `ST_Covers`,
+`ST_CoveredBy`) currently evaluate with their arguments swapped and return
+wrong results. This applies to `delete()`, `update()` and `merge_insert()`
+conditions as well as queries. Write `ST_Within(location, <constant>)`
+instead of `ST_Contains(<constant>, location)`.
+</Warning>
+
+Other spatial functions, such as `ST_Distance(location, ST_Point(x, y)) < d`
+for a radius filter, work in filters but are evaluated row by row, without the
+index. `ST_DWithin` is not available. To use the index for a radius filter,
+pair the distance check with an indexed predicate on a bounding polygon:
+`ST_Intersects(location, <box>) AND ST_Distance(location, <center>) < d`.
+
+Spatial functions are planar: they treat coordinates as points on a flat
+plane, and `ST_Distance` returns a distance in the units of the column's
+coordinates. For longitude and latitude, `d` is in degrees, not meters, and a
+degree of longitude shrinks toward the poles. Project the data to a metric
+coordinate system first if you need distances in meters.
+
+### Combine with vector search {#rtree-vector-search}
+
+A spatial filter on a vector search is a prefilter by default: the R-tree
+narrows the candidates first, and the nearest neighbors are found among the
+rows that match.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ScalarIndexRtreeVector}
+    </CodeBlock>
+</CodeGroup>
+
+With `prefilter=False` in Python, or `postfilter()` in TypeScript, the filter
+is applied to the nearest neighbors instead, without the index, so it can
+return fewer rows than the limit.
+
+### Check that the index is used {#rtree-explain}
+
+An indexed spatial filter appears as a `ScalarIndexQuery` on the R-tree in the
+query plan:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ScalarIndexRtreeExplain}
+    </CodeBlock>
+</CodeGroup>
+
+<Note title="LanceDB Enterprise">
+On a remote table, `create_index` sends the request with the `RTREE` index
+type, and spatial filters are sent to the deployment as written. Whether a
+deployment can build the index and evaluate `ST_*` functions depends on its
+server version. LanceDB Enterprise does not ship geospatial support yet (see
+[SQL data types](/sql/data-types#geospatial)), so the R-tree index and
+spatial filters are currently for local tables.
+</Note>
 
 ## Index UUID Columns
 

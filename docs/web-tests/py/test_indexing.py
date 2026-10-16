@@ -521,6 +521,83 @@ def test_scalar_index_uuid(tmp_db):
     assert len(result) == n + len(new_users)
 
 
+def test_scalar_index_rtree(tmp_db):
+    db = tmp_db
+
+    # --8<-- [start:scalar_index_rtree_data]
+    import pyarrow as pa
+
+    point = pa.struct([("x", pa.float64()), ("y", pa.float64())])
+    schema = pa.schema(
+        [
+            pa.field("name", pa.string()),
+            pa.field(
+                "location", point, metadata={"ARROW:extension:name": "geoarrow.point"}
+            ),
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+        ]
+    )
+    places = [
+        ("Ferry Building", -122.3937, 37.7955, [0.7, 0.3]),
+        ("Golden Gate Park", -122.4862, 37.7694, [0.1, 0.9]),
+        ("Oakland Museum", -122.2638, 37.7987, [1.0, 0.05]),
+    ]
+    data = pa.Table.from_pylist(
+        [
+            {"name": name, "location": {"x": x, "y": y}, "vector": vector}
+            for name, x, y, vector in places
+        ],
+        schema=schema,
+    )
+    table = db.create_table("places", data)
+    # --8<-- [end:scalar_index_rtree_data]
+
+    # --8<-- [start:scalar_index_rtree_create]
+    from lancedb.index import RTree
+
+    table.create_index("location", config=RTree())
+    # --8<-- [end:scalar_index_rtree_create]
+
+    # --8<-- [start:scalar_index_rtree_filter]
+    san_francisco = (
+        "ST_GeomFromText('POLYGON ((-122.52 37.70, -122.35 37.70, "
+        "-122.35 37.83, -122.52 37.83, -122.52 37.70))')"
+    )
+    in_san_francisco = f"ST_Within(location, {san_francisco})"
+
+    places_in_sf = table.search().where(in_san_francisco).select(["name"]).to_list()
+    # [{'name': 'Ferry Building'}, {'name': 'Golden Gate Park'}]
+    # --8<-- [end:scalar_index_rtree_filter]
+
+    assert sorted(row["name"] for row in places_in_sf) == [
+        "Ferry Building",
+        "Golden Gate Park",
+    ]
+
+    # --8<-- [start:scalar_index_rtree_vector]
+    # The nearest place overall is in Oakland; the spatial prefilter keeps the
+    # search inside San Francisco.
+    nearest_in_sf = (
+        table.search([1.0, 0.0])
+        .where(in_san_francisco)
+        .select(["name", "_distance"])
+        .limit(1)
+        .to_list()
+    )
+    # [{'name': 'Ferry Building', '_distance': 0.18}]
+    # --8<-- [end:scalar_index_rtree_vector]
+
+    assert nearest_in_sf[0]["name"] == "Ferry Building"
+    assert nearest_in_sf[0]["_distance"] == pytest.approx(0.18, abs=1e-6)
+    nearest = table.search([1.0, 0.0]).select(["name", "_distance"]).limit(1)
+    assert nearest.to_list()[0]["name"] == "Oakland Museum"
+
+    # --8<-- [start:scalar_index_rtree_explain]
+    plan = table.search().where(in_san_francisco).explain_plan(verbose=True)
+    assert "ScalarIndexQuery" in plan
+    # --8<-- [end:scalar_index_rtree_explain]
+
+
 @pytest.mark.asyncio
 async def test_scalar_index_nested_fields(mem_db_async):
     db = mem_db_async
