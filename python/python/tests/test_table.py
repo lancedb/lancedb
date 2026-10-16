@@ -2824,6 +2824,73 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def _merge_source_reader(ids: List[int]) -> pa.RecordBatchReader:
+    batches = [
+        pa.record_batch({"a": ids[i : i + 2], "b": ["new"] * len(ids[i : i + 2])})
+        for i in range(0, len(ids), 2)
+    ]
+    return pa.RecordBatchReader.from_batches(batches[0].schema, batches)
+
+
+@pytest.mark.parametrize("threshold", [0, 64 * 1024 * 1024])
+def test_merge_insert_one_shot_source(mem_db: DBConnection, threshold: int):
+    table = mem_db.create_table(
+        "my_table", data=pa.table({"a": [1, 2, 3], "b": ["old"] * 3})
+    )
+    # A threshold of 0 streams the source after its first batch; the default
+    # collects it into memory.
+    res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(
+            _merge_source_reader([2, 3, 4, 5, 6]),
+            source_collect_threshold_bytes=threshold,
+        )
+    )
+    assert res.num_updated_rows == 2
+    assert res.num_inserted_rows == 3
+    assert table.to_arrow().sort_by("a") == pa.table(
+        {"a": [1, 2, 3, 4, 5, 6], "b": ["old", "new", "new", "new", "new", "new"]}
+    )
+
+
+def test_merge_insert_source_collect_threshold_connection_option(tmp_path):
+    db = lancedb.connect(tmp_path, merge_insert_source_collect_threshold_bytes=0)
+    table = db.create_table("my_table", data=pa.table({"a": [1, 2], "b": ["old"] * 2}))
+    res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(_merge_source_reader([2, 3, 4]))
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 2
+
+    restored = lancedb.deserialize_conn(db.serialize())
+    assert restored._merge_insert_source_collect_threshold_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_source_collect_threshold_connection_option_async(
+    tmp_path,
+):
+    db = await lancedb.connect_async(
+        tmp_path, merge_insert_source_collect_threshold_bytes=0
+    )
+    table = await db.create_table(
+        "my_table", data=pa.table({"a": [1, 2], "b": ["old"] * 2})
+    )
+    res = await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(_merge_source_reader([2, 3, 4]))
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 2
+
+
 def test_merge_insert_composite_key(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
