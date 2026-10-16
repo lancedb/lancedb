@@ -10,6 +10,7 @@ import os
 import pathlib
 import warnings
 from datetime import date, datetime
+from decimal import Decimal
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
 from urllib.parse import urlparse
@@ -235,6 +236,19 @@ def inf_vector_column_query(schema: pa.Schema, dim: Optional[int] = None) -> str
     vector_col_names = []
     for field in schema:
         vector_col_names.extend(_iter_vector_columns(field, [], dim))
+
+    if len(vector_col_names) == 0 and dim is not None:
+        # The query's dimension matched no column. If the schema is
+        # unambiguous without that filter, the single vector column is still
+        # the right one to search: a dimension mismatch is a query-execution
+        # error, not a missing-column error.
+        unfiltered = []
+        for field in schema:
+            unfiltered.extend(_iter_vector_columns(field, []))
+        if len(unfiltered) == 1:
+            return unfiltered[0]
+        vector_col_names = unfiltered
+
     if len(vector_col_names) > 1:
         raise ValueError(
             "Schema has more than one vector column. "
@@ -371,6 +385,14 @@ def _(value: float):
             "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
         )
     return str(value)
+
+
+@value_to_sql.register(Decimal)
+def _(value: Decimal):
+    if not value.is_finite():
+        raise ValueError("Non-finite Decimal values cannot be converted to SQL")
+    # Quote exact decimal text so the target-column cast avoids float rounding.
+    return value_to_sql(format(value, "f"))
 
 
 @value_to_sql.register(bool)

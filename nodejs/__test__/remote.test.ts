@@ -28,6 +28,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
 class CustomProvider extends HeaderProvider {
@@ -93,6 +94,58 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it("reports unsupported operations with backend-neutral errors", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/table/test/describe/");
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            version: 1,
+            schema: {
+              fields: [
+                { name: "id", type: { type: "int64" }, nullable: false },
+                {
+                  name: "vector",
+                  type: {
+                    type: "fixed_size_list",
+                    fields: [
+                      { name: "item", type: { type: "float" }, nullable: true },
+                    ],
+                    length: 2,
+                  },
+                  nullable: false,
+                },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const table = (await db.openTable("test")) as LocalTable;
+        const cases: [() => Promise<unknown>, string][] = [
+          [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
+          [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
+          [
+            () => table.setUnenforcedPrimaryKey("id"),
+            "set_unenforced_primary_key",
+          ],
+          [() => table.optimize(), "optimize"],
+          [
+            () => table.createIndex("vector", { config: Index.hnswPq() }),
+            "IVF_HNSW_PQ",
+          ],
+        ];
+        for (const [run, operation] of cases) {
+          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          if (operation === "IVF_HNSW_PQ") {
+            message += " Please use IVF_HNSW_SQ instead.";
+          }
+          await expect(run()).rejects.toThrow(new Error(message));
+        }
+      },
+    );
+  });
+
   it("rejects nprobes(0) before sending a query", async () => {
     const requests: string[] = [];
     await withMockDatabase(
@@ -425,6 +478,15 @@ describe("remote connection", () => {
         },
       },
     );
+  });
+
+  it("rejects a zero blob request concurrency limit", async () => {
+    await expect(
+      connect("db://dev", {
+        apiKey: "fake",
+        clientConfig: { blobRequestConcurrency: 0 },
+      }),
+    ).rejects.toThrow("blob_request_concurrency");
   });
 
   it("shows the full error messages on retry errors", async () => {

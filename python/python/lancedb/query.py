@@ -12,6 +12,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Dict,
+    Iterable,
     List,
     Literal,
     Optional,
@@ -39,8 +40,8 @@ from .expr import Expr
 from .rerankers.base import Reranker
 from .rerankers.rrf import RRFReranker
 from .rerankers.util import check_reranker_result
-from .schema import is_blob_like_field, schema_has_blob_field
-from .util import _validate_query_vector, flatten_columns
+from .schema import blob_column_paths, is_blob_like_field, schema_has_blob_field
+from .util import _validate_query_vector, flatten_columns, get_uri_scheme
 from . import _wal_hybrid  # WAL-PK-FUSION: delete.
 from ._blob import (
     BLOB_MODE_TO_HANDLING,
@@ -49,8 +50,11 @@ from ._blob import (
     blob_auto_row_id_for_scan,
     blob_v2_projection_sources,
     finalize_blob_query_table,
+    reject_unfetchable_blob_columns,
+    reject_unmatched_blob_outputs,
     replace_v2_blob_columns_with_bytes,
     replace_v2_blob_columns_with_bytes_sync,
+    strip_auto_row_ids,
     validate_blob_mode,
 )
 from .types import BlobMode, QueryProjection
@@ -98,15 +102,50 @@ class _LanceScanner(Protocol):
     def to_reader(self): ...
 
 
-def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
-    return blob_mode in BLOB_MODE_TO_HANDLING and schema_has_blob_field(schema)
-
-
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     return RuntimeError(
         "blob columns require Lance native scanner conversion for query "
-        f"to_pandas(), but {reason}. Use a plain scan query or remove blob "
-        "columns from the projection."
+        f"to_pandas(), but {reason}. Use a plain scan query, pass "
+        "blob_mode='bytes' or blob_mode='descriptions', or remove blob columns "
+        "from the projection."
+    )
+
+
+def _supports_local_blob_fetch(
+    async_table: "AsyncTable", pushdown_operations: Iterable[str]
+) -> bool:
+    # Remote tables and QueryTable pushdown answer queries on a server, so a
+    # fetch through this handle could read another version.
+    return async_table._inner._is_native() and "QueryTable" not in pushdown_operations
+
+
+def _blob_bytes_without_snapshot_error() -> NotImplementedError:
+    return NotImplementedError(
+        "blob_mode='bytes' cannot safely materialize blob columns without a "
+        "stable table snapshot. Remote tables and namespace QueryTable pushdown "
+        "run the query on a server, so the blob fetch could read another table "
+        "version. Use blob_mode='descriptions'."
+    )
+
+
+def _is_remote_query_table(table: Any) -> bool:
+    async_table = getattr(table, "_table", table)
+    return not async_table._inner._is_native()
+
+
+def _query_needs_lance_scanner(builder: Any) -> bool:
+    """Whether the query sets options that to_arrow ignores."""
+    to_query_object = getattr(builder, "to_query_object", None)
+    if to_query_object is None:
+        return False
+    try:
+        query = to_query_object()
+    except NotImplementedError:
+        return False
+    return (
+        query.fragments is not None
+        or query.fragment_ids is not None
+        or bool(query.with_row_address)
     )
 
 
@@ -150,7 +189,8 @@ def _combine_where(
 
 
 def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
-    if columns is None:
+    # An empty projection selects all columns.
+    if not columns:
         return {}
     if isinstance(columns, list):
         if all(isinstance(column, str) for column in columns):
@@ -174,7 +214,8 @@ def _projection_to_scanner_kwargs(columns: QueryProjection) -> Dict[str, Any]:
 
 
 def _query_request_projection(req: "PyQueryRequest") -> QueryProjection:
-    if req.select_source_columns is not None:
+    # Treat empty map as a calculated select
+    if req.select_source_columns:
         return req.select_source_columns
     return req.select
 
@@ -309,6 +350,28 @@ def _finish_plain_scan_pandas(
     if strip_auto_row_id and "_rowid" in df.columns:
         return df.drop(columns=["_rowid"])
     return df
+
+
+def _finish_remote_pandas(
+    tbl: pa.Table,
+    *,
+    blob_mode: BlobMode,
+    blob_paths: Iterable[str],
+    flatten: Optional[Union[int, bool]],
+    **kwargs,
+) -> pd.DataFrame:
+    # A live remote table can be replaced between query and blob fetch.
+    # Row ids and version numbers do not identify the producing table.
+    if not blob_column_paths(tbl.schema):
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    if blob_mode == "descriptions":
+        tbl = strip_auto_row_ids(tbl, blob_paths)
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    raise NotImplementedError(
+        f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+        "blob columns without a stable table snapshot; "
+        "use blob_mode='descriptions'"
+    )
 
 
 async def _finish_plain_scan_pandas_async(
@@ -474,12 +537,12 @@ class MatchQuery(FullTextQuery):
     ----------
     query : str
         The query string to match against.
-    column : str
-        The name of the column to match against.
+    column : str, optional
+        The column to match against. None leaves column selection to query planning.
     boost : float, default 1.0
         The boost factor for the query.
         The score of each matching document is multiplied by this value.
-    fuzziness : int, optional
+    fuzziness : int or None, default 0
         The maximum edit distance for each term in the match query.
         Defaults to 0 (exact match).
         If None, fuzziness is applied automatically by the rules:
@@ -504,9 +567,9 @@ class MatchQuery(FullTextQuery):
     """
 
     query: str
-    column: str
+    column: Optional[str] = None
     boost: float = pydantic.Field(1.0, kw_only=True)
-    fuzziness: int = pydantic.Field(0, kw_only=True)
+    fuzziness: Optional[int] = pydantic.Field(0, kw_only=True)
     max_expansions: int = pydantic.Field(50, kw_only=True)
     operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
     prefix_length: int = pydantic.Field(0, kw_only=True)
@@ -692,8 +755,9 @@ class Query(pydantic.BaseModel):
         if True then apply the filter after vector / FTS search.  This is ignored for
         plain SQL filtering.
     nprobes : Optional[int]
-        The number of IVF partitions to search.  If this is None then a default
-        number of partitions will be used.
+        The legacy number of IVF partitions to search. Lance sets both probe
+        bounds to this value. If this is None then Lance's default probe settings
+        will be used.
 
         - A higher number makes search more accurate but also slower.
 
@@ -772,21 +836,27 @@ class Query(pydantic.BaseModel):
     # distance type to use for vector search
     distance_type: Optional[str] = None
 
+    # legacy number of IVF partitions to search
+    #
+    # Lance sets both probe bounds to this value. Explicit bounds can override it.
+    nprobes: Optional[int] = None
+
     # which columns to return in the results (dict values may be str or Expr)
     columns: QueryProjection = None
 
     # minimum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
+    # If None then Lance's default will be used.
     minimum_nprobes: Optional[int] = None
 
     # maximum number of IVF partitions to search
     #
-    # If None then a default value (20) will be used.
-    #
-    # If 0 then no limit will be applied and all partitions could be searched
-    # if needed to satisfy the limit.
+    # If None then Lance's default will be used. If 0 then no limit will be applied
+    # and all partitions could be searched if needed to satisfy the limit.
     maximum_nprobes: Optional[int] = None
+
+    # Optional initial IVF effort; None preserves Auto and explicit nprobes.
+    search_effort: Optional[float] = None
 
     # lower bound for distance search
     lower_bound: Optional[float] = None
@@ -846,8 +916,10 @@ class Query(pydantic.BaseModel):
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
+        query.nprobes = req.nprobes
         query.minimum_nprobes = req.minimum_nprobes
         query.maximum_nprobes = req.maximum_nprobes
+        query.search_effort = req.search_effort
         query.lower_bound = req.lower_bound
         query.upper_bound = req.upper_bound
         query.ef = req.ef
@@ -1062,44 +1134,58 @@ class LanceQueryBuilder(ABC):
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
-            Vector, FTS, hybrid, and other non-native query shapes keep the
-            existing Arrow conversion path and only support blob descriptions.
+            Controls how blob columns are returned. Eligible local plain scans
+            use Lance's scanner, which returns lazy blob handles in ``"lazy"``
+            mode and also supports legacy blob columns. Other local blob v2
+            queries return descriptors in ``"lazy"`` and ``"descriptions"``
+            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            Remote blob queries support only ``"descriptions"`` until a stable
+            table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
-        output_schema = getattr(self, "output_schema", None)
-        if output_schema is not None:
-            schema = output_schema()
-            if _blob_mode_requires_native_pandas(blob_mode, schema):
-                native_error = None
-                if (flatten is None or blob_mode == "descriptions") and timeout is None:
-                    try:
-                        df = self._plain_scan_to_pandas(
-                            blob_mode, flatten=flatten, **kwargs
-                        )
-                        if df is not None:
-                            return df
-                    except Exception as err:
-                        native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
-                raise _unsupported_blob_pandas_error(reason) from native_error
-
-        tbl = flatten_columns(self.to_arrow(timeout=timeout), flatten)
-        if _blob_mode_requires_native_pandas(blob_mode, tbl.schema):
-            raise _unsupported_blob_pandas_error(
-                "this query shape cannot use Lance native pandas conversion"
+        if _is_remote_query_table(self._table):
+            blob_sources = self._validated_blob_sources(blob_mode)
+            return _finish_remote_pandas(
+                self.to_arrow(timeout=timeout),
+                blob_mode=blob_mode,
+                blob_paths=blob_sources,
+                flatten=flatten,
+                **kwargs,
             )
-        return tbl.to_pandas(**kwargs)
+
+        output_schema = getattr(self, "output_schema", None)
+        if output_schema is not None and schema_has_blob_field(output_schema()):
+            if (flatten is None or blob_mode != "lazy") and timeout is None:
+                df = self._plain_scan_to_pandas(blob_mode, flatten=flatten, **kwargs)
+                if df is not None:
+                    return df
+            if _query_needs_lance_scanner(self):
+                raise _unsupported_blob_pandas_error(
+                    "this query shape cannot use Lance native pandas conversion"
+                )
+
+        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
+        tbl = self._to_arrow_in_mode(timeout, arrow_mode)
+        if (
+            blob_mode == "lazy"
+            and schema_has_blob_field(tbl.schema)
+            and not blob_v2_projection_sources(self._table.schema, self._columns)
+        ):
+            raise _unsupported_blob_pandas_error(
+                "the query has no fetchable blob v2 source"
+            )
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
 
     @abstractmethod
-    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
         """
         Execute the query and return the results as an
         [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
@@ -1113,6 +1199,11 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
         """
         raise NotImplementedError
 
@@ -1143,7 +1234,12 @@ class LanceQueryBuilder(ABC):
         """
         raise NotImplementedError
 
-    def to_list(self, *, timeout: Optional[timedelta] = None) -> List[dict]:
+    def to_list(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -1156,8 +1252,19 @@ class LanceQueryBuilder(ABC):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+        blob_mode: str, default "lazy"
+            Passed through to :meth:`to_arrow`.
         """
-        return self.to_arrow(timeout=timeout).to_pylist()
+        validate_blob_mode(blob_mode)
+        return self._to_arrow_in_mode(timeout, blob_mode).to_pylist()
+
+    def _to_arrow_in_mode(
+        self, timeout: Optional[timedelta], blob_mode: BlobMode
+    ) -> pa.Table:
+        # Older subclasses may not accept blob_mode. Omit it when it has no effect.
+        if blob_mode == "lazy" or not schema_has_blob_field(self._table.schema):
+            return self.to_arrow(timeout=timeout)
+        return self.to_arrow(timeout=timeout, blob_mode=blob_mode)
 
     def to_pydantic(
         self, model: type[T], *, timeout: Optional[timedelta] = None
@@ -1330,19 +1437,62 @@ class LanceQueryBuilder(ABC):
             query.with_row_id = True
         return query
 
-    def _finalize_blob_query_table(self, tbl: pa.Table) -> pa.Table:
-        blob_auto_row_id = self._blob_auto_row_id_enabled()
-        blob_paths = (
-            blob_v2_projection_sources(self._table.schema, self._columns).keys()
-            if blob_auto_row_id
-            else ()
+    def _validated_blob_sources(self, blob_mode: BlobMode) -> dict[str, str]:
+        """Map projected blob v2 outputs to their source columns.
+
+        Bytes mode is checked here, before the query runs.
+        """
+        validate_blob_mode(blob_mode)
+        schema = self._table.schema
+        blob_sources = blob_v2_projection_sources(schema, self._columns)
+        if blob_mode != "bytes":
+            return blob_sources
+        reject_unfetchable_blob_columns(schema, self._columns, blob_sources)
+        if blob_sources and not _supports_local_blob_fetch(
+            self._table._table, getattr(self._table, "_pushdown_operations", ())
+        ):
+            raise _blob_bytes_without_snapshot_error()
+        reject_unmatched_blob_outputs(self._blob_output_schema(), blob_sources)
+        return blob_sources
+
+    def _blob_output_schema(self) -> pa.Schema:
+        return self.output_schema()
+
+    def _apply_arrow_blob_mode(
+        self, tbl: pa.Table, blob_mode: BlobMode, blob_sources: dict[str, str]
+    ) -> pa.Table:
+        if blob_mode == "lazy":
+            return tbl
+        if blob_mode == "descriptions":
+            return strip_auto_row_ids(tbl, blob_sources)
+        return replace_v2_blob_columns_with_bytes_sync(
+            tbl, blob_sources, self._table.fetch_blobs
         )
-        return finalize_blob_query_table(
+
+    def _finalize_blob_query_table(
+        self,
+        tbl: pa.Table,
+        *,
+        blob_mode: BlobMode,
+        blob_sources: dict[str, str],
+    ) -> pa.Table:
+        blob_auto_row_id = self._blob_auto_row_id_enabled()
+        finalized = finalize_blob_query_table(
             tbl,
             user_requested_row_id=self._user_requested_row_id(),
             blob_auto_row_id=blob_auto_row_id,
-            blob_paths=blob_paths,
+            blob_paths=blob_sources.keys() if blob_auto_row_id else (),
         )
+        finalized = self._apply_arrow_blob_mode(finalized, blob_mode, blob_sources)
+        # with_row_id(False) does not reach the scan, which adds _rowid anyway.
+        # Lazy keeps it because fetch_blobs(hits) reads it there.
+        if (
+            blob_mode != "lazy"
+            and self._with_row_id is False
+            and "_rowid" in finalized.column_names
+        ):
+            finalized = finalized.drop_columns(["_rowid"])
+        return finalized
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
         """Set whether to return row addresses.
@@ -1555,6 +1705,11 @@ class LanceQueryBuilder(ABC):
         if not _query_is_plain_scan(query):
             return None
 
+        # Remote and in-memory tables have no Lance dataset to scan.
+        if not self._table._table._inner._is_native() or (
+            get_uri_scheme(self._table._dataset_path) == "memory"
+        ):
+            return None
         dataset = self._table.to_lance()
         blob_auto_row_id = self._blob_auto_row_id_enabled()
         blob_sources = (
@@ -1562,6 +1717,10 @@ class LanceQueryBuilder(ABC):
             if blob_mode == "bytes"
             else {}
         )
+        if blob_sources:
+            reject_unfetchable_blob_columns(
+                self._table.schema, query.columns, blob_sources
+            )
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
                 query,
@@ -1575,7 +1734,7 @@ class LanceQueryBuilder(ABC):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
-            strip_auto_row_id=blob_auto_row_id,
+            strip_auto_row_id=not self._user_requested_row_id(),
             flatten=flatten,
             **kwargs,
         )
@@ -1626,8 +1785,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         super().__init__(table)
         self._query = query
         self._distance_type = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
+        self._search_effort = None
         self._lower_bound = None
         self._upper_bound = None
         self._refine_factor = None
@@ -1690,9 +1851,9 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         See discussion in [Querying an ANN Index](https://lancedb.com/docs/indexing/)
         for tuning advice.
 
-        This method sets both the minimum and maximum number of probes to the same
-        value. See `minimum_nprobes` and `maximum_nprobes` for more fine-grained
-        control.
+        The value is retained as `nprobes` through client and server request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
 
         Parameters
         ----------
@@ -1706,8 +1867,28 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         """
         if nprobes <= 0:
             raise ValueError("Invalid input, nprobes must be greater than 0")
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> LanceVectorQueryBuilder:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None (the default) uses Auto, internally 0.5. Zero starts at the caller
+        minimum; one searches all partitions within the caller maximum. Later
+        probing may continue when too few candidates are found. Any explicit
+        effort, including 0.5, overrides nprobes in either call order. Explicit
+        minimum and maximum bounds still apply. This is not a recall guarantee
+        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        yet support this option.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table("effort_vectors", [{"vector": [0.1, 0.2]}])
+        >>> query = table.search([0.1, 0.2]).search_effort(0.75)
+        """
+        self._search_effort = search_effort
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceVectorQueryBuilder:
@@ -1814,7 +1995,12 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         """
         return self._table._output_schema(self.to_query_object())
 
-    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
         """
         Execute the query and return the results as an
         [Apache Arrow Table](https://arrow.apache.org/docs/python/generated/pyarrow.Table.html#pyarrow.Table).
@@ -1828,9 +2014,17 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         timeout: Optional[timedelta]
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
         """
+        blob_sources = self._validated_blob_sources(blob_mode)
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all()
+            self.to_batches(timeout=timeout).read_all(),
+            blob_mode=blob_mode,
+            blob_sources=blob_sources,
         )
 
     def to_query_object(self) -> Query:
@@ -1849,8 +2043,10 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             limit=self._limit,
             distance_type=self._distance_type,
             columns=self._columns,
+            nprobes=self._nprobes,
             minimum_nprobes=self._minimum_nprobes,
             maximum_nprobes=self._maximum_nprobes,
+            search_effort=self._search_effort,
             lower_bound=self._lower_bound,
             upper_bound=self._upper_bound,
             refine_factor=self._refine_factor,
@@ -2101,16 +2297,23 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
         """
         return self._table._output_schema(self.to_query_object())
 
-    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
+        blob_sources = self._validated_blob_sources(blob_mode)
         self._table._ensure_no_legacy_fts_index()
 
         query = self._query_for_scan()
-        results = self._table._execute_query(query, timeout=timeout)
-        results = results.read_all()
+        results = self._table._execute_query(query, timeout=timeout).read_all()
         if self._reranker is not None:
             results = self._reranker.rerank_fts(self._query, results)
             check_reranker_result(results)
-        return self._finalize_blob_query_table(results)
+        return self._finalize_blob_query_table(
+            results, blob_mode=blob_mode, blob_sources=blob_sources
+        )
 
     def to_batches(
         self, /, batch_size: Optional[int] = None, timeout: Optional[timedelta] = None
@@ -2137,9 +2340,17 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
 
 
 class LanceEmptyQueryBuilder(LanceQueryBuilder):
-    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
+        blob_sources = self._validated_blob_sources(blob_mode)
         return self._finalize_blob_query_table(
-            self.to_batches(timeout=timeout).read_all()
+            self.to_batches(timeout=timeout).read_all(),
+            blob_mode=blob_mode,
+            blob_sources=blob_sources,
         )
 
     def to_query_object(self) -> Query:
@@ -2207,8 +2418,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._fts_columns = fts_columns
         self._norm = None
         self._reranker = None
+        self._nprobes = None
         self._minimum_nprobes = None
         self._maximum_nprobes = None
+        self._search_effort = None
         self._refine_factor = None
         self._distance_type = None
         self._phrase_query = None
@@ -2270,16 +2483,30 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
     def to_query_object(self) -> Query:
         raise NotImplementedError("to_query_object not yet supported on a hybrid query")
 
-    def to_arrow(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
+        blob_sources = self._validated_blob_sources(blob_mode)
         # WAL-PK-FUSION: without the fallback, this body is `_run_hybrid`'s.
         return _wal_hybrid.with_pk_fallback(
-            lambda: self._run_hybrid(timeout=timeout),
+            lambda: self._run_hybrid(
+                timeout=timeout, blob_mode=blob_mode, blob_sources=blob_sources
+            ),
             self._table,
             fused=lambda: self._pk_fusion is not None,
             caller_requested_row_id=self._caller_requested_row_id,
         )
 
-    def _run_hybrid(self, *, timeout: Optional[timedelta] = None) -> pa.Table:
+    def _run_hybrid(
+        self,
+        *,
+        timeout: Optional[timedelta] = None,
+        blob_mode: BlobMode,
+        blob_sources: dict[str, str],
+    ) -> pa.Table:
         self._create_query_builders()
         fts_query, vector_query = self._fts_query, self._vector_query
         # WAL-PK-FUSION: without the fallback, both legs always ask for row ids.
@@ -2306,18 +2533,33 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             with_row_ids=True,
             offset=self._offset,
         )
-        return self._finish_hybrid_results(results)
+        return self._finish_hybrid_results(
+            results, blob_mode=blob_mode, blob_sources=blob_sources
+        )
 
-    def _finish_hybrid_results(self, results: pa.Table) -> pa.Table:
+    def _finish_hybrid_results(
+        self,
+        results: pa.Table,
+        *,
+        blob_mode: BlobMode,
+        blob_sources: dict[str, str],
+    ) -> pa.Table:
         if self._pk_fusion is not None:  # WAL-PK-FUSION: delete.
-            return self._pk_fusion.strip(results)
+            return self._apply_arrow_blob_mode(
+                self._pk_fusion.strip(results), blob_mode, blob_sources
+            )
         if self._user_requested_row_id():
-            return results
+            return self._apply_arrow_blob_mode(results, blob_mode, blob_sources)
         if self._blob_auto_row_id_enabled():
-            return self._finalize_blob_query_table(results)
+            return self._finalize_blob_query_table(
+                results, blob_mode=blob_mode, blob_sources=blob_sources
+            )
         if "_rowid" in results.column_names:
-            return results.drop(["_rowid"])
-        return results
+            # Fetch bytes before dropping _rowid.
+            return self._apply_arrow_blob_mode(results, blob_mode, blob_sources).drop(
+                ["_rowid"]
+            )
+        return self._apply_arrow_blob_mode(results, blob_mode, blob_sources)
 
     @staticmethod
     def _combine_hybrid_results(
@@ -2498,6 +2740,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         Higher values will yield better recall (more likely to find vectors if
         they exist) at the expense of latency.
 
+        The value is retained as `nprobes` until Lance sets both probe bounds to it.
+        Explicit minimum or maximum settings can override their respective bounds.
+
         Parameters
         ----------
         nprobes: int
@@ -2510,8 +2755,33 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """
         if nprobes <= 0:
             raise ValueError("Invalid input, nprobes must be greater than 0")
-        self._minimum_nprobes = nprobes
-        self._maximum_nprobes = nprobes
+        self._nprobes = nprobes
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> LanceHybridQueryBuilder:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None (the default) uses Auto, internally 0.5. Zero starts at the caller
+        minimum; one searches all partitions within the caller maximum. Later
+        probing may continue when too few candidates are found. Any explicit
+        effort, including 0.5, overrides nprobes in either call order. Explicit
+        minimum and maximum bounds still apply. This is not a recall guarantee
+        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        yet support this option.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> table = db.create_table(
+        ...     "effort_hybrid", [{"vector": [0.1, 0.2], "text": "dog"}]
+        ... )
+        >>> query = (
+        ...     table.search(query_type="hybrid").vector([0.1, 0.2])
+        ...     .text("dog").search_effort(0.75)
+        ... )
+        """
+        self._search_effort = search_effort
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> LanceHybridQueryBuilder:
@@ -2740,6 +3010,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         )
         return "\n".join(results)
 
+    def _blob_output_schema(self) -> pa.Schema:
+        self._create_query_builders()
+        return self._vector_query.output_schema()
+
     def _create_query_builders(self):
         """Set up and configure the vector and FTS query builders."""
         vector_query, fts_query = self._validate_query(
@@ -2790,6 +3064,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             self._fts_query.phrase_query(True)
         if self._distance_type:
             self._vector_query.metric(self._distance_type)
+        if self._nprobes is not None:
+            self._vector_query.nprobes(self._nprobes)
+        if self._search_effort is not None:
+            self._vector_query.search_effort(self._search_effort)
         if self._minimum_nprobes is not None:
             self._vector_query.minimum_nprobes(self._minimum_nprobes)
         if self._maximum_nprobes is not None:
@@ -2996,7 +3274,48 @@ class AsyncQueryBase(object):
         """
         return await self._inner.output_schema()
 
-    async def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
+    async def _validated_blob_sources(self, blob_mode: BlobMode) -> dict[str, str]:
+        """Map projected blob v2 outputs to their source columns.
+
+        Bytes mode is checked here, before the query runs.
+        """
+        validate_blob_mode(blob_mode)
+        # Lazy needs no mapping, and skipping it saves remote tables a request.
+        if blob_mode == "lazy" or self._table is None:
+            return {}
+        schema = await self._table.schema()
+        projection = _query_request_projection(self._inner.to_query_request())
+        blob_sources = blob_v2_projection_sources(schema, projection)
+        if blob_mode != "bytes":
+            return blob_sources
+        reject_unfetchable_blob_columns(schema, projection, blob_sources)
+        if blob_sources and not _supports_local_blob_fetch(
+            self._table, self._table._pushdown_operations
+        ):
+            raise _blob_bytes_without_snapshot_error()
+        reject_unmatched_blob_outputs(await self._blob_output_schema(), blob_sources)
+        return blob_sources
+
+    async def _blob_output_schema(self) -> pa.Schema:
+        return await self.output_schema()
+
+    async def _apply_arrow_blob_mode(
+        self, tbl: pa.Table, blob_mode: BlobMode, blob_sources: dict[str, str]
+    ) -> pa.Table:
+        if blob_mode == "lazy":
+            return tbl
+        if blob_mode == "descriptions":
+            return strip_auto_row_ids(tbl, blob_sources)
+        return await replace_v2_blob_columns_with_bytes(
+            tbl, blob_sources, self._table.fetch_blobs
+        )
+
+    async def to_arrow(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
         """
         Execute the query and collect the results into an Apache Arrow Table.
 
@@ -3010,13 +3329,26 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
+            Remote tables and namespace query pushdown refuse ``"bytes"``.
         """
+        blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
-        return self._finalize_blob_query_table(
+        tbl = self._finalize_blob_query_table(
             pa.Table.from_batches(await batch_iter.read_all(), schema=batch_iter.schema)
         )
+        return await self._apply_arrow_blob_mode(tbl, blob_mode, blob_sources)
 
-    async def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
+    async def to_list(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        blob_mode: BlobMode = "lazy",
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -3030,8 +3362,10 @@ class AsyncQueryBase(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        blob_mode: str, default "lazy"
+            Passed through to :meth:`to_arrow`.
         """
-        return (await self.to_arrow(timeout=timeout)).to_pylist()
+        return (await self.to_arrow(timeout=timeout, blob_mode=blob_mode)).to_pylist()
 
     async def to_pandas(
         self,
@@ -3073,40 +3407,66 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
-            Vector, FTS, hybrid, and other non-native query shapes keep the
-            existing Arrow conversion path and only support blob descriptions.
+            Controls how blob columns are returned. Eligible local plain scans
+            use Lance's scanner, which returns lazy blob handles in ``"lazy"``
+            mode and also supports legacy blob columns. Other local blob v2
+            queries return descriptors in ``"lazy"`` and ``"descriptions"``
+            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            Remote blob queries support only ``"descriptions"`` until a stable
+            table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
-        if hasattr(self._inner, "output_schema"):
-            schema = await self.output_schema()
-            if _blob_mode_requires_native_pandas(blob_mode, schema):
-                native_error = None
-                if (flatten is None or blob_mode == "descriptions") and timeout is None:
-                    try:
-                        df = await self._plain_scan_to_pandas(
-                            blob_mode, flatten=flatten, **kwargs
-                        )
-                        if df is not None:
-                            return df
-                    except Exception as err:
-                        native_error = err
-                reason = (
-                    "this query shape cannot use Lance native pandas conversion"
-                    if native_error is None
-                    else str(native_error)
-                )
-                raise _unsupported_blob_pandas_error(reason) from native_error
-
-        tbl = flatten_columns(await self.to_arrow(timeout=timeout), flatten)
-        if _blob_mode_requires_native_pandas(blob_mode, tbl.schema):
-            raise _unsupported_blob_pandas_error(
-                "this query shape cannot use Lance native pandas conversion"
+        if self._table is not None and not self._table._inner._is_native():
+            await self._validated_blob_sources(blob_mode)
+            return await self._remote_to_pandas(
+                flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
             )
-        return tbl.to_pandas(**kwargs)
+
+        if hasattr(self._inner, "output_schema") and schema_has_blob_field(
+            await self.output_schema()
+        ):
+            if (flatten is None or blob_mode != "lazy") and timeout is None:
+                df = await self._plain_scan_to_pandas(
+                    blob_mode, flatten=flatten, **kwargs
+                )
+                if df is not None:
+                    return df
+            if _query_needs_lance_scanner(self):
+                raise _unsupported_blob_pandas_error(
+                    "this query shape cannot use Lance native pandas conversion"
+                )
+
+        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
+        tbl = await self.to_arrow(timeout=timeout, blob_mode=arrow_mode)
+        if (
+            blob_mode == "lazy"
+            and schema_has_blob_field(tbl.schema)
+            and not await self._validated_blob_sources("descriptions")
+        ):
+            raise _unsupported_blob_pandas_error(
+                "the query has no fetchable blob v2 source"
+            )
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+
+    async def _remote_to_pandas(
+        self,
+        *,
+        flatten: Optional[Union[int, bool]],
+        timeout: Optional[timedelta],
+        blob_mode: BlobMode,
+        **kwargs,
+    ) -> "pd.DataFrame":
+        tbl = await self.to_arrow(timeout=timeout)
+        return _finish_remote_pandas(
+            tbl,
+            blob_mode=blob_mode,
+            blob_paths=self._blob_paths,
+            flatten=flatten,
+            **kwargs,
+        )
 
     async def _plain_scan_to_pandas(
         self,
@@ -3132,6 +3492,13 @@ class AsyncQueryBase(object):
             if blob_mode == "bytes"
             else {}
         )
+        if blob_sources:
+            reject_unfetchable_blob_columns(schema, query.columns, blob_sources)
+        # Remote and in-memory tables have no Lance dataset to scan.
+        if not self._table._inner._is_native() or (
+            get_uri_scheme(await self._table.uri()) == "memory"
+        ):
+            return None
         dataset = await self._table.to_lance()
         scanner = dataset.scanner(
             **_scanner_kwargs_for_query(
@@ -3146,7 +3513,7 @@ class AsyncQueryBase(object):
             blob_mode=blob_mode,
             blob_sources=blob_sources,
             fetch_blobs=self._table.fetch_blobs,
-            strip_auto_row_id=blob_auto_row_id,
+            strip_auto_row_id=self._with_row_id is not True,
             flatten=flatten,
             **kwargs,
         )
@@ -3660,7 +4027,7 @@ class AsyncVectorQueryBase:
 
     def nprobes(self, nprobes: int) -> Self:
         """
-        Set the number of partitions to search (probe)
+        Set the legacy IVF probe parameter
 
         The number of probes must be greater than 0.
 
@@ -3672,18 +4039,47 @@ class AsyncVectorQueryBase:
 
         The partition whose centroids are closest to the query vector will be
         exhaustiely searched to find matches.  This parameter controls how many
-        partitions should be searched.
+        partitions will be searched.
 
         Increasing this value will increase the recall of your query but will
-        also increase the latency of your query.  The default value is 20.  This
-        default is good for many cases but the best value to use will depend on
-        your data and the recall that you need to achieve.
+        also increase the latency of your query. If this method is not called,
+        Lance's adaptive probe defaults are used.
 
         For best results we recommend tuning this parameter with a benchmark against
         your actual data to find the smallest possible value that will still give
         you the desired recall.
+
+        LanceDB retains this as `nprobes` through local and remote request
+        construction. Lance sets both probe bounds to this value. Explicit minimum
+        or maximum settings can override their respective bounds.
         """
         self._inner.nprobes(nprobes)
+        return self
+
+    def search_effort(self, search_effort: Optional[float]) -> Self:
+        """Set the initial IVF search effort to a finite value in [0, 1].
+
+        None preserves Auto (internally 0.5) and fixed nprobes. Any explicit
+        effort, including 0.5, overrides nprobes in either call order; explicit
+        minimum and maximum bounds remain effective. Zero starts at the caller
+        minimum and one searches all partitions within the maximum. Later
+        probing may continue to obtain enough candidates. This is not a recall
+        guarantee and does not change refinement or HNSW ef. MemWAL LSM queries
+        do not yet support this option.
+
+        Examples
+        --------
+        >>> import asyncio
+        >>> import lancedb
+        >>> async def build_query():
+        ...     db = await lancedb.connect_async("memory://")
+        ...     table = await db.create_table(
+        ...         "effort_async", [{"vector": [0.1, 0.2]}]
+        ...     )
+        ...     return table.vector_search([0.1, 0.2]).search_effort(0.75)
+        >>> query = asyncio.run(build_query())
+        """
+        self._inner.search_effort(search_effort)
         return self
 
     def minimum_nprobes(self, minimum_nprobes: int) -> Self:
@@ -3956,6 +4352,10 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         self._reranker = reranker
 
         return self
+
+    async def _blob_output_schema(self) -> pa.Schema:
+        vector_query = AsyncVectorQuery(self._inner.to_vector_query(), self._table)
+        return await vector_query.output_schema()
 
     async def _create_child_queries(
         self,
@@ -4318,7 +4718,12 @@ class BaseQueryBuilder(object):
 
         return pa.RecordBatchReader.from_batches(async_reader.schema, iter_sync())
 
-    def to_arrow(self, timeout: Optional[timedelta] = None) -> pa.Table:
+    def to_arrow(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        blob_mode: BlobMode = "lazy",
+    ) -> pa.Table:
         """
         Execute the query and collect the results into an Apache Arrow Table.
 
@@ -4332,10 +4737,20 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        blob_mode: str, default "lazy"
+            ``"lazy"`` returns blob v2 descriptors that carry the row id
+            ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
+            ``"bytes"`` returns payload bytes and raises for legacy blob columns
+            and blobs inside lists.
         """
-        return LOOP.run(self._inner.to_arrow(timeout))
+        return LOOP.run(self._inner.to_arrow(timeout, blob_mode=blob_mode))
 
-    def to_list(self, timeout: Optional[timedelta] = None) -> List[dict]:
+    def to_list(
+        self,
+        timeout: Optional[timedelta] = None,
+        *,
+        blob_mode: BlobMode = "lazy",
+    ) -> List[dict]:
         """
         Execute the query and return the results as a list of dictionaries.
 
@@ -4349,8 +4764,10 @@ class BaseQueryBuilder(object):
             The maximum time to wait for the query to complete.
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
+        blob_mode: str, default "lazy"
+            Passed through to :meth:`to_arrow`.
         """
-        return LOOP.run(self._inner.to_list(timeout))
+        return LOOP.run(self._inner.to_list(timeout, blob_mode=blob_mode))
 
     def to_pandas(
         self,
@@ -4392,7 +4809,7 @@ class BaseQueryBuilder(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned for plain scan queries.
+            Passed through to :meth:`AsyncQueryBase.to_pandas`.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.

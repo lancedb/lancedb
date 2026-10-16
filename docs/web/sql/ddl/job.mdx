@@ -6,7 +6,7 @@ icon: hourglass-half
 keywords: ["show jobs", "show errors", "pause job", "resume job", "cancel job", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A [job](/basics/jobs) is not a catalog object -- it has no schema and is not
 namespaced -- but it has its own SQL statements, grouped here the same way the
@@ -73,7 +73,7 @@ being ignored.
 Cancellation is a request, matching the SDK's
 [`cancel()`](/basics/jobs#managing): it does not guarantee the job stops before
 doing more work, and asking twice or cancelling a finished job does nothing.
-`CANCEL JOB` itself can be unavailable on a deployment with no job registry
+`CANCEL JOB` itself can be unavailable on an Enterprise cluster with no job registry
 configured, which is a deployment condition rather than something you can work
 around from SQL.
 </Note>

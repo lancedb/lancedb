@@ -1,113 +1,144 @@
 ---
 title: "Profiling a dataset"
 sidebarTitle: "Aggregate"
-description: "Counting, grouping and summarizing — finding out what your data actually contains."
+description: "Measure coverage, missing values and class balance before selecting a dataset."
 icon: chart-column
 keywords: ["aggregate", "group by", "class balance", "count", "profiling", "distinct"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL aggregation.
 ---
 
-<Badge color="red">Enterprise</Badge> Aggregation is SQL, and
-[SQL needs a deployment](/basics/sql#sql-is-remote).
+Use SQL aggregates to summarize a dataset: count records, find missing values,
+and compare groups. These summaries help you understand the data before
+selecting records for search, evaluation or training.
 
-Before curating anything, find out what you have. Most of the surprises in a
-training set — a class that is 90% of the rows, a column that is half null, a
-"unique" id that is not — are one `GROUP BY` away from being visible.
+## Example data {#example-data}
 
-## How big, and how complete {#size}
+Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
+document table and a separate label table. Expand the setup below to create them.
+
+<Accordion title="Create the example tables">
+
+`curation_documents` has six records describing four documents.
+`curation_labels` has one label for each of three documents. `row_id` identifies
+a record; `doc_id` identifies the document it describes.
+
+Run each statement separately in a scratch database or namespace. Create these
+tables once for the whole section, using fresh names if they already exist.
 
 ```sql
-SELECT
-    count(*)            AS rows,
-    count(embedding)    AS embedded,
-    count(caption)      AS captioned
-FROM images
+CREATE TABLE curation_documents (
+    row_id BIGINT, doc_id BIGINT, version BIGINT,
+    source VARCHAR, caption VARCHAR, score DOUBLE
+);
+INSERT INTO curation_documents VALUES
+    (1, 10, 1, 'web', NULL, 0.80),
+    (2, 10, 2, 'web', 'A cat on a chair', 0.95),
+    (3, 20, 1, 'books', 'A dog in a field', 0.90),
+    (4, 30, 1, 'web', NULL, 0.70),
+    (5, 30, 1, 'web', 'A cat by a window', 0.85),
+    (6, 40, 1, 'books', 'A bird in a tree', 0.60);
+
+CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
+INSERT INTO curation_labels VALUES
+    (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
 
-`count(*)` counts rows; `count(col)` counts **non-null values**. The gap between
-them is your coverage, which is the fastest way to check how far a
-[column refresh](/feature-engineering/refresh-column) has got without waiting
-for the job to report.
+`score` is a sample quality score, not a search result score. Document 10 has
+two versions. Document 30 has two records at the same version. Document 40
+has no label. These cases let you check the effect of each operation.
 
-## Class balance {#balance}
+</Accordion>
 
-The single most useful curation query:
+## Count records and missing values {#size}
+
+Use `count(*)` to count rows and `count(column)` to count non-null values.
+Add `DISTINCT` to count unique values:
 
 ```sql
-SELECT label, count(*) AS n
-FROM images
+SELECT count(*) AS records,
+       count(DISTINCT doc_id) AS documents,
+       count(caption) AS captioned,
+       count(*) FILTER (WHERE caption IS NULL) AS missing_caption
+FROM curation_documents;
+```
+
+The example returns **6 records, 4 documents, 4 populated captions and 2 missing
+captions**. `count(column)` excludes null values; it does not check whether a
+string is empty or whether a value is useful for the task.
+
+## Group records by label {#balance}
+
+Use `GROUP BY` to calculate a summary for each label:
+
+```sql
+SELECT label, count(*) AS documents
+FROM curation_labels
 GROUP BY label
-ORDER BY n DESC
+ORDER BY documents DESC, label;
 ```
 
-If the top class is an order of magnitude larger than the rest, sampling
-uniformly will reproduce that imbalance. Two ways out: draw a fixed number per
-class with [windowing](/curation/windowing#per-group), or oversample the rare
-ones and accept the duplication.
+There are **2 cats and 1 dog** in the label table. Document 40 is absent, so this
+query does not measure labeling coverage across all source documents. Use a
+[left join](/curation/join#join-type) to find documents without labels.
 
-## Distinct values {#distinct}
+Decide whether the distribution matches your intended use. A uniform random
+sample tends to preserve the source distribution; it does not balance classes.
+To cap the number selected per label, use
+[ranking within a group](/curation/windowing#per-group).
+
+## Count records that match a condition {#conditional}
 
 ```sql
-SELECT count(DISTINCT source) FROM images
+SELECT source,
+       count(*) AS records,
+       count(*) FILTER (WHERE score >= 0.9) AS high_score,
+       count(*) FILTER (WHERE caption IS NULL) AS missing_caption
+FROM curation_documents
+GROUP BY source
+ORDER BY source;
 ```
 
-On a high-cardinality column this is expensive, because exact distinctness means
-holding every value seen. When an estimate will do:
+`FILTER` applies a condition to one aggregate. Here, `books` has 2 records,
+1 high-score record and no missing captions. `web` has 4 records, 1 high-score
+record and 2 missing captions. Counts are per record, so repeated document IDs
+still contribute more than once.
+
+<span id="distinct"></span>
+## Group numeric values into ranges {#buckets}
+
+Use `count(DISTINCT column)` for the number of distinct non-null values.
+For numeric fields, group by a range or summarize their distribution. For
+example, this query counts records in score buckets of width 0.1:
 
 ```sql
-SELECT approx_distinct(source) FROM images
+SELECT floor(score * 10) / 10 AS score_bucket, count(*) AS records
+FROM curation_documents
+GROUP BY score_bucket
+ORDER BY score_bucket;
 ```
 
-Cheap enough to run on a table where the exact version is not worth the wait.
-The other approximate functions — `approx_median`, `approx_percentile_cont` —
-are useful for the same reason when profiling a numeric column.
+For time-based data, group by the time interval relevant to the task. The
+[aggregation reference](/sql/dql/aggregation) and
+[scalar function reference](/sql/scalar-functions) cover additional summaries,
+including approximate counts and percentiles. Use an approximate aggregate when an estimate is sufficient; use an exact
+count when the result must be precise.
 
-## Conditional counts {#conditional}
+## Profile a sample {#sampling}
 
-`FILTER` narrows one aggregate without narrowing the query, which is how you get
-several slices in one pass rather than one query each:
+A [sample](/curation/sampling) can help you explore a large dataset before a
+full scan. Report the sample size and method alongside the result. A sample can miss rare classes, and fragment sampling can reflect the order
+in which records were written.
 
-```sql
-SELECT
-    label,
-    count(*)                              AS total,
-    count(*) FILTER (WHERE score > 0.9)   AS confident,
-    count(*) FILTER (WHERE caption IS NULL) AS uncaptioned
-FROM images
-GROUP BY label
-```
+Before accepting a curated dataset, check its required fields and key
+constraints directly rather than inferring them from a small sample.
 
-## Grouping by a bucket {#buckets}
+## Continue curating {#reference}
 
-Raw values are rarely the grouping you want. `date_bin` buckets timestamps, and
-ordinary arithmetic buckets numbers:
-
-```sql
-SELECT date_bin(INTERVAL '1 day', created_at) AS day, count(*)
-FROM images GROUP BY day ORDER BY day
-```
-
-A histogram of a score column is the same trick:
-
-```sql
-SELECT floor(score * 10) / 10 AS bucket, count(*)
-FROM images GROUP BY bucket ORDER BY bucket
-```
-
-## Profiling a sample {#sampling}
-
-On a very large table, profile a [sample](/curation/sampling) and scale:
-
-```sql
-SELECT label, count(*) * 100 AS estimated
-FROM images TABLESAMPLE (1)
-GROUP BY label
-```
-
-Treat the result as an estimate. A 1% sample will miss classes rarer than about
-1 in 10,000 entirely, which is exactly the tail you are usually looking for — so
-use this to check the shape of the head, not the existence of the tail.
-
-## Reference {#reference}
-
-The complete clause and function list is in
-[Aggregation](/sql/dql/aggregation).
+Use these measurements to choose a [sample](/curation/sampling),
+[attach missing metadata](/curation/join), or
+[select one record per document](/curation/windowing).
+See [Aggregation](/sql/dql/aggregation) for complete SQL syntax.

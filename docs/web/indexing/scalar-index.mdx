@@ -3,6 +3,13 @@ title: "Scalar Indexes"
 sidebarTitle: "Scalar Index"
 description: "Learn how to use scalar indexes in LanceDB for efficient metadata filtering and query optimization."
 icon: "tree"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Scalar indexes are built in the embedded library and in LanceDB Enterprise. A
+    deployment builds them in the background and keeps most of them up to date
+    itself; in the embedded library you update them with `optimize()`.
 ---
 
 import {
@@ -19,7 +26,9 @@ import {
     PyScalarIndexNestedFields as ScalarIndexNestedFields,
 } from '/snippets/indexing.mdx';
 
-Scalar indexes organize data by scalar attributes (e.g., numbers, categories) and enable fast filtering of vector data. They accelerate retrieval of scalar data associated with vectors, thus enhancing query performance.
+Scalar indexes accelerate filters on values such as numbers, categories and
+strings. Use them for selective table queries or metadata filters combined
+with vector and full-text search.
 
 LanceDB supports four types of scalar indexes:
 
@@ -29,7 +38,7 @@ LanceDB supports four types of scalar indexes:
 - `FM`: FM-Index over string or binary columns that accelerates substring search via `contains(col, 'needle')`.
 
 <Tip title="Working with scalar indices">
-Scalar indices serve as a foundational optimization layer, accelerating filtering across diverse search workloads. They can be combined with:
+Use scalar indexes with:
 
 - Vector search (prefilter results using metadata)
 - Full-text search (combining keyword matching with structured filters) 
@@ -70,11 +79,11 @@ If you are using LanceDB Enterprise, the `create_scalar_index` API returns immed
     </CodeBlock>
 </CodeGroup>
 
-`wait_for_index(...)` waits until the named scalar indexes exist and `index_stats(...)` reports `num_unindexed_rows == 0`. If a table is receiving steady writes, that fully indexed state may not stabilize before the timeout.
+`wait_for_index(...)` waits until the named scalar indexes exist and `index_stats(...)` reports `num_unindexed_rows == 0`. If a table is receiving steady writes, that fully indexed state may not stabilize before the timeout. In LanceDB Enterprise, rows added after the index was built are indexed only once enough have accumulated, so a small remainder can also keep the wait from finishing.
 
 ### 3. Update the Index
 
-Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. This can be done by calling `optimize`, which will trigger an update to the existing scalar index.
+Updating the table data (adding, deleting, or modifying records) requires that you also update the scalar index. In the embedded library, call `optimize`, which will trigger an update to the existing scalar index.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -83,7 +92,7 @@ Updating the table data (adding, deleting, or modifying records) requires that y
 </CodeGroup>
 
 <Note title="LanceDB Enterprise">
-New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Enterprise automates the optimize process, minimizing the impact on search speed.
+New data added after creating the scalar index will still appear in search results if optimize is not used, but with increased latency due to a flat search on the unindexed portion. LanceDB Enterprise does not support `optimize()`; instead it adds new rows to `BTREE`, `BITMAP` and `LABEL_LIST` indexes in the background once enough have accumulated. It does not update `FM` indexes automatically.
 </Note>
 
 ### 4. Run Indexed Searches
@@ -125,7 +134,7 @@ Nested paths follow Lance field-path semantics: dot-separate each struct field f
 The `FM` index is a scalar index built over string or binary columns that
 accelerates substring lookups expressed as `contains(col, 'needle')`. Unlike the
 tokenized [FTS index](/indexing/fts-index), which matches whole words after
-tokenization, the FM-Index matches arbitrary substrings of the raw bytes — so it
+tokenization, the FM-Index matches arbitrary substrings of the raw bytes. It
 works well for URLs, file paths, identifiers, log lines, or any column where you
 search for a fragment rather than a word.
 
@@ -143,6 +152,8 @@ or language-aware tokenization.
 
 Build an FM-Index with the async `create_index` API by passing the `Fm` config in
 Python or `Index.fm()` in TypeScript. In Rust, use `Index::Fm(FmIndexBuilder::default())`.
+A deployment builds FM-Indexes too, but does not add new rows to them in the background as it
+does for the other scalar indexes.
 
 <CodeGroup>
 ```python Python icon="python"

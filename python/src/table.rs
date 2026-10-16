@@ -697,6 +697,14 @@ impl PyBlobFile {
     }
 }
 
+fn blob_file_error(operation: &str, error: lance_core::Error) -> pyo3::PyErr {
+    let message = format!("blob {operation} failed: {error}");
+    match error {
+        lance_core::Error::InvalidInput { .. } => PyValueError::new_err(message),
+        _ => PyRuntimeError::new_err(message),
+    }
+}
+
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
@@ -705,7 +713,7 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            .map_err(|e| blob_file_error("read", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
@@ -713,10 +721,7 @@ impl PyBlobFile {
         self_.ensure_open()?;
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let bytes = inner
-                .read()
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            let bytes = inner.read().await.map_err(|e| blob_file_error("read", e))?;
             Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
         })
     }
@@ -739,7 +744,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
+            .map_err(|e| blob_file_error("close", e))
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
@@ -752,7 +757,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.seek(position).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
+            .map_err(|e| blob_file_error("seek", e))
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
@@ -761,7 +766,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.tell().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
+            .map_err(|e| blob_file_error("tell", e))
     }
 
     fn size(self_: PyRef<'_, Self>) -> u64 {
@@ -778,8 +783,30 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_range(offset..end).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_range", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
+    }
+
+    /// Read blob-local byte ranges without moving the cursor.
+    fn read_ranges(self_: PyRef<'_, Self>, ranges: Vec<(u64, u64)>) -> PyResult<Vec<Py<PyBytes>>> {
+        let ranges = ranges
+            .into_iter()
+            .map(|(offset, length)| {
+                offset
+                    .checked_add(length)
+                    .map(|end| offset..end)
+                    .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let inner = self_.inner.clone();
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_ranges(&ranges).await }))
+            .map_err(|e| blob_file_error("read_ranges", e))?;
+        Ok(bytes
+            .iter()
+            .map(|bytes| PyBytes::new(py, bytes.as_ref()).unbind())
+            .collect())
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
@@ -788,7 +815,7 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_up_to(length).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_up_to failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_up_to", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 }
@@ -823,8 +850,8 @@ impl From<LanceDbFtsToken> for FtsToken {
     language = "English".to_string(),
     max_token_length = Some(40),
     lower_case = true,
-    stem = true,
-    remove_stop_words = true,
+    stem = None,
+    remove_stop_words = None,
     custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
@@ -838,15 +865,15 @@ pub fn tokenize(
     language: String,
     max_token_length: Option<u32>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
 ) -> PyResult<Vec<FtsToken>> {
-    let params = FtsIndexBuilder::default()
+    let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
         .map_err(|_| {
@@ -857,13 +884,17 @@ pub fn tokenize(
         })?
         .max_token_length(max_token_length.map(|value| value as usize))
         .lower_case(lower_case)
-        .stem(stem)
-        .remove_stop_words(remove_stop_words)
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
         .ngram_prefix_only(prefix_only)
         .custom_stop_words(custom_stop_words);
+    if let Some(stem) = stem {
+        params = params.stem(stem);
+    }
+    if let Some(remove_stop_words) = remove_stop_words {
+        params = params.remove_stop_words(remove_stop_words);
+    }
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -911,6 +942,11 @@ impl Table {
     /// Returns True if the table is open, False if it is closed.
     pub fn is_open(&self) -> bool {
         self.inner.is_some()
+    }
+
+    /// Whether this table has a local Lance dataset that the client may open.
+    pub fn _is_native(&self) -> PyResult<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
     }
 
     /// Closes the table, releasing any resources associated with it.
@@ -1453,14 +1489,30 @@ impl Table {
     pub fn fetch_blob_ranges(
         self_: PyRef<'_, Self>,
         column: String,
-        requests: Vec<(u64, u64, u64)>,
+        requests: Vec<Vec<i128>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let requests = requests
+            .into_iter()
+            .map(|values| {
+                let [row_id, offset, length] = <[i128; 3]>::try_from(values).map_err(|_| {
+                    PyValueError::new_err("each blob range request must have three values")
+                })?;
+                let to_u64 = |value, name| {
+                    u64::try_from(value).map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "blob range {name} must be a non-negative 64-bit integer"
+                        ))
+                    })
+                };
+                Ok(BlobRangeRequest::new(
+                    to_u64(row_id, "row id")?,
+                    to_u64(offset, "offset")?,
+                    to_u64(length, "length")?,
+                ))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         future_into_py(self_.py(), async move {
-            let requests = requests
-                .into_iter()
-                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
-                .collect::<Vec<_>>();
             let blobs: LargeBinaryArray = inner
                 .fetch_blob_ranges(column, requests)
                 .await
@@ -1708,7 +1760,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .uses_v2_manifest_paths()
                 .await
                 .infer_error()
@@ -1720,7 +1775,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
