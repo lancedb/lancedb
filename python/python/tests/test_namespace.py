@@ -8,12 +8,12 @@ import shutil
 import importlib
 import http.server
 import json
-import threading
 from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from utils import start_server_thread
 from lancedb.listing import AsyncListing, Listing
 from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
 from lancedb.query import Query
@@ -146,8 +146,7 @@ def paginated_rest_namespace():
             pass
 
     with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+        thread = start_server_thread(server)
         try:
             yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
         finally:
@@ -1065,7 +1064,7 @@ class TestPushdownOperations:
         Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
         db = lancedb.connect_namespace(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True
@@ -1082,7 +1081,7 @@ class TestPushdownOperations:
         for the async path omitting the freshness header)."""
         db = lancedb.connect_namespace_async(
             "rest",
-            {"uri": "http://localhost:12345"},
+            {"uri": "http://127.0.0.1:12345"},
             namespace_client_pushdown_operations=["QueryTable"],
         )
         assert db._route_pushdown_to_rust is True

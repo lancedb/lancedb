@@ -3,13 +3,13 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from threading import Thread
 
 import pytest
 
 import lancedb
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.remote.errors import HttpError
+from utils import start_server_thread
 
 
 @pytest.fixture
@@ -38,8 +38,7 @@ def catalog_server():
         do_POST = handle_request
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        thread = start_server_thread(server, daemon=True)
         try:
             yield f"http://127.0.0.1:{server.server_port}", requests, responses
         finally:
