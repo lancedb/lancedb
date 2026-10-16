@@ -280,7 +280,11 @@ pub async fn create_plan(
 
         let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
         let is_binary = matches!(element_type, DataType::UInt8);
-        let top_k = query.base.limit.unwrap_or(DEFAULT_TOP_K) + query.base.offset.unwrap_or(0);
+        let top_k = query
+            .base
+            .limit
+            .unwrap_or(DEFAULT_TOP_K)
+            .saturating_add(query.base.offset.unwrap_or(0));
 
         if is_binary {
             let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
@@ -318,8 +322,15 @@ pub async fn create_plan(
     // Adding Scanner's global limit would truncate the combined result to k rows.
     if !is_batch_query {
         scanner.limit(
-            query.base.limit.map(|limit| limit as i64),
-            query.base.offset.map(|offset| offset as i64),
+            // Saturate: `usize::MAX as i64` wraps to -1, which Lance rejects.
+            query
+                .base
+                .limit
+                .map(|limit| i64::try_from(limit).unwrap_or(i64::MAX)),
+            query
+                .base
+                .offset
+                .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX)),
         )?;
     }
 
