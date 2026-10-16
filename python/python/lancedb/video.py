@@ -641,12 +641,18 @@ class VideoTransform:
             self._video = VideoFrames(
                 videos, self.column, key=self.key, **self.reader_options
             )
+        # One dict per row, like a per-item __getitem__ but for the whole batch:
+        # columns that locate a frame are consumed, every other column passes
+        # through by name, and each field's image lands under the field's key.
         rows = batch.to_pylist()
         used = {c for pair in self.fields.values() for c in pair}
         items = [
             {c: _to_tensor(v) for c, v in r.items() if c not in used} for r in rows
         ]
         names = list(self.fields)
+        # All images of the batch in one fetch_frames call: one blob range
+        # request for every file, decoded in parallel. That is the speed-up over
+        # fetching per item.
         requests = [
             (r[file_col], [r[frame_col] + o for o in self.window])
             for name in names
