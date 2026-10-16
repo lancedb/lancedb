@@ -330,6 +330,96 @@ pub async fn plan_duplicate_pairs(
     Ok(tasks)
 }
 
+/// Optional query columns. The default preserves the primitive's three-column
+/// schema; SQL convenience calls include physical scope identity and may map
+/// endpoints to an application key without fetching source vectors.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DuplicatePairsOutput {
+    pub scope: bool,
+    pub id_column: Option<String>,
+}
+
+impl DuplicatePairsOutput {
+    pub fn schema(&self, dataset: &Dataset) -> Result<SchemaRef> {
+        let mut fields = duplicate_pair_schema().fields().to_vec();
+        if self.scope {
+            fields.extend([
+                Arc::new(Field::new("segment_id", DataType::Utf8, false)),
+                Arc::new(Field::new("partition_id", DataType::UInt64, false)),
+                Arc::new(Field::new("dataset_version", DataType::UInt64, false)),
+            ]);
+        }
+        if let Some(column) = &self.id_column {
+            let schema = Schema::from(dataset.schema());
+            let field = schema.field_with_name(column)?;
+            if column.contains('.')
+                || matches!(
+                    field.data_type(),
+                    DataType::FixedSizeList(..)
+                        | DataType::List(..)
+                        | DataType::LargeList(..)
+                        | DataType::Struct(..)
+                        | DataType::Map(..)
+                )
+            {
+                return plan_err!("id_column must be a top-level scalar column");
+            }
+            fields.push(Arc::new(Field::new(
+                "id_a",
+                field.data_type().clone(),
+                field.is_nullable(),
+            )));
+            fields.push(Arc::new(Field::new(
+                "id_b",
+                field.data_type().clone(),
+                field.is_nullable(),
+            )));
+        }
+        Ok(Arc::new(Schema::new(fields)))
+    }
+
+    async fn enrich(
+        &self,
+        batch: arrow_array::RecordBatch,
+        dataset: &Dataset,
+        task: &DuplicatePairTask,
+    ) -> Result<arrow_array::RecordBatch> {
+        use arrow_array::{StringArray, UInt64Array};
+        let mut columns = batch.columns().to_vec();
+        let n = batch.num_rows();
+        if self.scope {
+            columns.extend([
+                Arc::new(StringArray::from(vec![task.segment_id.to_string(); n]))
+                    as arrow_array::ArrayRef,
+                Arc::new(UInt64Array::from(vec![task.partition_id as u64; n])),
+                Arc::new(UInt64Array::from(vec![dataset.version().version; n])),
+            ]);
+        }
+        if let Some(column) = &self.id_column {
+            for endpoint in 0..2 {
+                let ids = batch
+                    .column(endpoint)
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .expect("native row IDs");
+                let projection = lance::dataset::ProjectionRequest::from_columns(
+                    [column.as_str()],
+                    dataset.schema(),
+                );
+                let values = dataset.take_rows(ids.values(), projection).await?;
+                if values.num_rows() != n {
+                    return plan_err!("pair row ID is missing from the pinned snapshot");
+                }
+                columns.push(values.column(0).clone());
+            }
+        }
+        Ok(arrow_array::RecordBatch::try_new(
+            self.schema(dataset)?,
+            columns,
+        )?)
+    }
+}
+
 /// Streaming native operator over partition descriptors, never source-vector
 /// rows. Assigned descriptors are consumed sequentially; distributed hosts send
 /// one descriptor per worker request. No Python or per-vector ANN calls.
@@ -341,6 +431,7 @@ pub struct DuplicatePairsExec {
     tasks: Vec<DuplicatePairTask>,
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
+    output: DuplicatePairsOutput,
 }
 
 impl DuplicatePairsExec {
@@ -374,7 +465,22 @@ impl DuplicatePairsExec {
             tasks,
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
+            output: DuplicatePairsOutput::default(),
         })
+    }
+    /// Configure optional output fields before dispatching this plan.
+    pub fn with_output(mut self, output: DuplicatePairsOutput) -> Result<Self> {
+        self.properties = Arc::new(PlanProperties::new(
+            EquivalenceProperties::new(output.schema(&self.dataset)?),
+            Partitioning::UnknownPartitioning(1),
+            EmissionType::Incremental,
+            Boundedness::Bounded,
+        ));
+        self.output = output;
+        Ok(self)
+    }
+    pub fn output(&self) -> &DuplicatePairsOutput {
+        &self.output
     }
     pub fn dataset(&self) -> &Arc<Dataset> {
         &self.dataset
@@ -430,6 +536,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         if partition != 0 {
             return plan_err!("duplicate-pair output partition out of bounds");
         }
+        let output = self.output.clone();
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
         let config = self.config.clone();
@@ -467,6 +574,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         // into one-task PE requests before execution.
         let stream = stream::iter(tasks)
             .then(move |task| {
+                let output = output.clone();
                 let dataset = dataset.clone();
                 let config = config.clone();
                 let reservation = reservation.clone();
@@ -474,7 +582,7 @@ impl ExecutionPlan for DuplicatePairsExec {
                 let completed = completed.clone();
                 async move {
                     let reader = lance::index::vector::dedup::find_duplicate_pairs_in_partition_with_options(
-                        dataset,
+                        dataset.clone(),
                         &config.column,
                         task.segment_id,
                         task.partition_id,
@@ -506,15 +614,19 @@ impl ExecutionPlan for DuplicatePairsExec {
                             }
                         },
                     );
-                    Ok::<_, DataFusionError>(Box::pin(RecordBatchStreamAdapter::new(
-                        duplicate_pair_schema(),
-                        measured,
-                    )) as SendableRecordBatchStream)
+                    let schema = output.schema(&dataset)?;
+                    let measured = measured.and_then(move |batch| {
+                        let output = output.clone();
+                        let dataset = dataset.clone();
+                        let task = task.clone();
+                        async move { output.enrich(batch, &dataset, &task).await }
+                    });
+                    Ok::<_, DataFusionError>(Box::pin(RecordBatchStreamAdapter::new(schema, measured)) as SendableRecordBatchStream)
                 }
             })
             .try_flatten();
         Ok(Box::pin(RecordBatchStreamAdapter::new(
-            duplicate_pair_schema(),
+            self.schema(),
             stream,
         )))
     }

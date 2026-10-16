@@ -371,13 +371,15 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    pub async fn list_materialized_views(&self) -> napi::Result<Vec<String>> {
-        let views = self
-            .get_inner()?
-            .list_materialized_views()
-            .await
-            .default_error()?;
-        Ok(views)
+    pub fn list_materialized_views(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?
+                .list_materialized_views(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Drop a materialized view.
@@ -460,12 +462,18 @@ impl Connection {
 
     /// The names of the views in one namespace.
     #[napi(catch_unwind)]
-    pub async fn list_views(
+    pub fn list_views(
         &self,
         namespace_path: Option<Vec<String>>,
-    ) -> napi::Result<Vec<String>> {
-        let ns = namespace_path.unwrap_or_default();
-        self.get_inner()?.list_views(&ns).await.default_error()
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
     }
 
     /// Start dropping a materialized view and return its cleanup job.
@@ -588,9 +596,15 @@ impl Connection {
 
     /// List server-side jobs across the database's tables.
     #[napi(catch_unwind)]
-    pub async fn list_jobs(&self) -> napi::Result<Vec<crate::job::JobInfo>> {
-        let jobs = self.get_inner()?.list_jobs().await.default_error()?;
-        Ok(jobs.into_iter().map(Into::into).collect())
+    pub fn list_jobs(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::JobListing> {
+        Ok(crate::listing::JobListing::new(
+            self.get_inner()?
+                .list_jobs(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the

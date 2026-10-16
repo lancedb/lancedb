@@ -97,13 +97,16 @@ async fn local_function_catalog_operations_return_stable_not_supported() {
     ))
     .unwrap();
 
-    let create_error = connection.create_function_async(request).await.unwrap_err();
+    let create_error = connection
+        .create_function_async(request, &[])
+        .await
+        .unwrap_err();
     let lookup_error = connection
-        .get_function("normalize_score", "1")
+        .get_function("normalize_score", "1", &[])
         .await
         .unwrap_err();
     let drop_error = connection
-        .drop_function("normalize_score", "1")
+        .drop_function("normalize_score", "1", &[])
         .await
         .unwrap_err();
     for error in [create_error, lookup_error, drop_error] {

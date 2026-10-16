@@ -15,7 +15,7 @@ from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
-from ._lancedb import LsmWriteSpec
+from ._lancedb import MemWalWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -46,7 +46,6 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
-    vector_dedup as vector_dedup,
 )
 from .view import ViewDescription as ViewDescription
 from .table import AsyncTable, CompactionOptions, Table
@@ -62,7 +61,6 @@ from .namespace import (
 from .catalog import (
     AsyncCatalog,
     Catalog,
-    ListDatabasesResponse,
     connect_catalog,
     connect_catalog_async,
 )
@@ -323,8 +321,8 @@ def tokenize(
     language: str = "English",
     max_token_length: Optional[int] = 40,
     lower_case: bool = True,
-    stem: bool = True,
-    remove_stop_words: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
     custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
@@ -335,6 +333,8 @@ def tokenize(
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
+    When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
+    applies: False for ``code`` and ``ngram``, True otherwise.
     """
 
     return _tokenize(
@@ -578,7 +578,6 @@ async def connect_async(
 __all__ = [
     "Catalog",
     "AsyncCatalog",
-    "ListDatabasesResponse",
     "connect_catalog",
     "connect_catalog_async",
     "AsyncMaterializedView",
@@ -612,7 +611,7 @@ __all__ = [
     "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
-    "LsmWriteSpec",
+    "MemWalWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

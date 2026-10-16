@@ -89,19 +89,30 @@ Drop an empty database. The server rejects nonempty databases.
 ### listDatabases()
 
 ```ts
-listDatabases(options): Promise<ListDatabasesResponse>
+listDatabases(options): DatabaseNames
 ```
 
-List one page of databases; pass pageToken from a response for the next page.
+Iterate lazily over all database names using `for await...of`.
+pageToken resumes from a saved token; omitted starts at the beginning.
+pageLimit limits each REST response, not the total; omitted uses the server default.
+Request errors are raised during iteration and terminate the iterator.
 
 #### Parameters
 
 * **options** = `{}`
 
-* **options.limit?**: `number`
+* **options.pageLimit?**: `number`
 
 * **options.pageToken?**: `string`
 
 #### Returns
 
-`Promise`&lt;[`ListDatabasesResponse`](../interfaces/ListDatabasesResponse.md)&gt;
+[`DatabaseNames`](DatabaseNames.md)
+
+#### Example
+
+```ts
+for await (const name of catalog.listDatabases({ pageLimit: 20 })) {
+  console.log(name);
+}
+```

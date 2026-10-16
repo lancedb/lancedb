@@ -168,9 +168,9 @@ impl Query {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi]
@@ -289,8 +289,23 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .nprobes(nprobe as usize)
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .default_error()?;
+        Ok(())
     }
 
     #[napi]
@@ -379,9 +394,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi]
@@ -489,9 +504,9 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi]
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    #[napi(js_name = "useMemWal")]
+    pub fn use_memwal(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_memwal(enable);
     }
 
     #[napi(catch_unwind)]
@@ -658,6 +673,7 @@ impl JsFullTextQuery {
             FtsQuery::Phrase(_) => "phrase".to_string(),
             FtsQuery::Boost(_) => "boost".to_string(),
             FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::CombinedFields(_) => "combined_fields".to_string(),
             FtsQuery::Boolean(_) => "boolean".to_string(),
         }
     }
