@@ -2715,6 +2715,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_limit_usize_max() {
+        let conn = connect("memory://foo").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_non_empty_batches())
+            .execute()
+            .await
+            .unwrap();
+        let expected = table.count_rows(None).await.unwrap();
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .limit(usize::MAX)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let num_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(num_rows, expected);
+
+        let batches: Vec<RecordBatch> = table
+            .query()
+            .limit(usize::MAX)
+            .offset(1)
+            .nearest_to(&[0.1; 4])
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let num_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(num_rows, expected - 1);
+    }
+
+    #[tokio::test]
     async fn test_repeated_only_if_combines_with_and() {
         use crate::expr::{col, lit};
 
