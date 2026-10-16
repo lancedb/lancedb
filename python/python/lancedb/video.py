@@ -10,8 +10,8 @@ index, Matroska cues) and the span from the keyframe before the first requested
 frame to the keyframe after the last one. An 8-frame window of a 500 MB file
 costs about 1 MB of transfer, most of it the header, read once per file.
 
-The video index is five plain columns next to the blob, so it travels with the
-table and needs no sidecar::
+The video index is a few plain columns next to the blob (byte spans, keyframe
+positions, frame count, fps), so it travels with the table and needs no sidecar::
 
     import lancedb
     from lancedb.video import VideoFrames, add_videos, video_schema
@@ -24,6 +24,25 @@ table and needs no sidecar::
     frames = VideoFrames(table, "video", key="name")  # one per process or worker
     clips = frames.fetch_frames([("clip_0", [0, 1, 2]), ("clip_3", [120])])
     # clips[0]: uint8 tensor (3, 3, H, W); clips[1]: (1, 3, H, W)
+
+For training, :class:`VideoTransform` turns rows of any table that points at
+(video, frame) into items with decoded clips. A video generation loader over a
+captioned video table, one sample per 16-frame window::
+
+    schema = video_schema([pa.field("caption", pa.string())])
+    videos = db.create_table("videos", schema=schema)
+    add_videos(videos, paths, caption=captions)
+
+    # one row per training sample: which video, which start frame, its caption
+    windows = clip_windows(videos, 16, columns=["caption"])
+    clips = db.create_table("clips", windows)
+
+    transform = VideoTransform(
+        uri, "videos", fields={"video": ("video_row", "start")}, window=range(16)
+    )
+    ds = StreamingDataset(clips, num_splits=4, shuffle=True, transform=transform)
+    loader = StreamingDataLoader(ds, batch_size=8, num_workers=4)
+    # batch: {"caption": [8 strings], "video": uint8 tensor (8, 16, 3, H, W)}
 
 Requires ``av`` (PyAV) to build the index. Decoding uses torchcodec when it is
 installed and falls back to PyAV otherwise. Works with any container and codec
@@ -49,6 +68,8 @@ VIDEO_INDEX_COLUMNS = (
     "header_lengths",
     "kf_indices",
     "kf_positions",
+    "n_frames",
+    "fps",
 )
 VIDEO_INDEX_SCHEMA = pa.schema(
     [
@@ -59,6 +80,8 @@ VIDEO_INDEX_SCHEMA = pa.schema(
         # frame number and byte position of every keyframe
         pa.field("kf_indices", pa.list_(pa.int64())),
         pa.field("kf_positions", pa.list_(pa.int64())),
+        pa.field("n_frames", pa.int64()),
+        pa.field("fps", pa.float64()),
     ]
 )
 
@@ -140,11 +163,15 @@ def video_index(source: str | Path | bytes | io.IOBase) -> dict[str, Any]:
 
     # 2. Every keyframe, from a full demux.
     keyframes: list[tuple[int, int]] = []
+    n_frames = 0
     handle.seek(0)
     with av.open(handle) as container:
         stream = container.streams.video[0]
         for packet in container.demux(stream):
-            if packet.pts is None or not packet.is_keyframe or packet.pos is None:
+            if packet.pts is None:
+                continue
+            n_frames += 1
+            if not packet.is_keyframe or packet.pos is None:
                 continue
             frame_number = round(float(packet.pts * packet.time_base) * fps)
             keyframes.append((frame_number, packet.pos))
@@ -158,6 +185,8 @@ def video_index(source: str | Path | bytes | io.IOBase) -> dict[str, Any]:
         "header_lengths": [end - start for start, end in header],
         "kf_indices": [index for index, _ in keyframes],
         "kf_positions": [position for _, position in keyframes],
+        "n_frames": n_frames,
+        "fps": fps,
     }
 
 
@@ -379,6 +408,39 @@ class _PyAVDecoder:
                     frames.append(frame.to_ndarray(format="rgb24").transpose(2, 0, 1))
                     break
         return np.stack(frames)
+
+
+def clip_windows(
+    table: Any,
+    length: int,
+    stride: int | None = None,
+    columns: Sequence[str] = (),
+) -> pa.Table:
+    """One row per ``length``-frame window of every video in ``table``.
+
+    Columns ``video_row`` (the row id in ``table``) and ``start`` (first frame),
+    plus any ``columns`` copied from the video's row, say a caption. Windows
+    start every ``stride`` frames (default ``length``, no overlap). The result
+    is a frames table for :class:`VideoTransform` with
+    ``fields={"video": ("video_row", "start")}`` and ``window=range(length)``.
+    """
+    stride = stride or length
+    rows = (
+        table.search()
+        .select(["n_frames", *columns])
+        .with_row_id(True)
+        .limit(None)
+        .to_arrow()
+        .to_pylist()
+    )
+    out: dict[str, list] = {"video_row": [], "start": [], **{c: [] for c in columns}}
+    for row in rows:
+        for start in range(0, row["n_frames"] - length + 1, stride):
+            out["video_row"].append(row["_rowid"])
+            out["start"].append(start)
+            for c in columns:
+                out[c].append(row[c])
+    return pa.table(out)
 
 
 # ---------------------------------------------------------------------------

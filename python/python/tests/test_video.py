@@ -15,6 +15,7 @@ from lancedb.video import (
     VideoFrames,
     VideoTransform,
     add_videos,
+    clip_windows,
     video_schema,
     _DecoderCache,
     _merge_spans,
@@ -100,6 +101,7 @@ def test_video_index_records_header_and_keyframes():
     header = list(zip(index["header_offsets"], index["header_lengths"]))
     assert header and all(0 <= o and o + n <= index["file_size"] for o, n in header)
     assert index["kf_indices"] == [0, 10, 20, 30, 40, 50]
+    assert index["n_frames"] == 60 and index["fps"] == FPS
     assert index["kf_positions"] == sorted(index["kf_positions"])
     assert all(0 < p < index["file_size"] for p in index["kf_positions"])
 
@@ -243,3 +245,26 @@ def test_video_transform_decodes_fields_from_a_frames_table(tmp_path):
     assert np.abs(mean_color(items[0]["b"][1]) - solid_color(21)).max() < 12
     assert list(items[0]["state"].shape) == [2]  # passed through as a tensor
     assert set(items[0]) == {"state", "a", "b"}  # the locating columns are consumed
+
+
+def test_videogen_clips_with_captions(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    videos = db.create_table(
+        "videos", schema=video_schema([pa.field("caption", pa.string())])
+    )
+    add_videos(videos, [encode_video(40), encode_video(25)], caption=["cat", "dog"])
+    clips = clip_windows(videos, 16, columns=["caption"])
+    assert clips.column_names == ["video_row", "start", "caption"]
+    assert clips["start"].to_pylist() == [0, 16, 0]  # 40 frames -> 2 windows, 25 -> 1
+    assert clips["caption"].to_pylist() == ["cat", "cat", "dog"]
+
+    transform = VideoTransform(
+        str(tmp_path / "db"),
+        "videos",
+        fields={"video": ("video_row", "start")},
+        window=range(16),
+    )
+    items = transform(clips)
+    assert [i["caption"] for i in items] == ["cat", "cat", "dog"]
+    assert tuple(items[1]["video"].shape) == (16, 3, 48, 64)
+    assert np.abs(mean_color(items[1]["video"][3]) - solid_color(19)).max() < 12
