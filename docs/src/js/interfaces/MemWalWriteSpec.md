@@ -2,9 +2,9 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / LsmWriteSpec
+[@lancedb/lancedb](../globals.md) / MemWalWriteSpec
 
-# Interface: LsmWriteSpec
+# Interface: MemWalWriteSpec
 
 Specification selecting Lance's MemWAL LSM-style write path for
 `mergeInsert`.

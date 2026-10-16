@@ -76,7 +76,7 @@ _WAL_ROW_ID_REFUSAL = "does not support with_row_id"
 WAL_ROW_ID_UNSUPPORTED = (
     "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has "
     "no stable row id, and the ids the fusion joins on are synthesized from "
-    "the primary key. Set use_lsm(False) to read the base table only (results "
+    "the primary key. Set use_memwal(False) to read the base table only (results "
     "will exclude un-compacted MemWAL data)"
 )
 
@@ -151,13 +151,13 @@ def _stamp_surrogate_row_ids(
     return stamped
 
 
-def pk_fusion_learned(table, use_lsm: Optional[bool]) -> bool:
+def pk_fusion_learned(table, use_memwal: Optional[bool]) -> bool:
     """Whether a previous hybrid query on `table` was refused `_rowid`, so this
     one should go straight to the primary key.
 
     Learned from a refusal, never probed, so asking is free.
     """
-    if table is None or use_lsm is False:
+    if table is None or use_memwal is False:
         return False
     # Only an unambiguous True forks to the key: a table type that answers the
     # question loosely keeps the `_rowid` path.
@@ -192,7 +192,7 @@ class PkFusion:
             raise NotImplementedError(
                 "hybrid search cannot project a blob column on a MemWAL table: "
                 "fetching blobs needs a real _rowid, and the fresh tier has no "
-                "stable one. Set use_lsm(False) to read the base table only "
+                "stable one. Set use_memwal(False) to read the base table only "
                 "(results will exclude un-compacted MemWAL data)"
             )
         return cls(_pk_columns(schema))

@@ -223,7 +223,7 @@ if TYPE_CHECKING:
         DeleteResult,
         DropColumnsResult,
         FtsToken,
-        LsmWriteSpec,
+        MemWalWriteSpec,
         MergeResult,
         UpdateResult,
     )
@@ -4827,47 +4827,47 @@ class LanceTable(Table):
         [`AsyncTable.set_unenforced_primary_key`][lancedb.AsyncTable.set_unenforced_primary_key]."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec. See
-        [`AsyncTable.set_lsm_write_spec`][lancedb.AsyncTable.set_lsm_write_spec]."""
-        return LOOP.run(self._table.set_lsm_write_spec(spec))
+    def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
+        """Install an MemWalWriteSpec. See
+        [`AsyncTable.enable_memwal`][lancedb.AsyncTable.enable_memwal]."""
+        return LOOP.run(self._table.enable_memwal(spec))
 
-    def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec. See
-        [`AsyncTable.unset_lsm_write_spec`][lancedb.AsyncTable.unset_lsm_write_spec]."""
-        return LOOP.run(self._table.unset_lsm_write_spec())
+    def disable_memwal(self) -> None:
+        """Remove the MemWalWriteSpec. See
+        [`AsyncTable.disable_memwal`][lancedb.AsyncTable.disable_memwal]."""
+        return LOOP.run(self._table.disable_memwal())
 
-    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the installed LsmWriteSpec, or ``None``. See
-        [`AsyncTable.get_lsm_write_spec`][lancedb.AsyncTable.get_lsm_write_spec]."""
-        return LOOP.run(self._table.get_lsm_write_spec())
+    def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
+        """Read the installed MemWalWriteSpec, or ``None``. See
+        [`AsyncTable.get_memwal_spec`][lancedb.AsyncTable.get_memwal_spec]."""
+        return LOOP.run(self._table.get_memwal_spec())
 
-    def checkpoint_lsm(self) -> None:
+    def checkpoint_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
-        return LOOP.run(self._table.checkpoint_lsm())
+        [`AsyncTable.checkpoint_memwal`][lancedb.AsyncTable.checkpoint_memwal]."""
+        return LOOP.run(self._table.checkpoint_memwal())
 
-    def flush_lsm(self) -> None:
+    def flush_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
-        return LOOP.run(self._table.flush_lsm())
+        [`AsyncTable.flush_memwal`][lancedb.AsyncTable.flush_memwal]."""
+        return LOOP.run(self._table.flush_memwal())
 
-    def compact_lsm(self) -> None:
+    def compact_memwal(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
-        return LOOP.run(self._table.compact_lsm())
+        [`AsyncTable.compact_memwal`][lancedb.AsyncTable.compact_memwal]."""
+        return LOOP.run(self._table.compact_memwal())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_memwal_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        [`AsyncTable.get_memwal_stats`][lancedb.AsyncTable.get_memwal_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_memwal_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_lsm_writers(self) -> None:
+    def close_memwal_writers(self) -> None:
         """Close cached MemWAL shard writers. See
-        [`AsyncTable.close_lsm_writers`][lancedb.AsyncTable.close_lsm_writers]."""
-        return LOOP.run(self._table.close_lsm_writers())
+        [`AsyncTable.close_memwal_writers`][lancedb.AsyncTable.close_memwal_writers]."""
+        return LOOP.run(self._table.close_memwal_writers())
 
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -5525,18 +5525,18 @@ class AsyncTable:
             columns = list(columns)
         await self._inner.set_unenforced_primary_key(columns)
 
-    async def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec on this table.
+    async def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
+        """Install an MemWalWriteSpec on this table.
 
         The spec selects Lance's MemWAL LSM-style write path for future
-        `merge_insert` calls. ``LsmWriteSpec`` chooses one of three sharding
+        `merge_insert` calls. ``MemWalWriteSpec`` chooses one of three sharding
         strategies:
 
-        - ``LsmWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
+        - ``MemWalWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
           the single-column unenforced primary key.
-        - ``LsmWriteSpec.identity(column)`` — shard by the raw value of a
+        - ``MemWalWriteSpec.identity(column)`` — shard by the raw value of a
           scalar column.
-        - ``LsmWriteSpec.unsharded()`` — route every write to a single shard.
+        - ``MemWalWriteSpec.unsharded()`` — route every write to a single shard.
 
         All variants require the table to have an unenforced primary key set
         via [`set_unenforced_primary_key`]; bucket sharding additionally
@@ -5551,30 +5551,30 @@ class AsyncTable:
 
         Parameters
         ----------
-        spec : LsmWriteSpec
+        spec : MemWalWriteSpec
             The sharding spec to install.
 
         Examples
         --------
-        >>> from lancedb import LsmWriteSpec
+        >>> from lancedb import MemWalWriteSpec
         >>> # table.set_unenforced_primary_key("id")
-        >>> # table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 16))
+        >>> # table.enable_memwal(MemWalWriteSpec.bucket("id", 16))
         """
-        await self._inner.set_lsm_write_spec(spec)
+        await self._inner.enable_memwal(spec)
 
-    async def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec from this table.
+    async def disable_memwal(self) -> None:
+        """Remove the MemWalWriteSpec from this table.
 
         Reverts to the standard `merge_insert` write path. Errors if no spec
         is currently set.
         """
-        await self._inner.unset_lsm_write_spec()
+        await self._inner.disable_memwal()
 
-    async def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the LsmWriteSpec currently installed on this table.
+    async def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
+        """Read the MemWalWriteSpec currently installed on this table.
 
-        Returns ``None`` when the LSM write path is not enabled at all — no
-        spec has been set, or one was removed with `unset_lsm_write_spec`.
+        Returns ``None`` when the MemWAL write path is not enabled at all — no
+        spec has been set, or one was removed with `disable_memwal`.
         That is a different answer from a spec whose ``maintained_indexes``
         is ``None``, which is an installed spec selecting indexes
         automatically.
@@ -5584,7 +5584,7 @@ class AsyncTable:
         or gains later, ``[]`` maintains none, and a non-empty list maintains
         exactly those. All three round-trip.
         """
-        return await self._inner.get_lsm_write_spec()
+        return await self._inner.get_memwal_spec()
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
@@ -5595,19 +5595,19 @@ class AsyncTable:
         """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
         self._inner.note_hybrid_pk_fusion()
 
-    async def checkpoint_lsm(self) -> None:
-        """Converge this table's LSM write path into its base table.
+    async def checkpoint_memwal(self) -> None:
+        """Converge this table's MemWAL write path into its base table.
 
-        One flush, sealing every memtable into L0, then compaction triggers
-        until every generation that existed at that moment has reached base.
-        The loop runs client-side, reading progress from ``get_lsm_stats``.
+        One flush, freezing every memtable into an SSTable, then compaction triggers
+        until every SSTable that existed at that moment has reached base.
+        The loop runs client-side, reading progress from ``get_memwal_stats``.
 
-        Best-effort: generations created *while* it runs are deliberately not
+        Best-effort: SSTables created *while* it runs are deliberately not
         waited on, which is what lets it terminate on a table taking writes.
         Idempotent and safe on a cadence.
 
         There is no deadline, and the caller owns that. It returns when the
-        target generations are gone, raises on a terminal server fault, and
+        target SSTables are gone, raises on a terminal server fault, and
         otherwise waits however long the server takes. A slow table and a
         stuck one are the same picture from the client: the compactor pool is
         shared across every table on the node, so a checkpoint queued behind
@@ -5615,56 +5615,56 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        await self._inner.checkpoint_lsm()
+        await self._inner.checkpoint_memwal()
 
-    async def flush_lsm(self) -> None:
-        """Seal every bucket's active memtable into L0.
+    async def flush_memwal(self) -> None:
+        """Freeze every table shard's active memtable into an SSTable.
 
-        Does not touch the base table — moving L0 into base is
-        `compact_lsm`. On a node that has not claimed this table, this claims
+        Does not touch the base table — compacting SSTables into base is
+        `compact_memwal`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        await self._inner.flush_lsm()
+        await self._inner.flush_memwal()
 
-    async def compact_lsm(self) -> None:
-        """Trigger a background L0 to base compaction pass per bucket.
+    async def compact_memwal(self) -> None:
+        """Trigger a background SSTable compaction pass per table shard.
 
         Returns once the passes are dispatched, not once they finish: watch
-        ``get_lsm_stats`` for progress, or use ``checkpoint_lsm`` to loop
-        until the current L0 has reached base.
+        ``get_memwal_stats`` for progress, or use ``checkpoint_memwal`` to loop
+        until the current SSTables have reached base.
         """
-        await self._inner.compact_lsm()
+        await self._inner.compact_memwal()
 
-    async def get_lsm_stats(
-        self, *, include_generation_rows: bool = False
+    async def get_memwal_stats(
+        self, *, include_sstable_rows: bool = False
     ) -> Optional[dict]:
-        """Read live per-bucket LSM state.
+        """Read live per-table-shard MemWAL state.
 
-        Answers "how far behind is my fresh tier", "which bucket is hot", and
+        Answers "how far behind is my fresh tier", "which table shard is hot", and
         "why is my fresh-tier vector search brute-force". Mutates no table
         state, though on a node that has not claimed this table it claims it,
         exactly as a read would.
 
-        Returns ``None`` only when the LSM write path is not enabled.
+        Returns ``None`` only when the MemWAL write path is not enabled.
 
         Parameters
         ----------
-        include_generation_rows
-            Report a row count per L0 generation. Off by default: each count
-            opens an uncached Lance dataset, and ``checkpoint_lsm`` polls this
+        include_sstable_rows
+            Report a row count per SSTable. Off by default: each count
+            opens an uncached Lance dataset, and ``checkpoint_memwal`` polls this
             needing only generation numbers.
         """
-        return await self._inner.get_lsm_stats(include_generation_rows)
+        return await self._inner.get_memwal_stats(include_sstable_rows)
 
-    async def close_lsm_writers(self) -> None:
+    async def close_memwal_writers(self) -> None:
         """Drain and close any cached MemWAL shard writers for this table.
 
-        When an LSM write spec is installed, `merge_insert` opens MemWAL shard
+        When a MemWAL write spec is installed, `merge_insert` opens MemWAL shard
         writers and caches them for reuse across calls. This closes them,
         flushing pending data; writers reopen lazily on the next
         `merge_insert`. It is a no-op when no writers are cached.
         """
-        await self._inner.close_lsm_writers()
+        await self._inner.close_memwal_writers()
 
     @property
     def name(self) -> str:
@@ -6553,8 +6553,8 @@ class AsyncTable:
             take_query = self.take_offsets(query.take_offsets)
             if query.columns:
                 take_query = take_query.select(query.columns)
-            if query.use_lsm is not None:
-                take_query = take_query.use_lsm(query.use_lsm)
+            if query.use_memwal is not None:
+                take_query = take_query.use_memwal(query.use_memwal)
             if query.with_row_id:
                 take_query = take_query.with_row_id()
             return take_query
@@ -6570,8 +6570,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
-        if query.use_lsm is not None:
-            async_query = async_query.use_lsm(query.use_lsm)
+        if query.use_memwal is not None:
+            async_query = async_query.use_memwal(query.use_memwal)
         if query.with_row_id:
             async_query = async_query.with_row_id()
         if query.order_by:
@@ -6697,7 +6697,7 @@ class AsyncTable:
                 when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
-                use_lsm=merge._use_lsm,
+                use_memwal=merge._use_memwal,
                 validate_single_shard=merge._validate_single_shard,
             ),
         )

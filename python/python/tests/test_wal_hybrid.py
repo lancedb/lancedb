@@ -81,15 +81,15 @@ def test_base_table_hybrid_still_joins_on_row_ids():
     assert builder._vector_query._columns is None
 
 
-def test_wal_hybrid_with_use_lsm_false_joins_on_row_ids():
-    builder = _wal_hybrid().use_lsm(False)
+def test_wal_hybrid_with_use_memwal_false_joins_on_row_ids():
+    builder = _wal_hybrid().use_memwal(False)
     builder._create_query_builders()
     assert builder._pk_fusion is None
 
 
 def test_wal_hybrid_refuses_an_explicit_with_row_id():
     builder = _wal_hybrid().with_row_id(True)
-    with pytest.raises(NotImplementedError, match="use_lsm"):
+    with pytest.raises(NotImplementedError, match="use_memwal"):
         builder._create_query_builders()
 
 
@@ -141,7 +141,7 @@ def test_wal_hybrid_refuses_row_id_even_with_return_score_all(row_id_first: bool
     else:
         builder = builder.rerank(reranker).with_row_id(True)
 
-    with pytest.raises(NotImplementedError, match="use_lsm"):
+    with pytest.raises(NotImplementedError, match="use_memwal"):
         builder._create_query_builders()
 
 
@@ -199,7 +199,7 @@ def test_fallback_explains_the_refusal_to_a_caller_who_asked_for_row_ids():
     def run():
         raise _REFUSAL
 
-    with pytest.raises(NotImplementedError, match="use_lsm") as info:
+    with pytest.raises(NotImplementedError, match="use_memwal") as info:
         with_pk_fallback(
             run, mock.Mock(), fused=lambda: False, caller_requested_row_id=True
         )

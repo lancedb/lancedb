@@ -27,16 +27,16 @@ import java.util.Map;
  *
  * <p>Construct via {@link #bucket}, {@link #identity}, or {@link #unsharded}, then optionally chain
  * {@link #withMaintainedIndexes} and {@link #withWriterConfigDefaults}. Install it with {@link
- * LanceDbTableLsm#setLsmWriteSpec} and remove it with {@link LanceDbTableLsm#unsetLsmWriteSpec}.
+ * LanceDbTableMemWal#enableMemWal} and remove it with {@link LanceDbTableMemWal#disableMemWal}.
  *
  * <p>This is deliberately not {@code org.lance.memwal.InitializeMemWalParams}. That type is Lance's
  * own, and its maintained-index default is the opposite of this one: it defaults to maintaining
  * <em>nothing</em>, while a fresh spec here maintains <em>every</em> index. It also cannot express
  * the null that asks the server to resolve the set.
  */
-public class LsmWriteSpec {
+public class MemWalWriteSpec {
 
-  private static final String CONTEXT = "get_lsm_write_spec response";
+  private static final String CONTEXT = "get_memwal_spec response";
 
   /** How writes are routed to MemWAL shards. */
   public enum Sharding {
@@ -73,7 +73,7 @@ public class LsmWriteSpec {
   private final List<String> maintainedIndexes;
   private final Map<String, String> writerConfigDefaults;
 
-  private LsmWriteSpec(
+  private MemWalWriteSpec(
       Sharding sharding,
       String column,
       Integer numBuckets,
@@ -95,11 +95,11 @@ public class LsmWriteSpec {
    * @param column A non-nested column with a supported scalar type.
    * @param numBuckets The number of buckets, in {@code [1, 1024]}.
    */
-  public static LsmWriteSpec bucket(String column, int numBuckets) {
+  public static MemWalWriteSpec bucket(String column, int numBuckets) {
     if (column == null || column.trim().isEmpty()) {
       throw new IllegalArgumentException("Column cannot be null or empty");
     }
-    return new LsmWriteSpec(
+    return new MemWalWriteSpec(
         Sharding.BUCKET, column, numBuckets, null, new HashMap<String, String>());
   }
 
@@ -111,16 +111,17 @@ public class LsmWriteSpec {
    * with a given primary key must always produce the same {@code column} value, or upserts of that
    * key can land in different shards and a stale version can win.
    */
-  public static LsmWriteSpec identity(String column) {
+  public static MemWalWriteSpec identity(String column) {
     if (column == null || column.trim().isEmpty()) {
       throw new IllegalArgumentException("Column cannot be null or empty");
     }
-    return new LsmWriteSpec(Sharding.IDENTITY, column, null, null, new HashMap<String, String>());
+    return new MemWalWriteSpec(
+        Sharding.IDENTITY, column, null, null, new HashMap<String, String>());
   }
 
   /** No sharding — every write goes to a single MemWAL shard — maintaining every index. */
-  public static LsmWriteSpec unsharded() {
-    return new LsmWriteSpec(Sharding.UNSHARDED, null, null, null, new HashMap<String, String>());
+  public static MemWalWriteSpec unsharded() {
+    return new MemWalWriteSpec(Sharding.UNSHARDED, null, null, null, new HashMap<String, String>());
   }
 
   /**
@@ -131,8 +132,8 @@ public class LsmWriteSpec {
    *
    * <p>Note that {@code null} and the empty list mean opposite things here.
    */
-  public LsmWriteSpec withMaintainedIndexes(List<String> maintainedIndexes) {
-    return new LsmWriteSpec(
+  public MemWalWriteSpec withMaintainedIndexes(List<String> maintainedIndexes) {
+    return new MemWalWriteSpec(
         sharding,
         column,
         numBuckets,
@@ -149,11 +150,11 @@ public class LsmWriteSpec {
    * max_unflushed_memtable_bytes}, and {@code enable_memtable}. Duration knobs carry an {@code _ms}
    * suffix, such as {@code max_wal_flush_interval_ms}.
    */
-  public LsmWriteSpec withWriterConfigDefaults(Map<String, String> writerConfigDefaults) {
+  public MemWalWriteSpec withWriterConfigDefaults(Map<String, String> writerConfigDefaults) {
     if (writerConfigDefaults == null) {
       throw new IllegalArgumentException("writerConfigDefaults cannot be null");
     }
-    return new LsmWriteSpec(
+    return new MemWalWriteSpec(
         sharding,
         column,
         numBuckets,
@@ -191,7 +192,7 @@ public class LsmWriteSpec {
     return Collections.unmodifiableMap(writerConfigDefaults);
   }
 
-  /** Render this spec as the {@code set_lsm_write_spec} request body. */
+  /** Render this spec as the {@code enable_memwal} request body. */
   Map<String, Object> toRequestBody() {
     Map<String, Object> shardingBody = new LinkedHashMap<String, Object>();
     shardingBody.put("mode", sharding.wireName());
@@ -211,15 +212,15 @@ public class LsmWriteSpec {
   }
 
   /**
-   * Rebuild a spec from a {@code get_lsm_write_spec} response body.
+   * Rebuild a spec from a {@code get_memwal_spec} response body.
    *
    * <p>A null {@code maintained_indexes} selects every index the table has; an empty list selects
    * none.
    */
-  static LsmWriteSpec fromJson(JsonNode node) {
+  static MemWalWriteSpec fromJson(JsonNode node) {
     JsonNode shardingNode = node.get("sharding");
     if (shardingNode == null || shardingNode.get("mode") == null) {
-      throw new IllegalStateException("get_lsm_write_spec response has no sharding mode");
+      throw new IllegalStateException("get_memwal_spec response has no sharding mode");
     }
     Sharding sharding = Sharding.fromWireName(shardingNode.get("mode").asText());
 
@@ -252,12 +253,12 @@ public class LsmWriteSpec {
           .forEachRemaining(name -> defaults.put(name, defaultsNode.get(name).asText()));
     }
 
-    return new LsmWriteSpec(sharding, column, numBuckets, maintainedIndexes, defaults);
+    return new MemWalWriteSpec(sharding, column, numBuckets, maintainedIndexes, defaults);
   }
 
   @Override
   public String toString() {
-    return "LsmWriteSpec{sharding="
+    return "MemWalWriteSpec{sharding="
         + sharding
         + ", column="
         + column
