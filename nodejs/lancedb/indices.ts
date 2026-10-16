@@ -131,9 +131,15 @@ export interface IvfRqOptions {
    *
    * This value controls how much each residual component is compressed. The more
    * bits, the more accurate the index will be but the slower search. Typical values
-   * are small integers; the default is 1 bit per dimension.
+   * are small integers; the default is 5 bits per dimension.
    */
   numBits?: number;
+
+  /**
+   * Use prefix planes. Unset uses the product default: false in OSS and true
+   * in Enterprise. Ignored for 1-bit and 2-bit codes.
+   */
+  layered?: boolean;
 
   /**
    * Distance type to use to build the index.
@@ -660,6 +666,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.layered,
       ),
     );
   }

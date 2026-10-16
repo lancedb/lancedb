@@ -138,6 +138,9 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .max_iterations(params.max_iterations)
                     .sample_rate(params.sample_rate)
                     .num_bits(params.num_bits);
+                if let Some(layered) = params.layered {
+                    ivf_rq_builder = ivf_rq_builder.layered(layered);
+                }
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
                 }
@@ -266,6 +269,7 @@ struct IvfRqParams {
     distance_type: String,
     num_partitions: Option<u32>,
     num_bits: u32,
+    layered: Option<bool>,
     max_iterations: u32,
     sample_rate: u32,
     target_partition_size: Option<u32>,

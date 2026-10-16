@@ -3612,6 +3612,7 @@ class LanceTable(Table):
                         replace=replace,
                         accelerator=acc,
                         num_bits=getattr(config, "num_bits", 8),
+                        layered=getattr(config, "layered", None),
                         m=getattr(config, "m", 20),
                         ef_construction=getattr(config, "ef_construction", 300),
                         target_partition_size=getattr(
