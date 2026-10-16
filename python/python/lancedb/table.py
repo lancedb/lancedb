@@ -79,6 +79,7 @@ from .index import (
     Fm,
     NGram,
     ZoneMap,
+    RTree,
     HnswPq,
     HnswSq,
     HnswFlat,
@@ -343,6 +344,7 @@ IndexConfigType = Union[
     Fm,
     NGram,
     ZoneMap,
+    RTree,
     FTS,
 ]
 
@@ -1960,7 +1962,7 @@ class Table(ABC):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -2185,11 +2187,12 @@ class Table(ABC):
         ----------
         column : str
             The column to be indexed.  Must be a boolean, integer, float,
-            or string column.
+            or string column, or a GeoArrow geometry column for ``"RTREE"``.
         replace : bool, default True
             Replace the existing index if it exists.
-        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST"], default "BTREE"
-            The type of index to create.
+        index_type: Literal["BTREE", "BITMAP", "LABEL_LIST", "RTREE"], default "BTREE"
+            The type of index to create. ``"RTREE"`` creates an
+            [RTree][lancedb.index.RTree] index for spatial filters.
         wait_timeout: timedelta, optional
             The timeout to wait if indexing is asynchronous.
         name: str, optional
@@ -4714,7 +4717,7 @@ class LanceTable(Table):
         config : IndexConfigType, optional
             The index configuration object. If provided, uses the new unified API.
             Can be one of: IvfFlat, IvfPq, IvfSq, IvfRq, HnswPq, HnswSq,
-            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, FTS.
+            BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, FTS.
         replace : bool, default True
             Whether to replace an existing index on this column.
         exist_ok : bool, default False
@@ -5037,7 +5040,10 @@ class LanceTable(Table):
     @deprecation.deprecated(
         deprecated_in="0.25.0",
         current_version=__version__,
-        details="Use create_index() with config=BTree()/Bitmap()/LabelList() instead.",
+        details=(
+            "Use create_index() with config=BTree()/Bitmap()/LabelList()/RTree()"
+            " instead."
+        ),
     )
     def create_scalar_index(
         self,
@@ -5052,7 +5058,8 @@ class LanceTable(Table):
         """Create a scalar index on a column.
 
         .. deprecated:: 0.25.0
-            Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
+            Use :meth:`create_index` with a BTree, Bitmap, LabelList, or RTree
+            config instead.
             Example: ``table.create_index("column", config=BTree())``
         """
         if index_type == "scalar":
@@ -5068,6 +5075,8 @@ class LanceTable(Table):
             config = Bitmap()
         elif index_type == "LABEL_LIST":
             config = LabelList()
+        elif index_type == "RTREE":
+            config = RTree()
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
@@ -7256,6 +7265,7 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                RTree,
                 FTS,
             ]
         ] = None,
@@ -7337,13 +7347,14 @@ class AsyncTable:
                     Fm,
                     NGram,
                     ZoneMap,
+                    RTree,
                     FTS,
                 ),
             ):
                 raise TypeError(
                     "config must be an instance of IvfSq, IvfPq, IvfRq, HnswPq, HnswSq,"
-                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, or FTS, but got "
-                    + str(type(config))
+                    " BTree, Bitmap, LabelList, Fm, NGram, ZoneMap, RTree, or FTS,"
+                    " but got " + str(type(config))
                 )
         try:
             await self._inner.create_index(
@@ -7383,6 +7394,7 @@ class AsyncTable:
                 Fm,
                 NGram,
                 ZoneMap,
+                RTree,
                 FTS,
             ]
         ] = None,
@@ -9697,6 +9709,7 @@ class IndexStatistics:
         "LABEL_LIST",
         "NGRAM",
         "ZONEMAP",
+        "RTREE",
     ]
     distance_type: Optional[Literal["l2", "cosine", "dot"]] = None
     num_indices: Optional[int] = None
