@@ -7333,6 +7333,7 @@ mod tests {
                     "metric_type": "cosine",
                     "num_partitions": 64,
                     "num_bits": 8,
+                    "layered": false,
                     "sample_rate": 256,
                     "max_iterations": 50,
                 }),
@@ -7340,8 +7341,19 @@ mod tests {
                     IvfRqIndexBuilder::default()
                         .distance_type(DistanceType::Cosine)
                         .num_partitions(64)
-                        .num_bits(8),
+                        .num_bits(8)
+                        .layered(false),
                 ),
+            ),
+            (
+                "IVF_RQ",
+                json!({
+                    "metric_type": "l2",
+                    "layered": true,
+                    "sample_rate": 256,
+                    "max_iterations": 50,
+                }),
+                Index::IvfRq(IvfRqIndexBuilder::default().layered(true)),
             ),
             // HNSW_PQ isn't yet supported on SaaS
             ("BTREE", json!({}), Index::BTree(Default::default())),

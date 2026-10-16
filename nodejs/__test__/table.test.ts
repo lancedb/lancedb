@@ -1695,14 +1695,38 @@ describe("When creating an index", () => {
     });
   });
 
-  it("should be able to create IVF_RQ", async () => {
-    await tbl.createIndex("vec", {
-      config: Index.ivfRq({
-        numPartitions: 10,
-        numBits: 1,
-      }),
-    });
-  });
+  test.each([
+    [1, true],
+    [2, true],
+    [5, undefined],
+    [5, false],
+    [5, true],
+  ] as const)(
+    "should create IVF_RQ with bits=%s layered=%s",
+    async (numBits, layered) => {
+      await tbl.createIndex("vec", {
+        config: Index.ivfRq({ numPartitions: 10, numBits, layered }),
+      });
+      const indices = await tbl.listIndices();
+      expect(indices).toHaveLength(1);
+      expect(indices[0].indexType).toBe("IvfRq");
+      const expected = await tbl
+        .vectorSearch(queryVec)
+        .bypassVectorIndex()
+        .limit(10)
+        .toArray();
+      const actual = await tbl
+        .vectorSearch(queryVec)
+        .nprobes(10)
+        .refineFactor(30)
+        .limit(10)
+        .toArray();
+      const ids = new Set(expected.map((row) => row.id));
+      expect(
+        actual.filter((row) => ids.has(row.id)).length,
+      ).toBeGreaterThanOrEqual(5);
+    },
+  );
 
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");

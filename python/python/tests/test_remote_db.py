@@ -1477,7 +1477,8 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
-def test_remote_create_index_new_api(caplog):
+@pytest.mark.parametrize("layered", [None, False, True])
+def test_remote_create_index_new_api(caplog, layered):
     received_requests = []
 
     def handler(request):
@@ -1550,7 +1551,9 @@ def test_remote_create_index_new_api(caplog):
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
-            table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index(
+                "vector", config=IvfRq(distance_type="l2", layered=layered)
+            )
             table.create_index(
                 "vector", config=IvfPq(distance_type="l2"), replace=False
             )
@@ -1574,6 +1577,11 @@ def test_remote_create_index_new_api(caplog):
             "vector",
             "vector",
         ]
+        assert received_requests[3]["num_bits"] == 5
+        if layered is None:
+            assert "layered" not in received_requests[3]
+        else:
+            assert received_requests[3]["layered"] is layered
         assert received_requests[2]["block_size"] == 256
         assert received_requests[4]["replace"] is False
         assert received_requests[5]["replace"] is False

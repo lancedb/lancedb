@@ -421,13 +421,29 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_create_ivfrq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=IvfRq(num_bits=1))
+@pytest.mark.parametrize("num_bits", [1, 2, 5])
+@pytest.mark.parametrize("layered", [None, False, True])
+async def test_create_ivfrq_index(some_table: AsyncTable, num_bits, layered):
+    await some_table.create_index(
+        "vector", config=IvfRq(num_bits=num_bits, layered=layered)
+    )
     indices = await some_table.list_indices()
     assert len(indices) == 1
     assert indices[0].index_type == "IvfRq"
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
+    query = list(map(float, range(DIM)))
+    expected = (
+        await some_table.vector_search(query).bypass_vector_index().limit(10).to_arrow()
+    )
+    actual = (
+        await some_table.vector_search(query)
+        .nprobes(NROWS)
+        .refine_factor(26)
+        .limit(10)
+        .to_arrow()
+    )
+    assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
 
 
 @pytest.mark.asyncio
