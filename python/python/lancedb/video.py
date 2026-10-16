@@ -71,6 +71,9 @@ VIDEO_INDEX_SCHEMA = pa.schema(
 # keeps those reads off the one-at-a-time fallback path.
 _PROBE_BYTES = 256 << 10
 _SLACK = 64 << 10
+# Per-file keyframe indexes kept in memory per VideoFrames
+# (a file with 45k keyframes is about 720 KB).
+_INDEX_CACHE_FILES = 2048
 
 
 # ---------------------------------------------------------------------------
@@ -389,11 +392,14 @@ class _PyAVDecoder:
 class VideoFrames:
     """Keyframe-aware frame reads from a table's video blob column.
 
-    One instance per process (or DataLoader worker). Decoders stay open across
-    calls in an LRU, so repeated reads from the same file reuse its header and
-    already-fetched spans. ``probe_bytes`` is how much of the file head is
-    fetched on open; the decoder's own probe reads beyond it fall back to
-    ranged reads, which is correct but one round trip each.
+    One instance per process (or DataLoader worker). It holds no copy of the
+    table: a table handle, the keyframe index of recently used files (bounded
+    to 2,048 files), and open decoders in an LRU bounded by ``decoder_cache_size``
+    and ``byte_budget`` of fetched bytes, so a worker's memory is at most
+    that budget plus the decoders' own state. Repeated reads from the same file
+    reuse its header and already-fetched spans. ``probe_bytes`` is how much of
+    the file head is fetched on open; the decoder's own probe reads beyond it
+    fall back to ranged reads, which is correct but one round trip each.
     """
 
     def __init__(
@@ -413,7 +419,9 @@ class VideoFrames:
         self._lock = (
             threading.Lock()
         )  # one fetch at a time; files decode in parallel inside
-        self._index: dict[int, dict[str, Any]] = {}
+        self._index: OrderedDict[int, dict[str, Any]] = (
+            OrderedDict()
+        )  # per-file keyframe index, bounded
         self._pool = ThreadPoolExecutor(max_workers=decode_threads)
 
     def fetch_frames(self, requests: Sequence[tuple[int, Sequence[int]]]) -> list[Any]:
@@ -489,6 +497,8 @@ class VideoFrames:
                 "kf_indices": np.asarray(row["kf_indices"], dtype=np.int64),
                 "kf_positions": np.asarray(row["kf_positions"], dtype=np.int64),
             }
+        while len(self._index) > _INDEX_CACHE_FILES:
+            self._index.popitem(last=False)
 
     def _span(self, meta: dict[str, Any], first: int, last: int) -> tuple[int, int]:
         """Bytes covering frames [first, last]: preceding keyframe to the next one."""
