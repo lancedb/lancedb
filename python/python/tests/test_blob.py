@@ -2264,6 +2264,34 @@ def _external_uri_table_and_rows(name, uris):
     return table, rows
 
 
+@pytest.mark.parametrize("as_blob", [False, True])
+@pytest.mark.parametrize(
+    "range_kwargs", [{"position": 4, "size": 6}, {"position": 0, "size": 6}]
+)
+def test_add_minimal_blob_schema_rejects_byte_ranges(tmp_path, as_blob, range_kwargs):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"0123456789abcdef")
+    db = lancedb.connect(tmp_path / "db")
+    schema = pa.schema(
+        [pa.field("image", pa.large_binary(), metadata={"lance-encoding:blob": "true"})]
+    )
+    table = db.create_table("minimal_blob", schema=schema)
+    uri = blob_path.as_uri()
+    value = (
+        Blob.from_uri(uri, **range_kwargs) if as_blob else {"uri": uri, **range_kwargs}
+    )
+
+    with pytest.raises(ValueError, match="storage schema has no such field"):
+        table.add([{"image": value}], allow_external_blob_outside_bases=True)
+    assert table.count_rows() == 0
+
+    # Whole-file references still fit the minimal schema.
+    table.add([{"image": uri}], allow_external_blob_outside_bases=True)
+    assert table.fetch_blobs("image", table.search().to_arrow()).to_pylist() == [
+        b"0123456789abcdef"
+    ]
+
+
 def test_add_external_uri_struct_round_trips_with_flag(tmp_path):
     payload = b"external-uri-bytes"
     blob_path = tmp_path / "payload.bin"
