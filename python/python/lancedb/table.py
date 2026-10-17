@@ -5293,6 +5293,10 @@ def _infer_target_schema(
                 peeked, reader = peek_reader(reader)
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
+            if dim is None:
+                # A column containing only null lists has no observed dimension.
+                # Preserve its declared variable-length type instead of guessing.
+                continue
 
             # Determine target type based on value type
             if pa.types.is_floating(field.type.value_type):
@@ -5333,9 +5337,12 @@ def _infer_target_schema(
     return schema, reader
 
 
-def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
+def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> Optional[int]:
     # Use the most common length of the list as the dimensions
-    return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+    modes = pc.mode(pc.list_value_length(arr))
+    if len(modes) == 0:
+        return None
+    return modes[0].as_py()["mode"]
 
 
 def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:

@@ -113,6 +113,27 @@ def test_basic(mem_db: DBConnection):
     assert table.to_arrow() == expected_data
 
 
+@pytest.mark.parametrize(
+    "vector_type",
+    [pa.list_(pa.float32()), pa.large_list(pa.float32())],
+    ids=["list", "large-list"],
+)
+def test_create_table_with_all_null_variable_vector_column(
+    mem_db: DBConnection, vector_type: pa.DataType
+):
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "vector": pa.array([None, None], type=vector_type),
+        }
+    )
+
+    table = mem_db.create_table("all_null_vector", data=data)
+
+    assert table.schema == data.schema
+    assert table.to_arrow() == data
+
+
 @pytest.mark.parametrize("enable_v2", [False, True])
 def test_migrate_v2_manifest_paths(tmp_path, enable_v2):
     db = lancedb.connect(
