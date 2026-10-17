@@ -234,11 +234,12 @@ def add_videos(
     ``videos`` are paths or bytes; ``columns`` are the caller's own columns,
     one value per video, e.g. ``add_videos(table, paths, name=names)``.
 
-    Files are indexed ``workers`` at a time in a process pool (the demux holds
-    the GIL) and appended ``batch_size`` files per ``table.add``, so memory is
-    bounded by one batch of files, not the whole call. ``workers=None`` runs
-    in-process. For a cluster, shard the paths and call this from every
-    machine: Lance appends commit concurrently.
+    One ``table.add`` per call, fed a stream of record batches of ``batch_size``
+    files, so the write is a single commit and memory is bounded by one batch.
+    Each batch is indexed ``workers`` at a time in a process pool (the demux
+    holds the GIL); ``workers=None`` indexes in-process. For a cluster, shard
+    the paths and call this from every machine: Lance appends commit
+    concurrently.
     """
     names = list(columns)
     values = [list(v) for v in columns.values()]
@@ -250,7 +251,8 @@ def add_videos(
         if workers
         else None
     )
-    try:
+
+    def batches():
         for start in range(0, len(videos), batch_size):
             batch = list(videos[start : start + batch_size])
             paths = [
@@ -269,7 +271,10 @@ def add_videos(
                     column: pa.array(data, pa.large_binary()),
                 }
             )
-            table.add(_append_index(rows, indexes))
+            yield from _append_index(rows, indexes).to_batches()
+
+    try:
+        table.add(batches())
     finally:
         if pool is not None:
             pool.shutdown()

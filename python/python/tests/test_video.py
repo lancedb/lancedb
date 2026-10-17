@@ -289,7 +289,9 @@ def test_add_videos_in_batches_with_a_process_pool(tmp_path):
     table = lancedb.connect(tmp_path / "db").create_table(
         "clips", schema=video_schema([pa.field("i", pa.int64())])
     )
+    version = table.version
     add_videos(table, paths, workers=2, batch_size=2, i=list(range(5)))
+    assert table.version == version + 1  # three batches, one commit
     got = table.search().select(["i", "n_frames"]).to_arrow().sort_by("i").to_pylist()
     assert [r["n_frames"] for r in got] == [12, 13, 14, 15, 16]
     with pytest.raises(ValueError):
