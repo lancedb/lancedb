@@ -2,9 +2,6 @@
   <title id="title">LanceDB suite</title>
   <desc id="desc">LanceDB OSS supports search. LanceDB Enterprise is a multimodal lakehouse for curation, feature engineering, search and retrieval, and training. Both are built on the Lance open lakehouse format for multimodal AI.</desc>
   <defs>
-    <filter id="cardShadow" x="-8%" y="-18%" width="116%" height="136%" color-interpolation-filters="sRGB">
-      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#4F2A1A" flood-opacity="0.16"/>
-    </filter>
     <linearGradient id="enterpriseGradient" x1="512" y1="90" x2="2020" y2="90" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#E9C9F6"/>
       <stop offset="0.52" stop-color="#F39A9A"/>
@@ -28,21 +25,21 @@
     </linearGradient>
   </defs>
 
-  <rect x="28" y="28" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2" filter="url(#cardShadow)"/>
-  <rect x="28" y="202" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2" filter="url(#cardShadow)"/>
+  <rect x="28" y="28" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2"/>
+  <rect x="28" y="202" width="464" height="146" rx="8" style="fill:#FFFFFF !important;stroke:#3E3A35 !important;" stroke-width="2"/>
 
-  <rect x="512" y="28" width="1506" height="146" rx="8" style="fill:url(#enterpriseGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="512" y="28" width="1506" height="146" rx="8" style="fill:url(#enterpriseGradient) !important;"/>
   <rect x="516" y="32" width="1498" height="138" rx="6" style="fill:#FFFFFF !important;"/>
-  <rect x="512" y="202" width="360" height="146" rx="8" style="fill:url(#curationGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="512" y="202" width="360" height="146" rx="8" style="fill:url(#curationGradient) !important;"/>
   <rect x="516" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
-  <rect x="894" y="202" width="360" height="146" rx="8" style="fill:url(#featureGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="894" y="202" width="360" height="146" rx="8" style="fill:url(#featureGradient) !important;"/>
   <rect x="898" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
-  <rect x="1276" y="202" width="360" height="146" rx="8" style="fill:url(#searchGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="1276" y="202" width="360" height="146" rx="8" style="fill:url(#searchGradient) !important;"/>
   <rect x="1280" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
-  <rect x="1658" y="202" width="360" height="146" rx="8" style="fill:url(#trainingGradient) !important;" filter="url(#cardShadow)"/>
+  <rect x="1658" y="202" width="360" height="146" rx="8" style="fill:url(#trainingGradient) !important;"/>
   <rect x="1662" y="206" width="352" height="138" rx="6" style="fill:#FFFFFF !important;"/>
 
-  <rect x="28" y="376" width="1990" height="116" rx="8" style="fill:#FFFFFF !important;stroke:#665FFF !important;" stroke-width="3" filter="url(#cardShadow)"/>
+  <rect x="28" y="376" width="1990" height="116" rx="8" style="fill:#FFFFFF !important;stroke:#665FFF !important;" stroke-width="3"/>
 
   <g style="fill:#241712 !important;">
     <circle cx="78" cy="78" r="9"/>

@@ -6,7 +6,7 @@ icon: chart-simple
 keywords: ["window", "over", "partition by", "row_number", "rank", "lag", "lead"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A window function computes across a set of rows related to the current one and
 returns a value **per row**. That is the difference from
@@ -33,8 +33,8 @@ OVER (
 ```
 
 `PARTITION BY` splits the rows into independent groups. `ORDER BY` orders them
-inside each partition -- required by the ranking functions, since a rank without
-an order is meaningless. The frame clause narrows the window further, which is
+inside each partition. Supply an ordering for useful ranks, and a stable
+tie-breaker when selecting one row from several equal values. The frame clause narrows the window further, which is
 how running totals and moving averages are expressed:
 
 ```sql
@@ -74,7 +74,7 @@ lag  lead  first_value  last_value  nth_value
 **Aggregates**
 
 Any [aggregate function](/sql/dql/aggregation#functions) used with `OVER` becomes a
-window function — that is how running totals and moving averages are written.
+window function. This is how running totals and moving averages are written.
 
 ## Deduplicating with a window {#dedup}
 

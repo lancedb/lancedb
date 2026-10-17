@@ -95,8 +95,8 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
         return Ok(false);
     }
     // A MemWAL write spec means reads auto-route through the LSM scanner in
-    // `create_plan` even when `use_lsm` is unset. The namespace request has no
-    // use_lsm field, so pushing the default query down would silently omit
+    // `create_plan` even when `use_memwal` is unset. The namespace request has no
+    // use_memwal field, so pushing the default query down would silently omit
     // un-compacted rows — force local execution whenever a spec is installed.
     let dataset = table.dataset.get().await?;
     if dataset.mem_wal_index_details().await?.is_some() {
@@ -106,10 +106,10 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_lsm.
-    // For use_lsm that is worse than a tuning miss: MemWAL read routing lives only
+    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_memwal.
+    // For use_memwal that is worse than a tuning miss: MemWAL read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
+    if query.base().use_memwal.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
     matches!(
@@ -167,25 +167,25 @@ pub async fn create_plan(
 
     let ds_ref = table.dataset.get().await?;
 
-    // MemWAL read routing driven by `use_lsm`:
+    // MemWAL read routing driven by `use_memwal`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
-    //   * Some(true)  — force LSM routing; error if the table has no write spec
+    //   * Some(true)  — force MemWAL routing; error if the table has no write spec
     //   * Some(false) — read the base table only, bypassing the MemWAL
     // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
-    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    // memtables + SSTables); validation and dispatch live in `lsm`.
     let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
-    let use_lsm = match query.base.use_lsm {
+    let use_memwal = match query.base.use_memwal {
         Some(true) if !has_spec => {
             return Err(Error::InvalidInput {
-                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
-                    install one with set_lsm_write_spec or leave use_lsm unset"
+                message: "use_memwal(true) was set but the table has no MemWAL write spec; \
+                    install one with enable_memwal or leave use_memwal unset"
                     .to_string(),
             });
         }
         Some(enable) => enable,
         None => has_spec,
     };
-    if use_lsm {
+    if use_memwal {
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
@@ -1195,7 +1195,7 @@ mod tests {
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .enable_memwal(crate::table::MemWalWriteSpec::unsharded())
             .await
             .unwrap();
         let lsm_error = table
@@ -1395,7 +1395,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
+    async fn test_execute_query_use_memwal_with_namespace_pushdown_runs_locally() {
         use crate::connect;
         use crate::table::query::execute_query;
         use arrow_array::{Int32Array, RecordBatch};
@@ -1418,7 +1418,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table("test_use_lsm_namespace_fallback", batch)
+            .create_table("test_use_memwal_namespace_fallback", batch)
             .execute()
             .await
             .unwrap();
@@ -1429,13 +1429,13 @@ mod tests {
             .pushdown_operations
             .insert(NamespaceClientPushdownOperation::QueryTable);
 
-        // `use_lsm` set (even to false) must force local execution — the namespace
-        // request has no use_lsm field, so a pushdown would silently ignore it.
+        // `use_memwal` set (even to false) must force local execution — the namespace
+        // request has no use_memwal field, so a pushdown would silently ignore it.
         let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
         let query = AnyQuery::VectorQuery(VectorQueryRequest {
             base: QueryRequest {
                 limit: Some(1),
-                use_lsm: Some(false),
+                use_memwal: Some(false),
                 ..Default::default()
             },
             column: Some("vector".to_string()),

@@ -547,22 +547,22 @@ pub trait QueryBase {
     /// Control MemWAL read routing for this query.
     ///
     /// By default (unset), when the table carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
+    /// [`crate::Table::enable_memwal`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
-    /// memtables and flushed generations); a table without a spec reads the base
+    /// memtables and SSTables); a table without a spec reads the base
     /// table.
     ///
-    /// - `use_lsm(true)` forces LSM routing and errors if the table has no
+    /// - `use_memwal(true)` forces MemWAL routing and errors if the table has no
     ///   MemWAL write spec.
-    /// - `use_lsm(false)` bypasses the MemWAL and reads the base table only,
+    /// - `use_memwal(false)` bypasses the MemWAL and reads the base table only,
     ///   even when a spec is present.
     ///
     /// Note: the LSM scanner does not support every query shape (e.g. reranking,
     /// hybrid search, `order_by`). On a MemWAL table those shapes error unless
-    /// `use_lsm(false)` is set, because a base-only read would silently
+    /// `use_memwal(false)` is set, because a base-only read would silently
     /// exclude un-compacted MemWAL data.
-    fn use_lsm(self, enable: bool) -> Self;
+    fn use_memwal(self, enable: bool) -> Self;
 }
 
 pub trait HasQuery {
@@ -634,8 +634,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn use_lsm(mut self, enable: bool) -> Self {
-        self.mut_query().use_lsm = Some(enable);
+    fn use_memwal(mut self, enable: bool) -> Self {
+        self.mut_query().use_memwal = Some(enable);
         self
     }
 }
@@ -900,17 +900,17 @@ pub struct QueryRequest {
 
     /// Controls MemWAL read routing. When unset (the default), a query against a
     /// table that carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
+    /// [`crate::Table::enable_memwal`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
-    /// memtables and the flushed (L0) generations, deduplicated by primary key
+    /// memtables and the SSTables, deduplicated by primary key
     /// against the base table (newest generation wins); a table without a spec
     /// reads the base table.
     ///
-    /// - `Some(true)` forces LSM routing and errors if the table has no MemWAL
+    /// - `Some(true)` forces MemWAL routing and errors if the table has no MemWAL
     ///   write spec.
     /// - `Some(false)` reads only the base table, bypassing the MemWAL.
-    pub use_lsm: Option<bool>,
+    pub use_memwal: Option<bool>,
 }
 
 impl Default for QueryRequest {
@@ -930,7 +930,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
-            use_lsm: None,
+            use_memwal: None,
         }
     }
 }
@@ -3806,8 +3806,12 @@ mod tests {
         assert_eq!(results[0].num_columns(), 1);
     }
 
+    #[rstest::rstest]
+    #[case::single_row(1)]
+    #[case::two_rows(2)]
+    #[case::three_rows(3)]
     #[tokio::test]
-    async fn test_take_offsets_preserves_duplicate_multiplicity() {
+    async fn test_take_offsets_preserves_duplicate_multiplicity(#[case] max_batch_length: u32) {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
@@ -3815,7 +3819,7 @@ mod tests {
             .take_offsets(vec![5, 1, 5, 17])
             .select(Select::Columns(vec!["id".to_string()]))
             .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 2,
+                max_batch_length,
                 ..Default::default()
             })
             .await
@@ -3824,7 +3828,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|batch| batch.num_rows() <= max_batch_length as usize)
+        );
         assert!(results.iter().all(|batch| batch.num_columns() == 1));
         let mut ids = results
             .iter()

@@ -8,6 +8,18 @@
 
 ## Properties
 
+### blobRequestConcurrency?
+
+```ts
+optional blobRequestConcurrency: number;
+```
+
+Maximum number of concurrent blob HTTP requests across all tables and
+blob handles on this connection. Defaults to 8. Can also be set with
+`LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`. Must be greater than zero.
+
+***
+
 ### extraHeaders?
 
 ```ts

@@ -111,6 +111,26 @@ async def _create_blob_v2_query_table_async(db, name):
     return table
 
 
+def _nested_blob_v2_query_schema():
+    return pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), list_size=2)),
+            pa.field(
+                "info",
+                pa.struct([pa.field("label", pa.string()), lancedb.blob("blob")]),
+            ),
+        ]
+    )
+
+
+def _nested_blob_v2_query_rows():
+    return [
+        {"id": 1, "vector": [1.0, 0.0], "info": {"label": "one", "blob": b"one"}},
+        {"id": 2, "vector": [2.0, 0.0], "info": {"label": "two", "blob": b"two"}},
+    ]
+
+
 def _assert_lazy_blob(value, expected: bytes):
     assert hasattr(value, "readall")
     assert value.readall() == expected
@@ -503,7 +523,7 @@ def test_vector_query_to_pandas_blob_mode_requires_native_path(tmp_db):
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
 
-    with pytest.raises(RuntimeError, match="Lance native pandas conversion"):
+    with pytest.raises(RuntimeError, match="no fetchable blob v2 source"):
         table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1).to_pandas(
             blob_mode="lazy"
         )
@@ -536,6 +556,7 @@ def test_vector_query_to_pandas_blob_descriptions(tmp_db):
         _blob_query_data(),
         storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
     )
+    query = table.search([1.0, 0.0]).select(["blob", "vector"]).limit(1)
 
     df = (
         table.search([1.0, 0.0])

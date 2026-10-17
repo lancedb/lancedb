@@ -6,7 +6,7 @@ icon: table-columns
 keywords: ["select", "where", "order by", "limit", "cte", "union", "distinct"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 [WITH cte AS (...)]
@@ -35,9 +35,10 @@ await tbl.query().select(["id", "title", "identifier"]).toArrow();
 ```
 </CodeGroup>
 
-Projection pushes into the scan in all three -- an unselected column is never
-read off storage. On a table of images or video that is the difference between a
-fast query and a slow one, so **prefer naming columns over `SELECT *`**.
+Name the columns you need instead of using `SELECT *`, particularly for
+tables containing images, video or large vectors. Projection lets the engine
+avoid loading unnecessary columns, although columns used by filters, joins or
+other expressions may still need to be read.
 
 Row metadata is available as [pseudo-columns](/sql/data-types#pseudo-columns)
 (`_rowid`, `_rowaddr`, `_rowoffset`) but only when named, so they stay out of
@@ -63,8 +64,8 @@ await tbl.query().where("identifier > 0 AND identifier < 1000000").toArrow();
 </CodeGroup>
 
 The SDK `where` takes the same expression language, so a predicate moves between
-them unchanged. A predicate on an indexed column becomes a `ScalarIndexQuery`
-rather than a scan -- confirm with [`explain_plan`](/search/explain). See
+them unchanged. A supported predicate can use a scalar index; confirm the chosen plan with
+[`explain_plan`](/search/explain). See
 [Filtering](/search/filtering) for the operators and their pushdown behaviour.
 
 ## Ordering and limiting {#order-limit}

@@ -425,19 +425,19 @@ Empty results retain the query's output schema.
 
 ***
 
-### useLsm()
+### useMemWal()
 
 ```ts
-useLsm(enable): this
+useMemWal(enable): this
 ```
 
 Control MemWAL read routing for this query.
 
 By default (unset), when the table carries a MemWAL write spec (see
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+[Table#enableMemWal](Table.md#enablememwal)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key; a table without a spec
+the SSTables), deduplicated by primary key; a table without a spec
 reads the base table.
 
 #### Parameters
@@ -448,7 +448,7 @@ reads the base table.
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
     hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useLsm(false)` is set, because a base-only read would silently exclude
+    `useMemWal(false)` is set, because a base-only read would silently exclude
     un-compacted MemWAL data.
 
 #### Returns
@@ -457,7 +457,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useLsm`
+`StandardQueryBase.useMemWal`
 
 ***
 

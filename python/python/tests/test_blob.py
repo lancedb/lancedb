@@ -22,6 +22,7 @@ from lancedb._blob import (
 )
 from lancedb.expr import col
 from lancedb.index import FTS
+from lancedb.rerankers import Reranker
 from lancedb.schema import blob_column_paths, blob_v2_column_paths
 
 
@@ -411,6 +412,158 @@ def test_nested_blob_to_pandas_bytes(tmp_path):
     ].tolist() == [b"hello", None, None]
 
 
+def test_to_arrow_and_to_list_blob_mode(tmp_path):
+    table = _nested_blob_table(lancedb.connect(tmp_path), "arrow_blob_mode")
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+        None,
+    ]
+
+    assert table.to_arrow(blob_mode="bytes")["info"].to_pylist() == expected
+    assert table.search().to_arrow(blob_mode="bytes")["info"].to_pylist() == expected
+    assert table.search().to_list(blob_mode="bytes") == [
+        {"id": 0, "info": expected[0]},
+        {"id": 1, "info": expected[1]},
+        {"id": 2, "info": expected[2]},
+    ]
+    assert table.search().select({"b": "info.blob"}).to_list(blob_mode="bytes") == [
+        {"b": b"hello"},
+        {"b": None},
+        {"b": None},
+    ]
+    assert table.search().select(["id", "info.blob"]).to_list(blob_mode="bytes") == [
+        {"id": 0, "info.blob": b"hello"},
+        {"id": 1, "info.blob": None},
+        {"id": 2, "info.blob": None},
+    ]
+    assert table.search().select({"x.y": "info"}).to_list(blob_mode="bytes") == [
+        {"x.y": expected[0]},
+        {"x.y": expected[1]},
+        {"x.y": expected[2]},
+    ]
+    assert [
+        row["info"] for row in table.search().select([]).to_list(blob_mode="bytes")
+    ] == expected
+    assert table.search().select([]).to_pandas(blob_mode="bytes")["info"].tolist() == (
+        table.search().select([]).to_arrow(blob_mode="bytes")["info"].to_pylist()
+    )
+    assert "_rowid" not in table.search().select([]).to_arrow().column_names
+    # A flat non-blob column named like the nested blob path keeps its values.
+    shadowed = table.search().select({"info": "info", "info.blob": "id"})
+    assert [row["info.blob"] for row in shadowed.to_list()] == [0, 1, 2]
+    assert [row["info"] for row in shadowed.to_list(blob_mode="bytes")] == expected
+    with pytest.raises(ValueError, match="both produce blob column 'info.blob'"):
+        table.search().select(["info", "info.blob"]).to_list(blob_mode="bytes")
+
+    default_blob = table.search().select({"b": "info.blob"}).to_list()[0]["b"]
+    assert isinstance(default_blob, dict)
+    lazy = table.to_arrow(blob_mode="lazy")["info"].to_pylist()
+    assert table.to_arrow()["info"].to_pylist() == lazy
+    lazy_descriptor = lazy[0]["blob"]
+    assert "_lance_row_id" in lazy_descriptor
+    lazy_descriptor.pop("_lance_row_id")
+    descriptions = table.to_arrow(blob_mode="descriptions")["info"].to_pylist()
+    assert descriptions[0]["blob"] == lazy_descriptor
+    assert (
+        table.search().to_list(blob_mode="descriptions")[0]["info"]["blob"]
+        == lazy_descriptor
+    )
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.to_arrow(blob_mode="handles")
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.search().to_list(blob_mode="handles")
+
+
+@pytest.mark.asyncio
+async def test_async_to_arrow_and_to_list_blob_mode(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "async_arrow_blob_mode",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "info",
+                    pa.struct([pa.field("name", pa.string()), lancedb.blob("blob")]),
+                ),
+            ]
+        ),
+    )
+    await table.add(
+        pa.table(
+            {
+                "id": pa.array([0, 1]),
+                "info": pa.StructArray.from_arrays(
+                    [
+                        pa.array(["first", "second"]),
+                        pa.array([b"hello", None], type=pa.large_binary()),
+                    ],
+                    names=["name", "blob"],
+                ),
+            }
+        )
+    )
+    expected = [
+        {"name": "first", "blob": b"hello"},
+        {"name": "second", "blob": None},
+    ]
+
+    assert (await table.to_arrow(blob_mode="bytes"))["info"].to_pylist() == expected
+    assert (await table.query().to_arrow(blob_mode="bytes"))[
+        "info"
+    ].to_pylist() == expected
+    assert await table.query().to_list(blob_mode="bytes") == [
+        {"id": 0, "info": expected[0]},
+        {"id": 1, "info": expected[1]},
+    ]
+    default_blob = (await table.query().select({"b": "info.blob"}).to_list())[0]["b"]
+    assert isinstance(default_blob, dict)
+    descriptions = await table.to_arrow(blob_mode="descriptions")
+    assert (
+        "_lance_row_id"
+        not in descriptions.schema.field("info").type.field("blob").type.names
+    )
+
+
+def test_vector_query_to_arrow_blob_mode_bytes(tmp_path):
+    db = lancedb.connect(tmp_path)
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+            lancedb.blob("blob"),
+        ]
+    )
+    table = db.create_table("vector_arrow_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "vector": [1.0, 0.0], "blob": b"one"},
+            {"id": 2, "vector": [0.0, 1.0], "blob": b"two"},
+        ]
+    )
+    table.add([{"id": 3, "vector": [0.9, 0.1], "blob": b"three"}])
+    table.add([{"id": 4, "vector": [0.1, 0.9], "blob": None}])
+
+    hits = table.search([0.0, 1.0]).limit(4).to_arrow(blob_mode="bytes").to_pylist()
+    assert [(hit["id"], hit["blob"]) for hit in hits] == [
+        (2, b"two"),
+        (4, None),
+        (3, b"three"),
+        (1, b"one"),
+    ]
+    arrow = table.search([1.0, 0.0]).limit(1).to_arrow(blob_mode="bytes")
+    assert arrow["blob"].to_pylist() == [b"one"]
+    assert table.search([1.0, 0.0]).limit(1).to_list(blob_mode="bytes")[0]["blob"] == (
+        b"one"
+    )
+    assert isinstance(
+        table.search([1.0, 0.0]).limit(1).to_list()[0]["blob"],
+        dict,
+    )
+
+
 @pytest.mark.asyncio
 async def test_nested_blob_to_pandas_bytes_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -548,6 +701,19 @@ async def test_async_table_to_pandas_descriptions_mode_omits_row_id():
 
 
 @pytest.mark.asyncio
+async def test_async_calculated_select_does_not_read_every_blob_column():
+    db = await lancedb.connect_async("memory:///calculated_select")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = await db.create_table("calculated_select", schema=schema)
+    await table.add([{"id": 1, "image": b"hello"}])
+
+    hits = await table.query().select({"next_id": col("id") + 1}).to_arrow()
+
+    assert hits.column_names == ["next_id"]
+    assert hits["next_id"].to_pylist() == [2]
+
+
+@pytest.mark.asyncio
 async def test_async_typed_blob_projection_preserves_source_column():
     db = await lancedb.connect_async("memory:///typed_blob_projection")
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
@@ -559,6 +725,185 @@ async def test_async_typed_blob_projection_preserves_source_column():
     assert "_lance_row_id" in hits.schema.field("blob_alias").type.names
     blobs = await table.fetch_blobs("blob", hits)
     assert blobs.to_pylist() == [b"alpha"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["scan", "hybrid"])
+async def test_async_bytes_mode_rejects_blob_spelling_it_cannot_match(shape):
+    db = await lancedb.connect_async("memory:///")
+    table = await _hybrid_blob_table_async(db)
+    query = table.query()
+    if shape == "hybrid":
+        query = query.nearest_to([1.0, 0.0]).nearest_to_text("hello")
+
+    with pytest.raises(ValueError, match=r"could not match result columns \['pic'\]"):
+        await query.select({"id": "id", "pic": "`image`"}).to_arrow(blob_mode="bytes")
+
+
+def test_bytes_mode_keeps_struct_with_blob_descriptor_field_names():
+    descriptor_like = pa.struct(
+        [
+            pa.field("kind", pa.uint8()),
+            pa.field("position", pa.uint64()),
+            pa.field("size", pa.uint64()),
+            pa.field("blob_id", pa.uint32()),
+            pa.field("blob_uri", pa.utf8()),
+        ]
+    )
+    meta = {"kind": 1, "position": 2, "size": 3, "blob_id": 4, "blob_uri": "u"}
+    table = lancedb.connect("memory:///").create_table(
+        "descriptor_like",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                lancedb.blob("image"),
+                pa.field("meta", descriptor_like),
+            ]
+        ),
+    )
+    table.add([{"id": 1, "image": b"one", "meta": meta}])
+
+    assert table.search().to_list(blob_mode="bytes") == [
+        {"id": 1, "image": b"one", "meta": meta}
+    ]
+
+
+@pytest.mark.parametrize("source", ["`image`", "IMAGE"])
+def test_bytes_mode_rejects_blob_spelling_it_cannot_match(source):
+    table = _blob_table("blob_spelling", [{"id": 1, "image": b"one"}])
+
+    with pytest.raises(ValueError, match="could not match result columns"):
+        table.search().select({"id": "id", "pic": source}).to_arrow(blob_mode="bytes")
+
+
+def test_to_pandas_does_not_drop_fragment_selection_on_fallback():
+    table = _blob_table("blob_fragments", [{"id": 1, "image": b"one"}])
+    table.add([{"id": 2, "image": b"two"}])
+
+    query = table.search().fragment_ids([0])
+    with pytest.raises(RuntimeError, match="native pandas conversion"):
+        query.to_pandas(blob_mode="bytes")
+    with pytest.raises(RuntimeError, match="native pandas conversion"):
+        table.search().with_row_address(True).to_pandas(blob_mode="descriptions")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "descriptions", "bytes"])
+def test_to_pandas_reports_lance_dataset_failures(tmp_path, blob_mode):
+    table = lancedb.connect(tmp_path).create_table(
+        "dataset_failure",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
+    table.add([{"id": 1, "image": b"one"}])
+
+    def reject_credentials():
+        raise PermissionError("storage credentials rejected")
+
+    table.to_lance = reject_credentials
+    with pytest.raises(PermissionError, match="storage credentials rejected"):
+        table.search().to_pandas(blob_mode=blob_mode)
+
+
+def test_to_pandas_keeps_to_arrow_overrides_without_blob_mode():
+    from lancedb.query import LanceEmptyQueryBuilder
+
+    class ToArrowWithoutBlobMode(LanceEmptyQueryBuilder):
+        def to_arrow(self, *, timeout=None):
+            return super().to_arrow(timeout=timeout)
+
+    table = lancedb.connect("memory:///").create_table("no_blob", data=[{"id": 1}])
+    query = ToArrowWithoutBlobMode(table)
+    assert query.to_list(blob_mode="bytes") == [{"id": 1}]
+    assert query.to_pandas(blob_mode="descriptions")["id"].tolist() == [1]
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        query.to_list(blob_mode="handles")
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.search().to_list(blob_mode="handles")
+
+
+def test_take_queries_honor_blob_mode():
+    table = _blob_table(
+        "take_blob_mode", [{"id": 1, "image": b"one"}, {"id": 2, "image": b"two"}]
+    )
+
+    hits = table.take_offsets([1, 0]).to_arrow(blob_mode="bytes")
+    assert dict(zip(hits["id"].to_pylist(), hits["image"].to_pylist())) == {
+        1: b"one",
+        2: b"two",
+    }
+    assert [
+        row["image"] for row in table.take_row_ids([0]).to_list(blob_mode="bytes")
+    ] == [b"one"]
+    assert table.take_offsets([0]).to_pandas(blob_mode="bytes")["image"].tolist() == [
+        b"one"
+    ]
+    description = table.take_row_ids([0]).to_list(blob_mode="descriptions")[0]["image"]
+    assert "_lance_row_id" not in description
+
+
+def test_bytes_mode_follows_swapped_blob_aliases():
+    db = lancedb.connect("memory:///")
+    table = db.create_table(
+        "swapped_aliases",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("caption", pa.utf8()),
+                lancedb.blob("image"),
+                lancedb.blob("thumb"),
+            ]
+        ),
+    )
+    table.add([{"id": 0, "caption": "cap", "image": b"img", "thumb": b"th"}])
+
+    swapped = table.search().select({"id": "id", "image": "thumb", "thumb": "image"})
+    assert swapped.to_list(blob_mode="bytes") == [
+        {"id": 0, "image": b"th", "thumb": b"img"}
+    ]
+    over_text = table.search().select({"id": "id", "image": "caption", "pic": "image"})
+    assert over_text.to_list(blob_mode="bytes") == [
+        {"id": 0, "image": "cap", "pic": b"img"}
+    ]
+
+
+def test_bytes_mode_refused_under_namespace_query_pushdown(tmp_path):
+    db = lancedb.connect_namespace(
+        "dir",
+        {"root": str(tmp_path)},
+        namespace_client_pushdown_operations=["QueryTable"],
+    )
+    table = db.create_table(
+        "pushdown_blob",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
+    table.add([{"id": 1, "image": b"one"}])
+
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        table.to_arrow(blob_mode="bytes")
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        table.search().to_list(blob_mode="bytes")
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        table.take_row_ids([0]).to_list(blob_mode="bytes")
+    descriptor = table.to_arrow(blob_mode="descriptions")["image"].to_pylist()[0]
+    assert "_lance_row_id" not in descriptor
+
+
+@pytest.mark.asyncio
+async def test_async_bytes_mode_refused_under_namespace_query_pushdown(tmp_path):
+    db = lancedb.connect_namespace_async(
+        "dir",
+        {"root": str(tmp_path)},
+        namespace_client_pushdown_operations=["QueryTable"],
+    )
+    table = await db.create_table(
+        "pushdown_blob",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
+    await table.add([{"id": 1, "image": b"one"}])
+
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        await table.to_arrow(blob_mode="bytes")
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        await table.query().to_list(blob_mode="bytes")
 
 
 def test_fetch_blobs_round_trip():
@@ -651,6 +996,50 @@ def test_merge_insert_writes_python_bytes():
     by_id = _row_ids_by_id(table)
     blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
     assert blobs.to_pylist() == [b"updated", b"inserted"]
+
+
+@pytest.mark.parametrize("write", ["merge_insert", "create_table"])
+def test_uri_string_blob_write_reaches_external_base_validation(tmp_path, write):
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(b"payload")
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    rows = pa.table(
+        {"id": pa.array([1], pa.int64()), "image": pa.array([blob_path.as_uri()])}
+    )
+    db = lancedb.connect(tmp_path)
+
+    # These APIs do not expose add's outside-base opt-in. The URI should reach
+    # the blob policy check instead of failing at PyArrow's string-to-struct cast.
+    with pytest.raises(ValueError, match="outside registered external bases"):
+        if write == "merge_insert":
+            table = db.create_table("merge_uri", schema=schema)
+            table.merge_insert("id").when_not_matched_insert_all().execute(rows)
+        else:
+            db.create_table("create_uri", data=rows, schema=schema)
+
+
+@pytest.mark.parametrize("write", ["merge_insert", "create_table"])
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_blob_write_rejects_unsupported_input(write, source_type, value):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    rows = pa.table(
+        {"id": pa.array([1], pa.int64()), "image": pa.array([value], source_type)}
+    )
+    db = lancedb.connect("memory:///")
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        if write == "merge_insert":
+            table = db.create_table("merge_invalid", schema=schema)
+            table.merge_insert("id").when_not_matched_insert_all().execute(rows)
+        else:
+            db.create_table("create_invalid", data=rows, schema=schema)
 
 
 def test_merge_insert_bytes_after_reopen_without_touching_blob_type(tmp_path):
@@ -879,12 +1268,29 @@ def test_merge_insert_list_blob_dicts():
 
 def test_list_blob_column_queries_as_raw_descriptors():
     table = _list_blob_table("list_query")
+    assert table.blob_columns() == []
     hits = table.search().limit(10).to_arrow()
     element = hits.schema.field("images").type.value_type
     assert pa.types.is_struct(element)
     assert "_lance_row_id" not in element.names
-    with pytest.raises(ValueError, match="expected struct before segment"):
-        table.fetch_blobs("images.image", [0])
+    for column in ("images", "images.image"):
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blobs(column, [0])
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blob_files(column, [0])
+        with pytest.raises(ValueError, match="blobs inside lists cannot be fetched"):
+            table.fetch_blob_ranges(column, [(0, 0, 1)])
+
+
+def test_bytes_mode_rejects_blobs_inside_lists():
+    table = _list_blob_table("list_blob_bytes")
+
+    with pytest.raises(ValueError, match=r"\['images.image'\].*blobs inside lists"):
+        table.to_arrow(blob_mode="bytes")
+    with pytest.raises(ValueError, match="blobs inside lists"):
+        table.search().select({"pics": "images"}).to_list(blob_mode="bytes")
+    descriptions = table.to_arrow(blob_mode="descriptions")["images"].to_pylist()
+    assert descriptions[0][0]["size"] == len(b"before")
 
 
 def test_row_addressable_paths_exclude_list_children():
@@ -1066,13 +1472,14 @@ def test_add_list_of_dicts_to_blob_list_column(large_list):
     table = db.create_table(f"blob_{large_list}_list_add", data=seed)
 
     table.add([{"id": 1, "items": [None]}])
+    table.add([{"id": 2, "items": [b"a", None, b""]}])
     table.add(
-        [{"id": 2, "items": [b"a", None]}],
+        [{"id": 3, "items": [b"b", None]}],
         on_bad_vectors="fill",
     )
 
     ids = table.search().select(["id"]).to_arrow()["id"].to_pylist()
-    assert sorted(ids) == [0, 1, 2]
+    assert sorted(ids) == [0, 1, 2, 3]
     assert pa.types.is_large_list(table.schema.field("items").type) is large_list
 
 
@@ -1210,6 +1617,11 @@ def test_fetch_blobs_nested_path():
     blobs = table.fetch_blobs("info.blob", [by_id[1], by_id[2]])
     assert [blobs[0].as_py(), blobs[1].as_py()] == [b"nested-alpha", b"nested-beta"]
 
+    # The source path's parent name now holds a string column in the hits.
+    hits = table.search().select({"id": "id", "info": "info.name", "b": "info.blob"})
+    blobs = table.fetch_blobs("info.blob", hits.to_arrow())
+    assert blobs.to_pylist() == [b"nested-alpha", b"nested-beta"]
+
 
 def test_fetch_blob_files_lazy_read():
     payload = b"lazy-read" * 100
@@ -1220,7 +1632,7 @@ def test_fetch_blob_files_lazy_read():
     assert handles[0].read() == payload
     handles[0].close()
     assert handles[0].closed
-    with pytest.raises(RuntimeError, match="already closed"):
+    with pytest.raises(ValueError, match="read of closed file"):
         handles[0].read()
 
 
@@ -1269,8 +1681,8 @@ def test_blob_file_finalizer_and_close_on_runtime_worker():
         explicit_handle.close()  # Close remains idempotent after the worker call.
         try:
             explicit_handle.read()
-        except RuntimeError as error:
-            assert "already closed" in str(error)
+        except ValueError as error:
+            assert "read of closed file" in str(error)
         else:
             raise AssertionError("a closed blob file was readable")
         print("worker close completed")
@@ -1328,6 +1740,9 @@ async def test_async_fetch_blob_files_lazy_read():
     handles = await table.fetch_blob_files("image", hits)
     assert len(handles) == 1
     assert await handles[0].aread() == payload
+    handles[0].close()
+    with pytest.raises(ValueError, match="read of closed file"):
+        await handles[0].aread()
 
 
 def test_fetch_blobs_from_query_result_without_row_id_raises():
@@ -1382,6 +1797,122 @@ def test_blob_v2_hybrid_fetch_blobs():
     assert "_lance_row_id" in hits.schema.field("image").type.names
     blobs = table.fetch_blobs("image", hits)
     assert {blobs[i].as_py() for i in range(len(blobs))} == {b"alpha", b"beta"}
+
+
+def _blob_query_shape(table, shape):
+    if shape == "scan":
+        return table.search().where("id < 3")
+    if shape == "vector":
+        return table.search([1.0, 0.0])
+    if shape == "fts":
+        return table.search("hello", query_type="fts")
+    return table.search(query_type="hybrid").vector([1.0, 0.0]).text("hello")
+
+
+@pytest.mark.parametrize("with_row_id", [None, True, False])
+@pytest.mark.parametrize("blob_mode", ["bytes", "descriptions"])
+@pytest.mark.parametrize("shape", ["scan", "vector", "fts", "hybrid"])
+def test_blob_mode_for_every_query_shape(shape, blob_mode, with_row_id):
+    table = _hybrid_blob_table(lancedb.connect("memory:///"))
+    query = _blob_query_shape(table, shape).select(["id", "image"]).limit(2)
+    if with_row_id is not None:
+        query = query.with_row_id(with_row_id)
+
+    hits = query.to_arrow(blob_mode=blob_mode)
+
+    assert ("_rowid" in hits.column_names) == (with_row_id is True)
+    images = {row["id"]: row["image"] for row in hits.to_pylist()}
+    if blob_mode == "bytes":
+        assert images == {1: b"alpha", 2: b"beta"}
+    else:
+        assert sorted(images) == [1, 2]
+        assert all("_lance_row_id" not in image for image in images.values())
+    df = query.to_pandas(blob_mode=blob_mode)
+    assert dict(zip(df["id"], df["image"])) == images
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["scan", "vector", "fts", "hybrid"])
+async def test_async_blob_bytes_for_every_query_shape(shape):
+    db = await lancedb.connect_async("memory:///")
+    table = await _hybrid_blob_table_async(db)
+    query = table.query()
+    if shape in ("vector", "hybrid"):
+        query = query.nearest_to([1.0, 0.0])
+    if shape in ("fts", "hybrid"):
+        query = query.nearest_to_text("hello")
+    if shape == "scan":
+        query = query.where("id < 3")
+    query = query.select(["id", "image"]).limit(2)
+
+    hits = await query.to_arrow(blob_mode="bytes")
+
+    assert {row["id"]: row["image"] for row in hits.to_pylist()} == {
+        1: b"alpha",
+        2: b"beta",
+    }
+    df = await query.to_pandas(blob_mode="bytes")
+    assert dict(zip(df["id"], df["image"])) == {1: b"alpha", 2: b"beta"}
+
+
+class _KeepAllScoresReranker(Reranker):
+    """Rebuilds the merged table like model rerankers with return_score="all"."""
+
+    def __init__(self):
+        super().__init__(return_score="all")
+
+    def rerank_hybrid(self, query, vector_results, fts_results):
+        combined = self._merge_and_keep_scores(vector_results, fts_results)
+        scores = pa.array([1.0] * len(combined), type=pa.float32())
+        return combined.append_column("_relevance_score", scores)
+
+
+def test_bytes_mode_rejects_legacy_blob_after_reranker_drops_metadata(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "legacy_rerank",
+        pa.table(
+            {
+                "id": pa.array([1, 2], pa.int64()),
+                "text": ["hello alpha", "hello beta"],
+                "vector": pa.array(
+                    [[1.0, 0.0], [0.9, 0.1]], type=pa.list_(pa.float32(), 2)
+                ),
+                "blob": pa.array([b"one", b"two"], pa.large_binary()),
+            },
+            schema=_HYBRID_BLOB_SCHEMA.remove(3).append(
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                )
+            ),
+        ),
+        storage_options={"new_table_data_storage_version": "2.1"},
+    )
+    table.create_index("text", config=FTS(with_position=False))
+    query = (
+        table.search(query_type="hybrid")
+        .vector([1.0, 0.0])
+        .text("hello")
+        .rerank(_KeepAllScoresReranker())
+    )
+
+    with pytest.raises(ValueError, match=r"\['blob'\].*legacy blob columns"):
+        query.to_arrow(blob_mode="bytes")
+
+
+@pytest.mark.parametrize("source", ["`image`", "IMAGE"])
+def test_bytes_mode_rejects_blob_spelling_after_reranker_drops_metadata(source):
+    table = _hybrid_blob_table(lancedb.connect("memory:///"))
+    query = (
+        table.search(query_type="hybrid")
+        .vector([1.0, 0.0])
+        .text("hello")
+        .select({"id": "id", "pic": source})
+        .rerank(_KeepAllScoresReranker())
+    )
+
+    with pytest.raises(ValueError, match=r"could not match result columns \['pic'\]"):
+        query.to_arrow(blob_mode="bytes")
 
 
 @pytest.mark.asyncio
@@ -1461,6 +1992,49 @@ def test_blob_file_seek_read_and_read_range():
 
     with pytest.raises(ValueError, match="whence"):
         handle.seek(0, 99)
+
+
+def test_blob_file_matches_file_error_and_range_contract():
+    payload = b"abcdef"
+    table = _blob_table("file_contract", [{"id": 1, "image": payload}])
+    row_id = _row_ids_by_id(table)[1]
+    handle = table.fetch_blob_files("image", [row_id])[0]
+
+    handle.seek(2)
+    for offset, whence in [(-1, io.SEEK_SET), (-3, io.SEEK_CUR), (-7, io.SEEK_END)]:
+        with pytest.raises(ValueError, match="negative seek value -1"):
+            handle.seek(offset, whence)
+        assert handle.tell() == 2
+
+    assert handle.read(None) == payload[2:]
+    handle.seek(2)
+    assert handle.read1(2) == payload[2:4]
+    assert handle.read1() == payload[4:]
+    handle.seek(2)
+    assert handle.read_ranges([(0, 2), (4, 2), (2, 0)]) == [b"ab", b"ef", b""]
+    assert handle.tell() == 2
+
+    with pytest.raises(ValueError):
+        handle.read_range(5, 2)
+    with pytest.raises(ValueError):
+        handle.read_ranges([(0, 1), (5, 2)])
+    assert handle.tell() == 2
+
+    handle.close()
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read(1)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read(None)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.read1(1)
+    with pytest.raises(ValueError, match="read of closed file"):
+        handle.readall()
+    with pytest.raises(ValueError, match="readinto of closed file"):
+        handle.readinto(bytearray(1))
+    with pytest.raises(ValueError):
+        handle.read_range(0, 1)
+    with pytest.raises(ValueError):
+        handle.read_ranges([])
 
 
 def test_fetch_blob_files_from_query_partial_read():

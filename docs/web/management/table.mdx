@@ -4,6 +4,13 @@ sidebarTitle: "Table"
 description: "The object most operations act on: creating, opening, renaming, cloning and dropping one."
 icon: table
 keywords: ["table", "create_table", "open_table", "clone", "rename", "drop"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Tables are created, evolved, versioned and dropped in the embedded library
+    and in LanceDB Enterprise. Renaming, cloning, dropping every table and pruning old
+    versions differ between the two.
 ---
 
 import {
@@ -113,18 +120,20 @@ import {
     PyQueryToPandasKwargs as QueryToPandasKwargs,
 } from '/snippets/multimodal.mdx';
 
-A table is rows and columns, versioned. It is what searches read, what writes
-commit to, and what indexes and branches belong to.
+A table stores data in rows and columns and keeps a history of committed
+versions. Queries read table data, writes update it, and indexes accelerate
+searches over its columns. Branches let you make changes separately from the
+main table history.
 
-This page covers the table as a catalog object. Getting data into one is
-[Ingest](/ingestion); changing its shape is
-[Schema evolution](/management/table#schema).
+This page covers table management, data types, schema changes and version
+history. For loading records, see [Ingestion](/ingestion). For changes to
+columns, see [Schema evolution](/management/table#schema).
 
 <Note>
-Tables are created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl/table).
+In LanceDB Enterprise, tables are also created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sql/ddl/table).
 </Note>
 
-## What a table carries {#carries}
+## Table structure and metadata {#carries}
 
 | | |
 | --- | --- |
@@ -133,7 +142,7 @@ Tables are created and dropped in SQL with [`CREATE TABLE` and `DROP TABLE`](/sq
 | **Indexes** | vector, full-text and scalar, built over its columns |
 | **Branches** | isolated lines of change you can [merge or discard](/tables/branching) |
 
-## Creating {#create}
+## Create a table {#create}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -156,19 +165,18 @@ frame, or Pydantic models. [Ingesting data](/ingestion) covers each, plus
 `exist_ok` and `mode="overwrite"` for re-runnable scripts.
 
 <Warning>
-An explicit schema is where nullability is decided. Creation is also the only
-point at which the SDK can give a table **stable row ids**, which a deployment
-may require on a [materialized view](/management/materialized-view) source. See
-[Limits](/basics/limits#schema).
+An explicit schema is where nullability is decided. In the embedded library,
+creation is also the only point at which a table can be given **stable row
+ids**; in LanceDB Enterprise, whether a new table gets them is the deployment's
+setting. See [Limits](/basics/limits#schema).
 </Warning>
 
-## Opening and listing {#open}
+## Open and list tables {#open}
 
 <CodeGroup>
 ```python Python icon="python"
 tbl = db.open_table("documents")
 db.table_names()
-db.table_exists("documents")
 ```
 
 ```typescript TypeScript icon="square-js"
@@ -179,9 +187,18 @@ await db.tableNames();
 </CodeGroup>
 
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
-rather than at the database root. TypeScript has no `tableExists`.
+rather than at the database root.
 
-## Renaming and cloning {#rename-clone}
+To find out whether a table exists, open it and handle the error, or look for
+its name in a listing. A missing table raises `ValueError` on a local directory
+or a deployment, and `lance_namespace.TableNotFoundError` on a connection from
+`connect_namespace`. A listing returns one page of names at a time, so check
+every page. Python's `table_exists` is no substitute: a local directory or a
+deployment raises `NotImplementedError` for it, and on a connection from
+`connect_namespace("dir", ...)` or `connect_namespace("rest", ...)` it fails with
+an `AttributeError`. TypeScript has no `tableExists`.
+
+## Rename and clone tables {#rename-clone}
 
 ```python
 db.rename_table("documents", "docs")
@@ -194,6 +211,10 @@ db.clone_table(
 )
 ```
 
+Renaming is not supported on a local directory connection. In LanceDB Enterprise,
+whether a table can be renamed or cloned at all depends on how the deployment
+stores its catalog.
+
 A **shallow** clone -- the default -- references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training
@@ -204,18 +225,20 @@ A shallow clone depends on the source's files continuing to exist. If the source
 is [compacted](/maintenance/compaction) past the retention window, the version
 the clone points at can be pruned. Local OSS connections support shallow clones
 only; `is_shallow=False` is not implemented. If the copy must outlive the
-source's history, copy its data into an independent table instead. For remote
-connections, confirm which clone modes your deployment supports.
+source's history, copy its data into an independent table instead. A deployment
+that supports cloning also makes shallow clones only, and one whose catalog
+does not support it refuses every clone.
 </Warning>
 
 <Note>
-**Enterprise job type:** `drop_table`. Fences the table's directory with a
-marker and deletes its content in the background -- see
-[Background jobs](/maintenance/background-jobs#teardown) for the namespace,
-view, and function equivalent.
+**Enterprise job type:** on an Enterprise cluster that drops tables in the background,
+the teardown runs as a job: `drop_table`, which fences the table's directory
+with a marker and deletes its content, or `drop_object`, depending on how the
+deployment stores its catalog. See
+[Background jobs](/maintenance/background-jobs#teardown).
 </Note>
 
-## Dropping {#drop}
+## Drop a table {#drop}
 
 <CodeGroup>
 ```python Python icon="python"
@@ -238,13 +261,16 @@ DROP TABLE documents
 <Warning>
 Dropping removes the table and **every version of it**.
 [Versioning](/management/table#versioning) does not survive a drop, and neither
-`drop_all_tables` nor `drop_database` asks for confirmation.
+`drop_all_tables` nor `drop_database` asks for confirmation. Both work only on
+a local database; on an Enterprise connection the SDK raises instead.
 </Warning>
 
 On a large table the drop can take a while, so `drop_table_async` returns a
-[job](/basics/jobs) rather than blocking.
+[job](/basics/jobs) rather than blocking when the deployment drops tables in the
+background. In the embedded library, and on an Enterprise cluster that drops inline, the
+returned job has already finished.
 
-## The full surface {#surface}
+## Table management APIs {#surface}
 
 | | Python | TypeScript | SQL |
 | --- | --- | --- | --- |
@@ -456,7 +482,7 @@ When you call `to_pandas()` on a local LanceDB table that contains Blob API colu
 - `"bytes"`: eagerly materializes each blob as `bytes`. Use this when you need the raw payload in the DataFrame, for example to decode an image or audio clip in-process.
 - `"descriptions"`: returns blob descriptors (offsets, sizes, and positions) instead of the data itself. Use this when you want to plan I/O without paying the cost of loading every blob.
 
-`"bytes"` and `"descriptions"` require a filesystem-backed Lance dataset and are not supported on in-memory tables.
+`"bytes"` is not supported on in-memory tables.
 
 Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas conversion, so you can also pass options like `split_blocks` or `self_destruct`:
 
@@ -879,8 +905,13 @@ Remove several columns at once for efficiency:
     </CodeBlock>
 </CodeGroup>
 
-<Warning title="Irreversible Column Deletion">
-Dropping columns cannot be undone. Make sure you have backups or are certain before removing columns.
+<Warning title="Dropping a column is undone only by restoring a version">
+Dropping a column changes the latest version only. Until
+[cleanup](/maintenance/cleanup) prunes the versions from before the drop,
+[restoring](#versioning) one of them brings the column and its values back --
+along with the rest of the table as it was then. Once those versions are
+pruned, the drop cannot be undone, so check before dropping a column you may
+need.
 </Warning>
 
 ## Versioning {#versioning}
@@ -1040,8 +1071,9 @@ Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
 let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
 `"q3-evaluation"`) to specific versions and check those out by name. They are
 conceptually similar to git tags, and unlike numeric versions, **tagged versions
-are preserved when old versions are pruned** (see the cleanup note at the bottom
-of this page).
+are never pruned** -- a tagged version that is older than the retention window and
+is not the latest stops cleanup instead (see the cleanup note at the bottom of this
+page).
 
 The tags API supports the standard CRUD operations — create, list, update, delete —
 plus checking out by tag name.
@@ -1137,10 +1169,17 @@ mixing in lower-level Lance file operations.
 **System Operations**
 
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
-In LanceDB OSS and Enterprise, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
-which is when old-version files are removed and disk space is reclaimed.
+In LanceDB OSS, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
+when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 
-**Tagged versions are exempt from cleanup.** A version with a tag pointing at it is
-retained regardless of age, and its files are not removed by `optimize()`. To make
-a tagged version eligible for pruning, [delete the tag](#versioning-tag-based-versioning) first.
+**Tagged versions are never pruned.** A version with a tag pointing at it is
+retained regardless of age. When a tagged version is older than the retention window and
+is not the latest, cleanup refuses to run instead of pruning around it: `optimize()` raises
+an error naming the tag and prunes nothing. A tag on the latest version does not cause
+this, but `optimize()` compacts before it prunes, and compacting commits a new version
+whenever it merges files, so a tag on what was the latest version can become an older
+one by the time cleanup runs; the error then comes after compacting, and the index
+update does not run. To let cleanup proceed, [move the tag](#versioning-tag-based-versioning)
+to a version inside the retention window, delete it, or widen the window.
 </Note>
