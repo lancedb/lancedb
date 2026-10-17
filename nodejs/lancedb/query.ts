@@ -16,6 +16,7 @@ import {
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
+import { Expr } from "./expr";
 import { type IvfPqOptions } from "./indices";
 import {
   JsFullTextQuery,
@@ -578,11 +579,16 @@ export class StandardQueryBase<
   /**
    * A filter statement to be applied to this query.
    *
-   * The filter should be supplied as an SQL query string.  For example:
+   * The filter may be an SQL query string or an expression built with `col`,
+   * which preserves case-sensitive column names. For example:
    * @example
    * x > 10
    * y > 0 AND y < 100
    * x > 5 OR y = 'test'
+   * @example
+   * ```ts
+   * table.query().where(col("firstName").eq("Alice"));
+   * ```
    *
    * Filtering performance can often be improved by creating a scalar index
    * on the filter column(s).
@@ -590,8 +596,14 @@ export class StandardQueryBase<
    * Calling this multiple times combines the filters with a logical AND rather
    * than replacing the previous filter.
    */
-  where(predicate: string): this {
-    this.doCall((inner: NativeQueryType) => inner.onlyIf(predicate));
+  where(predicate: string | Expr): this {
+    this.doCall((inner: NativeQueryType) => {
+      if (predicate instanceof Expr) {
+        inner.onlyIf(predicate.toSql());
+      } else {
+        inner.onlyIf(predicate);
+      }
+    });
     return this;
   }
   /**
