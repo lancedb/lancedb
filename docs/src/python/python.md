@@ -385,6 +385,31 @@ listing a storage directory.
 
 ::: lancedb.view.ViewDescription
 
+## Property Graphs
+
+A property graph is defined over tables of its namespace: which tables hold
+nodes and which hold edges, each node table's key and label, and the node keys
+each edge table's source and destination columns reference -- the shape of
+SQL/PGQ's `CREATE PROPERTY GRAPH`. It stores no rows of its own; a query reads
+its tables as nodes and edges through SQL `GRAPH_TABLE`.
+
+Create one with
+[create_property_graph][lancedb.db.DBConnection.create_property_graph], and
+manage it with
+[open_property_graph][lancedb.db.DBConnection.open_property_graph],
+[list_property_graphs][lancedb.db.DBConnection.list_property_graphs] and
+[drop_property_graph][lancedb.db.DBConnection.drop_property_graph].
+
+::: lancedb.graph.NodeTable
+
+::: lancedb.graph.EdgeTable
+
+::: lancedb.graph.Endpoint
+
+::: lancedb.graph.PropertyGraph
+
+::: lancedb.graph.PropertyGraphDescription
+
 ## Expressions
 
 Type-safe expression builder for filters and projections. Use these instead
@@ -634,6 +659,14 @@ Table hold your actual data as a collection of records / rows.
 ## Materialized Views (Asynchronous)
 
 ::: lancedb.materialized_view.AsyncMaterializedView
+
+## Property Graphs (Asynchronous)
+
+`AsyncConnection` returns this handle from
+[create_property_graph][lancedb.db.AsyncConnection.create_property_graph] and
+[open_property_graph][lancedb.db.AsyncConnection.open_property_graph].
+
+::: lancedb.graph.AsyncPropertyGraph
 
 ## Indices (Asynchronous)
 

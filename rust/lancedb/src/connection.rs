@@ -28,6 +28,7 @@ use crate::database::{
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::listing::{Listing, ListingOptions};
 #[cfg(feature = "remote")]
 use crate::remote::{
@@ -38,7 +39,10 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
+use crate::utils::{
+    validate_namespace, validate_property_graph_reference, validate_secret_reference,
+    validate_view_reference,
+};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -984,6 +988,138 @@ impl Connection {
             async move {
                 validate_namespace(&namespace_path)?;
                 database.list_views(&namespace_path, options).await
+            }
+        })
+    }
+
+    /// Create a property graph over tables in its namespace.
+    ///
+    /// The definition names the tables that hold its nodes, with each one's
+    /// key column and label, and the tables that hold its edges, with the node
+    /// keys each one's source and destination columns reference -- the shape
+    /// of SQL/PGQ's `CREATE PROPERTY GRAPH`. The graph stores nothing else: a
+    /// query reads its tables through SQL `GRAPH_TABLE`, as they are when it
+    /// runs.
+    ///
+    /// The database checks the definition against the tables now, so one they
+    /// cannot satisfy is refused here rather than at the first query. The
+    /// returned description lists each table's properties as they resolved.
+    /// A name another property graph holds is an error. Local databases return
+    /// [`Error::NotSupported`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use futures::TryStreamExt;
+    /// use lancedb::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
+    ///
+    /// # async fn graph_lifecycle(
+    /// #     connection: &lancedb::Connection,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let namespace = vec!["analytics".to_string()];
+    ///
+    /// let definition = PropertyGraphDefinition {
+    ///     nodes: vec![NodeTable::new("person", "person_id", "Person").properties(["name"])],
+    ///     edges: vec![EdgeTable::new(
+    ///         "knows",
+    ///         "KNOWS",
+    ///         Endpoint::new("src_id", "person", "person_id"),
+    ///         Endpoint::new("dst_id", "person", "person_id"),
+    ///     )],
+    /// };
+    /// let graph = connection
+    ///     .create_property_graph("social", &definition, &namespace)
+    ///     .await?;
+    /// // The key is always a property, beside the columns asked for.
+    /// println!("{:?}", graph.definition.nodes[0].properties);
+    ///
+    /// let names: Vec<_> = connection
+    ///     .list_property_graphs(&namespace, Default::default())
+    ///     .try_collect()
+    ///     .await?;
+    /// assert!(names.iter().any(|name| name == "social"));
+    ///
+    /// // Dropping the graph leaves `person` and `knows` untouched.
+    /// connection.drop_property_graph("social", &namespace).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_property_graph(name.as_ref(), definition, namespace_path)
+            .await
+    }
+
+    /// What this database records about one property graph: its node and edge
+    /// tables, with each table's properties as create resolved them.
+    ///
+    /// Local databases return [`Error::NotSupported`].
+    pub async fn describe_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// Drop a property graph and wait for its definition to be deleted.
+    ///
+    /// The tables it reads are untouched: a property graph holds no rows of
+    /// its own. Local databases return [`Error::NotSupported`].
+    pub async fn drop_property_graph(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_property_graph_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_property_graph(name.as_ref(), namespace_path)
+            .await
+    }
+
+    /// The names of the property graphs in one namespace.
+    ///
+    /// Names only; a definition comes from [`Self::describe_property_graph`].
+    /// Local databases return [`Error::NotSupported`].
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// use futures::TryStreamExt;
+    ///
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let mut items = connection.list_property_graphs(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_property_graphs(&namespace_path, options)
+                    .await
             }
         })
     }
