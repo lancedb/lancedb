@@ -5244,6 +5244,11 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     else:
         values_has_nan = pc.is_nan(values)
     values_indices = pc.list_parent_indices(arr)
+    if arr.null_count:
+        # Match flatten(), which excludes child spans under null parent lists.
+        values_indices = pc.filter(
+            values_indices, pc.take(pc.is_valid(arr), values_indices)
+        )
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
