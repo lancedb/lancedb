@@ -241,8 +241,21 @@ def retry_with_exponential_backoff(
     exponential_base: float = 2,
     jitter: bool = True,
     max_retries: int = 7,
+    max_delay: float = 60,
 ):
     """Retry a function with exponential backoff.
+
+    Only errors that may succeed when repeated are retried. Errors that carry an
+    HTTP status code are retried when the status is 408, 409, 429 or >= 500; any
+    other 4xx status (for example 400, 401, 403, 404 or 422) is a permanent failure
+    that is raised immediately. Errors without a recognisable status code (for
+    example connection errors, timeouts, or exceptions raised by a custom embedding
+    function) are retried.
+
+    The delay before the n-th retry is ``initial_delay * exponential_base ** n``,
+    never more than ``max_delay``. With ``jitter`` enabled, a random amount of up to
+    half of that delay is removed ("equal jitter"), so the actual wait is always in
+    the range ``[delay / 2, delay]``.
 
     Args:
         func (function): The function to be retried.
@@ -250,6 +263,8 @@ def retry_with_exponential_backoff(
         exponential_base (float): The base for exponential backoff (default is 2).
         jitter (bool): Whether to add jitter to the delay (default is True).
         max_retries (int): Maximum number of retries (default is 7).
+        max_delay (float): Maximum delay between two attempts, in seconds
+            (default is 60).
 
     Returns:
         function: The decorated function.
@@ -265,13 +280,12 @@ def retry_with_exponential_backoff(
             try:
                 return func(*args, **kwargs)
 
-            # Currently retrying on all exceptions as there is no way to know the
-            # format of the error msgs used by different APIs. We'll log the error
-            # and say that it is assumed that if this portion errors out, it's due
-            # to rate limit but the user should check the error message to be sure.
+            # Errors are retried unless they are known to be permanent (see
+            # `_is_non_retryable_error`). Custom embedding functions can raise
+            # arbitrary exceptions, so unknown errors are assumed to be transient.
             except Exception as e:  # noqa: PERF203
-                # Don't retry on authentication errors (e.g., OpenAI 401)
-                # These are permanent failures that won't be fixed by retrying
+                # Don't retry permanent failures (e.g., OpenAI 401 or 404). They
+                # won't be fixed by retrying and would only delay the real error.
                 if _is_non_retryable_error(e):
                     raise
 
@@ -280,23 +294,71 @@ def retry_with_exponential_backoff(
                 if num_retries > max_retries:
                     raise Exception(
                         f"Maximum number of retries ({max_retries}) exceeded.", e
-                    )
+                    ) from e
 
-                delay *= exponential_base * (1 + jitter * random.random())
+                delay = min(delay * exponential_base, max_delay)
+                sleep_for = delay
+                if jitter:
+                    sleep_for = delay / 2 + random.random() * delay / 2
                 logging.warning(
                     "Error occurred: %s \n Retrying in %s seconds (retry %s of %s) \n",
                     e,
-                    delay,
+                    sleep_for,
                     num_retries,
                     max_retries,
                 )
-                time.sleep(delay)
+                time.sleep(sleep_for)
 
     return wrapper
 
 
+# HTTP statuses in the 4xx range that are worth retrying: request timeout,
+# conflict (the OpenAI SDK treats it as transient) and rate limiting.
+_RETRYABLE_CLIENT_STATUSES = (408, 409, 429)
+
+# AWS error codes that are reported with a 4xx status but are transient.
+_RETRYABLE_AWS_ERROR_CODES = (
+    "Throttl",
+    "TooManyRequests",
+    "RequestLimitExceeded",
+    "ProvisionedThroughputExceeded",
+    "ModelNotReady",
+    "ModelTimeout",
+)
+
+
+def _get_http_status(error: Exception):
+    """Best-effort extraction of an HTTP status code from an exception.
+
+    Provider SDKs expose it in different ways: ``status_code`` (openai, cohere),
+    ``http_status`` (voyageai), ``response.status_code`` (requests, httpx),
+    ``code`` (google-api-core, urllib) or ``response["ResponseMetadata"]``
+    (botocore). Returns None if no status can be found.
+    """
+    candidates = [
+        getattr(error, "status_code", None),
+        getattr(error, "http_status", None),
+    ]
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        candidates.append(response.get("ResponseMetadata", {}).get("HTTPStatusCode"))
+    else:
+        candidates.append(getattr(response, "status_code", None))
+    candidates.append(getattr(error, "code", None))
+
+    for status in candidates:
+        if isinstance(status, int) and not isinstance(status, bool):
+            if 100 <= status <= 599:
+                return status
+    return None
+
+
 def _is_non_retryable_error(error: Exception) -> bool:
     """Check if an error should not be retried.
+
+    An error is non-retryable if it is an authentication error or if it carries an
+    HTTP client-error status (4xx) other than 408, 409 and 429. Errors without a
+    recognisable status are treated as retryable.
 
     Args:
         error: The exception to check
@@ -309,13 +371,20 @@ def _is_non_retryable_error(error: Exception) -> bool:
     if error_type == "AuthenticationError":
         return True
 
-    # Check for other common non-retryable HTTP status codes
-    # 401 Unauthorized, 403 Forbidden
-    if hasattr(error, "status_code"):
-        if error.status_code in (401, 403):
-            return True
+    status = _get_http_status(error)
+    if status is None or not 400 <= status < 500:
+        return False
+    if status in _RETRYABLE_CLIENT_STATUSES:
+        return False
 
-    return False
+    # AWS reports throttling with a 400 status; the error code tells them apart.
+    response = getattr(error, "response", None)
+    if isinstance(response, dict):
+        aws_code = str(response.get("Error", {}).get("Code", ""))
+        if aws_code.startswith(_RETRYABLE_AWS_ERROR_CODES):
+            return False
+
+    return True
 
 
 def url_retrieve(url: str):

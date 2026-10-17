@@ -596,6 +596,271 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_sleep.call_count == 0
 
 
+class _HttpStatusError(Exception):
+    """Stand-in for provider SDK errors (openai, cohere, ...) with a status code."""
+
+    def __init__(self, status_code, message="error"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _ResponseStatusError(Exception):
+    """Stand-in for requests/httpx errors, which expose `response.status_code`."""
+
+    def __init__(self, status_code):
+        super().__init__(f"HTTP {status_code}")
+        self.response = MagicMock(status_code=status_code)
+
+
+def _run_with_retry(side_effect, **kwargs):
+    """Run a function through the retry helper with a mocked `time.sleep`.
+
+    Returns (mock_func, sleeps, error).
+    """
+    from lancedb.embeddings.utils import retry_with_exponential_backoff
+
+    mock_func = MagicMock(side_effect=side_effect)
+    sleeps = []
+    error = None
+    with patch("time.sleep", side_effect=sleeps.append):
+        try:
+            retry_with_exponential_backoff(mock_func, **kwargs)()
+        except Exception as e:
+            error = e
+    return mock_func, sleeps, error
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 410, 413, 422])
+@pytest.mark.parametrize("make_error", [_HttpStatusError, _ResponseStatusError])
+def test_retry_does_not_retry_permanent_http_errors(status, make_error):
+    err = make_error(status)
+    mock_func, sleeps, error = _run_with_retry(err, max_retries=7)
+
+    assert error is err
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
+@pytest.mark.parametrize("make_error", [_HttpStatusError, _ResponseStatusError])
+def test_retry_retries_transient_http_errors(status, make_error):
+    mock_func, sleeps, error = _run_with_retry(
+        [make_error(status), make_error(status), "result"], max_retries=7
+    )
+
+    assert error is None
+    assert mock_func.call_count == 3
+    assert len(sleeps) == 2
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ConnectionError("connection reset"),
+        TimeoutError("timed out"),
+        OSError("network is unreachable"),
+        ValueError("custom embedding function failure"),
+        RuntimeError("boom"),
+        Exception("plain exception"),
+    ],
+)
+def test_retry_retries_errors_without_http_status(exc):
+    mock_func, sleeps, error = _run_with_retry([exc, exc, "result"], max_retries=7)
+
+    assert error is None
+    assert mock_func.call_count == 3
+    assert len(sleeps) == 2
+
+
+def test_retry_error_status_attributes_of_other_types_are_ignored():
+    # `code` is a string for openai errors ("model_not_found"), and arbitrary
+    # exceptions may carry unrelated numeric attributes. Neither is an HTTP status.
+    class WeirdError(Exception):
+        code = "model_not_found"
+        status_code = None
+
+    class ExitCodeError(Exception):
+        code = 2
+
+    for exc in (WeirdError("a"), ExitCodeError("b")):
+        mock_func, sleeps, error = _run_with_retry(exc, max_retries=2)
+        assert mock_func.call_count == 3
+        assert len(sleeps) == 2
+
+
+def test_retry_botocore_style_errors():
+    # botocore ClientError exposes `response["ResponseMetadata"]["HTTPStatusCode"]`.
+    # Bedrock reports throttling with a 400, which must stay retryable.
+    class ClientError(Exception):
+        def __init__(self, status, code):
+            super().__init__(code)
+            self.response = {
+                "ResponseMetadata": {"HTTPStatusCode": status},
+                "Error": {"Code": code},
+            }
+
+    throttled = ClientError(400, "ThrottlingException")
+    mock_func, sleeps, error = _run_with_retry([throttled, "result"], max_retries=3)
+    assert error is None
+    assert mock_func.call_count == 2
+
+    invalid = ClientError(400, "ValidationException")
+    mock_func, sleeps, error = _run_with_retry(invalid, max_retries=3)
+    assert error is invalid
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_authentication_error_by_name_not_retried():
+    class AuthenticationError(Exception):
+        pass
+
+    mock_func, sleeps, error = _run_with_retry(AuthenticationError("bad key"))
+    assert isinstance(error, AuthenticationError)
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_gives_up_after_max_retries_with_original_error_attached():
+    original = _HttpStatusError(503, "overloaded")
+    mock_func, sleeps, error = _run_with_retry(original, max_retries=3)
+
+    assert mock_func.call_count == 4
+    assert len(sleeps) == 3
+    assert "Maximum number of retries (3) exceeded" in str(error)
+    assert error.args[1] is original
+    assert error.__cause__ is original
+
+
+def test_retry_delay_is_capped_by_max_delay():
+    # Default settings (7 retries, 60s cap): the old implementation could sleep for
+    # up to ~47 minutes in a single retry and hours in total.
+    exc = _HttpStatusError(503)
+    for seed in range(50):
+        import random
+
+        random.seed(seed)
+        _, sleeps, _ = _run_with_retry(exc)
+        assert len(sleeps) == 7
+        assert max(sleeps) <= 60
+        assert sum(sleeps) <= 7 * 60
+
+    # Custom cap
+    _, sleeps, _ = _run_with_retry(exc, max_retries=10, max_delay=5)
+    assert len(sleeps) == 10
+    assert max(sleeps) <= 5
+
+
+def test_retry_delay_without_jitter_is_exact_exponential_then_capped():
+    _, sleeps, _ = _run_with_retry(
+        _HttpStatusError(500),
+        initial_delay=1,
+        exponential_base=2,
+        jitter=False,
+        max_retries=8,
+        max_delay=30,
+    )
+    assert sleeps == [2, 4, 8, 16, 30, 30, 30, 30]
+
+
+def test_retry_jitter_is_bounded():
+    # Each wait is within [delay / 2, delay], where delay grows by exponential_base
+    # per retry (no random factor is compounded across retries).
+    exc = _HttpStatusError(500)
+    for seed in range(50):
+        import random
+
+        random.seed(seed)
+        _, sleeps, _ = _run_with_retry(exc, max_retries=8, max_delay=100)
+        for i, slept in enumerate(sleeps):
+            delay = min(2 ** (i + 1), 100)
+            assert delay / 2 <= slept <= delay
+
+    # Extremes of the random source map to the ends of the range
+    with patch("random.random", return_value=0.0):
+        _, sleeps, _ = _run_with_retry(exc, max_retries=3)
+    assert sleeps == [1, 2, 4]
+    with patch("random.random", return_value=1.0):
+        _, sleeps, _ = _run_with_retry(exc, max_retries=3)
+    assert sleeps == [2, 4, 8]
+
+
+def test_retry_large_max_retries_does_not_overflow():
+    _, sleeps, _ = _run_with_retry(_HttpStatusError(503), max_retries=1500)
+    assert len(sleeps) == 1500
+    assert max(sleeps) <= 60
+
+
+def _register_failing_embedding(name, error):
+    """Register an embedding function that always raises `error`.
+
+    Returns the class and a list that records every call. The function is
+    re-created from table metadata, so the call count has to live outside of it.
+    """
+    calls = []
+
+    @register(name)
+    class FailingEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 4
+
+        def generate_embeddings(self, texts):
+            calls.append(len(texts))
+            raise error
+
+    return FailingEmbeddingFunction, calls
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_permanent_embedding_error_is_not_retried(tmp_path, status):
+    """A permanent provider error (e.g. a misspelled model name) must surface
+    immediately from both `table.add` and `table.search` instead of being retried
+    with minutes of backoff."""
+    error = _HttpStatusError(status, "The model `typo-embed` does not exist")
+    cls, calls = _register_failing_embedding(f"failing-embedding-{status}", error)
+    func = cls.create()  # default max_retries=7
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", schema=Schema)
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="The model `typo-embed` does not exist"):
+            table.add([{"text": "hello"}])
+        assert len(calls) == 1
+
+        with pytest.raises(_HttpStatusError, match="does not exist"):
+            table.search("hello").limit(1).to_list()
+        assert len(calls) == 2
+
+    mock_sleep.assert_not_called()
+
+
+def test_transient_embedding_error_is_retried_in_table_add(tmp_path):
+    cls, calls = _register_failing_embedding(
+        "failing-embedding-503", _HttpStatusError(503)
+    )
+    func = cls.create(max_retries=2)
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", schema=Schema)
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="Maximum number of retries"):
+            table.add([{"text": "hello"}])
+
+    assert len(calls) == 3
+    assert mock_sleep.call_count == 2
+    assert all(call.args[0] <= 60 for call in mock_sleep.call_args_list)
+
+
 def test_ollama_embeddings_pickle():
     """OllamaEmbeddings must pickle even after the cached client is created."""
     registry = get_registry()
