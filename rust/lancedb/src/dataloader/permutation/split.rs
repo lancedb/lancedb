@@ -11,6 +11,7 @@ use arrow_schema::{DataType, Field, Schema};
 use datafusion_common::hash_utils::{RandomState, create_hashes};
 use futures::{StreamExt, TryStreamExt};
 use lance_arrow::SchemaExt;
+use rand::Rng;
 
 use lance_core::ROW_ID;
 
@@ -19,7 +20,7 @@ use crate::{
     arrow::{SendableRecordBatchStream, SimpleRecordBatchStream},
     dataloader::{
         permutation::shuffle::{Shuffler, ShufflerConfig},
-        permutation::util::TemporaryDirectory,
+        permutation::util::{TemporaryDirectory, non_crypto_rng},
     },
     query::{Query, QueryBase, Select},
 };
@@ -76,6 +77,27 @@ pub enum SplitStrategy {
     ///
     /// If this strategy is used then the counts/percentages in the SplitSizes are ignored.
     Calculated { calculation: String },
+    /// Rows are sampled uniformly **with replacement** from the base table (combine with
+    /// [`PermutationBuilder::with_filter`] to restrict the eligible population), independently
+    /// per split.
+    ///
+    /// Unlike every other strategy, the number of output rows is `num_samples`, not the number
+    /// of input rows: the same row can appear zero, one, or many times, and `num_samples` may
+    /// be larger or smaller than the (filtered) input row count. This is useful for bootstrap
+    /// resampling, oversampling rare classes, or any training workload that wants a fixed-size
+    /// stream of random draws rather than a single deterministic pass over every row.
+    ///
+    /// `sizes` divides `num_samples` across splits (reusing [`SplitSizes`], so `Fixed(n)` means
+    /// "n splits, each getting `num_samples / n` samples", the same convention `Random` and
+    /// `Sequential` use). Each split draws its own sample using a seed derived independently
+    /// from `(seed, split_index)`, so a given split's content does not change if `num_samples`
+    /// is redistributed across a different number of splits -- the same elastic-determinism
+    /// property documented for the data loader's other strategies.
+    Bootstrap {
+        num_samples: u64,
+        sizes: SplitSizes,
+        seed: Option<u64>,
+    },
 }
 
 impl SplitStrategy {
@@ -107,6 +129,25 @@ impl SplitStrategy {
             }
             Self::Sequential { sizes } => sizes.validate(num_rows),
             Self::Calculated { .. } => Ok(()),
+            Self::Bootstrap {
+                num_samples, sizes, ..
+            } => {
+                if num_rows == 0 {
+                    return Err(Error::InvalidInput {
+                        message: "Bootstrap strategy requires at least one eligible row to \
+                                  sample from (check the filter, if one is set)"
+                            .to_string(),
+                    });
+                }
+                if *num_samples == 0 {
+                    return Err(Error::InvalidInput {
+                        message: "Bootstrap strategy requires num_samples > 0".to_string(),
+                    });
+                }
+                // Validated against num_samples, not num_rows: sampling is with replacement,
+                // so num_samples may exceed the number of eligible rows.
+                sizes.validate(*num_samples)
+            }
         }
     }
 }
@@ -314,6 +355,65 @@ impl Splitter {
         )))
     }
 
+    /// Materializes the full (filtered) row id stream -- random access is required since
+    /// with-replacement sampling can draw any position, including ones already drawn -- then
+    /// independently samples each split's share with its own derived RNG seed.
+    async fn apply_bootstrap(
+        &self,
+        source: SendableRecordBatchStream,
+        num_rows: u64,
+        num_samples: u64,
+        sizes: &SplitSizes,
+        seed: Option<u64>,
+    ) -> Result<SendableRecordBatchStream> {
+        let schema = source.schema();
+        let row_id_field = schema.field(0).clone();
+        let batches: Vec<RecordBatch> = source.try_collect().await?;
+        let row_id_arrays = batches
+            .iter()
+            .map(|b| b.column(0).as_ref())
+            .collect::<Vec<_>>();
+        let row_ids = arrow::compute::concat(&row_id_arrays).unwrap();
+
+        let split_sample_counts = sizes.to_counts(num_samples);
+
+        let mut position_indices = Vec::<u64>::with_capacity(num_samples as usize);
+        let mut split_ids = Vec::<u64>::with_capacity(num_samples as usize);
+        for (split_idx, &count) in split_sample_counts.iter().enumerate() {
+            // Derive an independent seed per split (rather than one RNG shared across all
+            // splits) so a split's sample doesn't depend on how many other splits there are.
+            let split_seed = seed.map(|s| {
+                s.wrapping_add(
+                    (split_idx as u64)
+                        .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+                        .wrapping_add(1),
+                )
+            });
+            let mut rng = non_crypto_rng(&split_seed);
+            for _ in 0..count {
+                position_indices.push(rng.random_range(0..num_rows));
+                split_ids.push(split_idx as u64);
+            }
+        }
+
+        let indices = UInt64Array::from(position_indices);
+        let sampled_row_ids = arrow::compute::take(row_ids.as_ref(), &indices, None).unwrap();
+        let split_id_array: Arc<dyn Array> = Arc::new(UInt64Array::from(split_ids));
+
+        let new_schema = Arc::new(Schema::new(vec![
+            row_id_field,
+            Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
+        ]));
+        let result_batch =
+            RecordBatch::try_new(new_schema.clone(), vec![sampled_row_ids, split_id_array])
+                .unwrap();
+
+        Ok(Box::pin(SimpleRecordBatchStream::new(
+            futures::stream::once(std::future::ready(Ok(result_batch))),
+            new_schema,
+        )))
+    }
+
     pub async fn apply(
         &self,
         source: SendableRecordBatchStream,
@@ -357,6 +457,14 @@ impl Splitter {
                 self.apply_hash(source, split_weights, *discard_weight)
                     .await
             }
+            SplitStrategy::Bootstrap {
+                num_samples,
+                sizes,
+                seed,
+            } => {
+                self.apply_bootstrap(source, num_rows, *num_samples, sizes, *seed)
+                    .await
+            }
         }
     }
 
@@ -377,7 +485,13 @@ impl Splitter {
 
     pub fn orders_by_split_id(&self) -> bool {
         match &self.strategy {
-            SplitStrategy::Hash { .. } | SplitStrategy::Calculated { .. } => true,
+            // Bootstrap emits samples grouped split-by-split already (see apply_bootstrap),
+            // rather than relying on the shared pipeline's sort-by-split-id step: within-split
+            // draw order is meaningful to callers (e.g. a warmup/measured split within one
+            // split's stream), and sort stability for ties isn't documented behavior to lean on.
+            SplitStrategy::Hash { .. }
+            | SplitStrategy::Calculated { .. }
+            | SplitStrategy::Bootstrap { .. } => true,
             SplitStrategy::NoSplit
             | SplitStrategy::Sequential { .. }
             // It may be strange but for random we shuffle and then assign splits so the result is
@@ -806,5 +920,99 @@ mod tests {
 
         assert_eq!(num_in_split_0, 12); // 24%
         assert_eq!(num_in_split_1, 30); // 60%
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_split_schema_and_counts() {
+        let splitter = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: 1000,
+                sizes: SplitSizes::Fixed(4),
+                seed: Some(42),
+            },
+        );
+
+        let split_batches = splitter
+            .apply(test_data(), 50)
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let schema = split_batches[0].schema();
+        let split_batch = concat_batches(&schema, &split_batches).unwrap();
+
+        // Schema stays exactly [row_id, split_id], same as every other strategy.
+        let field_names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(field_names, vec!["id", SPLIT_ID_COLUMN]);
+
+        // Output row count is num_samples, not num_rows (50) -- sampling is with replacement.
+        assert_eq!(split_batch.num_rows(), 1000);
+
+        let split_ids = split_batch.column(1).as_primitive::<UInt64Type>().values();
+        for split_id in [0u64, 1, 2, 3] {
+            assert_eq!(split_ids.iter().filter(|v| **v == split_id).count(), 250);
+        }
+
+        // With 1000 draws from only 50 distinct rows, some row id must repeat.
+        let row_ids = split_batch.column(0).as_primitive::<Int32Type>().values();
+        let mut seen = std::collections::HashSet::new();
+        assert!(!row_ids.iter().all(|v| seen.insert(*v)));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_split_seed_is_reproducible() {
+        let make_splitter = || {
+            Splitter::new(
+                TemporaryDirectory::None,
+                SplitStrategy::Bootstrap {
+                    num_samples: 200,
+                    sizes: SplitSizes::Fixed(2),
+                    seed: Some(7),
+                },
+            )
+        };
+
+        let first = make_splitter()
+            .apply(test_data(), 50)
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let second = make_splitter()
+            .apply(test_data(), 50)
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+
+        let schema = first[0].schema();
+        let first = concat_batches(&schema, &first).unwrap();
+        let second = concat_batches(&schema, &second).unwrap();
+        assert_eq!(first.column(0), second.column(0));
+        assert_eq!(first.column(1), second.column(1));
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_split_respects_filter() {
+        // Bootstrap is driven through a filter the same way every other strategy is -- the
+        // base table rows reaching Splitter::apply are already filtered by the time they get
+        // here, so this exercises the same num_rows=0 guard a fully-filtered-out population
+        // would hit.
+        let splitter = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Fixed(1),
+                seed: Some(1),
+            },
+        );
+        let Err(err) = splitter.apply(test_data(), 0).await else {
+            panic!("expected Bootstrap over zero eligible rows to fail");
+        };
+        assert!(err.to_string().contains("at least one eligible row"));
     }
 }

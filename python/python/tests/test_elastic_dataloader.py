@@ -3195,3 +3195,64 @@ def test_streaming_dataset_over_remote_table():
     assert len(server.scans) == 1, "the permutation is built with one row-id scan"
     assert server.takes, "rows must be fetched with row-id takes"
     assert_server_safe_row_id_requests(server)
+
+
+# ---------------------------------------------------------------------------
+# split_strategy escape hatch
+# ---------------------------------------------------------------------------
+
+
+def test_split_strategy_bootstrap_sample(lance_table):
+    """split_strategy lets StreamingDataset use bootstrap_sample directly, producing
+    more rows than the base table has (sampling with replacement)."""
+    num_samples = 4 * NUM_ROWS
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            num_samples, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    ids = [row["id"] for row in ds]
+
+    assert len(ids) == num_samples
+    # 4x oversampling a small table must produce at least one repeat.
+    assert len(set(ids)) < len(ids)
+    assert set(ids).issubset(set(range(NUM_ROWS)))
+
+
+def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
+    """StreamingDataset(split_strategy=...), read single-process (no DataLoader
+    workers, so this one process owns every split and round-robins across all of
+    them), must yield exactly what calling the same strategy directly on a
+    PermutationBuilder would read, interleaved one row per split per cycle."""
+    from lancedb.permutation import Permutation, permutation_builder
+
+    def strategy(builder):
+        return builder.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=1)
+
+    direct_perm_tbl = strategy(permutation_builder(lance_table)).execute()
+    expected_by_split = []
+    for split in range(NUM_SPLITS):
+        perm = Permutation.from_tables(lance_table, direct_perm_tbl, split=split)
+        expected_by_split.append([row["id"] for row in perm])
+    samples_per_split = len(expected_by_split[0])
+    expected = [
+        expected_by_split[split][cycle]
+        for cycle in range(samples_per_split)
+        for split in range(NUM_SPLITS)
+    ]
+
+    ds = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    actual = [row["id"] for row in ds]
+    assert actual == expected
+
+
+def test_split_strategy_is_reproducible_across_instances(lance_table):
+    def strategy(builder):
+        return builder.bootstrap_sample(3 * NUM_ROWS, fixed=NUM_SPLITS, seed=99)
+
+    ds1 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    ds2 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+
+    assert [row["id"] for row in ds1] == [row["id"] for row in ds2]

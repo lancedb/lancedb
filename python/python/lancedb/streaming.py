@@ -39,6 +39,7 @@ from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
 from .permutation import (
     Permutation,
+    PermutationBuilder,
     Transforms,
     permutation_builder,
     _drop_base_version,
@@ -244,6 +245,20 @@ class StreamingDataset(IterableDataset):
         default) rows are shuffled using ``shuffle_seed`` and ``epoch``.
         When ``False`` rows are divided into splits sequentially in storage
         order, which can be useful for deterministic debugging or evaluation.
+        Ignored when ``split_strategy`` is provided.
+    split_strategy:
+        Escape hatch for any ``PermutationBuilder`` split strategy this class
+        doesn't otherwise expose a dedicated parameter for -- ``split_hash``,
+        ``split_calculated``, ``bootstrap_sample`` (uniform sampling with
+        replacement), or any strategy added later.  A callable that receives a
+        fresh ``PermutationBuilder`` for ``table`` and returns a configured one;
+        it is called and ``.execute()``'d directly, taking over permutation
+        construction entirely.  When provided, ``shuffle``, ``shuffle_seed``,
+        ``epoch``, and ``shuffle_clump_size`` are ignored -- the callable is
+        solely responsible for how rows are split and ordered.  For example,
+        ``split_strategy=lambda b: b.bootstrap_sample(10_000, fixed=num_splits,
+        seed=42)`` draws 10,000 samples with replacement, divided evenly across
+        ``num_splits`` splits.
     shuffle_seed:
         Base seed for the random permutation.  Combined with ``epoch`` so
         each epoch produces a different ordering.  Pass ``None`` to generate
@@ -388,6 +403,9 @@ class StreamingDataset(IterableDataset):
         *,
         num_splits: Optional[int] = None,
         shuffle: bool = True,
+        split_strategy: Optional[
+            Callable[[PermutationBuilder], PermutationBuilder]
+        ] = None,
         shuffle_seed: Optional[int] = 0,
         epoch: int = 0,
         rank: int = 0,
@@ -578,7 +596,14 @@ class StreamingDataset(IterableDataset):
         builder = permutation_builder(table)
         if filter is not None:
             builder = builder.filter(filter)
-        if shuffle:
+        if split_strategy is not None:
+            # Escape hatch: lets any PermutationBuilder split strategy drive this
+            # dataset (split_hash, split_calculated, bootstrap_sample, or any future
+            # strategy) without StreamingDataset needing a bespoke parameter for each
+            # one. shuffle/shuffle_seed/epoch/shuffle_clump_size are ignored in this
+            # path -- the caller's split_strategy is solely responsible for ordering.
+            self._perm_table = split_strategy(builder).execute()
+        elif shuffle:
             perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
             self._perm_table = builder.split_random(
                 fixed=num_splits, seed=perm_seed, clump_size=shuffle_clump_size

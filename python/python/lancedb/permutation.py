@@ -169,6 +169,48 @@ class PermutationBuilder:
         )
         return self
 
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[list[float]] = None,
+        counts: Optional[list[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
+    ) -> "PermutationBuilder":
+        """
+        Sample rows uniformly **with replacement**, independently per split.
+
+        Unlike the other split strategies, the number of output rows is ``num_samples``,
+        not the number of (optionally filtered) input rows: the same row can appear zero,
+        one, or many times, and ``num_samples`` may be larger or smaller than the input
+        row count. Useful for bootstrap resampling, oversampling rare classes, or any
+        training workload that wants a fixed-size stream of random draws rather than a
+        single deterministic pass over every row. Combine with :meth:`filter` to restrict
+        the eligible population.
+
+        One of ratios, counts, or fixed must be provided, with the same meaning as in
+        :meth:`split_random`, except they divide ``num_samples`` across splits rather than
+        the input row count: if fixed is 4, each split gets ``num_samples // 4`` samples.
+
+        Each split draws its own sample using a seed derived independently from
+        ``(seed, split_index)``, so a split's content does not change if the samples are
+        later redistributed across a different number of splits.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.bootstrap_sample(
+            num_samples,
+            ratios=ratios,
+            counts=counts,
+            fixed=fixed,
+            seed=seed,
+            split_names=split_names,
+        )
+        return self
+
     def split_calculated(
         self, calculation: str, split_names: Optional[list[str]] = None
     ) -> "PermutationBuilder":

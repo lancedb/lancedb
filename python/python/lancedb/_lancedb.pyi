@@ -944,6 +944,15 @@ class AsyncPermutationBuilder:
         counts: Optional[List[int]] = None,
         fixed: Optional[int] = None,
     ) -> "AsyncPermutationBuilder": ...
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
     def split_calculated(self, calculation: str) -> "AsyncPermutationBuilder": ...
     def shuffle(
         self, seed: Optional[int], clump_size: Optional[int]
