@@ -96,6 +96,13 @@ ALTER TABLE docs SET MEMWAL
 
 ### 4. Write and query {#write-and-query}
 
+<Warning>
+On a MemWAL table, an upsert through `merge_insert` is the only way to write
+rows. Use the form below exactly: `when_matched_update_all()` with no filter,
+plus `when_not_matched_insert_all()`. Other `merge_insert` forms, such as
+conditional updates or deleting rows missing from the source, are rejected.
+</Warning>
+
 Writes go through `merge_insert` on the primary key, and are visible to queries
 immediately:
 
