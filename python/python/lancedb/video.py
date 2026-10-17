@@ -234,12 +234,15 @@ def add_videos(
     ``videos`` are paths or bytes; ``columns`` are the caller's own columns,
     one value per video, e.g. ``add_videos(table, paths, name=names)``.
 
-    One ``table.add`` per call, fed a stream of record batches of ``batch_size``
-    files, so the write is a single commit and memory is bounded by one batch.
-    Each batch is indexed ``workers`` at a time in a process pool (the demux
-    holds the GIL); ``workers=None`` indexes in-process. For a cluster, shard
-    the paths and call this from every machine: Lance appends commit
-    concurrently.
+    Files go in ``batch_size`` at a time, one ``table.add`` (one commit) per
+    batch, so memory is bounded by one batch of files. A single streamed add
+    would be one commit, but the writer holds a streamed batch until its row
+    group fills (1,024 rows by default), which for 500 MB videos is the whole
+    dataset in memory; measured: 81 GB peak for 63 GB of files, against 11 GB
+    steady with a commit per batch. Each batch is indexed ``workers`` at a time
+    in a process pool (the demux holds the GIL); ``workers=None`` indexes
+    in-process. For a cluster, shard the paths and call this from every
+    machine: Lance appends commit concurrently.
     """
     names = list(columns)
     values = [list(v) for v in columns.values()]
@@ -252,7 +255,7 @@ def add_videos(
         else None
     )
 
-    def batches():
+    try:
         for start in range(0, len(videos), batch_size):
             batch = list(videos[start : start + batch_size])
             paths = [
@@ -271,10 +274,7 @@ def add_videos(
                     column: pa.array(data, pa.large_binary()),
                 }
             )
-            yield from _append_index(rows, indexes).to_batches()
-
-    try:
-        table.add(batches())
+            table.add(_append_index(rows, indexes))
     finally:
         if pool is not None:
             pool.shutdown()
