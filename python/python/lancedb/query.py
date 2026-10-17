@@ -102,6 +102,37 @@ class _LanceScanner(Protocol):
     def to_reader(self): ...
 
 
+def _blob_mode_requires_native_pandas(blob_mode: BlobMode, schema: pa.Schema) -> bool:
+    return blob_mode in BLOB_MODE_TO_HANDLING and schema_has_blob_field(schema)
+
+
+def _struct_blob_paths(schema: pa.Schema) -> list[str]:
+    """Blob paths reachable through structs only.
+
+    Blobs nested inside lists never carry auto row ids, and the row id
+    stripping step only knows how to traverse structs, so skip list paths.
+    """
+
+    def struct_only(path: str) -> bool:
+        if schema.get_field_index(path) >= 0:
+            return True
+        top_name, *rest = path.split(".")
+        index = schema.get_field_index(top_name)
+        if index < 0:
+            return False
+        field = schema.field(index)
+        for name in rest:
+            if not pa.types.is_struct(field.type):
+                return False
+            child = field.type.get_field_index(name)
+            if child < 0:
+                return False
+            field = field.type.field(child)
+        return True
+
+    return [path for path in blob_column_paths(schema) if struct_only(path)]
+
+
 def _unsupported_blob_pandas_error(reason: str) -> RuntimeError:
     return RuntimeError(
         "blob columns require Lance native scanner conversion for query "
@@ -1157,22 +1188,45 @@ class LanceQueryBuilder(ABC):
             )
 
         output_schema = getattr(self, "output_schema", None)
-        if output_schema is not None and schema_has_blob_field(output_schema()):
-            if (flatten is None or blob_mode != "lazy") and timeout is None:
-                df = self._plain_scan_to_pandas(blob_mode, flatten=flatten, **kwargs)
-                if df is not None:
-                    return df
-            if _query_needs_lance_scanner(self):
-                raise _unsupported_blob_pandas_error(
-                    "this query shape cannot use Lance native pandas conversion"
+        if output_schema is not None:
+            schema = output_schema()
+            if _blob_mode_requires_native_pandas(blob_mode, schema):
+                native_error = None
+                if (flatten is None or blob_mode == "descriptions") and timeout is None:
+                    try:
+                        df = self._plain_scan_to_pandas(
+                            blob_mode, flatten=flatten, **kwargs
+                        )
+                        if df is not None:
+                            return df
+                    except Exception as err:
+                        native_error = err
+                # Blob descriptions don't need the native scanner: any query
+                # shape can return them through the Arrow path below.
+                # Fragment selection is only honored by the native scanner, so
+                # keep rejecting it rather than returning rows outside it.
+                has_fragments = (
+                    getattr(self, "_fragments", None) is not None
+                    or getattr(self, "_fragment_ids", None) is not None
                 )
+                if (
+                    native_error is not None
+                    or blob_mode != "descriptions"
+                    or has_fragments
+                ):
+                    reason = (
+                        "this query shape cannot use Lance native pandas conversion"
+                        if native_error is None
+                        else str(native_error)
+                    )
+                    raise _unsupported_blob_pandas_error(reason) from native_error
 
-        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
-        tbl = self._to_arrow_in_mode(timeout, arrow_mode)
-        if (
-            blob_mode == "lazy"
-            and schema_has_blob_field(tbl.schema)
-            and not blob_v2_projection_sources(self._table.schema, self._columns)
+        tbl = self.to_arrow(timeout=timeout)
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, _struct_blob_paths(tbl.schema))
+        tbl = flatten_columns(tbl, flatten)
+        if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
+            blob_mode, tbl.schema
         ):
             raise _unsupported_blob_pandas_error(
                 "the query has no fetchable blob v2 source"
@@ -3425,26 +3479,45 @@ class AsyncQueryBase(object):
                 flatten=flatten, timeout=timeout, blob_mode=blob_mode, **kwargs
             )
 
-        if hasattr(self._inner, "output_schema") and schema_has_blob_field(
-            await self.output_schema()
-        ):
-            if (flatten is None or blob_mode != "lazy") and timeout is None:
-                df = await self._plain_scan_to_pandas(
-                    blob_mode, flatten=flatten, **kwargs
+        if hasattr(self._inner, "output_schema"):
+            schema = await self.output_schema()
+            if _blob_mode_requires_native_pandas(blob_mode, schema):
+                native_error = None
+                if (flatten is None or blob_mode == "descriptions") and timeout is None:
+                    try:
+                        df = await self._plain_scan_to_pandas(
+                            blob_mode, flatten=flatten, **kwargs
+                        )
+                        if df is not None:
+                            return df
+                    except Exception as err:
+                        native_error = err
+                # Blob descriptions don't need the native scanner: any query
+                # shape can return them through the Arrow path below.
+                # Fragment selection is only honored by the native scanner, so
+                # keep rejecting it rather than returning rows outside it.
+                has_fragments = (
+                    getattr(self, "_fragments", None) is not None
+                    or getattr(self, "_fragment_ids", None) is not None
                 )
-                if df is not None:
-                    return df
-            if _query_needs_lance_scanner(self):
-                raise _unsupported_blob_pandas_error(
-                    "this query shape cannot use Lance native pandas conversion"
-                )
+                if (
+                    native_error is not None
+                    or blob_mode != "descriptions"
+                    or has_fragments
+                ):
+                    reason = (
+                        "this query shape cannot use Lance native pandas conversion"
+                        if native_error is None
+                        else str(native_error)
+                    )
+                    raise _unsupported_blob_pandas_error(reason) from native_error
 
-        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
-        tbl = await self.to_arrow(timeout=timeout, blob_mode=arrow_mode)
-        if (
-            blob_mode == "lazy"
-            and schema_has_blob_field(tbl.schema)
-            and not await self._validated_blob_sources("descriptions")
+        tbl = await self.to_arrow(timeout=timeout)
+        if blob_mode == "descriptions":
+            tbl = strip_auto_row_ids(tbl, _struct_blob_paths(tbl.schema))
+        tbl = flatten_columns(tbl, flatten)
+        if blob_mode != "descriptions" and _blob_mode_requires_native_pandas(
+            blob_mode, tbl.schema
         ):
             raise _unsupported_blob_pandas_error(
                 "the query has no fetchable blob v2 source"
