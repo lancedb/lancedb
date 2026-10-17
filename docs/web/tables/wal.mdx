@@ -24,7 +24,7 @@ about how you query that table changes.
 - **Writes.** A `merge_insert` or `delete` lands in an in-memory **memtable**
   and is acknowledged once it is durable in the write-ahead log on object
   storage.
-- **Flush and compaction.** Memtables seal into **SSTables**, which background
+- **Flush and compaction.** Memtables freeze into **SSTables**, which background
   jobs compact into the base table, catching its indexes up as they go. See
   [Background jobs](/maintenance/background-jobs#wal).
 - **Reads.** Every query runs against the base table and the fresh tier
@@ -48,7 +48,7 @@ from datetime import timedelta
 import lancedb
 import numpy as np
 import pyarrow as pa
-from lancedb import LsmWriteSpec
+from lancedb import MemWalWriteSpec
 from lancedb.index import FTS, IvfPq
 
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
@@ -82,7 +82,7 @@ table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(min
 ### 3. Enable MemWAL {#enable}
 
 ```python
-table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+table.enable_memwal(MemWalWriteSpec.unsharded())
 
 # Wait for the table metadata to propagate before writing.
 time.sleep(30)
@@ -91,7 +91,7 @@ time.sleep(30)
 Or in SQL:
 
 ```sql
-ALTER TABLE docs SET WAL
+ALTER TABLE docs SET MEMWAL
 ```
 
 ### 4. Write and query {#write-and-query}
@@ -130,8 +130,8 @@ table.delete("id IN (2000, 2001)")
 Flush pending writes into the base table first, then disable:
 
 ```python
-table.checkpoint_lsm()
-table.unset_lsm_write_spec()
+table.checkpoint_memwal()
+table.disable_memwal()
 ```
 
 ## Performance {#performance}
@@ -196,4 +196,4 @@ and branching are among the features not yet available.
 
 - [Merge insert](/ingestion/merge-insert)
 - [Background jobs](/maintenance/background-jobs#wal)
-- [`ALTER TABLE ... SET WAL`](/sql/ddl/table#properties)
+- [`ALTER TABLE ... SET MEMWAL`](/sql/ddl/table#properties)
