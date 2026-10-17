@@ -181,6 +181,56 @@ describe("given a connection", () => {
     expect(seen).toEqual(created);
   });
 
+  it.each([2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER])(
+    "should not wrap a large table listing limit %s",
+    async (limit) => {
+      await db.createTable("a", [{ id: 1 }]);
+      await db.createTable("b", [{ id: 2 }]);
+      for (const names of [
+        db.tableNames({ limit }),
+        db.tableNames([], { limit }),
+      ]) {
+        await expect(names).resolves.toEqual(["a", "b"]);
+      }
+      for (const page of [
+        db.listTables({ limit }),
+        db.listTables([], { limit }),
+      ]) {
+        await expect(page).resolves.toEqual({ tables: ["a", "b"] });
+      }
+    },
+  );
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])("should reject an invalid table listing limit %s", async (limit) => {
+    await expect(db.tableNames({ limit })).rejects.toThrow(/limit/);
+    await expect(db.tableNames([], { limit })).rejects.toThrow(/limit/);
+    await expect(db.listTables({ limit })).rejects.toThrow(/limit/);
+    await expect(db.listTables([], { limit })).rejects.toThrow(/limit/);
+  });
+
+  it("should preserve zero, small and unsigned-32-bit table listing limits", async () => {
+    await db.createTable("a", [{ id: 1 }]);
+    await db.createTable("b", [{ id: 2 }]);
+    for (const [limit, names] of [
+      [0, []],
+      [1, ["a"]],
+      [2 ** 32 - 1, ["a", "b"]],
+    ] as const) {
+      await expect(db.tableNames({ limit })).resolves.toEqual(names);
+      const page = await db.listTables({ limit });
+      expect(page.tables).toEqual(names);
+    }
+    await expect(db.tableNames()).resolves.toEqual(["a", "b"]);
+    await expect(db.listTables()).resolves.toEqual({ tables: ["a", "b"] });
+  });
+
   it("should list all names and use a default page size of 100", async () => {
     const names = Array.from(
       { length: 130 },
