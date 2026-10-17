@@ -433,7 +433,7 @@ def _into_pyarrow_reader(
     ):
         return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_reader(data)
+        return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -443,10 +443,19 @@ def _into_pyarrow_reader(
         )
 
 
-def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+def _iterator_to_reader(
+    data: Iterable, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
-    first = _into_pyarrow_reader(next(data))
+    data = iter(data)
+    try:
+        first_batch = next(data)
+    except StopIteration:
+        if schema is None:
+            raise ValueError("Cannot create table from empty iterable without a schema")
+        return pa.RecordBatchReader.from_batches(schema, [])
+    first = _into_pyarrow_reader(first_batch)
     schema = first.schema
 
     def gen():

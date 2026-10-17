@@ -4647,6 +4647,81 @@ def test_stats(mem_db: DBConnection):
     assert stats_with_index["fragment_stats"]["num_fragments"] == 1
 
 
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+def test_create_table_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            mem_db.create_table("test", data=data)
+        return
+
+    table = mem_db.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert table.schema == schema
+    assert table.to_arrow().to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+async def test_create_table_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            await mem_db_async.create_table("test", data=data)
+        return
+
+    table = await mem_db_async.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert await table.schema() == schema
+    assert (await table.to_arrow()).to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_add_empty_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, on_bad_vectors
+):
+    table = mem_db.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        # The default scannable path still requires an input schema. This
+        # fix does not change its validation policy for schema-less input.
+        with pytest.raises(ValueError, match="empty iterator"):
+            table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        # Sanitization has the existing table schema available.
+        table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert table.to_arrow().to_pylist() == [{"id": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+async def test_add_empty_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, on_bad_vectors
+):
+    table = await mem_db_async.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="empty iterator"):
+            await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert (await table.to_arrow()).to_pylist() == [{"id": 1}]
+
+
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
     """Test creating table with empty list data and schema
 
