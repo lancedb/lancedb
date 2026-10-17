@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 from concurrent.futures import ThreadPoolExecutor
 import contextlib
+import copy
+from dataclasses import replace
 from datetime import timedelta
 import http.server
 import io
@@ -21,6 +23,14 @@ import lancedb
 import numpy as np
 from lancedb.conftest import MockNonNormTextEmbeddingFunction, MockTextEmbeddingFunction
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.graph import (
+    AsyncPropertyGraph,
+    EdgeTable,
+    Endpoint,
+    NodeTable,
+    PropertyGraph,
+    PropertyGraphDescription,
+)
 from lancedb.query import (
     AsyncQuery,
     ColumnOrdering,
@@ -4016,3 +4026,217 @@ def test_view_crud_addresses_its_own_routes():
         ("GET", "/v1/namespace/analytics/view/list"),
         ("POST", "/v1/view/analytics$adults/drop"),
     ]
+
+
+def _property_graph_handler(calls, respond):
+    """A mock route handler recording ``(method, path, body)`` and answering
+    with the ``(status, body)`` that ``respond(path, body)`` returns, as JSON."""
+
+    def handler(request):
+        length = int(request.headers.get("Content-Length") or 0)
+        raw = request.rfile.read(length) if length else b""
+        body = json.loads(raw) if raw else None
+        calls.append((request.command, request.path, body))
+        status, payload = respond(request.path, body)
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(json.dumps(payload).encode())
+
+    return handler
+
+
+SOCIAL_NODES = [
+    NodeTable("person", key="person_id", label="Person", properties=["name"])
+]
+SOCIAL_EDGES = [
+    EdgeTable(
+        "knows",
+        label="KNOWS",
+        source=Endpoint("src_id", references=("person", "person_id")),
+        destination=Endpoint("dst_id", references=("person", "person_id")),
+    )
+]
+# The create body for the tables above. The edge table leaves its properties
+# out, which means every column.
+SOCIAL_DEFINITION = {
+    "nodes": [
+        {
+            "table": "person",
+            "key": "person_id",
+            "label": "Person",
+            "properties": ["name"],
+        }
+    ],
+    "edges": [
+        {
+            "table": "knows",
+            "label": "KNOWS",
+            "source": {
+                "column": "src_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+            "destination": {
+                "column": "dst_id",
+                "references": {"table": "person", "column": "person_id"},
+            },
+        }
+    ],
+}
+# Create resolves each table's properties, the key and endpoint columns always
+# among them.
+RESOLVED_NODES = [replace(SOCIAL_NODES[0], properties=["person_id", "name"])]
+RESOLVED_EDGES = [replace(SOCIAL_EDGES[0], properties=["src_id", "dst_id", "since"])]
+
+
+def _social_description(namespace):
+    described = copy.deepcopy(SOCIAL_DEFINITION)
+    described["nodes"][0]["properties"] = RESOLVED_NODES[0].properties
+    described["edges"][0]["properties"] = RESOLVED_EDGES[0].properties
+    return {"name": "social", "namespace": namespace, **described}
+
+
+def test_property_graph_crud_addresses_its_own_routes():
+    # The definition is the create body and describe posts an empty object.
+    # An accepted drop hands back its cleanup job, which drop waits on.
+    calls = []
+
+    def respond(path, body):
+        if path.startswith("/v1/namespace/analytics/property_graph/list"):
+            if "page_token=p2" in path:
+                return 200, {"property_graphs": ["payments"]}
+            return 200, {"property_graphs": ["social"], "page_token": "p2"}
+        if path.endswith("/drop"):
+            return 202, {"job_id": "j1-pg-drop"}
+        if path == "/v1/jobs/describe":
+            return 200, {"job_id": body["job_id"], "job_state": "DONE"}
+        return 200, _social_description(["analytics"])
+
+    with mock_lancedb_connection(_property_graph_handler(calls, respond)) as db:
+        graph = db.create_property_graph(
+            "social", SOCIAL_NODES, SOCIAL_EDGES, namespace_path=["analytics"]
+        )
+        assert isinstance(graph, PropertyGraph)
+        assert (graph.name, graph.namespace_path) == ("social", ["analytics"])
+        assert graph.describe() == PropertyGraphDescription(
+            name="social",
+            namespace_path=["analytics"],
+            nodes=RESOLVED_NODES,
+            edges=RESOLVED_EDGES,
+        )
+
+        opened = db.open_property_graph("social", namespace_path=["analytics"])
+        assert (opened.name, opened.namespace_path) == ("social", ["analytics"])
+
+        graphs = db.list_property_graphs(namespace_path=["analytics"], page_limit=1)
+        assert list(graphs) == ["social", "payments"]
+
+        db.drop_property_graph("social", namespace_path=["analytics"])
+
+    assert calls == [
+        ("POST", "/v1/property_graph/analytics$social/create", SOCIAL_DEFINITION),
+        ("POST", "/v1/property_graph/analytics$social/describe", {}),
+        ("POST", "/v1/property_graph/analytics$social/describe", {}),
+        ("GET", "/v1/namespace/analytics/property_graph/list?limit=1", None),
+        (
+            "GET",
+            "/v1/namespace/analytics/property_graph/list?page_token=p2&limit=1",
+            None,
+        ),
+        ("POST", "/v1/property_graph/analytics$social/drop", None),
+        ("POST", "/v1/jobs/describe", {"job_id": "j1-pg-drop"}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_property_graph_handles():
+    calls = []
+
+    def respond(path, body):
+        if path.endswith("/property_graph/list"):
+            return 200, {"property_graphs": ["social"]}
+        if path.endswith("/drop"):
+            return 200, {}
+        return 200, _social_description([])
+
+    async with mock_lancedb_connection_async(
+        _property_graph_handler(calls, respond)
+    ) as db:
+        graph = await db.create_property_graph("social", SOCIAL_NODES)
+        assert isinstance(graph, AsyncPropertyGraph)
+        described = await graph.describe()
+        assert (described.namespace_path, described.nodes) == ([], RESOLVED_NODES)
+
+        opened = await db.open_property_graph("social")
+        assert isinstance(opened, AsyncPropertyGraph)
+        assert [name async for name in db.list_property_graphs()] == ["social"]
+        await db.drop_property_graph("social")
+
+    assert calls == [
+        (
+            "POST",
+            "/v1/property_graph/social/create",
+            {"nodes": SOCIAL_DEFINITION["nodes"], "edges": []},
+        ),
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("GET", "/v1/namespace/$/property_graph/list", None),
+        ("POST", "/v1/property_graph/social/drop", None),
+    ]
+
+
+def test_a_missing_property_graph_is_not_found():
+    # Opening describes the graph, so a name no graph holds fails there.
+    calls = []
+
+    def respond(path, body):
+        return 404, {"error": "property graph 'social' not found"}
+
+    with mock_lancedb_connection(_property_graph_handler(calls, respond)) as db:
+        with pytest.raises(HttpError) as missing:
+            db.open_property_graph("social")
+        assert missing.value.status_code == 404
+        with pytest.raises(HttpError) as missing:
+            db.drop_property_graph("social")
+        assert missing.value.status_code == 404
+
+    assert calls == [
+        ("POST", "/v1/property_graph/social/describe", {}),
+        ("POST", "/v1/property_graph/social/drop", None),
+    ]
+
+
+def test_a_property_graph_takes_node_and_edge_tables():
+    # A definition of the wrong shape is refused before any request is made.
+    calls = []
+    with mock_lancedb_connection(
+        _property_graph_handler(calls, lambda path, body: (200, {}))
+    ) as db:
+        with pytest.raises(TypeError, match="nodes are NodeTable"):
+            db.create_property_graph("social", SOCIAL_EDGES)
+        with pytest.raises(TypeError, match="not NodeTable"):
+            db.create_property_graph("social", SOCIAL_NODES, SOCIAL_NODES)
+        with pytest.raises(TypeError, match="are Endpoint, not tuple"):
+            db.create_property_graph(
+                "social",
+                SOCIAL_NODES,
+                [replace(SOCIAL_EDGES[0], source=("person", "person_id"))],
+            )
+        with pytest.raises(TypeError, match="not a string"):
+            db.create_property_graph(
+                "social", [replace(SOCIAL_NODES[0], properties="name")]
+            )
+    assert calls == []
+
+
+def test_local_connections_refuse_property_graphs(tmp_path):
+    db = lancedb.connect(tmp_path)
+    refused = "Property graph operations are not supported"
+    with pytest.raises(NotImplementedError, match=refused):
+        db.create_property_graph("social", SOCIAL_NODES, SOCIAL_EDGES)
+    with pytest.raises(NotImplementedError, match=refused):
+        db.open_property_graph("social")
+    with pytest.raises(NotImplementedError, match=refused):
+        list(db.list_property_graphs())
+    with pytest.raises(NotImplementedError, match=refused):
+        db.drop_property_graph("social")

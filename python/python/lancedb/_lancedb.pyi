@@ -206,6 +206,25 @@ class Connection(object):
         page_token: Optional[str] = None,
         page_limit: Optional[int] = None,
     ) -> NameListing: ...
+    async def create_property_graph(
+        self,
+        name: str,
+        definition_json: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> str: ...
+    async def describe_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def drop_property_graph(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
+    def list_property_graphs(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        *,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
     def list_jobs(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
     ) -> JobListing: ...
