@@ -4,6 +4,7 @@
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
 mod blob_coerce;
+mod blob_nulls;
 pub mod cast;
 pub mod insert;
 pub mod reject_nan;
@@ -171,12 +172,20 @@ pub struct BaseTableAdapter {
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = table
-            .schema()
-            .await?
-            .as_ref()
-            .clone()
-            .with_metadata(HashMap::default());
+        let mut schema = table.schema().await?;
+        if crate::blob::has_blob_columns(&schema) {
+            // Blob writes and scans have different struct layouts. Ask the query
+            // planner for the read schema without executing a scan or fetching bytes.
+            let query = QueryRequest {
+                limit: Some(0),
+                ..Default::default()
+            };
+            schema = table
+                .create_plan(&AnyQuery::Query(query), QueryExecutionOptions::default())
+                .await?
+                .schema();
+        }
+        let schema = blob_nulls::read_schema(&schema).with_metadata(HashMap::default());
 
         Ok(Self {
             table,
@@ -267,6 +276,7 @@ impl TableProvider for BaseTableAdapter {
             .create_plan(&AnyQuery::Query(query), options)
             .map_err(|err| DataFusionError::External(err.into()))
             .await?;
+        let plan = blob_nulls::mask_plan(plan)?;
         Ok(Arc::new(MetadataEraserExec::new(plan)))
     }
 
@@ -274,7 +284,23 @@ impl TableProvider for BaseTableAdapter {
         &self,
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        // Lance evaluates pushed filters before the descriptor validity mask.
+        // Keep predicates touching blobs above that mask, including IS NULL:
+        // the stored descriptor's children are not independently nullable.
+        Ok(filters
+            .iter()
+            .map(|filter| {
+                if filter.column_refs().iter().any(|column| {
+                    self.schema
+                        .field_with_name(&column.name)
+                        .is_ok_and(blob_nulls::has_descriptor)
+                }) {
+                    TableProviderFilterPushDown::Unsupported
+                } else {
+                    TableProviderFilterPushDown::Exact
+                }
+            })
+            .collect())
     }
 
     fn statistics(&self) -> Option<Statistics> {
@@ -507,6 +533,153 @@ pub mod tests {
                 expected.lines().count()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn test_sql_blob_descriptor_nulls() {
+        use arrow_array::{UInt8Array, UInt64Array};
+        use arrow_select::concat::concat_batches;
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let mut blobs = lance::blob::BlobArrayBuilder::new(3);
+        blobs.push_bytes(b"hello").unwrap();
+        blobs.push_bytes(b"").unwrap();
+        blobs.push_null().unwrap();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                crate::blob("payload", true),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                blobs.finish().unwrap(),
+            ],
+        )
+        .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
+        let adapter = Arc::new(
+            BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap(),
+        );
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(2));
+        ctx.register_table("docs", adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT id, payload.kind, payload.position, payload.size, payload.blob_id, payload.blob_uri FROM docs ORDER BY id")
+            .await.unwrap().collect().await.unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        assert_eq!(
+            batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<UInt8Array>()
+                .unwrap(),
+            &UInt8Array::from(vec![Some(0), Some(0), None])
+        );
+        assert_eq!(
+            batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap(),
+            &UInt64Array::from(vec![Some(5), Some(0), None])
+        );
+        for column in &batch.columns()[1..] {
+            assert!(!column.is_null(0));
+            assert!(!column.is_null(1));
+            assert!(column.is_null(2));
+        }
+
+        for (predicate, expected) in [
+            ("payload.size = 0", vec![2]),
+            ("payload.kind = 0", vec![1, 2]),
+            ("payload.blob_uri = ''", vec![1, 2]),
+            ("payload.size IS NULL", vec![3]),
+            ("payload.size IS NOT NULL", vec![1, 2]),
+            ("payload.kind IS NULL", vec![3]),
+            ("payload.position IS NULL", vec![3]),
+            ("payload.blob_id IS NULL", vec![3]),
+            ("payload.blob_uri IS NULL", vec![3]),
+            ("payload IS NULL", vec![3]),
+            ("payload.size = 0 OR payload.size IS NULL", vec![2, 3]),
+            ("id > 1 AND payload.size = 0", vec![2]),
+        ] {
+            let batches = ctx
+                .sql(&format!(
+                    "SELECT id FROM docs WHERE {predicate} ORDER BY id"
+                ))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let ids: Vec<i32> = batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+                .collect();
+            assert_eq!(ids, expected, "{predicate}");
+        }
+
+        let batches = ctx
+            .sql("SELECT id FROM docs WHERE payload.size IS NULL LIMIT 1")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            3
+        );
+        let batches = ctx
+            .sql("SELECT COUNT(*), COUNT(payload.size) FROM docs")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            3
+        );
+        assert_eq!(
+            batches[0]
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            2
+        );
+        assert!(ctx.sql("SELECT payload.data FROM docs").await.is_err());
+
+        // Whole-struct scans must agree with the declared schema too.
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
     }
 
     #[tokio::test]
