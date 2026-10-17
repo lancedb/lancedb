@@ -15,7 +15,7 @@ dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
 stream of small commits, and each write is only visible once its commit lands.
 
 MemWAL puts an LSM-style write tier in front of the table. It turns many small
-writes into a few large commits, and makes each write **readable within
+writes into a few large commits, and makes each write **searchable within
 milliseconds** of being acknowledged. It is enabled per table, and nothing
 about how you query that table changes.
 
@@ -30,9 +30,9 @@ about how you query that table changes.
 - **Reads.** Every query runs against the base table and the fresh tier
   (memtables and SSTables) in parallel. Fresh rows supersede base rows with the
   same primary key, and the two are merged into one result.
-- **Indexes stay fresh.** Vector, full-text, and BTree indexes are maintained on
-  the memtable, so new rows are searchable through the index as soon as they
-  are written.
+- **Indexes stay fresh.** Vector, full-text, BTree, and other supported indexes
+  are maintained on the memtable, so new rows are searchable through the index
+  as soon as they are written.
 
 ## Getting started {#getting-started}
 
@@ -127,7 +127,10 @@ table.delete("id IN (2000, 2001)")
 
 ### Disabling MemWAL {#disable}
 
-Flush pending writes into the base table first, then disable:
+Stop writes and wait for in-flight writes to finish, then flush pending writes
+into the base table and disable. `checkpoint_memwal()` only drains writes that
+existed when it started, so anything written during the checkpoint can be left
+behind.
 
 ```python
 table.checkpoint_memwal()
@@ -161,8 +164,7 @@ reached these peak rates:
 | 16 | 690 MB/s |
 | 32 | 885 MB/s |
 
-Balancing tables across write nodes, and each table across many shards, raises
-throughput almost linearly.
+Adding shards scales a table's ingest nearly linearly.
 
 ### Reads {#read-performance}
 
