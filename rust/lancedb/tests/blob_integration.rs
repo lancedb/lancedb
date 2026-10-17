@@ -8,9 +8,11 @@ use arrow_array::{
     StructArray, UInt64Array, new_null_array,
 };
 use arrow_schema::{DataType, Field, Fields, Schema};
+use datafusion::{catalog::TableProvider, prelude::SessionContext};
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::WriteParams;
+use lance_core::datatypes::BlobKind;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
 use lancedb::{
@@ -22,7 +24,10 @@ use lancedb::{
         OPT_NEW_TABLE_STORAGE_VERSION,
     },
     query::{ExecutableQuery, QueryBase},
-    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
+    table::{
+        AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions,
+        datafusion::BaseTableAdapter,
+    },
 };
 use tempfile::tempdir;
 
@@ -77,6 +82,119 @@ async fn create_inline_blob_table(
         .execute()
         .await?;
     Ok(table)
+}
+
+#[rstest::rstest]
+#[case::top_level(false)]
+#[case::nested(true)]
+#[tokio::test]
+async fn sql_blob_descriptor_schema(#[case] nested: bool) -> anyhow::Result<()> {
+    let tmp = tempdir()?;
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let wrap = |batch: RecordBatch| {
+        if !nested {
+            return batch;
+        }
+        let fields: Fields = vec![batch.schema().field(1).clone()].into();
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                batch.schema().field(0).clone(),
+                Field::new("info", DataType::Struct(fields.clone()), true),
+            ])),
+            vec![
+                batch.column(0).clone(),
+                Arc::new(StructArray::new(
+                    fields,
+                    vec![batch.column(1).clone()],
+                    None,
+                )),
+            ],
+        )
+        .unwrap()
+    };
+    let write_schema = wrap(RecordBatch::new_empty(blob_table_schema())).schema();
+    let table = db
+        .create_empty_table("docs", write_schema.clone())
+        .execute()
+        .await?;
+    table
+        .add(wrap(binary_input_batch(&[1, 2], &[Some(b"hello"), None])))
+        .execute()
+        .await?;
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", b"external bytes");
+    table
+        .add(wrap(uri_string_batch(3, &uri)))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+    // Descriptor scans must work without opening the referenced blob object.
+    std::fs::remove_file(tmp.path().join("payload.bin"))?;
+
+    let adapter = Arc::new(BaseTableAdapter::try_new(table.base_table().clone()).await?);
+    let scan_schema = table.query().output_schema().await?;
+    assert_eq!(
+        adapter.schema().as_ref(),
+        &scan_schema
+            .as_ref()
+            .clone()
+            .with_metadata(Default::default())
+    );
+    assert_eq!(table.schema().await?, write_schema);
+
+    let ctx = SessionContext::new();
+    ctx.register_table("docs", adapter.clone())?;
+    let batches = ctx.sql("SELECT * FROM docs").await?.collect().await?;
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    for batch in &batches {
+        assert_eq!(batch.schema(), adapter.schema());
+    }
+
+    let path = if nested { "info.image" } else { "image" };
+    let batches = ctx
+        .sql(&format!("SELECT {path} FROM docs WHERE id = 2"))
+        .await?
+        .collect()
+        .await?;
+    assert_eq!(batches[0].num_rows(), 1);
+    assert!(batches[0].column(0).is_null(0));
+
+    let batches = ctx
+        .sql(&format!(
+            "SELECT {path}.kind AS kind, {path}.blob_uri AS uri \
+             FROM docs WHERE id <> 2 ORDER BY id"
+        ))
+        .await?
+        .collect()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches)?;
+    let kinds = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<arrow_array::UInt8Array>()
+        .unwrap();
+    assert_eq!(
+        kinds.iter().collect::<Vec<_>>(),
+        vec![Some(BlobKind::Inline as u8), Some(BlobKind::External as u8)]
+    );
+    let uris = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(
+        uris.iter().collect::<Vec<_>>(),
+        vec![Some(""), Some(uri.as_str())]
+    );
+
+    let error = ctx
+        .sql(&format!("SELECT {path}.data FROM docs"))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Field data not found"),
+        "{error}"
+    );
+    Ok(())
 }
 
 async fn storage_format_version(table: &Table) -> ConcreteFileVersion {
