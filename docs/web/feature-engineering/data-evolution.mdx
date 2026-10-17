@@ -9,7 +9,8 @@ availability:
   enterprise: available
   summary: >-
     Adding columns computed from SQL expressions works in the embedded library
-    and in LanceDB Enterprise.
+    and in LanceDB Enterprise. The Python SDK also accepts precomputed values
+    from DataFrames and Arrow readers on local tables.
 ---
 
 import {
@@ -96,11 +97,16 @@ new column expressions together:
 </CodeGroup>
 
 <Info>
-LanceDB `add_columns` does not currently accept Python callables, batch UDFs, or
-PyArrow `RecordBatch` iterators for populating new columns. New column values must be
-defined with SQL expressions, or added as NULL columns from an Arrow field or schema.
-If your transformation cannot be expressed in SQL, compute the values outside
-`add_columns` before writing them back through another workflow.
+On local tables, Python `add_columns` also accepts pandas or Polars DataFrames,
+PyArrow Tables, RecordBatches, RecordBatchReaders, and iterables of batches.
+Pass only the new columns, with exactly one row per current live table row in
+storage scan order. DataFrame indexes are ignored, and reader batch boundaries
+need not match table fragments. Keep the table unchanged between computing the
+values and adding them. Readers are consumed once.
+
+Data inputs cannot be combined with `computed` columns and are not supported on
+remote tables. Python callables and batch UDFs are not accepted; compute those
+values first, then pass the result as a DataFrame or reader.
 </Info>
 
 ## When SQL is not enough {#beyond-sql}
