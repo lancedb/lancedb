@@ -3225,7 +3225,17 @@ def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
     """StreamingDataset(split_strategy=...), read single-process (no DataLoader
     workers, so this one process owns every split and round-robins across all of
     them), must yield exactly what calling the same strategy directly on a
-    PermutationBuilder would read, interleaved one row per split per cycle."""
+    PermutationBuilder would read, interleaved one row per split per cycle.
+
+    Reads each split via __getitems__ (explicit indices), not plain iteration:
+    Permutation's sequential __iter__ returns empty for a permutation with repeated
+    row_ids (confirmed directly -- len() is correct, __getitems__ returns the right
+    rows, but `for row in perm` yields nothing). That's a pre-existing limitation of
+    Permutation's iterator, unrelated to Bootstrap sampling's correctness: it doesn't
+    affect StreamingDataset or this benchmark, since both only ever read via
+    explicit-index batched fetches (take_offsets/__getitems__), never the plain
+    iterator -- flagged separately, not fixed here (out of scope for this change).
+    """
     from lancedb.permutation import Permutation, permutation_builder
 
     def strategy(builder):
@@ -3235,7 +3245,8 @@ def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
     expected_by_split = []
     for split in range(NUM_SPLITS):
         perm = Permutation.from_tables(lance_table, direct_perm_tbl, split=split)
-        expected_by_split.append([row["id"] for row in perm])
+        rows = perm.__getitems__(list(range(len(perm))))
+        expected_by_split.append([row["id"] for row in rows])
     samples_per_split = len(expected_by_split[0])
     expected = [
         expected_by_split[split][cycle]
