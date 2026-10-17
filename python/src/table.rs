@@ -1427,8 +1427,8 @@ impl Table {
         })
     }
 
-    pub fn query(&self) -> Query {
-        Query::new(self.inner_ref().unwrap().query())
+    pub fn query(&self) -> PyResult<Query> {
+        Ok(Query::new(self.inner_ref()?.query()))
     }
 
     #[getter]
