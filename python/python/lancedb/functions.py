@@ -697,6 +697,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.string(), "utf8"),
     (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
+    (pa.large_binary(), "large_binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
@@ -846,11 +847,7 @@ def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
             {
                 "name": child.name,
                 "nullable": child.nullable,
-                "type": (
-                    {"type": "large_binary"}
-                    if pa.types.is_large_binary(child.type)
-                    else _exact_arrow_type(child.type)
-                ),
+                "type": _exact_arrow_type(child.type),
             }
             for child in storage
         ],
