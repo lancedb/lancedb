@@ -69,9 +69,10 @@ from __future__ import annotations
 
 import bisect
 import io
+import multiprocessing as mp
 import threading
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -223,18 +224,62 @@ def add_videos(
     table,
     videos: Sequence[str | Path | bytes],
     column: str = "video",
+    *,
+    workers: int | None = None,
+    batch_size: int = 16,
     **columns: Sequence[Any],
 ) -> None:
     """Read, index and append video files to a table made with :func:`video_schema`.
 
     ``videos`` are paths or bytes; ``columns`` are the caller's own columns,
     one value per video, e.g. ``add_videos(table, paths, name=names)``.
+
+    Files are indexed ``workers`` at a time in a process pool (the demux holds
+    the GIL) and appended ``batch_size`` files per ``table.add``, so memory is
+    bounded by one batch of files, not the whole call. ``workers=None`` runs
+    in-process. For a cluster, shard the paths and call this from every
+    machine: Lance appends commit concurrently.
     """
-    data = [
-        v if isinstance(v, (bytes, bytearray)) else Path(v).read_bytes() for v in videos
-    ]
-    rows = pa.table({**columns, column: pa.array(data, pa.large_binary())})
-    table.add(with_video_index(rows, column))
+    names = list(columns)
+    values = [list(v) for v in columns.values()]
+    if any(len(v) != len(videos) for v in values):
+        raise ValueError("every column needs one value per video")
+    # spawn, not fork: lancedb's async runtime does not survive a fork cleanly
+    pool = (
+        ProcessPoolExecutor(workers, mp_context=mp.get_context("spawn"))
+        if workers
+        else None
+    )
+    try:
+        for start in range(0, len(videos), batch_size):
+            batch = list(videos[start : start + batch_size])
+            paths = [
+                None if isinstance(v, (bytes, bytearray)) else Path(v) for v in batch
+            ]
+            if pool is not None and all(paths):
+                indexes = list(pool.map(video_index, paths))
+            else:
+                indexes = [
+                    video_index(v if p is None else p) for v, p in zip(batch, paths)
+                ]
+            data = [v if p is None else p.read_bytes() for v, p in zip(batch, paths)]
+            rows = pa.table(
+                {
+                    **{n: v[start : start + batch_size] for n, v in zip(names, values)},
+                    column: pa.array(data, pa.large_binary()),
+                }
+            )
+            table.add(_append_index(rows, indexes))
+    finally:
+        if pool is not None:
+            pool.shutdown()
+
+
+def _append_index(table: pa.Table, indexes: list[dict[str, Any]]) -> pa.Table:
+    index_table = pa.Table.from_pylist(indexes, schema=VIDEO_INDEX_SCHEMA)
+    for field in VIDEO_INDEX_SCHEMA:
+        table = table.append_column(field, index_table.column(field.name))
+    return table
 
 
 def with_video_index(data: pa.Table | pa.RecordBatch, column: str) -> pa.Table:
@@ -244,11 +289,7 @@ def with_video_index(data: pa.Table | pa.RecordBatch, column: str) -> pa.Table:
     together with the blobs.
     """
     table = pa.Table.from_batches([data]) if isinstance(data, pa.RecordBatch) else data
-    indexes = [video_index(blob.as_py()) for blob in table.column(column)]
-    index_table = pa.Table.from_pylist(indexes, schema=VIDEO_INDEX_SCHEMA)
-    for field in VIDEO_INDEX_SCHEMA:
-        table = table.append_column(field, index_table.column(field.name))
-    return table
+    return _append_index(table, [video_index(b.as_py()) for b in table.column(column)])
 
 
 # ---------------------------------------------------------------------------

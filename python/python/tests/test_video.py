@@ -279,3 +279,18 @@ def test_more_files_in_one_call_than_the_decoder_cache_keeps(tmp_path):
     clips = frames.fetch_frames([(n, [5]) for n in "abcd"])
     assert len(clips) == 4 and all(tuple(c.shape) == (1, 3, 48, 64) for c in clips)
     assert np.abs(mean_color(clips[3][0]) - solid_color(5)).max() < 12
+
+
+def test_add_videos_in_batches_with_a_process_pool(tmp_path):
+    paths = []
+    for i in range(5):
+        paths.append(tmp_path / f"{i}.mp4")
+        paths[-1].write_bytes(encode_video(12 + i))
+    table = lancedb.connect(tmp_path / "db").create_table(
+        "clips", schema=video_schema([pa.field("i", pa.int64())])
+    )
+    add_videos(table, paths, workers=2, batch_size=2, i=list(range(5)))
+    got = table.search().select(["i", "n_frames"]).to_arrow().sort_by("i").to_pylist()
+    assert [r["n_frames"] for r in got] == [12, 13, 14, 15, 16]
+    with pytest.raises(ValueError):
+        add_videos(table, paths[:2], i=[0])
