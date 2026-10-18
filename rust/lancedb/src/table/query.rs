@@ -284,7 +284,9 @@ pub async fn create_plan(
             .base
             .limit
             .unwrap_or(DEFAULT_TOP_K)
-            .saturating_add(query.base.offset.unwrap_or(0));
+            .saturating_add(query.base.offset.unwrap_or(0))
+            // Lance allocates candidates from k; no search can return more rows than the table.
+            .min(ds_ref.count_rows(None).await?.max(1));
 
         if is_binary {
             let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
@@ -321,16 +323,18 @@ pub async fn create_plan(
     // For a batch query, `nearest` already applies k to each query vector.
     // Adding Scanner's global limit would truncate the combined result to k rows.
     if !is_batch_query {
+        let offset = query
+            .base
+            .offset
+            .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX));
         scanner.limit(
-            // Saturate: `usize::MAX as i64` wraps to -1, which Lance rejects.
-            query
-                .base
-                .limit
-                .map(|limit| i64::try_from(limit).unwrap_or(i64::MAX)),
-            query
-                .base
-                .offset
-                .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX)),
+            // Lance's FTS planner adds limit + offset as i64.
+            query.base.limit.map(|limit| {
+                i64::try_from(limit)
+                    .unwrap_or(i64::MAX)
+                    .min(i64::MAX - offset.unwrap_or(0))
+            }),
+            offset,
         )?;
     }
 
