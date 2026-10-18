@@ -5335,6 +5335,31 @@ mod tests {
         schema_describe_response(&schema)
     }
 
+    #[tokio::test]
+    async fn test_adapter_construction_only_describes_blob_schema() {
+        use datafusion_catalog::TableProvider;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            blob_describe_response()
+        });
+
+        let adapter =
+            crate::table::datafusion::BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let schema = adapter.schema();
+        let DataType::Struct(fields) = schema.field_with_name("image").unwrap().data_type() else {
+            panic!("expected a blob descriptor");
+        };
+        assert!(fields.find("size").unwrap().1.is_nullable());
+        assert!(fields.find("data").is_none());
+    }
+
     #[rstest]
     #[case(semver::Version::new(0, 1, 0))]
     #[case(semver::Version::new(0, 5, 0))]

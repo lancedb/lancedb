@@ -13,8 +13,12 @@ use arrow_array::{
 };
 use arrow_buffer::NullBuffer;
 use arrow_schema::{DataType, Field, FieldRef, Schema};
-use datafusion_common::Result;
-use datafusion_expr::ColumnarValue;
+use datafusion_common::{
+    Result,
+    tree_node::{TreeNode, TreeNodeRecursion},
+};
+use datafusion_expr::{ColumnarValue, Expr};
+use datafusion_functions::core::getfield::GetFieldFunc;
 use datafusion_physical_expr::{PhysicalExpr, expressions::Column};
 use datafusion_physical_plan::{ExecutionPlan, projection::ProjectionExec};
 use lance_arrow::FieldExt;
@@ -37,6 +41,51 @@ pub(super) fn has_descriptor(field: &Field) -> bool {
         }
         _ => false,
     }
+}
+
+/// Resolve static struct accesses without confusing a scalar sibling with the
+/// entire root column. Track descriptor ancestors too: `blob.size` is scalar,
+/// but still requires the descriptor validity mask before evaluation.
+fn referenced_field<'a>(expr: &Expr, schema: &'a Schema) -> Option<(&'a Field, bool)> {
+    match expr {
+        Expr::Column(column) => Some((schema.field_with_name(&column.name).ok()?, false)),
+        Expr::ScalarFunction(call)
+            if call.func.inner().downcast_ref::<GetFieldFunc>().is_some() =>
+        {
+            let (base, path) = call.args.split_first()?;
+            let (mut field, mut within_descriptor) = referenced_field(base, schema)?;
+            for name in path {
+                let Expr::Literal(name, _) = name else {
+                    return None;
+                };
+                within_descriptor |= is_descriptor(field);
+                let DataType::Struct(fields) = field.data_type() else {
+                    return None;
+                };
+                field = fields.find(name.try_as_str().flatten()?)?.1;
+            }
+            Some((field, within_descriptor))
+        }
+        _ => None,
+    }
+}
+
+pub(super) fn references_descriptor(expr: &Expr, schema: &Schema) -> Result<bool> {
+    let mut found = false;
+    expr.apply(|expr| {
+        if let Some((field, within_descriptor)) = referenced_field(expr, schema) {
+            if within_descriptor || has_descriptor(field) {
+                found = true;
+                return Ok(TreeNodeRecursion::Stop);
+            }
+            // The complete path is safe. Do not revisit its root as a whole
+            // struct, which could contain an unrelated blob sibling.
+            return Ok(TreeNodeRecursion::Jump);
+        }
+        // Unknown/computed paths conservatively visit their arguments.
+        Ok(TreeNodeRecursion::Continue)
+    })?;
+    Ok(found)
 }
 
 fn nullable_descriptor_fields(field: &FieldRef) -> FieldRef {

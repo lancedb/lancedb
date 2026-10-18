@@ -26,6 +26,7 @@ use datafusion_physical_plan::{
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
+use lance_core::datatypes::{Projection, Schema as LanceSchema};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
@@ -171,20 +172,13 @@ pub struct BaseTableAdapter {
 }
 
 impl BaseTableAdapter {
+    /// Create an adapter whose schema matches default scans, including blob descriptors.
+    ///
+    /// Deriving the descriptor schema does not execute a query or read blob payloads.
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let mut schema = table.schema().await?;
-        if crate::blob::has_blob_columns(&schema) {
-            // Blob writes and scans have different struct layouts. Ask the query
-            // planner for the read schema without executing a scan or fetching bytes.
-            let query = QueryRequest {
-                limit: Some(0),
-                ..Default::default()
-            };
-            schema = table
-                .create_plan(&AnyQuery::Query(query), QueryExecutionOptions::default())
-                .await?
-                .schema();
-        }
+        let write_schema = table.schema().await?;
+        let schema = Projection::full(Arc::new(LanceSchema::try_from(write_schema.as_ref())?))
+            .to_arrow_schema();
         let schema = blob_nulls::read_schema(&schema).with_metadata(HashMap::default());
 
         Ok(Self {
@@ -287,20 +281,18 @@ impl TableProvider for BaseTableAdapter {
         // Lance evaluates pushed filters before the descriptor validity mask.
         // Keep predicates touching blobs above that mask, including IS NULL:
         // the stored descriptor's children are not independently nullable.
-        Ok(filters
+        filters
             .iter()
             .map(|filter| {
-                if filter.column_refs().iter().any(|column| {
-                    self.schema
-                        .field_with_name(&column.name)
-                        .is_ok_and(blob_nulls::has_descriptor)
-                }) {
-                    TableProviderFilterPushDown::Unsupported
-                } else {
-                    TableProviderFilterPushDown::Exact
-                }
+                Ok(
+                    if blob_nulls::references_descriptor(filter, &self.schema)? {
+                        TableProviderFilterPushDown::Unsupported
+                    } else {
+                        TableProviderFilterPushDown::Exact
+                    },
+                )
             })
-            .collect())
+            .collect()
     }
 
     fn statistics(&self) -> Option<Statistics> {
@@ -680,6 +672,102 @@ pub mod tests {
         // Whole-struct scans must agree with the declared schema too.
         let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
         assert_eq!(plan.schema(), adapter.schema());
+    }
+
+    #[tokio::test]
+    async fn test_nested_blob_sibling_filter_pushdown() {
+        use arrow_array::{Array, StructArray};
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let mut blobs = lance::blob::BlobArrayBuilder::new(3);
+        blobs.push_bytes(b"hello").unwrap();
+        blobs.push_null().unwrap();
+        blobs.push_bytes(b"").unwrap();
+        let fields = vec![
+            Arc::new(Field::new("note", DataType::Utf8, false)),
+            Arc::new(crate::blob("clip", true)),
+            Arc::new(Field::new("note.with.dot", DataType::Utf8, false)),
+        ];
+        let extra = StructArray::new(
+            fields.into(),
+            vec![
+                Arc::new(StringArray::from(vec!["note 7", "note 8", "note 9"])),
+                blobs.finish().unwrap(),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("extra", extra.data_type().clone(), false),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(extra)],
+        )
+        .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
+        let adapter = Arc::new(
+            BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap(),
+        );
+        let ctx = SessionContext::new();
+        ctx.register_table("docs", adapter).unwrap();
+
+        for (predicate, pushed, expected) in [
+            ("extra.note = 'note 7'", true, vec![1]),
+            ("extra.\"note.with.dot\" = 'b'", true, vec![2]),
+            ("extra.clip.size IS NULL", false, vec![2]),
+            ("get_field(extra, 'clip', 'size') = 0", false, vec![3]),
+            ("extra.clip IS NULL", false, vec![2]),
+            (
+                "extra.note = 'note 7' OR extra.clip.size IS NULL",
+                false,
+                vec![1, 2],
+            ),
+        ] {
+            let sql = format!("SELECT id FROM docs WHERE {predicate}");
+            let explain = ctx
+                .sql(&format!("EXPLAIN {sql}"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let explain = explain
+                .iter()
+                .flat_map(|batch| batch.column(1).as_string::<i32>().iter())
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(explain.contains("FilterExec"), !pushed, "{explain}");
+            if pushed {
+                assert!(explain.contains("full_filters=["), "{explain}");
+            }
+            let batches = ctx
+                .sql(&format!("{sql} ORDER BY id"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let ids = batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_primitive::<arrow_array::types::Int32Type>()
+                        .values()
+                        .iter()
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected, "{predicate}");
+        }
     }
 
     #[tokio::test]
