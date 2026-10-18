@@ -58,7 +58,7 @@ Lance with `index_type`.
 
 | If your priority is... | Use this index | Why | Approx. compression ratio | Python config class |
 | :--- | :--- | :--- | :--- | :--- |
-| Maximum compression | `IVF_RQ` | IVF indexing with RaBitQ quantization | Around `1/32` of raw size | `IvfRq` |
+| Maximum compression | `IVF_RQ` | IVF indexing with RaBitQ quantization | Around `1/32` of raw size with `num_bits=1` | `IvfRq` |
 | Higher accuracy at small dimensions (`dimension <= 256`) | `IVF_PQ` | IVF indexing with product quantization | Usually `1/64` to `1/16` of raw size (depends on `num_sub_vectors`) | `IvfPq` |
 | Best recall/latency trade-off | `IVF_HNSW_SQ` | IVF-HNSW indexing with scalar | Typically a little larger than `1/4` of raw size | `IvfHnswSq` |
 | Highest recall / no quantization | `IVF_HNSW_FLAT` | IVF-HNSW indexing with no quantization; embedded library only | Around raw vector size plus HNSW graph overhead | `IvfHnswFlat` |
@@ -377,7 +377,7 @@ which has been compressed to $4$ chunks $\times 8$-bit integers $= 32$ bits of q
 
 RaBitQ is an advanced quantization technique that outperforms PQ in several ways.
 It needs no codebook to train, estimates distances very quickly at query-time, 
-and crucially, quantizes each vector in (with some small overhead) just **one bit per dimension!** 
+and can quantize each vector in (with some small overhead) as little as **one bit per dimension!**
 In practice, RaBitQ compresses a $1024$-dimensional `float32` vector into just a few thousand bits, while maintaining good recall.
 
 The inner workings of RaBitQ quantization are rather mathematically dense. It generates a quantization codebook by 
@@ -385,11 +385,14 @@ applying a uniformly random, approximately distance-preserving orthogonal transf
 where $d$ is the dimensionality of the dataset. We defer the details, and an elegant theoretical error bound, to [the original paper.](https://arxiv.org/pdf/2405.12497)
 
 ##### Using RaBitQ
-Use RaBitQ quantization by selecting quantized index types ending in the suffix `RQ`. For example, call `create_index` with `index_type="IVF_RQ"`. 
+Use RaBitQ quantization by selecting quantized index types ending in the suffix `RQ`. For example, import `IvfRq` from `lancedb.index` and call `table.create_index("vector", config=IvfRq())`.
 Note that when using `IVF_RQ`, the dimension of the dataset must be a multiple of `8`.
 
 `num_bits` determines how many bits are used to quantize each dimension.
-`1` is the standard RaBitQ setting. Increase to `2`, `4`, or `8` bits to achieve better recall for additional storage and query-time compute.
+`IvfRq()` leaves this unset and inherits Lance's default, currently `5` bits, matching Rust and Node.
+Higher values improve recall at the cost of additional storage and query-time compute.
+To retain the previous Python default and maximum compression, use `IvfRq(num_bits=1)`.
+Five-bit quantized vector codes use roughly five times the storage of one-bit codes; total index size also includes other overhead.
 
 <Warning title="Reading multi-bit indexes across versions">
 RaBitQ-quantized indexes computed with `num_bits >= 2` use a newer on-disk layout, and cannot be read by some older LanceDB versions. 
@@ -410,7 +413,7 @@ among all integral multiples $\{j \times 10^5: -128 \leq j \leq 127 \}$.
 
 | Parameter | Description |
 | :--- | :--- |
-| `num_bits` | Bits per dimension for quantization. Only applies to `IVF_PQ`/`IVF_HNSW_PQ` (default `8`) and `IVF_RQ` (default `1`, RaBitQ); not used by `IVF_FLAT`/`IVF_SQ`/`IVF_HNSW_FLAT`/`IVF_HNSW_SQ`. Higher values improve accuracy at the cost of additional storage. |
+| `num_bits` | Bits per dimension for quantization. Only applies to `IVF_PQ`/`IVF_HNSW_PQ` (default `8`) and `IVF_RQ` (`IvfRq()` inherits Lance's default, currently `5`, RaBitQ); not used by `IVF_FLAT`/`IVF_SQ`/`IVF_HNSW_FLAT`/`IVF_HNSW_SQ`. Higher values improve accuracy at the cost of additional storage. |
 
 `max_iterations` and `sample_rate` also affect quantizer training, but since they apply to every IVF/HNSW index type (not just quantized ones), they're documented as general [Build-time Parameters](/indexing/vector-index#build-time-parameters) instead. All three are passed as keyword arguments to `create_index`, alongside `index_type`:
 

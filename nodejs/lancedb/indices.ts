@@ -131,7 +131,8 @@ export interface IvfRqOptions {
    *
    * This value controls how much each residual component is compressed. The more
    * bits, the more accurate the index will be but the slower search. Typical values
-   * are small integers; the default is 1 bit per dimension.
+   * are small integers. If unset, uses Lance's default (currently 5 bits per
+   * dimension). Set to 1 for maximum compression.
    */
   numBits?: number;
 

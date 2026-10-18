@@ -3604,6 +3604,11 @@ class LanceTable(Table):
                     cfg_type = type(config).__name__
                     lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
 
+                    quantization_kwargs = {}
+                    num_bits = getattr(config, "num_bits", 8)
+                    if num_bits is not None:
+                        quantization_kwargs["num_bits"] = num_bits
+
                     self.to_lance().create_index(
                         column=column,
                         index_type=lance_index_type,
@@ -3612,12 +3617,12 @@ class LanceTable(Table):
                         num_sub_vectors=getattr(config, "num_sub_vectors", None),
                         replace=replace,
                         accelerator=acc,
-                        num_bits=getattr(config, "num_bits", 8),
                         m=getattr(config, "m", 20),
                         ef_construction=getattr(config, "ef_construction", 300),
                         target_partition_size=getattr(
                             config, "target_partition_size", None
                         ),
+                        **quantization_kwargs,
                     )
                     self.checkout_latest()
                     return

@@ -355,7 +355,10 @@ impl NativeTable {
                     index.sample_rate,
                     index.max_iterations,
                 );
-                let rq_params = RQBuildParams::new(index.num_bits.unwrap_or(1) as u8);
+                let rq_params = index
+                    .num_bits
+                    .map(|num_bits| RQBuildParams::new(num_bits as u8))
+                    .unwrap_or_default();
                 let lance_idx_params = VectorIndexParams::with_ivf_rq_params(
                     index.distance_type.into(),
                     ivf_params,
