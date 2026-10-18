@@ -11,6 +11,8 @@ function blob(name, options): Field
 ```
 
 Declares a `lance.blob.v2` column.
+Stores inline bytes and whole external files. Use [blobWithRange](blobWithRange.md) to
+also accept external byte ranges.
 
 Query results are descriptors, not payload bytes. Use [Table.fetchBlobs](../classes/Table.md#fetchblobs)
 or [Table.fetchBlobFiles](../classes/Table.md#fetchblobfiles) to read bytes.

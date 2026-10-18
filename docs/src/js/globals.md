@@ -183,6 +183,7 @@
 
 - [RecordBatchIterator](functions/RecordBatchIterator.md)
 - [blob](functions/blob.md)
+- [blobWithRange](functions/blobWithRange.md)
 - [connect](functions/connect.md)
 - [connectCatalog](functions/connectCatalog.md)
 - [connectNamespace](functions/connectNamespace.md)

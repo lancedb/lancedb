@@ -17,11 +17,45 @@ import {
   makeArrowTable,
   resolveBlobInputs,
 } from "../lancedb/arrow";
-import { BlobFile, blob, coerceBlobValue, isBlobField } from "../lancedb/blob";
+import {
+  BlobFile,
+  blob,
+  blobWithRange,
+  coerceBlobValue,
+  isBlobField,
+} from "../lancedb/blob";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry } from "../lancedb/embedding/registry";
 
 describe("blob()", () => {
+  it("keeps the minimal layout and offers an opt-in range layout", () => {
+    expect((blob("image").type as Struct).children.map((f) => f.name)).toEqual([
+      "data",
+      "uri",
+    ]);
+    const field = blobWithRange("image", {
+      nullable: false,
+      inlineSizeThreshold: 12,
+    });
+    expect(field.nullable).toBe(false);
+    expect(isBlobField(field)).toBe(true);
+    expect(
+      field.metadata.get("lance-encoding:blob-inline-size-threshold"),
+    ).toBe("12");
+    expect(
+      (field.type as Struct).children.map((f) => [
+        f.name,
+        f.type.toString(),
+        f.nullable,
+      ]),
+    ).toEqual([
+      ["data", "LargeBinary", true],
+      ["uri", "Utf8", true],
+      ["position", "Uint64", true],
+      ["size", "Uint64", true],
+    ]);
+  });
+
   it("marks the field as lance.blob.v2", () => {
     const field = blob("image", { nullable: false });
     expect(field.nullable).toBe(false);
@@ -156,7 +190,7 @@ describe("coerceBlobValue", () => {
     [
       "unknown struct field",
       { data: Buffer.from("y"), mime: "image/png" },
-      /Blob struct values only support 'data' and 'uri', got 'mime'/,
+      /Blob struct values only support .*got 'mime'/,
     ],
     [
       "misspelled struct field",
@@ -171,6 +205,158 @@ describe("coerceBlobValue", () => {
     ["Date", new Date(0), /Blob column values must be/],
   ])("rejects %s", (_name, input, message) => {
     expect(() => coerceBlobValue(input)).toThrow(message);
+  });
+});
+
+describe("external blob ranges", () => {
+  const uri = "s3://bucket/key";
+
+  it.each([0, 4, 0n, 4n, 9007199254740993n])(
+    "preserves position %s",
+    (position) => {
+      expect(coerceBlobValue({ uri, position, size: 6 })).toEqual({
+        data: null,
+        uri,
+        position: BigInt(position),
+        size: 6n,
+      });
+    },
+  );
+
+  it.each([
+    [{ uri, position: 0 }, /both position and size/],
+    [{ uri, size: 6 }, /both position and size/],
+    [{ uri, position: null, size: 6 }, /both position and size/],
+    [{ uri, position: 0, size: 0 }, /size must be positive/],
+    [{ uri, position: -1, size: 6 }, /position must be non-negative/],
+    [{ uri, position: 0, size: -1n }, /size must be positive/],
+    [{ uri, position: 0.5, size: 6 }, /safe integer or bigint/],
+    [
+      { uri, position: Number.MAX_SAFE_INTEGER + 1, size: 6 },
+      /safe integer or bigint/,
+    ],
+    [{ uri, position: 0, size: Number.NaN }, /safe integer or bigint/],
+    [{ uri, position: "4", size: 6 }, /safe integer or bigint/],
+    [{ uri, position: false, size: 6 }, /safe integer or bigint/],
+    [{ uri, position: 1n << 64n, size: 6 }, /fit in uint64/],
+    [{ uri, position: 0xffffffffffffffffn, size: 1 }, /overflows uint64/],
+    [{ data: Buffer.from("x"), position: 0, size: 6 }, /require a uri/],
+  ])("rejects malformed input %p", (value, message) => {
+    expect(() => coerceBlobValue(value)).toThrow(message);
+  });
+
+  it("preserves ranges while normalizing a URL held by getters", () => {
+    class Range {
+      get uri() {
+        return new URL(uri);
+      }
+      get position() {
+        return 4;
+      }
+      get size() {
+        return 6;
+      }
+    }
+    expect(coerceBlobValue(new Range())).toEqual({
+      data: null,
+      uri,
+      position: 4n,
+      size: 6n,
+    });
+  });
+
+  it("writes ranges and mixed whole-file, inline, and null values to Arrow", () => {
+    const schema = new Schema([blobWithRange("image")]);
+    const rows = [
+      null,
+      Buffer.from("x"),
+      uri,
+      { uri, position: 4, size: 6 },
+    ].map((image) => ({ image }));
+    const column = makeArrowTable(rows, { schema }).getChild("image")!;
+    expect(column.get(0)).toBeNull();
+    expect(Buffer.from(column.getChild("data")!.get(1))).toEqual(
+      Buffer.from("x"),
+    );
+    expect(column.getChild("uri")!.get(2)).toBe(uri);
+    expect(column.getChild("position")!.toArray()).toEqual(
+      new BigUint64Array([0n, 0n, 0n, 4n]),
+    );
+    expect(column.getChild("position")!.get(2)).toBeNull();
+    expect(column.getChild("size")!.get(3)).toBe(6n);
+  });
+
+  it.each([
+    Buffer.from("inline"),
+    uri,
+    { uri, position: null, size: null },
+    null,
+  ])("retains the full declared range layout when seeded with %p", (image) => {
+    const schema = new Schema([blobWithRange("image")]);
+    const table = makeArrowTable([{ image }], { schema });
+    expect(table.schema).toEqual(schema);
+    expect(table.getChild("image")!.getChild("position")!.get(0)).toBeNull();
+  });
+
+  it.each([0, 4])(
+    "rejects position %s on a minimal schema before dropping keys",
+    (position) => {
+      expect(() =>
+        makeArrowTable(
+          [
+            { image: Buffer.from("inline") },
+            { image: { uri, position, size: 6 } },
+          ],
+          { schema: new Schema([blob("image")]) },
+        ),
+      ).toThrow(
+        /field image at row 1: Blob storage schema cannot store byte ranges/,
+      );
+    },
+  );
+
+  it("accepts omitted or null range fields on the minimal schema", () => {
+    const column = makeArrowTable(
+      [{ image: { uri, position: null, size: null } }],
+      {
+        schema: new Schema([blob("image")]),
+      },
+    ).getChild("image")!;
+    expect(column.getChild("uri")!.get(0)).toBe(uri);
+  });
+
+  it("validates ranges nested in structs and lists against their storage fields", () => {
+    const value = { uri, position: 4, size: 6 };
+    for (const field of [blob("image"), blobWithRange("image")]) {
+      const schema = new Schema([
+        new Field("info", new Struct([field]), true),
+        new Field("images", new List(field), true),
+      ]);
+      if ((field.type as Struct).children.length === 2) {
+        expect(() =>
+          makeArrowTable([{ info: { image: value } }], { schema }),
+        ).toThrow(/field info.image.*storage schema/);
+        expect(() => makeArrowTable([{ images: [value] }], { schema })).toThrow(
+          /field images\[0\].*storage schema/,
+        );
+      } else {
+        const table = makeArrowTable(
+          [{ info: { image: value }, images: [value] }],
+          { schema },
+        );
+        const info = table.getChild("info")!.get(0) as {
+          image: { position: bigint; size: bigint };
+        };
+        expect(info.image.position).toBe(4n);
+        const images = Array.from(
+          table.getChild("images")!.get(0) as Iterable<{
+            position: bigint;
+            size: bigint;
+          }>,
+        );
+        expect(images[0].size).toBe(6n);
+      }
+    }
   });
 });
 

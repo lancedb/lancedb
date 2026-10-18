@@ -246,6 +246,7 @@ impl BlobRangeRequest {
 ///
 /// `Struct<data, uri>` with the `lance.blob.v2` marker. Same layout Lance
 /// expects on write.
+/// Use [`blob_with_range`] to also accept external URI byte ranges.
 ///
 /// A blob column may be top-level or nested inside a struct or list. Blobs
 /// nested inside structs use dotted paths (e.g. `info.blob`) in the read APIs.
@@ -262,6 +263,36 @@ impl BlobRangeRequest {
 /// ```
 pub fn blob(name: impl AsRef<str>, nullable: bool) -> Field {
     lance::blob::blob_field(name.as_ref(), nullable)
+}
+
+/// Creates a blob v2 column that accepts external URI byte ranges.
+///
+/// Adds nullable `position: UInt64` and `size: UInt64` fields to the layout of
+/// [`blob`]. Set both to select `[position, position + size)` within `uri`, or
+/// leave both null to reference the whole file. The size must be positive and
+/// the range must not overflow `u64`. Inline bytes and null blobs are accepted
+/// too. External URIs must be within a registered base, unless the append uses
+/// [`crate::table::AddDataBuilder::allow_external_blob_outside_bases`].
+///
+/// ```
+/// use arrow_schema::{DataType, Schema};
+///
+/// let field = lancedb::blob_with_range("clip", true);
+/// let DataType::Struct(children) = field.data_type() else { unreachable!() };
+/// assert_eq!(children[2].name(), "position");
+/// assert_eq!(children[3].name(), "size");
+/// let schema = Schema::new(vec![field]);
+/// ```
+pub fn blob_with_range(name: impl AsRef<str>, nullable: bool) -> Field {
+    blob(name, nullable).with_data_type(DataType::Struct(
+        vec![
+            Field::new("data", DataType::LargeBinary, true),
+            Field::new("uri", DataType::Utf8, true),
+            Field::new("position", DataType::UInt64, true),
+            Field::new("size", DataType::UInt64, true),
+        ]
+        .into(),
+    ))
 }
 
 /// Options for creating a blob v2 column field with tier thresholds.

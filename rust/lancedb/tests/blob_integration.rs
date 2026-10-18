@@ -15,7 +15,7 @@ use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
 use lancedb::{
     Connection, Error, Result, Table,
-    blob::{BlobRangeRequest, blob},
+    blob::{BlobRangeRequest, blob, blob_with_range},
     connect, connect_namespace,
     database::listing::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
@@ -1607,6 +1607,88 @@ async fn external_uri_struct_round_trips_with_flag() -> Result<()> {
     let ids = collect_row_ids(&table).await?;
     let bytes = table.fetch_blobs("image", &ids).await?;
     assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_ranges_round_trip_with_registered_base_and_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"0123456789abcdef";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let base_uri = url::Url::from_directory_path(tmp.path())
+        .unwrap()
+        .to_string();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    for registered_base in [false, true] {
+        let field = blob_with_range("image", true);
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!("blob field is a struct");
+        };
+        let schema = Arc::new(Schema::new(vec![field]));
+        let name = if registered_base {
+            "registered"
+        } else {
+            "opt_in"
+        };
+        let table = db
+            .create_empty_table(name, schema.clone())
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    initial_bases: registered_base.then(|| {
+                        vec![BasePath {
+                            id: 1,
+                            name: Some("external".to_string()),
+                            path: base_uri.clone(),
+                            is_dataset_root: false,
+                        }]
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await?;
+        let values = StructArray::new(
+            children,
+            vec![
+                Arc::new(LargeBinaryArray::from(vec![
+                    None,
+                    None,
+                    None,
+                    Some(b"inline".as_slice()),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    None,
+                ])),
+                Arc::new(UInt64Array::from(vec![Some(0), Some(4), None, None])),
+                Arc::new(UInt64Array::from(vec![Some(6), Some(6), None, None])),
+            ],
+            None,
+        );
+        table
+            .add(RecordBatch::try_new(schema, vec![Arc::new(values)])?)
+            .allow_external_blob_outside_bases(!registered_base)
+            .execute()
+            .await?;
+        let reopened = db.open_table(name).execute().await?;
+        let ids = collect_row_ids(&reopened).await?;
+        let bytes = reopened.fetch_blobs("image", &ids).await?;
+        assert_eq!(bytes.value(0), &payload[..6]);
+        assert_eq!(bytes.value(1), &payload[4..10]);
+        assert_eq!(bytes.value(2), payload);
+        assert_eq!(bytes.value(3), b"inline");
+        let files = reopened.fetch_blob_files("image", &ids).await?;
+        assert_eq!(files[1].as_ref().unwrap().size(), 6);
+        assert_eq!(
+            files[1].as_ref().unwrap().read_range(1..3).await?,
+            &payload[5..7]
+        );
+    }
     Ok(())
 }
 

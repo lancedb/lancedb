@@ -4499,6 +4499,97 @@ mod tests {
         assert!(image.column_by_name("data").unwrap().is_null(0));
     }
 
+    #[tokio::test]
+    async fn add_external_blob_ranges_preserves_remote_wire_values() {
+        let field = crate::blob_with_range("image", true);
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!();
+        };
+        let schema = Arc::new(Schema::new(vec![field]));
+        // Registered external bases are enforced by the server, so remote
+        // clients send the URI and range without the local-only opt-in.
+        let uri = "s3://registered/payload.bin";
+        let image = StructArray::new(
+            children,
+            vec![
+                arrow_array::new_null_array(&DataType::LargeBinary, 2),
+                Arc::new(StringArray::from(vec![uri, uri])),
+                Arc::new(arrow_array::UInt64Array::from(vec![0, 4])),
+                Arc::new(arrow_array::UInt64Array::from(vec![6, 6])),
+            ],
+            None,
+        );
+        let input = RecordBatch::try_new(schema.clone(), vec![Arc::new(image)]).unwrap();
+        let describe_body = describe_response(&schema).into_bytes();
+        let payload = b"0123456789abcdef";
+        let fetched = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![
+                &payload[..6],
+                &payload[4..10],
+            ]))],
+        )
+        .unwrap();
+        let fetched_body = write_ipc_stream_uncompressed(&fetched);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    sender.send(request.body_mut().take().unwrap()).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version": 2}"#.to_vec())
+                        .unwrap()
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["column"], "image");
+                    assert_eq!(body["row_ids"], json!([0, 1]));
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(fetched_body.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+        );
+        table.add(input).execute().await.unwrap();
+        let body = collect_body(receiver.recv().unwrap()).await;
+        let batch = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.schema(), schema);
+        let image = batch.column(0).as_struct();
+        let positions = image
+            .column(2)
+            .as_primitive::<arrow::datatypes::UInt64Type>();
+        let sizes = image
+            .column(3)
+            .as_primitive::<arrow::datatypes::UInt64Type>();
+        assert_eq!(positions.values().as_ref(), &[0, 4]);
+        assert_eq!(sizes.values().as_ref(), &[6, 6]);
+        assert_eq!(image.column(1).as_string::<i32>().value(0), uri);
+        assert_eq!(image.column(1).as_string::<i32>().value(1), uri);
+        let bytes = table.fetch_blobs("image", &[0, 1]).await.unwrap();
+        assert_eq!(bytes.value(0), &payload[..6]);
+        assert_eq!(bytes.value(1), &payload[4..10]);
+    }
+
     #[rstest]
     #[case(true)]
     #[case(false)]
