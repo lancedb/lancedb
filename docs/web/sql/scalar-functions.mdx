@@ -143,7 +143,7 @@ punctuation. Equivalent to an `fts()` match query with fuzziness off, `AND`
 semantics and the simple tokenizer.
 
 **Index-accelerated.** When the column has a full-text index that suits the
-query, the planner uses it instead of scanning — which is the reason to prefer
+query, the planner uses it instead of scanning, which is the reason to prefer
 it over `LIKE` for keyword tests.
 
 ### JSON accessors {#json}

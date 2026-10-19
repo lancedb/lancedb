@@ -69,7 +69,7 @@ well as on LanceDB Enterprise (remote) tables.
 
 ## Connect to a table {#connect-to-a-table}
 
-The branch API is identical no matter how you connect — only the connection
+The branch API is identical no matter how you connect: only the connection
 itself differs between OSS and Enterprise. Establish a connection (`db`) and open
 a `table` (see [Ingesting data](/ingestion)), then use the same branch calls
 in every example that follows.
@@ -150,7 +150,7 @@ somewhere else, pass a branch name, a specific version, or both.
 
 ### Write to a branch {#write-to-a-branch}
 
-Writes go through the branch handle and stay there — the `main` handle keeps
+Writes go through the branch handle and stay there: the `main` handle keeps
 reporting its original row count. Listing branches returns a mapping of each
 branch name to its metadata, including the version it was forked from.
 
@@ -170,7 +170,7 @@ branch name to its metadata, including the version it was forked from.
 
 ### Reopen a branch {#reopen-a-branch}
 
-A branch outlives the handle that created it. Reopen it later by name — either
+A branch outlives the handle that created it. Reopen it later by name, either
 from an existing table handle or straight from the connection when you open the
 table. Both routes give you a writable handle tracking the branch's latest state.
 
@@ -193,7 +193,7 @@ table. Both routes give you a writable handle tracking the branch's latest state
 Deleting a branch removes it and its branch-local history; `main` is untouched.
 A deployment refuses to delete a branch whose columns have been promoted onto
 `main`, because `main` still depends on it.
-Before deleting a branch, make sure you've retained any results you need — see
+Before deleting a branch, make sure you've retained any results you need. See
 [Apply branch-tested changes to `main`](#apply-branch-tested-changes-to-main)
 below.
 
@@ -215,8 +215,8 @@ below.
 
 <Warning>
 A branch has its own writable history. Outside of the [diff and cherry-pick
-APIs](#compare-and-merge-a-branch-into-main) — which are available on
-LanceDB Enterprise and promote added columns only — LanceDB does not reconcile
+APIs](#compare-and-merge-a-branch-into-main) (which are available on
+LanceDB Enterprise and promote added columns only), LanceDB does not reconcile
 one branch's history with another or detect conflicts between them. To carry
 other accepted work forward, rerun the validated operation against `main` or
 explicitly write selected results to it.
@@ -242,7 +242,7 @@ If the result you want to retain is a set of inserted or updated rows, use
 matches incoming rows by key and does not merge branch histories.
 
 Read the rows you want from the reviewed branch, then upsert them into `main` on
-your key column — `id` in this example. Here, `candidate` is the branch handle:
+your key column (`id` in this example). Here, `candidate` is the branch handle:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -259,7 +259,7 @@ your key column — `id` in this example. Here, `candidate` is the branch handle
 </CodeGroup>
 
 With LanceDB Enterprise, the synchronous Python table raises for `to_arrow()`; read
-the branch's rows with a query instead -- see
+the branch's rows with a query instead. See
 [Avoid materializing the whole table](/search#avoid-materializing-the-whole-table).
 
 This operation transfers only the inserted or updated rows in its input. It does
@@ -293,8 +293,8 @@ row and index changes.
 
 `diff` reads the branch and `main` without modifying either, and returns what
 has changed: columns added, removed or changed, indexes added or removed, row
-counts, and a list of `errors` -- the reasons a cherry-pick of the branch could
-not land now. An empty list means it could.
+counts, and a list of `errors` (the reasons a cherry-pick of the branch could
+not land now). An empty list means it could.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -436,6 +436,6 @@ give you to work with table history. Choose these approaches based on whether yo
 | **[`checkout(version)`](/management/table#versioning-rollback-to-previous-versions)** | ❌ No | Read a historical version of `main` without forking. Read-only until you `restore`. |
 
 <Note>
-For linear version history — creating versions, listing them, rolling back, and
-tagging — see the [Versioning and Reproducibility](/management/table#versioning) guide.
+For linear version history (creating versions, listing them, rolling back, and
+tagging), see the [Versioning and Reproducibility](/management/table#versioning) guide.
 </Note>

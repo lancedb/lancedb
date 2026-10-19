@@ -24,7 +24,7 @@ import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/co
 
 Some columns cannot be written as a SQL expression: an embedding, a model call,
 an image decode. A function is a Python callable registered with the database,
-versioned, and then applied as a column — the code runs where the data is
+versioned, and then applied as a column. The code runs where the data is
 rather than pulling rows to your process.
 
 Registering and running a function needs a LanceDB Enterprise deployment with
@@ -61,7 +61,7 @@ your process, without the database, so unit tests stay ordinary tests:
 </CodeBlock>
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
-and `output_schema` together — one without the other is rejected. A scalar
+and `output_schema` together: one without the other is rejected. A scalar
 output must be non-nullable, because a physical NULL is what marks a
 computed-column row as unfilled. A named-struct output may declare nullable
 fields: whether a row has a result at all is the struct's own validity, which
@@ -181,7 +181,7 @@ pydantic**.
 <Note>
 The client version defaults `python_version`, so a function registered from a
 3.11 environment runs on 3.11 unless you say otherwise. That default is usually
-right and occasionally surprising -- pin it when the function is sensitive to it.
+right and occasionally surprising. Pin it when the function is sensitive to it.
 </Note>
 
 ## Failure handling {#failures}
@@ -200,8 +200,8 @@ count on the retry costing only the rows that did not complete.
 
 <Warning>
 The artifact is a **snapshot**: the function source, plus exactly the
-module-level names it references — modules as imports, importable classes and
-functions as imports, literals inlined.
+module-level names it references (modules as imports, importable classes and
+functions as imports, literals inlined).
 
 Code that reaches the module namespace another way is rejected where it can be
 seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,

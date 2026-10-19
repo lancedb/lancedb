@@ -244,8 +244,34 @@ impl BlobRangeRequest {
 
 /// Creates an Arrow field for a Lance blob v2 column.
 ///
-/// `Struct<data, uri>` with the `lance.blob.v2` marker. Same layout Lance
-/// expects on write.
+/// `Struct<data, uri, position, size>` with nullable children and the
+/// `lance.blob.v2` marker. Set both range fields to read a byte range from a
+/// URI, or leave both null for a whole file. Inline bytes are also supported.
+///
+/// # Migration
+///
+/// This helper previously returned only `data` and `uri`. Rust callers building
+/// a `StructArray` from this field must now supply four children: append typed
+/// null UInt64 arrays for `position` and `size` when no range is needed:
+///
+/// ```
+/// use std::sync::Arc;
+/// use arrow_array::{ArrayRef, LargeBinaryArray, StringArray, StructArray, UInt64Array};
+/// use arrow_schema::DataType;
+/// let field = lancedb::blob("image", true);
+/// let DataType::Struct(children) = field.data_type() else { unreachable!() };
+/// let image = StructArray::new(children.clone(), vec![
+///     Arc::new(LargeBinaryArray::from(vec![Some(b"image".as_slice())])) as ArrayRef,
+///     Arc::new(StringArray::from(vec![None::<&str>])),
+///     Arc::new(UInt64Array::new_null(1)),
+///     Arc::new(UInt64Array::new_null(1)),
+/// ], None);
+/// ```
+///
+/// Existing two-field tables remain writable: append and merge-insert fill
+/// missing range fields or drop all-null range fields to match the table.
+/// Non-null ranges cannot be written to a two-field table. Overwrite replaces
+/// the table schema with the input schema rather than normalizing its layout.
 ///
 /// A blob column may be top-level or nested inside a struct or list. Blobs
 /// nested inside structs use dotted paths (e.g. `info.blob`) in the read APIs.
@@ -261,8 +287,20 @@ impl BlobRangeRequest {
 /// ]);
 /// ```
 pub fn blob(name: impl AsRef<str>, nullable: bool) -> Field {
-    lance::blob::blob_field(name.as_ref(), nullable)
+    blob_with_options(name, nullable, BlobOptions::default())
 }
+
+static BLOB_STORAGE_TYPE: std::sync::LazyLock<DataType> = std::sync::LazyLock::new(|| {
+    DataType::Struct(
+        vec![
+            Field::new("data", DataType::LargeBinary, true),
+            Field::new("uri", DataType::Utf8, true),
+            Field::new("position", DataType::UInt64, true),
+            Field::new("size", DataType::UInt64, true),
+        ]
+        .into(),
+    )
+});
 
 /// Options for creating a blob v2 column field with tier thresholds.
 ///
@@ -293,6 +331,7 @@ pub use lance::blob::BlobFieldOptions as BlobOptions;
 /// ```
 pub fn blob_with_options(name: impl AsRef<str>, nullable: bool, options: BlobOptions) -> Field {
     lance::blob::blob_field_with_options(name.as_ref(), nullable, options)
+        .with_data_type(BLOB_STORAGE_TYPE.clone())
 }
 
 /// Returns true if `field` is a blob v2 column.
@@ -306,7 +345,7 @@ pub fn is_blob(field: &Field) -> bool {
 }
 
 /// Returns true if `field`, or any field nested under it, is a blob v2 column.
-fn field_tree_has_blob_v2(field: &Field) -> bool {
+pub(crate) fn field_tree_has_blob_v2(field: &Field) -> bool {
     if field.is_blob_v2() {
         return true;
     }
@@ -673,7 +712,21 @@ mod tests {
             field.metadata().get(ARROW_EXT_NAME_KEY).map(String::as_str),
             Some("lance.blob.v2")
         );
-        assert!(matches!(field.data_type(), DataType::Struct(_)));
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("expected struct")
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| (f.name().as_str(), f.data_type(), f.is_nullable()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("data", &DataType::LargeBinary, true),
+                ("uri", &DataType::Utf8, true),
+                ("position", &DataType::UInt64, true),
+                ("size", &DataType::UInt64, true),
+            ]
+        );
     }
 
     #[test]

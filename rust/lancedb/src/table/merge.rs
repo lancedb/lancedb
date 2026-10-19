@@ -298,7 +298,11 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
 // The JSON projection iterates target fields, so reject unknown source fields
 // before it can erase them. Missing and reordered fields remain valid merge
 // inputs; type compatibility is still checked by the cast and Lance writer.
-fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+pub(crate) fn validate_merge_source_fields(
+    input: &Fields,
+    target: &Fields,
+    parent: &str,
+) -> Result<()> {
     let mut names = HashSet::with_capacity(input.len());
     for field in input {
         let path = if parent.is_empty() {
@@ -317,7 +321,9 @@ fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -
             .ok_or_else(|| Error::InvalidInput {
                 message: format!("merge source field '{path}' is not present in the table schema"),
             })?;
-        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        if !crate::blob::is_blob(target_field) {
+            validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        }
     }
     Ok(())
 }
@@ -340,7 +346,13 @@ fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -
             | DataType::LargeListView(target),
         )
         | (DataType::Map(input, _), DataType::Map(target, _)) => {
-            validate_merge_source_type(input.data_type(), target.data_type(), path)
+            // Collection items carry extension metadata just like named fields.
+            // Blob coercion, rather than struct validation, checks range narrowing.
+            if crate::blob::is_blob(target) {
+                Ok(())
+            } else {
+                validate_merge_source_type(input.data_type(), target.data_type(), path)
+            }
         }
         (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
         (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
@@ -357,14 +369,32 @@ pub(crate) async fn execute_merge_insert(
     new_data: Box<dyn Scannable>,
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
+    let schema = table.schema().await?;
     super::computed_columns::ensure_no_function_bindings_for_mutation(
-        table.schema().await?.as_ref(),
+        schema.as_ref(),
         "merge_insert",
     )?;
+    // Normalize blob layouts and JSON extension metadata just as on append.
+    // Keep arrow.json text labelled until Lance encodes it as JSONB.
+    let cast_schema = if crate::blob::has_blob_columns(&schema)
+        || schema
+            .fields()
+            .iter()
+            .any(|field| lance_arrow::json::has_json_fields(field))
+    {
+        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
+        Some(schema.as_ref())
+    } else {
+        None
+    };
     match lsm::lsm_dispatch_decision(table, &params).await? {
         lsm::LsmDispatch::Lsm(plan) => {
+            let source = execute_stream(
+                merge_source_plan(new_data, cast_schema)?,
+                Arc::new(TaskContext::default()),
+            )?;
             let future =
-                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
+                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, source);
             return match params.timeout {
                 Some(timeout) => match tokio::time::timeout(timeout, future).await {
                     Ok(result) => result,
@@ -379,19 +409,6 @@ pub(crate) async fn execute_merge_insert(
     }
 
     let dataset = table.dataset.get().await?;
-    let schema = arrow_schema::Schema::from(dataset.schema());
-    // JSON source fields must carry the stored extension metadata just as on
-    // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
-    let cast_schema = if schema
-        .fields()
-        .iter()
-        .any(|field| lance_arrow::json::has_json_fields(field))
-    {
-        validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
-        Some(&schema)
-    } else {
-        None
-    };
     let collect_threshold_bytes = params
         .source_collect_threshold_bytes
         .unwrap_or(DEFAULT_SOURCE_COLLECT_THRESHOLD_BYTES);
@@ -478,6 +495,18 @@ pub(crate) enum MergeSource {
     Batches(Vec<RecordBatch>),
 }
 
+/// Plan a scan of `source`, cast to `cast_schema` when set.
+fn merge_source_plan(
+    source: Box<dyn Scannable>,
+    cast_schema: Option<&arrow_schema::Schema>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let plan: Arc<dyn ExecutionPlan> = Arc::new(ScannableExec::new(source, None));
+    match cast_schema {
+        Some(schema) => super::datafusion::cast::cast_to_table_schema(plan, schema),
+        None => Ok(plan),
+    }
+}
+
 /// Prepare a merge source so the merge join can see its statistics.
 ///
 /// * A rescannable source becomes a provider reporting its exact row count.
@@ -494,10 +523,7 @@ pub(crate) async fn prepare_merge_source(
     collect_threshold_bytes: usize,
 ) -> Result<MergeSource> {
     let rescannable = source.rescannable();
-    let mut plan: Arc<dyn ExecutionPlan> = Arc::new(ScannableExec::new(source, None));
-    if let Some(schema) = cast_schema {
-        plan = super::datafusion::cast::cast_to_table_schema(plan, schema)?;
-    }
+    let plan = merge_source_plan(source, cast_schema)?;
     if rescannable {
         return Ok(MergeSource::Provider(Arc::new(ScannableProvider::new(
             plan,
