@@ -382,6 +382,13 @@ await table.createIndex("vector", {
 ```
 
 ```ts
+// Or size the partitions by row count instead of choosing how many.
+await table.createIndex("vector", {
+  config: lancedb.Index.ivfPq({ targetPartitionSize: 4096 }),
+});
+```
+
+```ts
 // Or create a Scalar index
 await table.createIndex("my_float_col");
 ```

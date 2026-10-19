@@ -26,8 +26,8 @@ export interface IvfPqOptions {
    * This is an alternative to `numPartitions`. When it is set and
    * `numPartitions` is not, the number of partitions is derived by dividing
    * the number of rows by this value. When both are set, `numPartitions` is
-   * used and this value is ignored. When neither is set, a default target
-   * that depends on the index type is used.
+   * used and this value is ignored. When neither is set, the target is
+   * 8192 rows.
    *
    * Larger partitions mean fewer of them, which makes the first part of the
    * search (picking the right partitions) faster and the second part
@@ -147,8 +147,8 @@ export interface IvfRqOptions {
    * This is an alternative to `numPartitions`. When it is set and
    * `numPartitions` is not, the number of partitions is derived by dividing
    * the number of rows by this value. When both are set, `numPartitions` is
-   * used and this value is ignored. When neither is set, a default target
-   * that depends on the index type is used.
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
    *
    * Larger partitions mean fewer of them, which makes the first part of the
    * search (picking the right partitions) faster and the second part
@@ -258,8 +258,8 @@ export interface HnswPqOptions {
    * This is an alternative to `numPartitions`. When it is set and
    * `numPartitions` is not, the number of partitions is derived by dividing
    * the number of rows by this value. When both are set, `numPartitions` is
-   * used and this value is ignored. When neither is set, a default target
-   * that depends on the index type is used.
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
    *
    * Larger partitions mean fewer of them, which makes the first part of the
    * search (picking the right partitions) faster and the second part
@@ -389,8 +389,8 @@ export interface HnswSqOptions {
    * This is an alternative to `numPartitions`. When it is set and
    * `numPartitions` is not, the number of partitions is derived by dividing
    * the number of rows by this value. When both are set, `numPartitions` is
-   * used and this value is ignored. When neither is set, a default target
-   * that depends on the index type is used.
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
    *
    * Larger partitions mean fewer of them, which makes the first part of the
    * search (picking the right partitions) faster and the second part
@@ -481,8 +481,8 @@ export interface IvfFlatOptions {
    * This is an alternative to `numPartitions`. When it is set and
    * `numPartitions` is not, the number of partitions is derived by dividing
    * the number of rows by this value. When both are set, `numPartitions` is
-   * used and this value is ignored. When neither is set, a default target
-   * that depends on the index type is used.
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
    *
    * Larger partitions mean fewer of them, which makes the first part of the
    * search (picking the right partitions) faster and the second part
