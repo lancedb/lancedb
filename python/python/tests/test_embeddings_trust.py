@@ -114,6 +114,33 @@ def test_restored_trust_flag_follows_allowlist_when_absent():
     assert restore("sentence-transformers", {"name": "org/model"}).trust_remote_code
 
 
+def test_created_function_records_trust_flag():
+    # Otherwise a new table using the default would look like a pre-fix table,
+    # where a missing flag meant True.
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=SentenceTransformerEmbeddings.create(name="org/model"),
+    )
+    assert get_registry().function_to_metadata(conf)["model"] == {
+        "name": "org/model",
+        "trust_remote_code": False,
+    }
+
+    get_registry().allow_remote_code("org/model")
+    metadata = get_registry().get_table_metadata([conf])
+    restored = get_registry().parse_functions(metadata)["vector"].function
+    assert restored.trust_remote_code is False
+
+
+def test_huggingface_missing_flag_keeps_false_default():
+    # huggingface always defaulted to False, so approval must not flip it.
+    get_registry().allow_remote_code("org/model")
+    with patch("lancedb.embeddings.transformers.attempt_import_or_raise"):
+        func = restore("huggingface", {"name": "org/model"})
+    assert func.trust_remote_code is False
+
+
 def test_restored_explicit_false_stays_false():
     get_registry().allow_remote_code("org/model")
     func = restore(
@@ -178,7 +205,7 @@ def test_missing_flag_does_not_inherit_unapproved_trust_default():
     registry.register("legacy-trust-default")(LegacySentenceTransformer)
     try:
         func = restore("legacy-trust-default", {"name": "attacker/model"})
-        assert isinstance(func, UntrustedEmbeddingFunction)
+        assert not func.trust_remote_code
     finally:
         del registry._functions["legacy-trust-default"]
 
