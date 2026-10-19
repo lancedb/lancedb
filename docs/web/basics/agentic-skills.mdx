@@ -13,7 +13,7 @@ import {
 } from '/snippets/build_with_ai_agents.mdx';
 
 A coding agent writing LanceDB code from memory writes whatever was in its
-training data -- often an older API, sometimes one that never existed. The
+training data: often an older API, sometimes one that never existed. The
 LanceDB agent plugin fixes that by supplying the current reference at the point
 the agent needs it.
 
@@ -42,8 +42,8 @@ npx plugins add lancedb/lancedb-agent-plugins
 
 The [`plugins`](https://www.npmjs.com/package/plugins) installer shown under
 **Other agents** is a cross-tool option. It detects which agent CLIs are on your
-`PATH` — Cursor, GitHub Copilot CLI, VS Code, Grok Build, and Kimi Code, as well
-as Claude Code and Codex — and installs through each one's native plugin system.
+`PATH` (Cursor, GitHub Copilot CLI, VS Code, Grok Build, and Kimi Code, as well
+as Claude Code and Codex) and installs through each one's native plugin system.
 
 The plugin supplements the agent's training data with current LanceDB
 instructions. To pick up later revisions, refresh the marketplace:
