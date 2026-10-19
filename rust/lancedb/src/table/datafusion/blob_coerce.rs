@@ -1299,7 +1299,7 @@ mod tests {
         nesting: &[&str],
         null_depth: Option<usize>,
     ) -> RecordBatch {
-        nested_layout_batch_with_options(wide, id, range, nesting, null_depth, false)
+        nested_layout_batch_with_options(wide, id, range, nesting, null_depth, &[])
     }
 
     fn nested_layout_batch_with_options(
@@ -1308,7 +1308,7 @@ mod tests {
         range: Option<u64>,
         nesting: &[&str],
         null_depth: Option<usize>,
-        caption: bool,
+        captions: &[&str],
     ) -> RecordBatch {
         // Ancestor validity must not introduce nulls into a required blob child.
         let mut field = if wide {
@@ -1334,9 +1334,11 @@ mod tests {
                 "struct" => {
                     let mut fields = vec![Arc::new(field)];
                     let mut columns = vec![array];
-                    if caption && depth + 1 == nesting.len() {
-                        fields.push(Arc::new(Field::new("caption", DataType::Utf8, true)));
-                        columns.push(Arc::new(StringArray::from(vec!["keep me"])));
+                    if depth + 1 == nesting.len() {
+                        for caption in captions {
+                            fields.push(Arc::new(Field::new("caption", DataType::Utf8, true)));
+                            columns.push(Arc::new(StringArray::from(vec![*caption])));
+                        }
                     }
                     let fields: Fields = fields.into();
                     array = Arc::new(StructArray::new(fields.clone(), columns, nulls));
@@ -1508,7 +1510,8 @@ mod tests {
                 None,
             )
         };
-        let input = nested_layout_batch_with_options(wide_source, 1, None, nesting, None, true);
+        let input =
+            nested_layout_batch_with_options(wide_source, 1, None, nesting, None, &["keep me"]);
         let version = if remote {
             None
         } else {
@@ -1536,7 +1539,8 @@ mod tests {
         }
 
         // A declared sibling must survive normalization in every layout direction.
-        let initial = nested_layout_batch_with_options(wide_target, 0, None, nesting, None, true);
+        let initial =
+            nested_layout_batch_with_options(wide_target, 0, None, nesting, None, &["keep me"]);
         let schema = initial.schema();
         let (table, receiver) = if remote {
             let (table, receiver) = remote_layout_table(schema.as_ref());
@@ -1574,7 +1578,7 @@ mod tests {
                     None,
                     nesting,
                     None,
-                    true
+                    &["keep me"]
                 )]
             );
         } else {
@@ -1628,6 +1632,90 @@ mod tests {
                 }
             }
             assert!(found, "declared caption was lost");
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "struct"])]
+    #[case(&["large_list", "struct", "list", "struct"])]
+    #[tokio::test]
+    async fn nested_blob_append_rejects_duplicate_siblings(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_source: bool,
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] remote: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+
+        let initial =
+            nested_layout_batch_with_options(wide_target, 0, None, nesting, None, &["keep me"]);
+        let schema = initial.schema();
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let (table, receiver) = if remote {
+            let (table, receiver) = remote_layout_table(schema.as_ref());
+            (table, Some(receiver))
+        } else {
+            (
+                db.create_table("captions", initial)
+                    .execute()
+                    .await
+                    .unwrap(),
+                None,
+            )
+        };
+        let snapshot = if remote {
+            None
+        } else {
+            Some((
+                table.version().await.unwrap(),
+                table
+                    .query()
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap(),
+            ))
+        };
+        // Construct distinct arrays for the duplicate names: selecting only the
+        // first matching field must not silently discard the second value.
+        let input = nested_layout_batch_with_options(
+            wide_source,
+            1,
+            None,
+            nesting,
+            None,
+            &["first", "second"],
+        );
+        let error = table.add(input).execute().await.unwrap_err().to_string();
+        assert!(
+            error.contains("caption") && error.contains("specified more than once"),
+            "{error}"
+        );
+        if let Some(receiver) = receiver {
+            assert!(
+                receiver.try_recv().is_err(),
+                "ambiguous append reached server"
+            );
+        } else {
+            let (version, before) = snapshot.unwrap();
+            assert_eq!(table.version().await.unwrap(), version);
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+            assert_eq!(table.schema().await.unwrap(), schema);
+            let batches = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches, before);
         }
     }
 

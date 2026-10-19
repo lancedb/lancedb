@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -234,6 +235,7 @@ pub struct PreprocessingOutput {
 /// Fields can be in different orders, so match by name.
 ///
 /// If a column exists in input but not in table, error (no extra columns allowed).
+/// Input field names must be unique within each struct.
 ///
 /// If a column exists in table but not in input, that is okay - it may be filled with nulls.
 ///
@@ -245,7 +247,13 @@ fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
 }
 
 fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
     for field in input {
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("field '{}' is specified more than once", field.name()),
+            });
+        }
         match table.iter().find(|f| f.name() == field.name()) {
             None => {
                 return Err(Error::InvalidInput {
@@ -362,11 +370,27 @@ mod tests {
             target_kind,
             Field::new(
                 "target_item",
-                DataType::Struct(vec![legacy_image.clone(), caption].into()),
+                DataType::Struct(vec![caption.clone(), legacy_image.clone()].into()),
                 true,
             ),
         );
+        // Declared siblings can be reordered, but must not occur more than once.
         super::validate_schema(&input, &target).unwrap();
+        let duplicate = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone(), caption].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&duplicate, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("specified more than once"),
+            "{error}"
+        );
         // Item names need not match, and blob children still reach range coercion.
         super::validate_schema(
             &schema(source_kind, image.with_name("source_item")),
