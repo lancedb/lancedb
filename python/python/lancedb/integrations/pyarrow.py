@@ -52,6 +52,8 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
             raise NotImplementedError("memory_pool not supported")
 
     def count_rows(self):
+        if isinstance(self.filter, pa.compute.Expression):
+            return self.to_table().num_rows
         return self.table.count_rows(self.filter)
 
     def from_batches(self, **kwargs):
@@ -83,6 +85,8 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
         return self.to_reader().read_all()
 
     def to_reader(self, *, limit: Optional[int] = None):
+        if isinstance(self.filter, pa.compute.Expression):
+            return self._to_reader_with_expression(limit=limit)
         query = self.table.search()
         # Disable the builtin limit
         if limit is None:
@@ -98,13 +102,30 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
             query = query.where(self.filter, prefilter=True)
         return query.to_batches(batch_size=self.batch_size)
 
+    def _to_reader_with_expression(self, *, limit: Optional[int] = None):
+        # LanceDB filters are SQL strings, but engines such as DuckDB push down
+        # pyarrow compute expressions.  Scan the table and apply the filter and
+        # projection with pyarrow, since the filter may reference columns that
+        # are not part of the projection.
+        if limit is not None and limit <= 0:
+            raise ValueError("limit must be positive")
+        query = self.table.search().limit(self.table.count_rows())
+        scanner = pa.dataset.Scanner.from_batches(
+            query.to_batches(batch_size=self.batch_size),
+            columns=self.columns,
+            filter=self.filter,
+        )
+        if limit is None:
+            return scanner.to_reader()
+        return scanner.head(limit).to_reader()
+
 
 class PyarrowDatasetAdapter(pa.dataset.Dataset):
     def __init__(self, table: Table):
         self.table = table
 
     def count_rows(self, filter: Optional[Filter] = None):
-        return self.table.count_rows(filter)
+        return self.scanner(filter=filter).count_rows()
 
     def get_fragments(self, filter: Optional[Filter] = None):
         raise NotImplementedError
