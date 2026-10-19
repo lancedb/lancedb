@@ -31,8 +31,8 @@ REFRESH COLUMN doubled ON my_table
 ```
 </CodeGroup>
 
-The refresh commits ordinary table versions -- the values, then a
-metadata-only record of the inputs they were computed from -- so
+The refresh commits ordinary table versions (the values, then a
+metadata-only record of the inputs they were computed from), so
 [versioning](/management/table#versioning) applies to it like any other write.
 
 <Note>
@@ -53,7 +53,7 @@ column and then ingesting more data does not mean recomputing the backfill.
 derives from `x` and a row's `x` is later updated, `doubled` keeps its old value
 until the next refresh recomputes it.
 
-That is what makes the call idempotent and safe to retry -- but unlike a
+That is what makes the call idempotent and safe to retry. However, unlike a
 spreadsheet formula, nothing is recomputed until you refresh, so a derived
 column is stale between an update and the next refresh.
 
@@ -122,8 +122,8 @@ values can remain after a failure.
 Either way, recover by fixing the cause and refreshing again. The new refresh
 fills rows that are still empty or whose inputs changed, and normally skips
 values that were kept. That is not guaranteed: a refresh can recompute values
-that were already written -- for example when the record of the inputs they
-were computed from was not saved -- so do not count on a retry costing only the
+that were already written (for example when the record of the inputs they
+were computed from was not saved), so do not count on a retry costing only the
 rows that did not complete.
 
 {/*

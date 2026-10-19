@@ -215,7 +215,7 @@ Renaming is not supported on a local directory connection. In LanceDB Enterprise
 whether a table can be renamed or cloned at all depends on how the deployment
 stores its catalog.
 
-A **shallow** clone -- the default -- references the source's data files rather
+A **shallow** clone (the default) references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training
 set to the exact version a model saw.
@@ -286,7 +286,7 @@ returned job has already finished.
 
 ## Data types {#data-types}
 
-A table's schema is an **Arrow schema** -- there is no separate LanceDB type
+A table's schema is an **Arrow schema**: there is no separate LanceDB type
 system mapped onto storage, so a column is the same object to the query engine
 as it is to the format.
 
@@ -298,7 +298,7 @@ as it is to the format.
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
 | Lance extensions | vectors, [JSON](/sql/data-types#json), [blobs](#multimodal), bfloat16 |
 
-A vector column is a `fixed_size_list<float32, dim>` -- an ordinary Arrow type,
+A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
 arithmetic rather than scalar.
 
@@ -307,7 +307,7 @@ extension types and pseudo-columns.
 
 ## Multimodal data {#multimodal}
 
-Binary data -- images, audio, video, model artifacts -- lives in the table
+Binary data (images, audio, video, model artifacts) lives in the table
 beside the structured columns and embeddings that describe it, and is governed
 by the same versioning and search.
 
@@ -520,7 +520,7 @@ precision does.
 
 ## Schema evolution {#schema}
 
-Schema evolution enables non-breaking modifications to a database table's structure — such as adding columns, altering data types, or dropping fields — to adapt to evolving data requirements without service interruptions. 
+Schema evolution enables non-breaking modifications to a database table's structure (such as adding columns, altering data types, or dropping fields) to adapt to evolving data requirements without service interruptions.
 LanceDB supports ACID-compliant schema evolution through granular operations (add/alter/drop columns), allowing you to:
 
 * Iterate Safely: Modify schemas in production with versioned datasets and backward compatibility
@@ -575,7 +575,7 @@ First, let's create a sample table with product data to demonstrate schema evolu
 </CodeGroup>
 
 <Note>
-Columns derived from existing data -- SQL expressions over other columns -- are
+Columns derived from existing data (SQL expressions over other columns) are
 covered in [Data evolution](/feature-engineering/data-evolution), because
 deriving values is a feature-engineering job rather than a schema one.
 </Note>
@@ -776,7 +776,7 @@ Changing data types requires rewriting the column data and may be resource-inten
 
 ### Update field metadata {#schema-update-field-metadata}
 
-Each column in a LanceDB table can carry a small key/value map of Arrow field metadata — useful
+Each column in a LanceDB table can carry a small key/value map of Arrow field metadata, which is useful
 for annotating columns with units, provenance, PII flags, embedding model versions, or any other
 schema-level context your application needs.
 
@@ -788,7 +788,7 @@ the new `version`.
 
 Each update targets one field by **dot-path**: top-level columns are addressed by name (for
 example `"embedding"`), and nested fields by their full path (for example `"address.zip"`). By
-default, the keys you pass are **merged** into the field's existing metadata — keys you do not
+default, the keys you pass are **merged** into the field's existing metadata: keys you do not
 mention are preserved, and passing `None` (Python) or `null` (TypeScript) deletes a key. Set
 `replace: true` to swap the field's entire metadata map instead of merging.
 
@@ -823,8 +823,8 @@ To overwrite a field's metadata entirely instead of merging, set `replace` to `t
 </CodeGroup>
 
 <Tip>
-You can pass multiple updates in a single call to change metadata on several fields at once —
-each call commits a single new table version.
+You can pass multiple updates in a single call to change metadata on several fields at once.
+Each call commits a single new table version.
 </Tip>
 
 #### Canonical metadata keys {#schema-canonical-metadata-keys}
@@ -908,7 +908,7 @@ Remove several columns at once for efficiency:
 <Warning title="Dropping a column is undone only by restoring a version">
 Dropping a column changes the latest version only. Until
 [cleanup](/maintenance/cleanup) prunes the versions from before the drop,
-[restoring](#versioning) one of them brings the column and its values back --
+[restoring](#versioning) one of them brings the column and its values back,
 along with the rest of the table as it was then. Once those versions are
 pruned, the drop cannot be undone, so check before dropping a column you may
 need.
@@ -1071,11 +1071,11 @@ Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
 let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
 `"q3-evaluation"`) to specific versions and check those out by name. They are
 conceptually similar to git tags, and unlike numeric versions, **tagged versions
-are never pruned** -- a tagged version that is older than the retention window and
+are never pruned**. A tagged version that is older than the retention window and
 is not the latest stops cleanup instead (see the cleanup note at the bottom of this
 page).
 
-The tags API supports the standard CRUD operations — create, list, update, delete —
+The tags API supports the standard CRUD operations (create, list, update, delete),
 plus checking out by tag name.
 
 <CodeGroup>
@@ -1099,7 +1099,7 @@ deletion, the underlying table version becomes eligible for cleanup again.
 
 ### Branches {#versioning-branches}
 
-Beyond linear history, LanceDB also supports **branches** — isolated, writable
+Beyond linear history, LanceDB also supports **branches**: isolated, writable
 lines of history forked from `main` (or a specific version). Whereas tags and
 `checkout` give you read-only views of existing versions, a branch has its own
 writable history, making it ideal for experiments, backfills, and migrations

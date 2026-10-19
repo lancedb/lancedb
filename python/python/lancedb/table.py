@@ -341,10 +341,19 @@ def _blob_input_to_arrow(data: Any, schema: Optional[pa.Schema]) -> Optional[pa.
             if isinstance(field.type, pa.ExtensionType)
             else field.type
         )
-        storage = pa.array(
-            [_blob_value_to_storage(value) for value in values[field.name]],
-            type=storage_type,
-        )
+        storage_values = [_blob_value_to_storage(value) for value in values[field.name]]
+        missing_range_fields = {"position", "size"} - set(storage_type.names)
+        # Arrow silently ignores dictionary keys absent from the storage type.
+        if missing_range_fields and any(
+            value is not None
+            and any(value.get(name) is not None for name in missing_range_fields)
+            for value in storage_values
+        ):
+            raise ValueError(
+                f"Blob column '{field.name}' storage schema cannot store byte ranges. "
+                "Create the column with lancedb.blob() to use position and size."
+            )
+        storage = pa.array(storage_values, type=storage_type)
         column = (
             pa.ExtensionArray.from_storage(field.type, storage)
             if isinstance(field.type, pa.ExtensionType)

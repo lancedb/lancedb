@@ -2306,6 +2306,90 @@ def test_add_external_uri_string_round_trips_with_flag(tmp_path):
 
 
 @pytest.mark.parametrize("as_pandas", [False, True])
+@pytest.mark.parametrize("as_blob", [False, True])
+@pytest.mark.parametrize("minimal_schema", [False, True])
+@pytest.mark.parametrize("position", [0, 4])
+def test_add_external_blob_range_matches_storage_schema(
+    tmp_path, as_pandas, as_blob, minimal_schema, position
+):
+    payload = b"0123456789abcdef"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    field = (
+        pa.field("image", pa.large_binary(), metadata={"lance-encoding:blob": "true"})
+        if minimal_schema
+        else lancedb.blob("image")
+    )
+    db = lancedb.connect(tmp_path / "db")
+    table = db.create_table(
+        "ranges", schema=pa.schema([pa.field("id", pa.int64()), field])
+    )
+    value = (
+        Blob.from_uri(blob_path.as_uri(), position=position, size=6)
+        if as_blob
+        else {"uri": blob_path.as_uri(), "position": position, "size": 6}
+    )
+    rows = [{"id": 1, "image": b"inline"}, {"id": 2, "image": value}]
+    data = pd.DataFrame(rows) if as_pandas else rows
+
+    if minimal_schema:
+        with pytest.raises(ValueError, match="Blob column 'image'.*storage schema"):
+            table.add(data, allow_external_blob_outside_bases=True)
+        assert table.count_rows() == 0
+    else:
+        table.add(data, allow_external_blob_outside_bases=True)
+        by_id = _row_ids_by_id(table)
+        assert table.fetch_blobs("image", [by_id[1], by_id[2]]).to_pylist() == [
+            b"inline",
+            payload[position : position + 6],
+        ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
+def test_add_minimal_blob_schema_preserves_whole_file_and_inline_values(
+    tmp_path, as_pandas
+):
+    payload = b"whole-file"
+    blob_path = tmp_path / "payload.bin"
+    blob_path.write_bytes(payload)
+    uri = blob_path.as_uri()
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "image", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+            ),
+        ]
+    )
+    table = lancedb.connect(tmp_path / "db").create_table("minimal", schema=schema)
+    values = [
+        None,
+        b"inline",
+        Blob.from_bytes(b"from-blob"),
+        uri,
+        Blob.from_uri(uri),
+        {"uri": uri, "position": None, "size": None},
+    ]
+    rows = [{"id": i, "image": value} for i, value in enumerate(values)]
+    table.add(
+        pd.DataFrame(rows) if as_pandas else rows,
+        allow_external_blob_outside_bases=True,
+    )
+
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs(
+        "image", [by_id[i] for i in range(len(values))]
+    ).to_pylist() == [
+        None,
+        b"inline",
+        b"from-blob",
+        payload,
+        payload,
+        payload,
+    ]
+
+
+@pytest.mark.parametrize("as_pandas", [False, True])
 def test_add_bytes_and_uri_in_one_batch_preserves_external_uri(tmp_path, as_pandas):
     payload = b"external-payload"
     blob_path = tmp_path / "payload.bin"
