@@ -1299,6 +1299,17 @@ mod tests {
         nesting: &[&str],
         null_depth: Option<usize>,
     ) -> RecordBatch {
+        nested_layout_batch_with_options(wide, id, range, nesting, null_depth, false)
+    }
+
+    fn nested_layout_batch_with_options(
+        wide: bool,
+        id: i64,
+        range: Option<u64>,
+        nesting: &[&str],
+        null_depth: Option<usize>,
+        caption: bool,
+    ) -> RecordBatch {
         // Ancestor validity must not introduce nulls into a required blob child.
         let mut field = if wide {
             crate::blob("image", false)
@@ -1321,8 +1332,14 @@ mod tests {
             let nulls = (null_depth == Some(depth)).then(|| NullBuffer::from(vec![false]));
             let data_type = match *kind {
                 "struct" => {
-                    let fields: Fields = vec![Arc::new(field)].into();
-                    array = Arc::new(StructArray::new(fields.clone(), vec![array], nulls));
+                    let mut fields = vec![Arc::new(field)];
+                    let mut columns = vec![array];
+                    if caption && depth + 1 == nesting.len() {
+                        fields.push(Arc::new(Field::new("caption", DataType::Utf8, true)));
+                        columns.push(Arc::new(StringArray::from(vec!["keep me"])));
+                    }
+                    let fields: Fields = fields.into();
+                    array = Arc::new(StructArray::new(fields.clone(), columns, nulls));
                     DataType::Struct(fields)
                 }
                 "list" => {
@@ -1456,6 +1473,162 @@ mod tests {
                 .unwrap()
         });
         (table, receiver)
+    }
+
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "struct"])]
+    #[case(&["large_list", "struct", "list", "struct"])]
+    #[tokio::test]
+    async fn nested_blob_append_validates_siblings(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_source: bool,
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] remote: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+        use futures::StreamExt;
+        use http_body::Body;
+
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let initial = nested_layout_batch(wide_target, 0, None, nesting);
+        let schema = initial.schema();
+        let (table, receiver) = if remote {
+            let (table, receiver) = remote_layout_table(schema.as_ref());
+            (table, Some(receiver))
+        } else {
+            (
+                db.create_table("no_caption", initial)
+                    .execute()
+                    .await
+                    .unwrap(),
+                None,
+            )
+        };
+        let input = nested_layout_batch_with_options(wide_source, 1, None, nesting, None, true);
+        let version = if remote {
+            None
+        } else {
+            Some(table.version().await.unwrap())
+        };
+        let error = table
+            .add(input.clone())
+            .execute()
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("does not exist"),
+            "{error}"
+        );
+        if let Some(receiver) = receiver {
+            assert!(
+                receiver.try_recv().is_err(),
+                "invalid append reached server"
+            );
+        } else {
+            assert_eq!(table.version().await.unwrap(), version.unwrap());
+            assert_eq!(table.count_rows(None).await.unwrap(), 1);
+            assert_eq!(table.schema().await.unwrap(), schema);
+        }
+
+        // A declared sibling must survive normalization in every layout direction.
+        let initial = nested_layout_batch_with_options(wide_target, 0, None, nesting, None, true);
+        let schema = initial.schema();
+        let (table, receiver) = if remote {
+            let (table, receiver) = remote_layout_table(schema.as_ref());
+            (table, Some(receiver))
+        } else {
+            (
+                db.create_table("with_caption", initial)
+                    .execute()
+                    .await
+                    .unwrap(),
+                None,
+            )
+        };
+        table.add(input).execute().await.unwrap();
+        if let Some(receiver) = receiver {
+            let mut body = receiver.recv().unwrap();
+            let mut bytes = Vec::new();
+            while let Some(frame) =
+                futures::stream::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx))
+                    .next()
+                    .await
+            {
+                bytes.extend_from_slice(frame.unwrap().data_ref().unwrap());
+            }
+            let batches =
+                arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+                    .unwrap()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+            assert_eq!(
+                batches,
+                vec![nested_layout_batch_with_options(
+                    wide_target,
+                    1,
+                    None,
+                    nesting,
+                    None,
+                    true
+                )]
+            );
+        } else {
+            assert_eq!(table.count_rows(None).await.unwrap(), 2);
+            assert_eq!(table.schema().await.unwrap(), schema);
+            let batches = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let mut found = false;
+            for batch in batches {
+                let ids = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                let Some(row) = (0..ids.len()).find(|row| ids.value(*row) == 1) else {
+                    continue;
+                };
+                let mut array = batch.column(1).slice(row, 1);
+                for kind in nesting {
+                    array = match *kind {
+                        "list" => array.as_any().downcast_ref::<ListArray>().unwrap().value(0),
+                        "large_list" => array
+                            .as_any()
+                            .downcast_ref::<LargeListArray>()
+                            .unwrap()
+                            .value(0),
+                        "struct" => {
+                            let values = array.as_any().downcast_ref::<StructArray>().unwrap();
+                            if let Some(caption) = values.column_by_name("caption") {
+                                assert_eq!(
+                                    caption
+                                        .as_any()
+                                        .downcast_ref::<StringArray>()
+                                        .unwrap()
+                                        .value(0),
+                                    "keep me"
+                                );
+                                found = true;
+                                break;
+                            }
+                            values.column(0).clone()
+                        }
+                        _ => unreachable!(),
+                    };
+                }
+            }
+            assert!(found, "declared caption was lost");
+        }
     }
 
     #[cfg(feature = "remote")]
