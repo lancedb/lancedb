@@ -35,7 +35,7 @@ SELECT * FROM documents TABLESAMPLE SYSTEM (10)
 | `SYSTEM` | `BLOCK` | **Lance fragments**, and takes whatever rows they hold |
 
 `BERNOULLI` gives a genuinely uniform sample and reads across the whole table to
-get it. `SYSTEM` reads far less -- it skips entire fragments -- but the sample is
+get it. `SYSTEM` reads far less (it skips entire fragments), but the sample is
 only as uniform as the data's layout. If rows were written in an order that
 correlates with what you are measuring, a fragment sample inherits that
 correlation.
@@ -46,7 +46,7 @@ independent row sampling. Omitting the method gives
 
 ## Repeatability {#repeatable}
 
-Without a seed, every execution resamples -- running the same query twice gives
+Without a seed, every execution resamples: running the same query twice gives
 different rows. `REPEATABLE` fixes the draw:
 
 ```sql
@@ -98,5 +98,5 @@ would draw from are not all in the fragments yet.
 ## Sampling outside SQL {#sdk}
 
 For a training loop rather than a query, the SDKs read a table in a shuffled
-order without going through SQL at all -- see [Training](/training/data-loading), where a
+order without going through SQL at all. See [Training](/training/data-loading), where a
 permutation drives the data loader.

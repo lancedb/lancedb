@@ -2593,6 +2593,16 @@ describe("when dealing with versioning", () => {
   });
 });
 
+function legacyBlob(name: string): Field {
+  const field = blob(name);
+  return new Field(
+    name,
+    new Struct((field.type as Struct).children.slice(0, 2)),
+    field.nullable,
+    field.metadata,
+  );
+}
+
 describe("when dealing with blob columns", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -2601,6 +2611,89 @@ describe("when dealing with blob columns", () => {
   afterEach(() => {
     tmpDir.removeCallback();
   });
+
+  it.each([false, true])(
+    "normalizes Arrow blob layouts for append and merge (range target: %s)",
+    async (wide) => {
+      const db = await connect(tmpDir.name);
+      const schema = (full: boolean) =>
+        new Schema([
+          new Field("id", new Int64(), true),
+          full ? blob("image") : legacyBlob("image"),
+        ]);
+      const table = await db.createTable(
+        "layouts",
+        [{ id: 1n, image: Buffer.from("old") }],
+        { schema: schema(wide) },
+      );
+      await table.add(
+        makeArrowTable([{ id: 2n, image: Buffer.from("appended") }], {
+          schema: schema(!wide),
+        }),
+      );
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(
+          makeArrowTable(
+            [
+              { id: 1n, image: Buffer.from("updated") },
+              { id: 3n, image: Buffer.from("inserted") },
+            ],
+            { schema: schema(!wide) },
+          ),
+        );
+      expect(await table.schema()).toEqual(schema(wide));
+      const rows = await table.query().withRowId().toArray();
+      rows.sort((a, b) => Number(a.id - b.id));
+      expect(
+        await table.fetchBlobs(
+          "image",
+          rows.map((row) => row._rowid as bigint),
+        ),
+      ).toEqual([
+        Buffer.from("updated"),
+        Buffer.from("appended"),
+        Buffer.from("inserted"),
+      ]);
+      if (!wide) {
+        const bad = makeArrowTable(
+          [
+            {
+              id: 1n,
+              image: { uri: "s3://registered/file", position: 0, size: 6 },
+            },
+          ],
+          { schema: schema(true) },
+        );
+        const version = await table.version();
+        await expect(table.add(bad)).rejects.toThrow(
+          /cannot store byte ranges/,
+        );
+        await expect(
+          table
+            .mergeInsert("id")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute(bad),
+        ).rejects.toThrow(/cannot store byte ranges/);
+        expect(await table.version()).toBe(version);
+        expect(await table.countRows()).toBe(3);
+      }
+      const replacement = makeArrowTable(
+        [{ id: 4n, image: Buffer.from("replacement") }],
+        { schema: schema(!wide) },
+      );
+      await table.add(replacement, { mode: "overwrite" });
+      expect(await table.schema()).toEqual(schema(!wide));
+      expect(await table.countRows()).toBe(1);
+      const [row] = await table.query().withRowId().toArray();
+      expect(await table.fetchBlobs("image", [row._rowid as bigint])).toEqual([
+        Buffer.from("replacement"),
+      ]);
+    },
+  );
 
   it("rejects unsupported blob values in createTable and add", async () => {
     const db = await connect(tmpDir.name);
@@ -2677,6 +2770,100 @@ describe("when dealing with blob columns", () => {
     const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
     expect(bytes[0]).toEqual(payload);
   });
+
+  it.each([0, 4])(
+    "fetches the exact external range at position %s after reopening",
+    async (position) => {
+      const { db, uri, payload } = await openExternalBlobTable();
+      const schema = new Schema([
+        new Field("id", new Int64(), true),
+        blob("payload"),
+      ]);
+      const rows: { id: bigint; payload: BlobInput }[] = [
+        { id: 1n, payload: Buffer.from("inline") },
+        { id: 2n, payload: { uri: new URL(uri), position, size: 6 } },
+        { id: 3n, payload: uri },
+        { id: 4n, payload: null },
+      ];
+      const table = await db.createTable("ranges", rows.slice(0, 1), {
+        schema,
+      });
+      await table.add(rows.slice(1), { allowExternalBlobOutsideBases: true });
+      table.close();
+      const reopened = await db.openTable("ranges");
+      const results = await reopened.query().withRowId().toArray();
+      results.sort((a, b) => Number(a.id - b.id));
+      expect(results[1].payload.position).toBe(BigInt(position));
+      expect(results[1].payload.size).toBe(6n);
+      expect(
+        await reopened.fetchBlobs(
+          "payload",
+          results.map((r) => r._rowid as bigint),
+        ),
+      ).toEqual([
+        Buffer.from("inline"),
+        payload.subarray(position, position + 6),
+        payload,
+        null,
+      ]);
+    },
+  );
+
+  it.each([0, 4])(
+    "rejects ranges at position %s on reopened minimal tables without writing",
+    async (position) => {
+      const { db, uri, payload } = await openExternalBlobTable();
+      const table = await db.createEmptyTable(
+        "legacy_blobs",
+        new Schema([new Field("id", new Int64(), true), legacyBlob("payload")]),
+      );
+      table.close();
+      const reopened = await db.openTable("legacy_blobs");
+      await expect(
+        reopened.add(
+          [
+            { id: 1n, payload: Buffer.from("inline") },
+            { id: 2n, payload: { uri, position, size: 6 } },
+          ],
+          { allowExternalBlobOutsideBases: true },
+        ),
+      ).rejects.toThrow(/storage schema cannot store byte ranges/);
+      expect(await reopened.countRows()).toBe(0);
+      await reopened.add(
+        [
+          { id: 3n, payload: uri },
+          { id: 4n, payload: Buffer.from("inline") },
+        ],
+        { allowExternalBlobOutsideBases: true },
+      );
+      const rows = await reopened.query().withRowId().toArray();
+      rows.sort((a, b) => Number(a.id - b.id));
+      expect(
+        await reopened.fetchBlobs(
+          "payload",
+          rows.map((r) => r._rowid as bigint),
+        ),
+      ).toEqual([payload, Buffer.from("inline")]);
+    },
+  );
+
+  it.each([{ position: 0 }, { size: 6 }, { position: 0, size: 0 }])(
+    "rejects partial or empty ranges without writing: %p",
+    async (range) => {
+      const { db, uri } = await openExternalBlobTable();
+      const table = await db.createEmptyTable(
+        "invalid_ranges",
+        new Schema([blob("payload")]),
+      );
+      await expect(
+        table.add(
+          [{ payload: Buffer.from("inline") }, { payload: { uri, ...range } }],
+          { allowExternalBlobOutsideBases: true },
+        ),
+      ).rejects.toThrow(/both position and size|size must be positive/);
+      expect(await table.countRows()).toBe(0);
+    },
+  );
 
   it("applies the external blob opt-in only to the current add", async () => {
     const { table, uri } = await openExternalBlobTable();

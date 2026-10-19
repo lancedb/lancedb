@@ -1324,6 +1324,8 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
+    /// Remote tables read through version-pinned [`BlobFile`] handles using
+    /// HTTP byte-range requests.
     ///
     /// `_rowid` values stay valid after compaction when the table has stable
     /// row ids. One missing or deleted row id rejects the whole request; no

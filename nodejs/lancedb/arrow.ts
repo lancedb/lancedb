@@ -456,14 +456,29 @@ export function makeArrowTable(
 
   if (schema !== undefined) {
     // Validate blob values up front and give every one the full
-    // `{ data, uri }` shape, so inference sees the same struct whether a row
+    // storage shape, so inference sees the same struct whether a row
     // passed bytes, a URI, or a partial struct.
-    data = mapBlobInputs(data, schema, (value, field, row) => {
+    data = mapBlobInputs(data, schema, (value, field, row, storageField) => {
       if (value === undefined) {
         return value;
       }
       try {
-        return coerceBlobValue(value);
+        const normalized = coerceBlobValue(value, storageField);
+        if (
+          normalized === null ||
+          !(storageField.type instanceof Struct) ||
+          storageField.type.children.length === 2
+        ) {
+          return normalized;
+        }
+        // Keep even unused range children during schema inference. Otherwise
+        // creating a range-capable table with inline data would lose them.
+        return Object.fromEntries(
+          storageField.type.children.map((child) => [
+            child.name,
+            normalized[child.name as keyof typeof normalized] ?? null,
+          ]),
+        );
       } catch (e) {
         throw new Error(
           `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,
@@ -533,7 +548,12 @@ function containsBlobField(field: Field): boolean {
   );
 }
 
-type BlobInputVisitor = (value: unknown, field: string, row: number) => unknown;
+type BlobInputVisitor = (
+  value: unknown,
+  field: string,
+  row: number,
+  storageField: Field,
+) => unknown;
 
 /**
  * Calls `visit` on every value that lands in a blob column of `schema`,
@@ -592,7 +612,7 @@ function mapBlobField(
   visit: BlobInputVisitor,
 ): unknown {
   if (isBlobField(field)) {
-    return visit(value, label, row);
+    return visit(value, label, row, field);
   }
   if (field.type instanceof Struct && isObject(value)) {
     return mapBlobFields(value, field.type.children, `${label}.`, row, visit);
@@ -697,11 +717,11 @@ function transposeData(
   const valuesPath = [...path, field.name];
   if (isBlobField(field) && field.type instanceof Struct) {
     const blobRows = data.map((datum) =>
-      coerceBlobValue(valueAtPath(datum, valuesPath)),
+      coerceBlobValue(valueAtPath(datum, valuesPath), field),
     );
     const childVectors = field.type.children.map((child) => {
       const values = blobRows.map((row) =>
-        row == null ? null : (row[child.name as "data" | "uri"] ?? null),
+        row == null ? null : (row[child.name as keyof typeof row] ?? null),
       );
       return makeVector(values, child.type, undefined, child.nullable);
     });
