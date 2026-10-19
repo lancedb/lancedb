@@ -4,7 +4,9 @@
 use std::sync::Mutex;
 
 use lancedb::index::Index as LanceDbIndex;
-use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
+use lancedb::index::scalar::{
+    BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder, RTreeIndexBuilder,
+};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
     IvfRqIndexBuilder,
@@ -212,6 +214,17 @@ impl Index {
         Self {
             inner: Mutex::new(Some(LanceDbIndex::Fm(FmIndexBuilder::default()))),
         }
+    }
+
+    #[napi(factory)]
+    pub fn rtree(page_size: Option<u32>) -> napi::Result<Self> {
+        let mut builder = RTreeIndexBuilder::default();
+        if let Some(page_size) = page_size {
+            builder = builder.page_size(page_size).default_error()?;
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::RTree(builder))),
+        })
     }
 
     #[napi(factory)]

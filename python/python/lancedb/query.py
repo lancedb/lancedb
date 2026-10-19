@@ -1397,6 +1397,10 @@ class LanceQueryBuilder(ABC):
         -----
         Calling this multiple times combines the filters with a logical AND
         rather than replacing the previous filter.
+
+        Spatial predicates such as ``ST_Intersects(geom, ST_GeomFromText(...))``
+        work on GeoArrow columns and use an [RTree][lancedb.index.RTree] index
+        when one exists.
         """
         self._where = _combine_where(self._where, where)
         self._postfilter = not prefilter
@@ -3658,9 +3662,11 @@ class AsyncStandardQuery(AsyncQueryBase):
         >>> predicate = "x > 10"
         >>> predicate = "y > 0 AND y < 100"
         >>> predicate = "x > 5 OR y = 'test'"
+        >>> predicate = "ST_Intersects(geom, ST_GeomFromText('POINT (1 2)'))"
 
         Filtering performance can often be improved by creating a scalar index
-        on the filter column(s).
+        on the filter column(s). Spatial predicates on GeoArrow columns use an
+        [RTree][lancedb.index.RTree] index.
 
         Calling this multiple times combines the filters with a logical AND
         rather than replacing the previous filter.

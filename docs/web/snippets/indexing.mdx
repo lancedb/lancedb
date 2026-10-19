@@ -26,6 +26,16 @@ export const PyScalarIndexOptimize = "table.add([{\"vector\": [7, 8], \"book_id\
 
 export const PyScalarIndexPrefilter = "table = db.open_table(\"book_with_embeddings\")\ntable.search([1.2] * 2).where(\"book_id != 3\").limit(10).to_pandas()\n";
 
+export const PyScalarIndexRtreeCreate = "from lancedb.index import RTree\n\ntable.create_index(\"location\", config=RTree())\n";
+
+export const PyScalarIndexRtreeData = "import pyarrow as pa\n\npoint = pa.struct([(\"x\", pa.float64()), (\"y\", pa.float64())])\nschema = pa.schema(\n    [\n        pa.field(\"name\", pa.string()),\n        pa.field(\n            \"location\", point, metadata={\"ARROW:extension:name\": \"geoarrow.point\"}\n        ),\n        pa.field(\"vector\", pa.list_(pa.float32(), 2)),\n    ]\n)\nplaces = [\n    (\"Ferry Building\", -122.3937, 37.7955, [0.7, 0.3]),\n    (\"Golden Gate Park\", -122.4862, 37.7694, [0.1, 0.9]),\n    (\"Oakland Museum\", -122.2638, 37.7987, [1.0, 0.05]),\n]\ndata = pa.Table.from_pylist(\n    [\n        {\"name\": name, \"location\": {\"x\": x, \"y\": y}, \"vector\": vector}\n        for name, x, y, vector in places\n    ],\n    schema=schema,\n)\ntable = db.create_table(\"places\", data)\n";
+
+export const PyScalarIndexRtreeExplain = "plan = table.search().where(in_san_francisco).explain_plan(verbose=True)\nassert \"ScalarIndexQuery\" in plan\n";
+
+export const PyScalarIndexRtreeFilter = "san_francisco = (\n    \"ST_GeomFromText('POLYGON ((-122.52 37.70, -122.35 37.70, \"\n    \"-122.35 37.83, -122.52 37.83, -122.52 37.70))')\"\n)\nin_san_francisco = f\"ST_Within(location, {san_francisco})\"\n\nplaces_in_sf = table.search().where(in_san_francisco).select([\"name\"]).to_list()\n# [{'name': 'Ferry Building'}, {'name': 'Golden Gate Park'}]\n";
+
+export const PyScalarIndexRtreeVector = "# The nearest place overall is in Oakland; the spatial prefilter keeps the\n# search inside San Francisco.\nnearest_in_sf = (\n    table.search([1.0, 0.0])\n    .where(in_san_francisco)\n    .select([\"name\", \"_distance\"])\n    .limit(1)\n    .to_list()\n)\n# [{'name': 'Ferry Building', '_distance': 0.18}]\n";
+
 export const PyScalarIndexUuidData = "def generate_random_names():\n    base_names = [\"Alice\", \"Bob\", \"Carla\", \"David\", \"Eve\", \"Frank\", \"Grace\"]\n    letter = random.choice(string.ascii_uppercase)\n    return f\"{random.choice(base_names)} {letter}.\"\n\ndef generate_uuids(num_items):\n    return [uuid.uuid4().bytes for _ in range(num_items)]\n\n# Generate some UUIDs and random names\nn = 7\nuuids = generate_uuids(n)\nnames = [generate_random_names() for _ in range(n)]\n";
 
 export const PyScalarIndexUuidTable = "table_name = \"index-on-uuid\"\n\nuuid_array = pa.array(uuids, pa.uuid())\nname_array = pa.array(names, pa.string())\nschema = pa.schema(\n    [\n        pa.field(\"id\", pa.uuid()),\n        pa.field(\"name\", pa.string()),\n    ]\n)\ndata_table = pa.Table.from_arrays([uuid_array, name_array], schema=schema)\ntable = db.create_table(table_name, data=data_table, mode=\"overwrite\")\n";
