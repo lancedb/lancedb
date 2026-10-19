@@ -23,7 +23,7 @@ import {
 
 LangChain streamlines these stages (in figure above) by providing pre-built components and tools for integration, memory management, and deployment, allowing developers to focus on application logic rather than underlying complexities.
 
-Integration of **Langchain** with **LanceDB** enables applications to retrieve the most relevant data by comparing query vectors against stored vectors, facilitating effective information retrieval. It results in better and context aware replies and actions by the LLMs.
+Integration of **LangChain** with **LanceDB** enables applications to retrieve the most relevant data by comparing query vectors against stored vectors, facilitating effective information retrieval. It results in better and context aware replies and actions by the LLMs.
 
 ## Quick Start {#quick-start}
 You can load your document data using langchain's loaders, for this example we are using `TextLoader` and `OpenAIEmbeddings` as the embedding model.
@@ -42,7 +42,7 @@ The exhaustive list of parameters for `LanceDB` vector store are :
 |Name|type|Purpose|default|
 |:----|:----|:----|:----|
 |`connection`| (Optional) `Any` |`lancedb.db.LanceDBConnection` connection object to use.  If not provided, a new connection will be created.|`None`|
-|`embedding`| (Optional) `Embeddings` | Langchain embedding model.|Provided by user.|
+|`embedding`| (Optional) `Embeddings` | LangChain embedding model.|Provided by user.|
 |`uri`| (Optional) `str` |It specifies the directory location of **LanceDB database** and establishes a connection that can be used to interact with the database. |`/tmp/lancedb`|
 |`vector_key` |(Optional) `str`| Column name to use for vector's in the table.|`'vector'`|
 |`id_key` |(Optional) `str`| Column name to use for id's in the table.|`'id'`|
@@ -54,7 +54,7 @@ The exhaustive list of parameters for `LanceDB` vector store are :
 |`table`| (Optional) `Any`| You can connect to an existing table of LanceDB, created outside of langchain, and utilize it.|`None`|
 |`distance`|(Optional) `str`| The choice of distance metric used to calculate the similarity between vectors.|`'l2'`|
 |`reranker` |(Optional) `Any`| The reranker to use for LanceDB.|`None`|
-|`relevance_score_fn` |(Optional) `Callable[[float], float]` | Langchain relevance score function to be used.|`None`|
+|`relevance_score_fn` |(Optional) `Callable[[float], float]` | LangChain relevance score function to be used.|`None`|
 |`limit`|`int`|Set the maximum number of results to return.| `DEFAULT_K` (it is 4)|
 
 <CodeBlock filename="Python" language="Python" icon="python">
