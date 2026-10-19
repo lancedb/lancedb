@@ -79,13 +79,27 @@ pub enum SplitStrategy {
     Calculated { calculation: String },
     /// Rows are sampled uniformly **with replacement** from the base table (combine with
     /// [`PermutationBuilder::with_filter`] to restrict the eligible population), independently
-    /// per split.
+    /// per split. Named after "the bootstrap" -- the statistical technique of estimating a
+    /// dataset's properties by resampling it with replacement -- the same sense `bootstrap=True`
+    /// has in scikit-learn's bagging classifiers.
     ///
-    /// Unlike every other strategy, the number of output rows is `num_samples`, not the number
-    /// of input rows: the same row can appear zero, one, or many times, and `num_samples` may
-    /// be larger or smaller than the (filtered) input row count. This is useful for bootstrap
-    /// resampling, oversampling rare classes, or any training workload that wants a fixed-size
-    /// stream of random draws rather than a single deterministic pass over every row.
+    /// Every other strategy partitions the table: each row goes to exactly one split, exactly
+    /// once. `Bootstrap` does not partition -- it resamples. The number of output rows is
+    /// `num_samples`, not the number of input rows: the same row can appear zero, one, or many
+    /// times, and `num_samples` may be larger or smaller than the (filtered) input row count.
+    /// Typical uses:
+    ///
+    /// - **Bagging / ensemble training** (e.g. random forests): each split is an independent
+    ///   bootstrap resample of the training set.
+    /// - **Oversampling a rare class**: filter to the minority class, then sample it up to
+    ///   whatever count balances it against the majority, instead of exhausting its small set
+    ///   once per epoch.
+    /// - **Fixed-size training steps independent of dataset size**: `num_samples` is set
+    ///   directly rather than being implicitly `len(dataset)`.
+    /// - **Weighted sampling without a weight column**: filter to "eligible" rows (e.g. a
+    ///   windowed-sampling workload filtering to valid window-start positions), then bootstrap
+    ///   the filtered set -- an item with more eligible rows is naturally drawn proportionally
+    ///   more often, with no explicit per-row weight needed.
     ///
     /// `sizes` divides `num_samples` across splits (reusing [`SplitSizes`], so `Fixed(n)` means
     /// "n splits, each getting `num_samples / n` samples", the same convention `Random` and
@@ -93,6 +107,24 @@ pub enum SplitStrategy {
     /// from `(seed, split_index)`, so a given split's content does not change if `num_samples`
     /// is redistributed across a different number of splits -- the same elastic-determinism
     /// property documented for the data loader's other strategies.
+    ///
+    /// Example: a 5-row base table (`row_id` 0..4), `Bootstrap { num_samples: 8, sizes:
+    /// Fixed(2), seed: Some(42) }` produced (an actual run, not a hypothetical one):
+    ///
+    /// ```text
+    /// row_id  split_id
+    ///      0         0
+    ///      2         0
+    ///      4         0
+    ///      4         0      <- row 4 repeated within split 0
+    ///      4         1      <- row 4 also drawn in split 1 (independent draw)
+    ///      4         1
+    ///      1         1
+    ///      2         1
+    /// ```
+    ///
+    /// 8 output rows from a 5-row table, row 4 drawn 4 times total, row 3 never drawn --
+    /// exactly the with-replacement behavior the name promises, not an even round-robin.
     Bootstrap {
         num_samples: u64,
         sizes: SplitSizes,
