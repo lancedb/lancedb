@@ -254,7 +254,11 @@ fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<Merge
 // The JSON projection iterates target fields, so reject unknown source fields
 // before it can erase them. Missing and reordered fields remain valid merge
 // inputs; type compatibility is still checked by the cast and Lance writer.
-fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -> Result<()> {
+pub(crate) fn validate_merge_source_fields(
+    input: &Fields,
+    target: &Fields,
+    parent: &str,
+) -> Result<()> {
     let mut names = HashSet::with_capacity(input.len());
     for field in input {
         let path = if parent.is_empty() {
@@ -273,7 +277,9 @@ fn validate_merge_source_fields(input: &Fields, target: &Fields, parent: &str) -
             .ok_or_else(|| Error::InvalidInput {
                 message: format!("merge source field '{path}' is not present in the table schema"),
             })?;
-        validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        if !crate::blob::is_blob(target_field) {
+            validate_merge_source_type(field.data_type(), target_field.data_type(), &path)?;
+        }
     }
     Ok(())
 }
@@ -313,35 +319,18 @@ pub(crate) async fn execute_merge_insert(
     new_data: Box<dyn RecordBatchReader + Send>,
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
+    let schema = table.schema().await?;
     super::computed_columns::ensure_no_function_bindings_for_mutation(
-        table.schema().await?.as_ref(),
+        schema.as_ref(),
         "merge_insert",
     )?;
-    match lsm::lsm_dispatch_decision(table, &params).await? {
-        lsm::LsmDispatch::Lsm(plan) => {
-            let future =
-                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, new_data);
-            return match params.timeout {
-                Some(timeout) => match tokio::time::timeout(timeout, future).await {
-                    Ok(result) => result,
-                    Err(_) => Err(Error::Runtime {
-                        message: "merge insert timed out".to_string(),
-                    }),
-                },
-                None => future.await,
-            };
-        }
-        lsm::LsmDispatch::Standard => {}
-    }
-
-    let dataset = table.dataset.get().await?;
-    let schema = arrow_schema::Schema::from(dataset.schema());
-    // JSON source fields must carry the stored extension metadata just as on
-    // append. Keep arrow.json text labelled until Lance encodes it as JSONB.
-    let source = if schema
-        .fields()
-        .iter()
-        .any(|field| lance_arrow::json::has_json_fields(field))
+    // Normalize blob layouts and JSON extension metadata just as on append.
+    // Keep arrow.json text labelled until Lance encodes it as JSONB.
+    let source = if crate::blob::has_blob_columns(&schema)
+        || schema
+            .fields()
+            .iter()
+            .any(|field| lance_arrow::json::has_json_fields(field))
     {
         validate_merge_source_fields(new_data.schema().fields(), schema.fields(), "")?;
         let plan = Arc::new(super::datafusion::scannable_exec::ScannableExec::new(
@@ -356,6 +345,24 @@ pub(crate) async fn execute_merge_insert(
     } else {
         new_data.into_stream()
     };
+    match lsm::lsm_dispatch_decision(table, &params).await? {
+        lsm::LsmDispatch::Lsm(plan) => {
+            let future =
+                lsm::execute_lsm_merge_insert(table, plan, params.validate_single_shard, source);
+            return match params.timeout {
+                Some(timeout) => match tokio::time::timeout(timeout, future).await {
+                    Ok(result) => result,
+                    Err(_) => Err(Error::Runtime {
+                        message: "merge insert timed out".to_string(),
+                    }),
+                },
+                None => future.await,
+            };
+        }
+        lsm::LsmDispatch::Standard => {}
+    }
+
+    let dataset = table.dataset.get().await?;
     let mut builder = LanceMergeInsertBuilder::try_new(dataset.clone(), params.on)?;
     match (
         params.when_matched_update_all,

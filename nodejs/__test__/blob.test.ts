@@ -17,23 +17,23 @@ import {
   makeArrowTable,
   resolveBlobInputs,
 } from "../lancedb/arrow";
-import {
-  BlobFile,
-  blob,
-  blobWithRange,
-  coerceBlobValue,
-  isBlobField,
-} from "../lancedb/blob";
+import { BlobFile, blob, coerceBlobValue, isBlobField } from "../lancedb/blob";
 import { EmbeddingFunction, LanceSchema } from "../lancedb/embedding";
 import { getRegistry } from "../lancedb/embedding/registry";
 
+function legacyBlob(name: string): Field {
+  const field = blob(name);
+  return new Field(
+    name,
+    new Struct((field.type as Struct).children.slice(0, 2)),
+    field.nullable,
+    field.metadata,
+  );
+}
+
 describe("blob()", () => {
-  it("keeps the minimal layout and offers an opt-in range layout", () => {
-    expect((blob("image").type as Struct).children.map((f) => f.name)).toEqual([
-      "data",
-      "uri",
-    ]);
-    const field = blobWithRange("image", {
+  it("declares the four-field range layout", () => {
+    const field = blob("image", {
       nullable: false,
       inlineSizeThreshold: 12,
     });
@@ -266,7 +266,7 @@ describe("external blob ranges", () => {
   });
 
   it("writes ranges and mixed whole-file, inline, and null values to Arrow", () => {
-    const schema = new Schema([blobWithRange("image")]);
+    const schema = new Schema([blob("image")]);
     const rows = [
       null,
       Buffer.from("x"),
@@ -292,7 +292,7 @@ describe("external blob ranges", () => {
     { uri, position: null, size: null },
     null,
   ])("retains the full declared range layout when seeded with %p", (image) => {
-    const schema = new Schema([blobWithRange("image")]);
+    const schema = new Schema([blob("image")]);
     const table = makeArrowTable([{ image }], { schema });
     expect(table.schema).toEqual(schema);
     expect(table.getChild("image")!.getChild("position")!.get(0)).toBeNull();
@@ -307,7 +307,7 @@ describe("external blob ranges", () => {
             { image: Buffer.from("inline") },
             { image: { uri, position, size: 6 } },
           ],
-          { schema: new Schema([blob("image")]) },
+          { schema: new Schema([legacyBlob("image")]) },
         ),
       ).toThrow(
         /field image at row 1: Blob storage schema cannot store byte ranges/,
@@ -319,7 +319,7 @@ describe("external blob ranges", () => {
     const column = makeArrowTable(
       [{ image: { uri, position: null, size: null } }],
       {
-        schema: new Schema([blob("image")]),
+        schema: new Schema([legacyBlob("image")]),
       },
     ).getChild("image")!;
     expect(column.getChild("uri")!.get(0)).toBe(uri);
@@ -327,7 +327,7 @@ describe("external blob ranges", () => {
 
   it("validates ranges nested in structs and lists against their storage fields", () => {
     const value = { uri, position: 4, size: 6 };
-    for (const field of [blob("image"), blobWithRange("image")]) {
+    for (const field of [legacyBlob("image"), blob("image")]) {
       const schema = new Schema([
         new Field("info", new Struct([field]), true),
         new Field("images", new List(field), true),

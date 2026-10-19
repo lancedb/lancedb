@@ -210,7 +210,7 @@ use std::{fmt::Display, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-pub use blob::{BlobRangeRequest, blob, blob_with_range, is_blob};
+pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
 pub use function::FunctionVersion;

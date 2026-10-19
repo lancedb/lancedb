@@ -12,7 +12,7 @@ use std::sync::Arc;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, LargeListArray, ListArray, RecordBatch,
 };
-use arrow_buffer::OffsetBuffer;
+use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_cast::cast;
 use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
 use arrow_select::nullif::nullif;
@@ -68,6 +68,21 @@ pub(super) fn coerce_blob_expr(
                         table_field.name()
                     ),
                 });
+            }
+            for child in children {
+                if !declared_fields
+                    .iter()
+                    .any(|field| field.name() == child.name())
+                    && !matches!(child.name().as_str(), "position" | "size")
+                {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "unknown blob child '{}' in column '{}'",
+                            child.name(),
+                            table_field.name()
+                        ),
+                    });
+                }
             }
             BlobInputShape::Struct(children)
         }
@@ -155,10 +170,25 @@ pub(super) fn coerce_blob_expr(
     // `named_struct` always yields a valid struct, so a null input would land
     // as a row that set neither `data` nor `uri` -- not an absent blob but a
     // malformed one, which Lance rejects on write.
+    let dropped_ranges = match &input_shape {
+        BlobInputShape::Struct(children) => children
+            .iter()
+            .enumerate()
+            .filter(|(_, child)| {
+                matches!(child.name().as_str(), "position" | "size")
+                    && !declared_fields
+                        .iter()
+                        .any(|field| field.name() == child.name())
+            })
+            .map(|(index, _)| index)
+            .collect(),
+        _ => Vec::new(),
+    };
     let expr: Arc<dyn PhysicalExpr> = Arc::new(AbsentBlobIsNull {
         source: input_expr,
         built,
         field: table_field.clone(),
+        dropped_ranges,
     });
     Ok((expr, table_field.clone()))
 }
@@ -366,6 +396,7 @@ struct AbsentBlobIsNull {
     source: Arc<dyn PhysicalExpr>,
     built: Arc<dyn PhysicalExpr>,
     field: FieldRef,
+    dropped_ranges: Vec<usize>,
 }
 
 impl fmt::Display for AbsentBlobIsNull {
@@ -376,7 +407,10 @@ impl fmt::Display for AbsentBlobIsNull {
 
 impl PartialEq for AbsentBlobIsNull {
     fn eq(&self, other: &Self) -> bool {
-        self.source.eq(&other.source) && self.built.eq(&other.built) && self.field == other.field
+        self.source.eq(&other.source)
+            && self.built.eq(&other.built)
+            && self.field == other.field
+            && self.dropped_ranges == other.dropped_ranges
     }
 }
 
@@ -387,6 +421,7 @@ impl Hash for AbsentBlobIsNull {
         self.source.hash(state);
         self.built.hash(state);
         self.field.hash(state);
+        self.dropped_ranges.hash(state);
     }
 }
 
@@ -401,8 +436,28 @@ impl PhysicalExpr for AbsentBlobIsNull {
 
     fn evaluate(&self, batch: &RecordBatch) -> datafusion_common::Result<ColumnarValue> {
         let rows = batch.num_rows();
-        let built = self.built.evaluate(batch)?.into_array(rows)?;
         let source = self.source.evaluate(batch)?.into_array(rows)?;
+        if !self.dropped_ranges.is_empty() {
+            let values = source
+                .as_any()
+                .downcast_ref::<arrow_array::StructArray>()
+                .unwrap();
+            for index in &self.dropped_ranges {
+                let nulls = NullBuffer::union(
+                    values.nulls(),
+                    values.column(*index).logical_nulls().as_ref(),
+                );
+                if nulls.as_ref().map_or(values.len() != 0, |nulls| {
+                    nulls.null_count() != values.len()
+                }) {
+                    return Err(DataFusionError::Execution(format!(
+                        "blob storage schema cannot store byte ranges in column '{}': position and size must both be null",
+                        self.field.name()
+                    )));
+                }
+            }
+        }
+        let built = self.built.evaluate(batch)?.into_array(rows)?;
         let Some(nulls) = source.logical_nulls() else {
             return Ok(ColumnarValue::Array(built));
         };
@@ -424,6 +479,7 @@ impl PhysicalExpr for AbsentBlobIsNull {
             source: children[0].clone(),
             built: children[1].clone(),
             field: self.field.clone(),
+            dropped_ranges: self.dropped_ranges.clone(),
         }))
     }
 
@@ -449,7 +505,6 @@ fn typed_null(data_type: &DataType) -> Result<Arc<dyn PhysicalExpr>> {
 mod tests {
     use super::super::cast::cast_to_table_schema;
     use super::*;
-    use crate::blob::blob;
     use arrow_array::{
         Array, ArrayRef, BinaryArray, BinaryViewArray, FixedSizeListArray, Int32Array, Int64Array,
         LargeBinaryArray, LargeListArray, ListArray, NullArray, RecordBatch, StringArray,
@@ -461,6 +516,7 @@ mod tests {
     use datafusion_catalog::MemTable;
     use datafusion_physical_plan::ExecutionPlan;
     use futures::TryStreamExt;
+    use lance::blob::blob_field as blob;
     use lance_arrow::FieldExt;
     use std::collections::HashMap;
 
@@ -944,6 +1000,47 @@ mod tests {
             .unwrap();
         assert_eq!(size.value(0), 6);
         assert!(image.column_by_name("data").unwrap().is_null(0));
+    }
+
+    #[tokio::test]
+    async fn dropping_ranges_respects_parent_validity_and_slices() {
+        for parent_valid in [false, true] {
+            let DataType::Struct(children) = wide_blob_field("image").data_type().clone() else {
+                unreachable!()
+            };
+            let input = StructArray::new(
+                children,
+                vec![
+                    Arc::new(LargeBinaryArray::from(vec![
+                        Some(b"ignored".as_slice()),
+                        Some(b"payload".as_slice()),
+                    ])),
+                    Arc::new(StringArray::from(vec![None::<&str>, None])),
+                    Arc::new(UInt64Array::from(vec![None, Some(4)])),
+                    Arc::new(UInt64Array::new_null(2)),
+                ],
+                Some(NullBuffer::from(vec![true, parent_valid])),
+            )
+            .slice(1, 1);
+            let batch = batch_with_image(
+                Field::new("image", input.data_type().clone(), true),
+                Arc::new(input),
+            );
+            if parent_valid {
+                let plan = cast_to_table_schema(plan_from_batch(batch).await, &blob_table_schema())
+                    .unwrap();
+                let error = plan
+                    .execute(0, SessionContext::new().task_ctx())
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains("cannot store byte ranges"));
+            } else {
+                let output = coerce(batch, &blob_table_schema()).await;
+                assert!(image_struct(&output).is_null(0));
+            }
+        }
     }
 
     #[tokio::test]

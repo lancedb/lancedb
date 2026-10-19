@@ -83,7 +83,7 @@ export {
   VectorColumnOptions,
 } from "./arrow";
 
-export { blob, blobWithRange, isBlobField, BlobFile } from "./blob";
+export { blob, isBlobField, BlobFile } from "./blob";
 export type {
   BlobData,
   BlobInput,

@@ -3154,6 +3154,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let rescannable = source.rescannable();
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
+        let table_schema = self.schema().await?;
+        let input = if crate::blob::has_blob_columns(&table_schema) {
+            crate::table::merge::validate_merge_source_fields(
+                input.schema().fields(),
+                table_schema.fields(),
+                "",
+            )?;
+            crate::table::datafusion::cast::cast_to_table_schema(input, &table_schema)?
+        } else {
+            input
+        };
         let freshness_request = self.snapshot_freshness_headers();
 
         let mut merge: Arc<dyn ExecutionPlan> = Arc::new(
@@ -4501,7 +4512,7 @@ mod tests {
 
     #[tokio::test]
     async fn add_external_blob_ranges_preserves_remote_wire_values() {
-        let field = crate::blob_with_range("image", true);
+        let field = crate::blob("image", true);
         let DataType::Struct(children) = field.data_type().clone() else {
             unreachable!();
         };
@@ -4588,6 +4599,162 @@ mod tests {
         let bytes = table.fetch_blobs("image", &[0, 1]).await.unwrap();
         assert_eq!(bytes.value(0), &payload[..6]);
         assert_eq!(bytes.value(1), &payload[4..10]);
+    }
+
+    #[tokio::test]
+    async fn remote_blob_layout_normalization_and_overwrite() {
+        use arrow_array::{ArrayRef, UInt64Array};
+        for wide_target in [false, true] {
+            let field = |wide| {
+                if wide {
+                    crate::blob("image", true)
+                } else {
+                    lance::blob::blob_field("image", true)
+                }
+            };
+            let target = Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                field(wide_target),
+            ]);
+            for operation in ["add", "merge", "overwrite"] {
+                for range in [
+                    None,
+                    Some((Some(4), None)),
+                    Some((None, Some(6))),
+                    Some((Some(4), Some(6))),
+                ] {
+                    if range.is_some() && (wide_target || operation == "overwrite") {
+                        continue;
+                    }
+                    // Range input always uses the full layout. Otherwise use the
+                    // opposite layout to exercise both normalization directions.
+                    let wide_input = range.is_some() || !wide_target;
+                    let schema = Arc::new(Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        field(wide_input),
+                    ]));
+                    let DataType::Struct(children) = schema.field(1).data_type().clone() else {
+                        unreachable!()
+                    };
+                    let mut arrays: Vec<ArrayRef> = vec![
+                        Arc::new(LargeBinaryArray::from(vec![Some(b"inline".as_slice())])),
+                        Arc::new(StringArray::from(vec![None::<&str>])),
+                    ];
+                    if wide_input {
+                        arrays.push(Arc::new(UInt64Array::from(vec![range.and_then(|r| r.0)])));
+                        arrays.push(Arc::new(UInt64Array::from(vec![range.and_then(|r| r.1)])));
+                    }
+                    let image = Arc::new(StructArray::new(children, arrays, None));
+                    let batch = RecordBatch::try_new(
+                        schema.clone(),
+                        vec![Arc::new(Int64Array::from(vec![1])), image],
+                    )
+                    .unwrap();
+                    let describe = describe_response(&target);
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let table = Table::new_with_handler("my_table", move |mut request| {
+                        if request.url().path().ends_with("/describe/") {
+                            return http::Response::builder()
+                                .status(200)
+                                .body(describe.clone())
+                                .unwrap();
+                        }
+                        assert!(
+                            request.url().path().ends_with("/insert/")
+                                || request.url().path().ends_with("/merge_insert/")
+                        );
+                        if operation == "overwrite" {
+                            assert!(
+                                request
+                                    .url()
+                                    .query_pairs()
+                                    .any(|(k, v)| k == "mode" && v == "overwrite")
+                            );
+                        }
+                        sender.send(request.body_mut().take().unwrap()).unwrap();
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 2, "num_inserted_rows": 1}"#.to_string())
+                            .unwrap()
+                    });
+                    // A bad later batch must abort the request, including after
+                    // an earlier valid batch was encoded. No write handler runs.
+                    let mut batches = Vec::new();
+                    if range.is_some() {
+                        let empty_range_arrays: Vec<ArrayRef> = vec![
+                            Arc::new(LargeBinaryArray::from(vec![Some(b"first".as_slice())])),
+                            Arc::new(StringArray::from(vec![None::<&str>])),
+                            Arc::new(UInt64Array::new_null(1)),
+                            Arc::new(UInt64Array::new_null(1)),
+                        ];
+                        let DataType::Struct(children) = schema.field(1).data_type().clone() else {
+                            unreachable!()
+                        };
+                        batches.push(Ok(RecordBatch::try_new(
+                            schema.clone(),
+                            vec![
+                                Arc::new(Int64Array::from(vec![0])),
+                                Arc::new(StructArray::new(children, empty_range_arrays, None)),
+                            ],
+                        )
+                        .unwrap()));
+                    }
+                    batches.push(Ok(batch));
+                    let reader: Box<dyn RecordBatchReader + Send> =
+                        Box::new(RecordBatchIterator::new(batches, schema.clone()));
+                    let result = match operation {
+                        "merge" => {
+                            let mut merge = table.merge_insert(&["id"]);
+                            merge
+                                .when_matched_update_all(None)
+                                .when_not_matched_insert_all();
+                            merge.execute(reader).await.map(|_| ())
+                        }
+                        "overwrite" => table
+                            .add(reader)
+                            .mode(AddDataMode::Overwrite)
+                            .execute()
+                            .await
+                            .map(|_| ()),
+                        _ => table.add(reader).execute().await.map(|_| ()),
+                    };
+                    if !wide_target && range.is_some() && operation != "overwrite" {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("cannot store byte ranges")
+                        );
+                        assert!(
+                            receiver.try_recv().is_err(),
+                            "invalid stream must not reach a committed write"
+                        );
+                        continue;
+                    }
+                    result.unwrap();
+                    let body = collect_body(receiver.recv().unwrap()).await;
+                    let reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+                    let expected = if operation == "overwrite" {
+                        schema.as_ref()
+                    } else {
+                        &target
+                    };
+                    assert_eq!(reader.schema().as_ref(), expected);
+                    for batch in reader {
+                        let batch = batch.unwrap();
+                        let image = batch.column(1).as_struct();
+                        assert!(
+                            image.column(0).as_binary::<i64>().value(0) == b"inline"
+                                || image.column(0).as_binary::<i64>().value(0) == b"first"
+                        );
+                        if image.num_columns() == 4 && range.is_none() {
+                            assert!(image.column(2).is_null(0));
+                            assert!(image.column(3).is_null(0));
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[rstest]
@@ -4943,6 +5110,12 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             if request.url().path() == "/v1/table/my_table/merge_insert/" {
                 assert_eq!(request.method(), "POST");
 
@@ -4999,6 +5172,12 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
             let params = request.url().query_pairs().collect::<HashMap<_, _>>();
@@ -5084,6 +5263,12 @@ mod tests {
         let num_deleted_rows = if delete_unmatched { 3 } else { 0 };
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&Schema::empty()))
+                    .unwrap();
+            }
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
             assert_eq!(request.headers()[CONTENT_TYPE], ARROW_STREAM_CONTENT_TYPE);
@@ -5154,6 +5339,12 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
             // One repeated `on` per column, in the order the caller gave them.
@@ -5225,6 +5416,12 @@ mod tests {
 
         // Default parameters
         let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
@@ -14496,6 +14693,20 @@ mod tests {
         ));
         let table = Table::new_with_handler("my_table", move |request| {
             match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["branch"], "exp");
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&Schema::new(vec![Field::new(
+                            "id",
+                            DataType::Int32,
+                            false,
+                        )])))
+                        .unwrap()
+                }
                 "/v1/table/my_table/branches/create/" => http::Response::builder()
                     .status(200)
                     .body("{}".to_string())

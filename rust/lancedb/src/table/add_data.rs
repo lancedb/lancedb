@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use arrow_schema::{DataType, Fields, Schema};
 use lance::dataset::WriteMode;
+use lance_arrow::FieldExt;
 use serde::{Deserialize, Serialize};
 
 use crate::data::scannable::Scannable;
@@ -252,6 +253,11 @@ fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
                 });
             }
             Some(table_field) => {
+                // Blob coercion validates its children and permits dropping only
+                // all-null range fields when targeting a legacy two-field layout.
+                if table_field.is_blob_v2() {
+                    continue;
+                }
                 if let (DataType::Struct(in_children), DataType::Struct(tbl_children)) =
                     (field.data_type(), table_field.data_type())
                 {

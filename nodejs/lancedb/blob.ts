@@ -28,7 +28,7 @@ export type BlobUri = string | URL;
  *
  * Either inline bytes, a URI pointing at external bytes, or a struct that sets
  * exactly one of `data` or `uri`. `null` and `undefined` write a null blob.
- * External byte ranges require a {@link blobWithRange} column and both
+ * External byte ranges require both
  * `position` (non-negative) and `size` (positive). Use safe integer numbers or
  * `bigint` values for these unsigned 64-bit byte counts.
  *
@@ -89,8 +89,15 @@ export type BlobOptions = {
 
 /**
  * Declares a `lance.blob.v2` column.
- * Stores inline bytes and whole external files. Use {@link blobWithRange} to
- * also accept external byte ranges.
+ * Uses nullable `data`, `uri`, `position`, and `size` fields for inline bytes,
+ * whole external files, and external byte ranges. Set both `position` and
+ * positive `size` for a range, or omit both for a whole file.
+ *
+ * Existing two-field columns remain writable. Appends and merge inserts fill
+ * missing range fields with nulls for four-field targets and drop all-null
+ * range fields for two-field targets. Non-null ranges require a four-field
+ * target. Overwrite with Arrow input replaces the table's schema; row objects
+ * are converted using the current table schema.
  *
  * Query results are descriptors, not payload bytes. Use {@link Table.fetchBlobs}
  * or {@link Table.fetchBlobFiles} to read bytes.
@@ -155,49 +162,11 @@ export function blob(name: string, options: BlobOptions = {}): Field {
     new Struct([
       new Field("data", new LargeBinary(), true),
       new Field("uri", new Utf8(), true),
-    ]),
-    options.nullable ?? true,
-    metadata,
-  );
-}
-
-/**
- * Declares a blob column that also accepts external byte ranges.
- *
- * Adds nullable `position` and `size` UInt64 fields to the layout of {@link blob}.
- * Set both to select `[position, position + size)` within `uri`, or leave both
- * null or omitted to reference the whole file. `size` must be positive.
- * Inline bytes and null blobs are accepted too. External URIs must be within a
- * registered base, unless a local append explicitly allows otherwise.
- *
- * @example
- * ```ts
- * import { Schema } from "apache-arrow";
- * import { blobWithRange, connect } from "@lancedb/lancedb";
- *
- * const db = await connect("./data");
- * const table = await db.createEmptyTable(
- *   "clips", new Schema([blobWithRange("clip")]),
- * );
- * await table.add(
- *   [{ clip: { uri: "file:///data/video.bin", position: 4, size: 6 } }],
- *   { allowExternalBlobOutsideBases: true },
- * );
- * const rows = await table.query().withRowId().toArray();
- * const bytes = await table.fetchBlobs("clip", [rows[0]._rowid as bigint]);
- * ```
- */
-export function blobWithRange(name: string, options: BlobOptions = {}): Field {
-  const field = blob(name, options);
-  return new Field(
-    name,
-    new Struct([
-      ...(field.type as Struct).children,
       new Field("position", new Uint64(), true),
       new Field("size", new Uint64(), true),
     ]),
-    field.nullable,
-    field.metadata,
+    options.nullable ?? true,
+    metadata,
   );
 }
 
@@ -505,7 +474,7 @@ export function coerceBlobValue(
           ))
       ) {
         throw new Error(
-          "Blob storage schema cannot store byte ranges. Create the column with blobWithRange() to use position and size",
+          "Blob storage schema cannot store byte ranges. Use a four-field blob() schema to store position and size",
         );
       }
       return { data: null, uri: uriValue, position, size };
