@@ -49,6 +49,10 @@ class SentenceTransformerEmbeddings(TextEmbeddingFunction):
     def remote_code_model(self) -> Optional[Tuple[str, Optional[str]]]:
         return (self.name, self.revision)
 
+    @classmethod
+    def _legacy_trust_remote_code_default(cls) -> bool:
+        return True
+
     @property
     def embedding_model(self):
         """

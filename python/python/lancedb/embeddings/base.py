@@ -53,7 +53,16 @@ class EmbeddingFunction(BaseModel, ABC):
 
         resolved_kwargs = cls.__resolveVariables(kwargs)
         instance = cls(**resolved_kwargs)
-        instance._original_args = kwargs
+        instance._original_args = dict(kwargs)
+        if (
+            instance.remote_code_model() is not None
+            and "trust_remote_code" in cls.model_fields
+        ):
+            # Record the flag even when left at its default, so a missing flag
+            # in table metadata only ever means a table written before this.
+            instance._original_args.setdefault(
+                "trust_remote_code", instance.trust_remote_code
+            )
         # The caller wrote this config, so this process trusts it. Without this,
         # a table created with it could not be reopened in the same process.
         EmbeddingFunctionRegistry.get_instance()._trust(instance)
@@ -124,6 +133,16 @@ class EmbeddingFunction(BaseModel, ABC):
         [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
         """
         return None
+
+    @classmethod
+    def _legacy_trust_remote_code_default(cls) -> bool:
+        """
+        The `trust_remote_code` to use for table metadata that omits it. Only
+        tables written before the flag was always recorded omit it, so this is
+        the default from that time.
+        """
+        field = cls.model_fields.get("trust_remote_code")
+        return bool(field.default) if field is not None else False
 
     def endpoints(self) -> List[str]:
         """

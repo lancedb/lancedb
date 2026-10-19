@@ -151,15 +151,19 @@ class EmbeddingFunctionRegistry:
         model = probe.remote_code_model()
         if model is not None:
             allowed = self._remote_code_allowed(*model)
-            # Check the effective value, since a subclass may default to True.
-            requested = TypeAdapter(bool).validate_python(
-                getattr(probe, "trust_remote_code", False)
-            )
-            if allowed and "trust_remote_code" not in resolved:
-                # Tables written before the default became False don't record
-                # the flag, so let this process's approval decide.
-                resolved["trust_remote_code"] = True
-            elif requested and not allowed:
+            explicit = "trust_remote_code" in resolved
+            if explicit:
+                requested = TypeAdapter(bool).validate_python(
+                    resolved["trust_remote_code"]
+                )
+            else:
+                requested = cls._legacy_trust_remote_code_default()
+            # Always set the flag, since a subclass may default it to True.
+            resolved["trust_remote_code"] = requested and allowed
+            # A legacy table that omits the flag is downgraded rather than
+            # blocked: most sentence-transformers models don't need remote code,
+            # and those tables relied on the old True default without asking.
+            if requested and not allowed and explicit:
                 model_name, revision = model
                 reasons.append(
                     f"runs code from model '{model_name}' at revision "
