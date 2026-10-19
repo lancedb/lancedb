@@ -1747,7 +1747,7 @@ mod tests {
         RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new("id", arrow_schema::DataType::Int32, false),
-                crate::blob("image", true),
+                lance::blob::blob_field("image", true),
             ])),
             vec![Arc::new(Int32Array::from(ids)), builder.finish().unwrap()],
         )
@@ -1901,7 +1901,7 @@ mod tests {
         let mut blob_builder = lance::blob::BlobArrayBuilder::new(2);
         blob_builder.push_bytes(b"nested").unwrap();
         blob_builder.push_null().unwrap();
-        let blob_field = crate::blob("image", true);
+        let blob_field = lance::blob::blob_field("image", true);
         let metadata_fields = Fields::from(vec![blob_field.clone()]);
         let metadata = StructArray::new(
             metadata_fields.clone(),
@@ -1968,7 +1968,7 @@ mod tests {
         blob_builder.push_bytes(b"a").unwrap();
         blob_builder.push_bytes(b"bb").unwrap();
         blob_builder.push_null().unwrap();
-        let item = Arc::new(crate::blob("item", true));
+        let item = Arc::new(lance::blob::blob_field("item", true));
         let images = ListArray::new(
             item.clone(),
             OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
