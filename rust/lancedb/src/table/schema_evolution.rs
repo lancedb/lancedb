@@ -118,6 +118,12 @@ pub(crate) async fn execute_add_columns(
         NewColumnTransform::BatchUDF(udf) => {
             computed_columns::ensure_no_foreign_declarations(udf.output_schema.fields())?
         }
+        NewColumnTransform::Reader(reader) => {
+            computed_columns::ensure_no_foreign_declarations(reader.schema().fields())?
+        }
+        NewColumnTransform::Stream(stream) => {
+            computed_columns::ensure_no_foreign_declarations(stream.schema().fields())?
+        }
         _ => {}
     }
     commit_add_columns(table, transforms, read_columns).await

@@ -2,7 +2,9 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
+from collections import UserDict
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 
@@ -410,13 +412,16 @@ def known_application() -> FunctionApplication:
 
 
 @pytest.mark.asyncio
-async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically():
+@pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
+async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomically(
+    mapping_type,
+):
     inner = _FunctionDeclarationInner()
     table = AsyncTable(inner)
     application = known_application()
 
     result = await table.add_columns(
-        {"features": application._copy(update={"columns": {}})}
+        mapping_type({"features": application._copy(update={"columns": {}})})
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"

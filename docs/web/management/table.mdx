@@ -553,7 +553,10 @@ older version for reads, call `checkout_latest` / `checkoutLatest` before modify
 
 You can add new columns to a table with the [`add_columns`](https://lancedb.github.io/lancedb/python/python/#lancedb.table.Table.add_columns) 
 method in Python, [`addColumns`](https://lancedb.github.io/lancedb/js/classes/Table/#addcolumns) in TypeScript/JavaScript, or `add_columns` in Rust. 
-New columns are populated based on SQL expressions you provide.
+New columns are populated based on SQL expressions you provide. On local tables,
+the Python SDK also accepts precomputed values from DataFrames and Arrow readers;
+see [Data evolution](/feature-engineering/data-evolution#add-derived-columns) for
+the supported inputs and row-order requirements.
 
 
 #### Set up the example table {#schema-set-up-the-example-table}

@@ -9,6 +9,7 @@ import json
 import deprecation
 import warnings
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import cached_property
@@ -441,7 +442,7 @@ def _into_pyarrow_reader(
         and data.__class__.__name__ == "LazyFrame"
     ):
         return data.collect().to_arrow().to_reader()
-    elif isinstance(data, Iterable):
+    elif isinstance(data, Iterable) and not isinstance(data, str):
         return _iterator_to_reader(data)
     else:
         raise TypeError(
@@ -455,6 +456,7 @@ def _into_pyarrow_reader(
 def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
+    data = iter(data)
     first = _into_pyarrow_reader(next(data))
     schema = first.schema
 
@@ -2541,11 +2543,15 @@ class Table(ABC):
     @abstractmethod
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -2555,8 +2561,9 @@ class Table(ABC):
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication], FunctionApplication,
-            pa.Field, List[pa.Field], pa.Schema
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -2570,6 +2577,16 @@ class Table(ABC):
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -2611,6 +2628,11 @@ class Table(ABC):
            x  doubled
         0  1        2
         1  2        4
+
+        >>> import pyarrow as pa
+        >>> result = table.add_columns(pa.table({"score": [0.25, 0.75]}).to_reader())
+        >>> table.to_arrow()["score"].to_pylist()
+        [0.25, 0.75]
         """
 
     @abstractmethod
@@ -4783,11 +4805,15 @@ class LanceTable(Table):
 
     def add_columns(
         self,
-        transforms: Dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
@@ -6832,11 +6858,15 @@ class AsyncTable:
 
     async def add_columns(
         self,
-        transforms: dict[str, str | FunctionApplication]
+        transforms: Mapping[str, str | FunctionApplication]
         | FunctionApplication
         | pa.Field
         | List[pa.Field]
         | pa.Schema
+        | DATA
+        | pa.RecordBatch
+        | pa.RecordBatchReader
+        | pl.DataFrame
         | None = None,
         *,
         computed: dict[str, str] | None = None,
@@ -6846,7 +6876,9 @@ class AsyncTable:
 
         Parameters
         ----------
-        transforms: Dict[str, str | FunctionApplication] or FunctionApplication
+        transforms: Mapping[str, str | FunctionApplication], FunctionApplication,
+            pa.Field, List[pa.Field], pa.Schema, pandas.DataFrame,
+            polars.DataFrame, pa.Table, pa.RecordBatch, pa.RecordBatchReader
             A map of column name to a SQL expression to use to calculate the
             value of the new column. These expressions will be evaluated for
             each row in the table, and can reference existing columns.
@@ -6859,6 +6891,16 @@ class AsyncTable:
             atomic binding; aliases come from ``rename(columns=...)``.
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
+
+            On local tables, a pandas or Polars DataFrame, PyArrow Table,
+            RecordBatch, or RecordBatchReader supplies precomputed new-column
+            values. Supply exactly one row per current live table row, in storage
+            scan order; pandas indexes are ignored. The input contains only new
+            columns. Readers are consumed once, and their batch boundaries need
+            not match table fragments. Keep the table unchanged between computing
+            these values and calling add_columns. Data inputs cannot be combined
+            with computed columns. Remote tables do not support data inputs.
+
         computed: Dict[str, str], optional
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -6889,7 +6931,7 @@ class AsyncTable:
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
             function_application = transforms
-        elif isinstance(transforms, dict) and any(
+        elif isinstance(transforms, Mapping) and any(
             isinstance(value, FunctionApplication) for value in transforms.values()
         ):
             if len(transforms) != 1 or not all(
@@ -6918,7 +6960,10 @@ class AsyncTable:
         ):
             transforms = pa.schema(transforms)
         if computed:
-            if transforms:
+            if transforms is not None and (
+                not isinstance(transforms, (Mapping, list, pa.Schema))
+                or bool(transforms)
+            ):
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
@@ -6927,8 +6972,11 @@ class AsyncTable:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
             return await self._inner.add_columns_with_schema(transforms)
-        else:
+        if isinstance(transforms, Mapping):
             return await self._inner.add_columns(list(transforms.items()))
+        return await self._inner.add_columns_from_reader(
+            _into_pyarrow_reader(transforms)
+        )
 
     async def refresh_column(self, column: str) -> RefreshColumnResult:
         """
