@@ -12,9 +12,9 @@ use std::sync::Arc;
 use arrow_array::{
     Array, ArrayRef, BooleanArray, FixedSizeListArray, LargeListArray, ListArray, RecordBatch,
 };
-use arrow_buffer::{NullBuffer, OffsetBuffer};
+use arrow_buffer::{BooleanBuffer, NullBuffer, NullBufferBuilder, OffsetBuffer};
 use arrow_cast::cast;
-use arrow_schema::{DataType, Field, FieldRef, Fields, Schema};
+use arrow_schema::{DataType, Field, FieldRef, Fields, Schema, SchemaRef};
 use arrow_select::nullif::nullif;
 use datafusion::functions::core::{get_field, named_struct};
 use datafusion_common::config::ConfigOptions;
@@ -34,6 +34,7 @@ pub(super) fn coerce_blob_expr(
     input_field: &Field,
     table_field: &FieldRef,
     config: &Arc<ConfigOptions>,
+    ancestors: &[Arc<dyn PhysicalExpr>],
 ) -> Result<(Arc<dyn PhysicalExpr>, FieldRef)> {
     let DataType::Struct(declared_fields) = table_field.data_type() else {
         return Err(Error::InvalidInput {
@@ -188,6 +189,7 @@ pub(super) fn coerce_blob_expr(
         built,
         field: table_field.clone(),
         dropped_ranges,
+        ancestors: ancestors.to_vec(),
     });
     Ok((expr, table_field.clone()))
 }
@@ -199,6 +201,7 @@ pub(super) fn coerce_blob_list_expr(
     input_expr: Arc<dyn PhysicalExpr>,
     input_field: &Field,
     table_field: &FieldRef,
+    ancestors: &[Arc<dyn PhysicalExpr>],
 ) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let (DataType::List(input_item)
     | DataType::LargeList(input_item)
@@ -222,12 +225,19 @@ pub(super) fn coerce_blob_list_expr(
         input_item.as_ref().clone().with_name(table_item.name()),
     )]
     .into();
-    let (item_expr, output_item) =
-        super::cast::build_field_exprs(&input_fields, &vec![table_item.clone()].into(), &|_| {
-            Arc::new(Column::new(input_item.name(), 0))
-        })?
-        .pop()
-        .expect("one list item projection");
+    let validity_field = Field::new("__blob_parent_validity", DataType::Boolean, true);
+    let (item_expr, output_item) = super::cast::build_field_exprs(
+        &input_fields,
+        &vec![table_item.clone()].into(),
+        &|_| Arc::new(Column::new(input_item.name(), 0)),
+        &[Arc::new(Column::new(validity_field.name(), 1))],
+    )?
+    .pop()
+    .expect("one list item projection");
+    let item_schema = Arc::new(Schema::new(vec![
+        input_item.clone(),
+        Arc::new(validity_field),
+    ]));
     let output_type = match table_field.data_type() {
         DataType::List(_) => DataType::List(output_item),
         DataType::LargeList(_) => DataType::LargeList(output_item),
@@ -240,6 +250,8 @@ pub(super) fn coerce_blob_list_expr(
         input_item: input_item.clone(),
         item_expr,
         field: output_field.clone(),
+        ancestors: ancestors.to_vec(),
+        item_schema,
     });
     Ok(Some((expr, output_field)))
 }
@@ -250,6 +262,8 @@ struct CoerceBlobList {
     input_item: FieldRef,
     item_expr: Arc<dyn PhysicalExpr>,
     field: FieldRef,
+    ancestors: Vec<Arc<dyn PhysicalExpr>>,
+    item_schema: SchemaRef,
 }
 
 impl fmt::Display for CoerceBlobList {
@@ -264,6 +278,7 @@ impl PartialEq for CoerceBlobList {
             && self.input_item == other.input_item
             && self.item_expr.eq(&other.item_expr)
             && self.field == other.field
+            && self.ancestors == other.ancestors
     }
 }
 
@@ -275,6 +290,7 @@ impl Hash for CoerceBlobList {
         self.input_item.hash(state);
         self.item_expr.hash(state);
         self.field.hash(state);
+        self.ancestors.hash(state);
     }
 }
 
@@ -304,34 +320,56 @@ impl PhysicalExpr for CoerceBlobList {
         } else {
             cast(source.as_ref(), &intermediate_type)?
         };
-        let values = match source.data_type() {
+        let row_nulls = NullBuffer::union(
+            source.logical_nulls().as_ref(),
+            ancestor_nulls(&self.ancestors, batch)?.as_ref(),
+        );
+        let (values, item_nulls) = match source.data_type() {
             DataType::List(_) => {
                 let list = source.as_any().downcast_ref::<ListArray>().unwrap();
                 let first = list.offsets()[0] as usize;
                 let last = *list.offsets().last().unwrap() as usize;
-                list.values().slice(first, last - first)
+                (
+                    list.values().slice(first, last - first),
+                    expand_list_nulls(row_nulls.as_ref(), list.offsets().lengths(), last - first),
+                )
             }
             DataType::LargeList(_) => {
                 let list = source.as_any().downcast_ref::<LargeListArray>().unwrap();
                 let first = list.offsets()[0] as usize;
                 let last = *list.offsets().last().unwrap() as usize;
-                list.values().slice(first, last - first)
+                (
+                    list.values().slice(first, last - first),
+                    expand_list_nulls(row_nulls.as_ref(), list.offsets().lengths(), last - first),
+                )
             }
-            DataType::FixedSizeList(_, _) => source
-                .as_any()
-                .downcast_ref::<FixedSizeListArray>()
-                .unwrap()
-                .values()
-                .clone(),
+            DataType::FixedSizeList(_, size) => (
+                source
+                    .as_any()
+                    .downcast_ref::<FixedSizeListArray>()
+                    .unwrap()
+                    .values()
+                    .clone(),
+                row_nulls.as_ref().map(|nulls| nulls.expand(*size as usize)),
+            ),
             other => {
                 return Err(DataFusionError::Internal(format!(
                     "coerce_blob_list expected a list, got {other}"
                 )));
             }
         };
+        // Carry list/ancestor validity in a separate column. Applying it to the
+        // items themselves would introduce nulls into non-nullable child fields.
+        let validity = BooleanArray::new(
+            item_nulls
+                .as_ref()
+                .map(|nulls| nulls.inner().clone())
+                .unwrap_or_else(|| BooleanBuffer::new_set(values.len())),
+            item_nulls,
+        );
         let item_batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![self.input_item.clone()])),
-            vec![values.clone()],
+            self.item_schema.clone(),
+            vec![values.clone(), Arc::new(validity)],
         )?;
         let coerced = self
             .item_expr
@@ -376,7 +414,9 @@ impl PhysicalExpr for CoerceBlobList {
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.source]
+        std::iter::once(&self.source)
+            .chain(self.ancestors.iter())
+            .collect()
     }
 
     fn with_new_children(
@@ -388,12 +428,43 @@ impl PhysicalExpr for CoerceBlobList {
             input_item: self.input_item.clone(),
             item_expr: self.item_expr.clone(),
             field: self.field.clone(),
+            ancestors: children[1..].to_vec(),
+            item_schema: self.item_schema.clone(),
         }))
     }
 
     fn fmt_sql(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self}")
     }
+}
+
+fn ancestor_nulls(
+    ancestors: &[Arc<dyn PhysicalExpr>],
+    batch: &RecordBatch,
+) -> datafusion_common::Result<Option<NullBuffer>> {
+    let mut nulls = None;
+    for ancestor in ancestors {
+        let array = ancestor.evaluate(batch)?.into_array(batch.num_rows())?;
+        nulls = NullBuffer::union(nulls.as_ref(), array.logical_nulls().as_ref());
+    }
+    Ok(nulls)
+}
+
+fn expand_list_nulls(
+    nulls: Option<&NullBuffer>,
+    lengths: impl Iterator<Item = usize>,
+    item_count: usize,
+) -> Option<NullBuffer> {
+    let nulls = nulls?;
+    let mut builder = NullBufferBuilder::new(item_count);
+    for (length, valid) in lengths.zip(nulls.iter()) {
+        if valid {
+            builder.append_n_non_nulls(length);
+        } else {
+            builder.append_n_nulls(length);
+        }
+    }
+    builder.finish()
 }
 
 /// Carries the source column's nullity onto the struct built for it.
@@ -408,6 +479,7 @@ struct AbsentBlobIsNull {
     built: Arc<dyn PhysicalExpr>,
     field: FieldRef,
     dropped_ranges: Vec<usize>,
+    ancestors: Vec<Arc<dyn PhysicalExpr>>,
 }
 
 impl fmt::Display for AbsentBlobIsNull {
@@ -422,6 +494,7 @@ impl PartialEq for AbsentBlobIsNull {
             && self.built.eq(&other.built)
             && self.field == other.field
             && self.dropped_ranges == other.dropped_ranges
+            && self.ancestors == other.ancestors
     }
 }
 
@@ -433,6 +506,7 @@ impl Hash for AbsentBlobIsNull {
         self.built.hash(state);
         self.field.hash(state);
         self.dropped_ranges.hash(state);
+        self.ancestors.hash(state);
     }
 }
 
@@ -449,13 +523,15 @@ impl PhysicalExpr for AbsentBlobIsNull {
         let rows = batch.num_rows();
         let source = self.source.evaluate(batch)?.into_array(rows)?;
         if !self.dropped_ranges.is_empty() {
+            let ancestor_nulls = ancestor_nulls(&self.ancestors, batch)?;
             let values = source
                 .as_any()
                 .downcast_ref::<arrow_array::StructArray>()
                 .unwrap();
+            let effective_nulls = NullBuffer::union(values.nulls(), ancestor_nulls.as_ref());
             for index in &self.dropped_ranges {
                 let nulls = NullBuffer::union(
-                    values.nulls(),
+                    effective_nulls.as_ref(),
                     values.column(*index).logical_nulls().as_ref(),
                 );
                 if nulls.as_ref().map_or(values.len() != 0, |nulls| {
@@ -479,7 +555,10 @@ impl PhysicalExpr for AbsentBlobIsNull {
     }
 
     fn children(&self) -> Vec<&Arc<dyn PhysicalExpr>> {
-        vec![&self.source, &self.built]
+        [&self.source, &self.built]
+            .into_iter()
+            .chain(self.ancestors.iter())
+            .collect()
     }
 
     fn with_new_children(
@@ -491,6 +570,7 @@ impl PhysicalExpr for AbsentBlobIsNull {
             built: children[1].clone(),
             field: self.field.clone(),
             dropped_ranges: self.dropped_ranges.clone(),
+            ancestors: children[2..].to_vec(),
         }))
     }
 
@@ -1209,10 +1289,21 @@ mod tests {
         range: Option<u64>,
         nesting: &[&str],
     ) -> RecordBatch {
+        nested_layout_batch_with_null(wide, id, range, nesting, None)
+    }
+
+    fn nested_layout_batch_with_null(
+        wide: bool,
+        id: i64,
+        range: Option<u64>,
+        nesting: &[&str],
+        null_depth: Option<usize>,
+    ) -> RecordBatch {
+        // Ancestor validity must not introduce nulls into a required blob child.
         let mut field = if wide {
-            crate::blob("image", true)
+            crate::blob("image", false)
         } else {
-            blob("image", true)
+            blob("image", false)
         };
         let DataType::Struct(children) = field.data_type().clone() else {
             unreachable!()
@@ -1223,14 +1314,15 @@ mod tests {
         ];
         if wide {
             columns.push(Arc::new(UInt64Array::from(vec![range])));
-            columns.push(Arc::new(UInt64Array::new_null(1)));
+            columns.push(Arc::new(UInt64Array::from(vec![range])));
         }
         let mut array: ArrayRef = Arc::new(StructArray::new(children, columns, None));
-        for kind in nesting.iter().rev() {
+        for (depth, kind) in nesting.iter().enumerate().rev() {
+            let nulls = (null_depth == Some(depth)).then(|| NullBuffer::from(vec![false]));
             let data_type = match *kind {
                 "struct" => {
                     let fields: Fields = vec![Arc::new(field)].into();
-                    array = Arc::new(StructArray::new(fields.clone(), vec![array], None));
+                    array = Arc::new(StructArray::new(fields.clone(), vec![array], nulls));
                     DataType::Struct(fields)
                 }
                 "list" => {
@@ -1239,7 +1331,7 @@ mod tests {
                         item.clone(),
                         OffsetBuffer::new(vec![0, 1].into()),
                         array,
-                        None,
+                        nulls,
                     ));
                     DataType::List(item)
                 }
@@ -1249,13 +1341,13 @@ mod tests {
                         item.clone(),
                         OffsetBuffer::new(vec![0_i64, 1].into()),
                         array,
-                        None,
+                        nulls,
                     ));
                     DataType::LargeList(item)
                 }
                 "fixed_size_list" => {
                     let item = Arc::new(field.with_name("item"));
-                    array = Arc::new(FixedSizeListArray::new(item.clone(), 1, array, None));
+                    array = Arc::new(FixedSizeListArray::new(item.clone(), 1, array, nulls));
                     DataType::FixedSizeList(item, 1)
                 }
                 _ => unreachable!(),
@@ -1270,6 +1362,41 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![id])), array],
         )
         .unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case(&["struct"])]
+    #[case(&["struct", "struct"])]
+    #[case(&["list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "struct", "list"])]
+    #[case(&["fixed_size_list", "struct", "large_list"])]
+    #[tokio::test]
+    async fn nullable_nested_blob_layout_projection(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] sliced: bool,
+    ) {
+        for depth in 0..nesting.len() {
+            // Physical range slots beneath a null ancestor are not logical values.
+            let input =
+                nested_layout_batch_with_null(!wide_target, 1, Some(0), nesting, Some(depth));
+            let input = if sliced {
+                let outside = nested_layout_batch(!wide_target, 0, Some(4), nesting);
+                arrow_select::concat::concat_batches(
+                    &input.schema(),
+                    &[outside.clone(), input, outside],
+                )
+                .unwrap()
+                .slice(1, 1)
+            } else {
+                input
+            };
+            let expected =
+                nested_layout_batch_with_null(wide_target, 1, None, nesting, Some(depth));
+            let output = coerce(input, expected.schema().as_ref()).await;
+            assert_eq!(output, expected, "null ancestor at {depth} in {nesting:?}");
+        }
     }
 
     #[rstest::rstest]
@@ -1329,6 +1456,168 @@ mod tests {
                 .unwrap()
         });
         (table, receiver)
+    }
+
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    #[case(&["struct"])]
+    #[case(&["list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "list"])]
+    #[tokio::test]
+    async fn nullable_nested_blob_layout_writes(
+        #[case] nesting: &[&str],
+        #[values(false, true)] merge: bool,
+        #[values(false, true)] remote: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+        use futures::StreamExt;
+        use http_body::Body;
+
+        for depth in 0..nesting.len() {
+            let initial = nested_layout_batch(false, 0, None, nesting);
+            let schema = initial.schema();
+            let db = crate::connect("memory://").execute().await.unwrap();
+            let (table, receiver) = if remote {
+                let (table, receiver) = remote_layout_table(schema.as_ref());
+                (table, Some(receiver))
+            } else {
+                (
+                    db.create_table("layouts", initial).execute().await.unwrap(),
+                    None,
+                )
+            };
+            let visible_id = if merge { 0 } else { 1 };
+            let visible = nested_layout_batch(true, visible_id, None, nesting);
+            let hidden = nested_layout_batch_with_null(true, 2, Some(0), nesting, Some(depth));
+            let outside = nested_layout_batch(true, 99, Some(4), nesting);
+            let input = arrow_select::concat::concat_batches(
+                &visible.schema(),
+                &[outside.clone(), visible, hidden, outside],
+            )
+            .unwrap()
+            .slice(1, 2);
+            let expected = arrow_select::concat::concat_batches(
+                &schema,
+                &[
+                    nested_layout_batch(false, visible_id, None, nesting),
+                    nested_layout_batch_with_null(false, 2, None, nesting, Some(depth)),
+                ],
+            )
+            .unwrap();
+            if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                let input_schema = input.schema();
+                builder
+                    .execute(Box::new(arrow_array::RecordBatchIterator::new(
+                        vec![Ok(input)],
+                        input_schema,
+                    )))
+                    .await
+                    .unwrap();
+            } else {
+                table.add(input).execute().await.unwrap();
+            }
+            let count = if merge { 2 } else { 3 };
+            if let Some(receiver) = &receiver {
+                let mut body = receiver.recv().unwrap();
+                let mut bytes = Vec::new();
+                while let Some(frame) =
+                    futures::stream::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx))
+                        .next()
+                        .await
+                {
+                    bytes.extend_from_slice(frame.unwrap().data_ref().unwrap());
+                }
+                let batches =
+                    arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+                        .unwrap()
+                        .collect::<std::result::Result<Vec<_>, _>>()
+                        .unwrap();
+                assert_eq!(batches, vec![expected]);
+            } else {
+                assert_eq!(table.schema().await.unwrap(), schema);
+                assert_eq!(table.count_rows(None).await.unwrap(), count);
+                let batches = table
+                    .query()
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                let mut found = false;
+                for batch in batches {
+                    let ids = batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap();
+                    if let Some(row) = (0..ids.len()).find(|row| ids.value(*row) == 2) {
+                        let mut array = batch.column(1).slice(row, 1);
+                        for kind in &nesting[..depth] {
+                            array = match *kind {
+                                "struct" => array
+                                    .as_any()
+                                    .downcast_ref::<StructArray>()
+                                    .unwrap()
+                                    .column(0)
+                                    .clone(),
+                                "list" => {
+                                    array.as_any().downcast_ref::<ListArray>().unwrap().value(0)
+                                }
+                                "large_list" => array
+                                    .as_any()
+                                    .downcast_ref::<LargeListArray>()
+                                    .unwrap()
+                                    .value(0),
+                                _ => unreachable!(),
+                            };
+                        }
+                        assert!(array.is_null(0), "lost null ancestor at {depth}");
+                        found = true;
+                    }
+                }
+                assert!(found);
+            }
+
+            // A visible populated range in a later batch must still abort everything.
+            let version = if remote {
+                None
+            } else {
+                Some(table.version().await.unwrap())
+            };
+            let hidden = nested_layout_batch_with_null(true, 3, Some(0), nesting, Some(depth));
+            let bad = nested_layout_batch(true, 4, Some(4), nesting);
+            let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+                Box::new(arrow_array::RecordBatchIterator::new(
+                    vec![Ok(hidden), Ok(bad.clone())],
+                    bad.schema(),
+                ));
+            let result = if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(reader).await.map(|_| ())
+            } else {
+                table.add(reader).execute().await.map(|_| ())
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("cannot store byte ranges"), "{error}");
+            if let Some(receiver) = receiver {
+                assert!(
+                    receiver.try_recv().is_err(),
+                    "rejected write reached server"
+                );
+            } else {
+                assert_eq!(table.version().await.unwrap(), version.unwrap());
+                assert_eq!(table.count_rows(None).await.unwrap(), count);
+            }
+        }
     }
 
     #[cfg(feature = "remote")]
