@@ -389,13 +389,15 @@ Use RaBitQ quantization by selecting quantized index types ending in the suffix 
 Note that when using `IVF_RQ`, the dimension of the dataset must be a multiple of `8`.
 
 `num_bits` determines how many bits are used to quantize each dimension.
-`IvfRq()` leaves this unset and inherits Lance's default, currently `5` bits, matching Rust and Node.
+By default, Python, Rust, and Node leave this unset and inherit Lance's default, currently `5` bits.
 Higher values improve recall at the cost of additional storage and query-time compute.
-To retain the previous Python default and maximum compression, use `IvfRq(num_bits=1)`.
+To retain the previous one-bit default and maximum compression, explicitly set `num_bits=1` (for example, `IvfRq(num_bits=1)` in Python).
 Five-bit quantized vector codes use roughly five times the storage of one-bit codes; total index size also includes other overhead.
 
 <Warning title="Reading multi-bit indexes across versions">
-RaBitQ-quantized indexes computed with `num_bits >= 2` use a newer on-disk layout, and cannot be read by some older LanceDB versions. 
+RaBitQ-quantized indexes computed with `num_bits >= 2` use a newer on-disk layout and cannot be read by some older LanceDB versions.
+The new five-bit default therefore affects reader compatibility as well as index size.
+Upgrade readers to versions that support multi-bit IVF_RQ before creating indexes with the default settings, or explicitly set `num_bits=1` when sharing indexes with readers that support only one-bit IVF_RQ.
 </Warning>
 
 See this [blog post](https://lancedb.com/blog/feature-rabitq-quantization/) for further discussion and benchmarking of LanceDB's RaBitQ implementation.
