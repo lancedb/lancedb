@@ -99,3 +99,23 @@ Increasing this value might improve the quality of the index but in most cases t
 default should be sufficient.
 
 The default value is 256.
+
+***
+
+### targetPartitionSize?
+
+```ts
+optional targetPartitionSize: number;
+```
+
+The target number of rows in each IVF partition.
+
+This is an alternative to `numPartitions`. When it is set and
+`numPartitions` is not, the number of partitions is derived by dividing
+the number of rows by this value. When both are set, `numPartitions` is
+used and this value is ignored. When neither is set, a default target
+that depends on the index type is used.
+
+Larger partitions mean fewer of them, which makes the first part of the
+search (picking the right partitions) faster and the second part
+(searching within a partition) slower.

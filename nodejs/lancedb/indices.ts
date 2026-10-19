@@ -21,6 +21,21 @@ export interface IvfPqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, a default target
+   * that depends on the index type is used.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of sub-vectors of PQ.
    *
    * This value controls how much the vector is compressed during the quantization step.
@@ -127,6 +142,21 @@ export interface IvfRqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, a default target
+   * that depends on the index type is used.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of bits per dimension for residual quantization.
    *
    * This value controls how much each residual component is compressed. The more
@@ -221,6 +251,21 @@ export interface HnswPqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, a default target
+   * that depends on the index type is used.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of sub-vectors of PQ.
@@ -339,6 +384,21 @@ export interface HnswSqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, a default target
+   * that depends on the index type is used.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Max iterations to train kmeans.
    *
    * The default value is 50.
@@ -414,6 +474,21 @@ export interface IvfFlatOptions {
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, a default target
+   * that depends on the index type is used.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Distance type to use to build the index.
@@ -632,6 +707,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -660,6 +736,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -687,6 +764,7 @@ export class Index {
         options?.numPartitions,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -797,6 +875,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -819,6 +898,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }

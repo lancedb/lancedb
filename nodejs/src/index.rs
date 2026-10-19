@@ -104,6 +104,7 @@ impl Index {
         num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
+        target_partition_size: Option<u32>,
     ) -> napi::Result<Self> {
         let mut ivf_pq_builder = IvfPqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
@@ -112,6 +113,9 @@ impl Index {
         }
         if let Some(num_partitions) = num_partitions {
             ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            ivf_pq_builder = ivf_pq_builder.target_partition_size(target_partition_size);
         }
         if let Some(num_sub_vectors) = num_sub_vectors {
             ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
@@ -137,6 +141,7 @@ impl Index {
         num_bits: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
+        target_partition_size: Option<u32>,
     ) -> napi::Result<Self> {
         let mut ivf_rq_builder = IvfRqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
@@ -145,6 +150,9 @@ impl Index {
         }
         if let Some(num_partitions) = num_partitions {
             ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
         }
         if let Some(num_bits) = num_bits {
             ivf_rq_builder = ivf_rq_builder.num_bits(num_bits);
@@ -166,6 +174,7 @@ impl Index {
         num_partitions: Option<u32>,
         max_iterations: Option<u32>,
         sample_rate: Option<u32>,
+        target_partition_size: Option<u32>,
     ) -> napi::Result<Self> {
         let mut ivf_flat_builder = IvfFlatIndexBuilder::default();
         if let Some(distance_type) = distance_type {
@@ -174,6 +183,9 @@ impl Index {
         }
         if let Some(num_partitions) = num_partitions {
             ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            ivf_flat_builder = ivf_flat_builder.target_partition_size(target_partition_size);
         }
         if let Some(max_iterations) = max_iterations {
             ivf_flat_builder = ivf_flat_builder.max_iterations(max_iterations);
@@ -283,6 +295,7 @@ impl Index {
     }
 
     #[napi(factory)]
+    #[allow(clippy::too_many_arguments)]
     pub fn hnsw_pq(
         distance_type: Option<String>,
         num_partitions: Option<u32>,
@@ -291,6 +304,7 @@ impl Index {
         sample_rate: Option<u32>,
         m: Option<u32>,
         ef_construction: Option<u32>,
+        target_partition_size: Option<u32>,
     ) -> napi::Result<Self> {
         let mut hnsw_pq_builder = IvfHnswPqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
@@ -299,6 +313,9 @@ impl Index {
         }
         if let Some(num_partitions) = num_partitions {
             hnsw_pq_builder = hnsw_pq_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            hnsw_pq_builder = hnsw_pq_builder.target_partition_size(target_partition_size);
         }
         if let Some(num_sub_vectors) = num_sub_vectors {
             hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
@@ -328,6 +345,7 @@ impl Index {
         sample_rate: Option<u32>,
         m: Option<u32>,
         ef_construction: Option<u32>,
+        target_partition_size: Option<u32>,
     ) -> napi::Result<Self> {
         let mut hnsw_sq_builder = IvfHnswSqIndexBuilder::default();
         if let Some(distance_type) = distance_type {
@@ -336,6 +354,9 @@ impl Index {
         }
         if let Some(num_partitions) = num_partitions {
             hnsw_sq_builder = hnsw_sq_builder.num_partitions(num_partitions);
+        }
+        if let Some(target_partition_size) = target_partition_size {
+            hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
         }
         if let Some(max_iterations) = max_iterations {
             hnsw_sq_builder = hnsw_sq_builder.max_iterations(max_iterations);
