@@ -345,7 +345,7 @@ pub fn is_blob(field: &Field) -> bool {
 }
 
 /// Returns true if `field`, or any field nested under it, is a blob v2 column.
-fn field_tree_has_blob_v2(field: &Field) -> bool {
+pub(crate) fn field_tree_has_blob_v2(field: &Field) -> bool {
     if field.is_blob_v2() {
         return true;
     }

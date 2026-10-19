@@ -52,7 +52,7 @@ pub fn cast_to_table_schema(
 /// For each table field that exists in the input, produce an expression that
 /// reads from the input and casts if needed. Fields in the table but not in the
 /// input are omitted (the storage layer handles missing columns).
-fn build_field_exprs(
+pub(super) fn build_field_exprs(
     input_fields: &Fields,
     table_fields: &Fields,
     get_input_expr: &dyn Fn(usize) -> Arc<dyn PhysicalExpr>,
@@ -114,8 +114,7 @@ fn build_field_exprs(
         }
 
         // Blob values in lists need the same coercion as top-level blob columns.
-        if let Some(coerced) =
-            coerce_blob_list_expr(input_expr.clone(), input_field, table_field, &config)?
+        if let Some(coerced) = coerce_blob_list_expr(input_expr.clone(), input_field, table_field)?
         {
             result.push(coerced);
             continue;
@@ -157,11 +156,12 @@ fn build_field_exprs(
                     .map(|(_, f)| f.clone())
                     .collect::<Vec<_>>()
                     .into();
-                let output_field: FieldRef = Arc::new(Field::new(
-                    table_field.name(),
-                    DataType::Struct(output_struct_fields),
-                    table_field.is_nullable(),
-                ));
+                let output_field: FieldRef = Arc::new(
+                    table_field
+                        .as_ref()
+                        .clone()
+                        .with_data_type(DataType::Struct(output_struct_fields)),
+                );
 
                 // Build named_struct(lit("a"), expr_a, lit("b"), expr_b, ...)
                 let mut ns_args: Vec<Arc<dyn PhysicalExpr>> = Vec::new();

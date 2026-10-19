@@ -24,7 +24,6 @@ use datafusion_physical_expr::ScalarFunctionExpr;
 use datafusion_physical_expr::expressions::{CastExpr, Literal};
 use datafusion_physical_plan::PhysicalExpr;
 use datafusion_physical_plan::expressions::Column;
-use lance_arrow::FieldExt;
 
 use crate::error::{Error, Result};
 
@@ -193,14 +192,13 @@ pub(super) fn coerce_blob_expr(
     Ok((expr, table_field.clone()))
 }
 
-/// Apply the normal blob coercion to list values while retaining the list's
-/// offsets and validity. A child batch lets the existing blob expression handle
-/// binary, null, and descriptor inputs exactly as it does for top-level fields.
+/// Recurse through list items while retaining the list's offsets and validity.
+/// A child batch reuses the field projection, including nested structs and lists,
+/// so every blob leaf receives the same coercion as a top-level blob column.
 pub(super) fn coerce_blob_list_expr(
     input_expr: Arc<dyn PhysicalExpr>,
     input_field: &Field,
     table_field: &FieldRef,
-    config: &Arc<ConfigOptions>,
 ) -> Result<Option<(Arc<dyn PhysicalExpr>, FieldRef)>> {
     let (DataType::List(input_item)
     | DataType::LargeList(input_item)
@@ -214,23 +212,36 @@ pub(super) fn coerce_blob_list_expr(
     else {
         return Ok(None);
     };
-    if !table_item.is_blob_v2() || input_item == table_item {
+    if !crate::blob::field_tree_has_blob_v2(table_item) || input_item == table_item {
         return Ok(None);
     }
 
-    let (item_expr, _) = coerce_blob_expr(
-        Arc::new(Column::new(input_item.name(), 0)),
-        input_item,
-        table_item,
-        config,
-    )?;
+    // List item names need not match across SDKs. Their position identifies the
+    // item, while named children inside a struct still match by name.
+    let input_fields = vec![Arc::new(
+        input_item.as_ref().clone().with_name(table_item.name()),
+    )]
+    .into();
+    let (item_expr, output_item) =
+        super::cast::build_field_exprs(&input_fields, &vec![table_item.clone()].into(), &|_| {
+            Arc::new(Column::new(input_item.name(), 0))
+        })?
+        .pop()
+        .expect("one list item projection");
+    let output_type = match table_field.data_type() {
+        DataType::List(_) => DataType::List(output_item),
+        DataType::LargeList(_) => DataType::LargeList(output_item),
+        DataType::FixedSizeList(_, size) => DataType::FixedSizeList(output_item, *size),
+        _ => unreachable!(),
+    };
+    let output_field = Arc::new(table_field.as_ref().clone().with_data_type(output_type));
     let expr: Arc<dyn PhysicalExpr> = Arc::new(CoerceBlobList {
         source: input_expr,
         input_item: input_item.clone(),
         item_expr,
-        field: table_field.clone(),
+        field: output_field.clone(),
     });
-    Ok(Some((expr, table_field.clone())))
+    Ok(Some((expr, output_field)))
 }
 
 #[derive(Debug, Clone)]
@@ -1190,5 +1201,262 @@ mod tests {
         let input_ptr = Arc::as_ptr(&input);
         let plan = cast_to_table_schema(input, &table_schema).unwrap();
         assert_eq!(Arc::as_ptr(&plan), input_ptr, "no projection inserted");
+    }
+
+    fn nested_layout_batch(
+        wide: bool,
+        id: i64,
+        range: Option<u64>,
+        nesting: &[&str],
+    ) -> RecordBatch {
+        let mut field = if wide {
+            crate::blob("image", true)
+        } else {
+            blob("image", true)
+        };
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!()
+        };
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(LargeBinaryArray::from(vec![Some(b"payload".as_slice())])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+        ];
+        if wide {
+            columns.push(Arc::new(UInt64Array::from(vec![range])));
+            columns.push(Arc::new(UInt64Array::new_null(1)));
+        }
+        let mut array: ArrayRef = Arc::new(StructArray::new(children, columns, None));
+        for kind in nesting.iter().rev() {
+            let data_type = match *kind {
+                "struct" => {
+                    let fields: Fields = vec![Arc::new(field)].into();
+                    array = Arc::new(StructArray::new(fields.clone(), vec![array], None));
+                    DataType::Struct(fields)
+                }
+                "list" => {
+                    let item = Arc::new(field.with_name("item"));
+                    array = Arc::new(ListArray::new(
+                        item.clone(),
+                        OffsetBuffer::new(vec![0, 1].into()),
+                        array,
+                        None,
+                    ));
+                    DataType::List(item)
+                }
+                "large_list" => {
+                    let item = Arc::new(field.with_name("item"));
+                    array = Arc::new(LargeListArray::new(
+                        item.clone(),
+                        OffsetBuffer::new(vec![0_i64, 1].into()),
+                        array,
+                        None,
+                    ));
+                    DataType::LargeList(item)
+                }
+                "fixed_size_list" => {
+                    let item = Arc::new(field.with_name("item"));
+                    array = Arc::new(FixedSizeListArray::new(item.clone(), 1, array, None));
+                    DataType::FixedSizeList(item, 1)
+                }
+                _ => unreachable!(),
+            };
+            field = Field::new("value", data_type, true);
+        }
+        RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                field,
+            ])),
+            vec![Arc::new(Int64Array::from(vec![id])), array],
+        )
+        .unwrap()
+    }
+
+    #[rstest::rstest]
+    #[case(&["list"])]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list"])]
+    #[case(&["large_list", "struct", "list"])]
+    #[case(&["fixed_size_list", "struct", "large_list"])]
+    #[case(&["struct", "list", "struct"])]
+    #[tokio::test]
+    async fn nested_blob_layout_projection(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] sliced: bool,
+    ) {
+        let input = nested_layout_batch(!wide_target, 1, None, nesting);
+        let input = if sliced {
+            // Populated ranges outside a sliced collection must not be examined.
+            let before = nested_layout_batch(!wide_target, 0, Some(4), nesting);
+            let after = nested_layout_batch(!wide_target, 2, Some(4), nesting);
+            arrow_select::concat::concat_batches(&input.schema(), &[before, input, after])
+                .unwrap()
+                .slice(1, 1)
+        } else {
+            input
+        };
+        let expected = nested_layout_batch(wide_target, 1, None, nesting);
+        let output = coerce(input, expected.schema().as_ref()).await;
+        assert_eq!(output, expected);
+    }
+
+    #[cfg(feature = "remote")]
+    fn remote_layout_table(
+        schema: &Schema,
+    ) -> (crate::Table, std::sync::mpsc::Receiver<reqwest::Body>) {
+        let describe = serde_json::json!({
+            "version": 1,
+            "schema": lance::arrow::json::JsonSchema::try_from(schema).unwrap(),
+        })
+        .to_string();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = crate::Table::new_with_handler("layouts", move |mut request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(describe.clone())
+                    .unwrap();
+            }
+            assert!(
+                request.url().path().ends_with("/insert/")
+                    || request.url().path().ends_with("/merge_insert/")
+            );
+            sender.send(request.body_mut().take().unwrap()).unwrap();
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version":2,"num_inserted_rows":1}"#.to_string())
+                .unwrap()
+        });
+        (table, receiver)
+    }
+
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    #[case(&["list"])]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list"])]
+    #[case(&["large_list", "struct", "list"])]
+    #[case(&["struct", "list", "struct"])]
+    #[tokio::test]
+    async fn nested_blob_layout_writes(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] merge: bool,
+        #[values(false, true)] remote: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+        use futures::StreamExt;
+        use http_body::Body;
+
+        let initial = nested_layout_batch(wide_target, 0, None, nesting);
+        let schema = initial.schema();
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let (table, receiver) = if remote {
+            let (table, receiver) = remote_layout_table(schema.as_ref());
+            (table, Some(receiver))
+        } else {
+            (
+                db.create_table("layouts", initial).execute().await.unwrap(),
+                None,
+            )
+        };
+        let input = nested_layout_batch(!wide_target, 1, None, nesting);
+        let expected = nested_layout_batch(wide_target, 1, None, nesting);
+        let (input, expected) = if merge {
+            (
+                arrow_select::concat::concat_batches(
+                    &input.schema(),
+                    &[nested_layout_batch(!wide_target, 0, None, nesting), input],
+                )
+                .unwrap(),
+                arrow_select::concat::concat_batches(
+                    &schema,
+                    &[nested_layout_batch(wide_target, 0, None, nesting), expected],
+                )
+                .unwrap(),
+            )
+        } else {
+            (input, expected)
+        };
+        if merge {
+            let mut builder = table.merge_insert(&["id"]);
+            builder
+                .when_matched_update_all(None)
+                .when_not_matched_insert_all();
+            let schema = input.schema();
+            builder
+                .execute(Box::new(arrow_array::RecordBatchIterator::new(
+                    vec![Ok(input)],
+                    schema,
+                )))
+                .await
+                .unwrap();
+        } else {
+            table.add(input).execute().await.unwrap();
+        }
+        if let Some(receiver) = &receiver {
+            let mut body = receiver.recv().unwrap();
+            let mut bytes = Vec::new();
+            while let Some(frame) =
+                futures::stream::poll_fn(|cx| std::pin::Pin::new(&mut body).poll_frame(cx))
+                    .next()
+                    .await
+            {
+                bytes.extend_from_slice(frame.unwrap().data_ref().unwrap());
+            }
+            let batches =
+                arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(bytes), None)
+                    .unwrap()
+                    .collect::<std::result::Result<Vec<_>, _>>()
+                    .unwrap();
+            assert_eq!(batches, vec![expected]);
+        } else {
+            assert_eq!(table.schema().await.unwrap(), schema);
+            assert_eq!(table.count_rows(None).await.unwrap(), 2);
+            // Read the stored nested descriptors as well as the row count.
+            table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+        }
+        if !wide_target {
+            let version = if remote {
+                None
+            } else {
+                Some(table.version().await.unwrap())
+            };
+            let first = nested_layout_batch(true, 2, None, nesting);
+            let bad = nested_layout_batch(true, 3, Some(4), nesting);
+            let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+                Box::new(arrow_array::RecordBatchIterator::new(
+                    vec![Ok(first), Ok(bad.clone())],
+                    bad.schema(),
+                ));
+            let result = if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(reader).await.map(|_| ())
+            } else {
+                table.add(reader).execute().await.map(|_| ())
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("cannot store byte ranges"), "{error}");
+            if let Some(receiver) = receiver {
+                assert!(
+                    receiver.try_recv().is_err(),
+                    "a rejected range must not reach the server"
+                );
+            } else {
+                assert_eq!(table.version().await.unwrap(), version.unwrap());
+                assert_eq!(table.count_rows(None).await.unwrap(), 2);
+            }
+        }
     }
 }

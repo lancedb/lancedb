@@ -302,7 +302,13 @@ fn validate_merge_source_type(input: &DataType, target: &DataType, path: &str) -
             | DataType::LargeListView(target),
         )
         | (DataType::Map(input, _), DataType::Map(target, _)) => {
-            validate_merge_source_type(input.data_type(), target.data_type(), path)
+            // Collection items carry extension metadata just like named fields.
+            // Blob coercion, rather than struct validation, checks range narrowing.
+            if crate::blob::is_blob(target) {
+                Ok(())
+            } else {
+                validate_merge_source_type(input.data_type(), target.data_type(), path)
+            }
         }
         (DataType::Dictionary(_, input), _) => validate_merge_source_type(input, target, path),
         (_, DataType::Dictionary(_, target)) => validate_merge_source_type(input, target, path),
