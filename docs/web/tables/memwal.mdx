@@ -53,7 +53,7 @@ from lancedb.index import FTS, IvfPq
 
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
 
-dim = 128
+n, dim = 1024, 128
 schema = pa.schema([
     pa.field(
         "id",
@@ -64,6 +64,12 @@ schema = pa.schema([
     pa.field("vector", pa.list_(pa.float32(), dim)),
     pa.field("text", pa.utf8()),
 ])
+initial_data = pa.table({
+    "id": pa.array(range(n), pa.int64()),
+    "vector": pa.FixedSizeListArray.from_arrays(
+        pa.array(np.random.rand(n * dim).astype("float32")), dim),
+    "text": pa.array([f"doc {i} alpha bravo" for i in range(n)]),
+}, schema=schema)
 table = db.create_table("docs", initial_data, schema=schema)
 ```
 
@@ -107,6 +113,14 @@ Writes go through `merge_insert` on the primary key, and are visible to queries
 immediately:
 
 ```python
+new_rows = pa.table({
+    "id": pa.array([2000, 2001], pa.int64()),
+    "vector": pa.FixedSizeListArray.from_arrays(
+        pa.array(np.random.rand(2 * dim).astype("float32")), dim),
+    "text": pa.array(["fresh charlie delta", "fresh echo foxtrot"]),
+}, schema=schema)
+query_vector = np.random.rand(dim).astype("float32")
+
 table.merge_insert("id") \
     .when_matched_update_all() \
     .when_not_matched_insert_all() \
@@ -121,7 +135,10 @@ change; omitted columns keep their current values. This requires a scalar
 index on the primary key.
 
 ```python
-patch = pa.table({"id": [0, 1], "text": ["doc 0 revised", "doc 1 revised"]})
+patch = pa.table(
+    {"id": [0, 1], "text": ["doc 0 revised", "doc 1 revised"]},
+    schema=pa.schema([schema.field("id"), schema.field("text")]),
+)
 table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
 ```
 
