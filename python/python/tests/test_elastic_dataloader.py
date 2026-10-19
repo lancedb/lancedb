@@ -2107,7 +2107,9 @@ def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
         )
 
         peak_raw = 0
-        for _ in ds:
+        ids = []
+        for item in ds:
+            ids.append(item)  # slow_transform yields bare ids, not dicts
             if ds.raw_queue_depth > peak_raw:
                 peak_raw = ds.raw_queue_depth
 
@@ -2115,6 +2117,9 @@ def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
         f"raw_queue_depth peaked at {peak_raw}, expected <= {max_allowed} "
         "(io_queue_depth * read_batch_size)"
     )
+    # The backpressure fix must not come at the cost of dropping or
+    # duplicating rows.
+    assert sorted(ids) == list(range(n_rows))
 
 
 def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
