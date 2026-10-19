@@ -580,60 +580,57 @@ impl Table {
             .default_error()
     }
 
-    #[napi(catch_unwind, js_name = "enableMemWal")]
-    pub async fn enable_memwal(&self, spec: MemWalWriteSpec) -> napi::Result<()> {
-        let native_spec = lancedb::table::MemWalWriteSpec::try_from(spec)?;
+    #[napi(catch_unwind, js_name = "enableRTE")]
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::RTEWriteSpec::try_from(spec)?;
         self.inner_ref()?
-            .enable_memwal(native_spec)
+            .enable_rte(native_spec)
             .await
             .default_error()
     }
 
-    #[napi(catch_unwind, js_name = "disableMemWal")]
-    pub async fn disable_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.disable_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "disableRTE")]
+    pub async fn disable_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.disable_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "getMemWalSpec")]
-    pub async fn get_memwal_spec(&self) -> napi::Result<Option<MemWalWriteSpec>> {
-        let spec = self.inner_ref()?.get_memwal_spec().await.default_error()?;
-        Ok(spec.map(MemWalWriteSpec::from))
+    #[napi(catch_unwind, js_name = "getRTESpec")]
+    pub async fn get_rte_spec(&self) -> napi::Result<Option<RTEWriteSpec>> {
+        let spec = self.inner_ref()?.get_rte_spec().await.default_error()?;
+        Ok(spec.map(RTEWriteSpec::from))
     }
 
-    #[napi(catch_unwind, js_name = "closeMemWalWriters")]
-    pub async fn close_memwal_writers(&self) -> napi::Result<()> {
-        self.inner_ref()?
-            .close_memwal_writers()
-            .await
-            .default_error()
+    #[napi(catch_unwind, js_name = "closeRTEWriters")]
+    pub async fn close_rte_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_rte_writers().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "flushMemWal")]
-    pub async fn flush_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.flush_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "flushRTE")]
+    pub async fn flush_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "compactMemWal")]
-    pub async fn compact_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.compact_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "compactRTE")]
+    pub async fn compact_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "checkpointMemWal")]
-    pub async fn checkpoint_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.checkpoint_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "checkpointRTE")]
+    pub async fn checkpoint_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "getMemWalStats")]
-    pub async fn get_memwal_stats(
+    #[napi(catch_unwind, js_name = "getRTEStats")]
+    pub async fn get_rte_stats(
         &self,
         include_sstable_rows: bool,
-    ) -> napi::Result<Option<MemWalStats>> {
+    ) -> napi::Result<Option<RTEStats>> {
         let stats = self
             .inner_ref()?
-            .get_memwal_stats(include_sstable_rows)
+            .get_rte_stats(include_sstable_rows)
             .await
             .default_error()?;
-        Ok(stats.map(MemWalStats::from))
+        Ok(stats.map(RTEStats::from))
     }
 
     #[napi(catch_unwind)]
@@ -946,53 +943,53 @@ impl From<LanceDbFtsToken> for FtsToken {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `mergeInsert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `mergeInsert` through Lance's MemWAL LSM-style write path.
 ///
 /// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
 /// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
 /// `column` is required.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct MemWalWriteSpec {
+pub struct RTEWriteSpec {
     /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
     pub spec_type: String,
     /// Bucket and identity variants: the sharding column.
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// Indexes the RTE keeps up to date. Omitted resolves every
     /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
 }
 
-impl TryFrom<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
+impl TryFrom<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
     type Error = napi::Error;
 
-    fn try_from(value: MemWalWriteSpec) -> napi::Result<Self> {
+    fn try_from(value: RTEWriteSpec) -> napi::Result<Self> {
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec bucket requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `column`")
                 })?;
                 let num_buckets = value.num_buckets.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec bucket requires `numBuckets`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `numBuckets`")
                 })?;
                 Self::bucket(column, num_buckets)
             }
             "identity" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec identity requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec identity requires `column`")
                 })?;
                 Self::identity(column)
             }
             "unsharded" => Self::unsharded(),
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "MemWalWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    "RTEWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
                     other
                 )));
             }
@@ -1003,9 +1000,9 @@ impl TryFrom<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
     }
 }
 
-impl From<lancedb::table::MemWalWriteSpec> for MemWalWriteSpec {
-    fn from(spec: lancedb::table::MemWalWriteSpec) -> Self {
-        use lancedb::table::MemWalWriteSpec as Native;
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(spec: lancedb::table::RTEWriteSpec) -> Self {
+        use lancedb::table::RTEWriteSpec as Native;
         match spec {
             Native::Bucket {
                 column,
@@ -1148,19 +1145,19 @@ impl From<lancedb::table::TableShardStats> for TableShardStats {
     }
 }
 
-/// Live per-table-shard MemWAL state, as returned by `Table#getMemWalStats`.
+/// Live per-table-shard RTE state, as returned by `Table#getRTEStats`.
 ///
 /// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct MemWalStats {
+pub struct RTEStats {
     /// One entry per table shard backing this table.
     pub table_shards: Vec<TableShardStats>,
 }
 
-impl From<lancedb::table::MemWalStats> for MemWalStats {
-    fn from(stats: lancedb::table::MemWalStats) -> Self {
+impl From<lancedb::table::RTEStats> for RTEStats {
+    fn from(stats: lancedb::table::RTEStats) -> Self {
         Self {
             table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }

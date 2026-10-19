@@ -1844,10 +1844,10 @@ def lsm_test_table(lsm_handler):
     """A remote table whose LSM routes are served by ``lsm_handler``.
 
     ``lsm_handler(request, route)`` is called for ``/v1/table/test/<route>/``
-    where route is one of flush_memwal, compact_memwal, get_memwal_stats, and is
+    where route is one of flush_rte, compact_rte, get_rte_stats, and is
     responsible for writing the response.
     """
-    routes = ("flush_memwal", "compact_memwal", "get_memwal_stats")
+    routes = ("flush_rte", "compact_rte", "get_rte_stats")
 
     def handler(request):
         match = re.fullmatch(r"/v1/table/test/(\w+)/", request.path)
@@ -1879,7 +1879,7 @@ def send_json(request, payload, status=200):
     request.wfile.write(json.dumps(payload).encode())
 
 
-def test_get_memwal_stats_sync():
+def test_get_rte_stats_sync():
     """The sync wrapper round-trips the server payload into a dict."""
     table_shard = {
         "shard_id": "b0",
@@ -1904,29 +1904,29 @@ def test_get_memwal_stats_sync():
     seen_bodies = []
 
     def lsm_handler(request, route):
-        assert route == "get_memwal_stats"
+        assert route == "get_rte_stats"
         seen_bodies.append(read_json_body(request))
-        send_json(request, {"memwal_stats": {"table_shards": [table_shard]}})
+        send_json(request, {"rte_stats": {"table_shards": [table_shard]}})
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.get_memwal_stats() == {"table_shards": [table_shard]}
+        assert table.get_rte_stats() == {"table_shards": [table_shard]}
         # Off by default, and forwarded when asked for.
         assert seen_bodies == [{"include_sstable_rows": False}]
-        table.get_memwal_stats(include_sstable_rows=True)
+        table.get_rte_stats(include_sstable_rows=True)
         assert seen_bodies[-1] == {"include_sstable_rows": True}
 
 
-def test_get_memwal_stats_sync_returns_none_when_memwal_disabled():
-    """A null envelope means the MemWAL write path is not enabled, not an error."""
+def test_get_rte_stats_sync_returns_none_when_rte_disabled():
+    """A null envelope means the RTE write path is not enabled, not an error."""
 
     def lsm_handler(request, route):
-        send_json(request, {"memwal_stats": None})
+        send_json(request, {"rte_stats": None})
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.get_memwal_stats() is None
+        assert table.get_rte_stats() is None
 
 
-def test_flush_and_compact_memwal_sync():
+def test_flush_and_compact_rte_sync():
     """Both are one-shot POSTs answered 202 with no body."""
     called = []
 
@@ -1936,12 +1936,12 @@ def test_flush_and_compact_memwal_sync():
         request.end_headers()
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.flush_memwal() is None
-        assert table.compact_memwal() is None
-        assert called == ["flush_memwal", "compact_memwal"]
+        assert table.flush_rte() is None
+        assert table.compact_rte() is None
+        assert called == ["flush_rte", "compact_rte"]
 
 
-def test_checkpoint_memwal_sync():
+def test_checkpoint_rte_sync():
     """Freeze, read the watermark, and return once no SSTables remain.
 
     The convergence loop itself is covered in Rust; this pins the sync
@@ -1951,17 +1951,17 @@ def test_checkpoint_memwal_sync():
 
     def lsm_handler(request, route):
         called.append(route)
-        if route == "get_memwal_stats":
+        if route == "get_rte_stats":
             # An empty SSTable tier yields no target watermark, so the loop is done
             # after the freeze without ever polling compaction.
-            send_json(request, {"memwal_stats": {"table_shards": []}})
+            send_json(request, {"rte_stats": {"table_shards": []}})
         else:
             request.send_response(202)
             request.end_headers()
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.checkpoint_memwal() is None
-        assert called == ["flush_memwal", "get_memwal_stats"]
+        assert table.checkpoint_rte() is None
+        assert called == ["flush_rte", "get_rte_stats"]
 
 
 @contextlib.contextmanager

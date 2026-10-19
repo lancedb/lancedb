@@ -716,8 +716,8 @@ impl<S: HttpSend> RemoteTable<S> {
             )),
             select: Select::columns(&[column]),
             with_row_id: true,
-            // Row ids name base-table rows, and the MemWAL scanner has no stable `_rowid`.
-            use_memwal: Some(false),
+            // Row ids name base-table rows, and the RTE scanner has no stable `_rowid`.
+            use_rte: Some(false),
             ..Default::default()
         });
         let body = self
@@ -1153,7 +1153,7 @@ mod tests {
                             .unwrap();
                     assert_eq!(body["columns"], serde_json::json!(["image"]));
                     assert_eq!(body["with_row_id"], serde_json::json!(true));
-                    assert_eq!(body["use_memwal"], serde_json::json!(false));
+                    assert_eq!(body["use_rte"], serde_json::json!(false));
                     let requested = filter_row_ids(body["filter"].as_str().unwrap());
                     captured.lock().unwrap().push(TakeMockRequest::Query {
                         row_ids: requested.clone(),
