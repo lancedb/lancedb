@@ -5,6 +5,7 @@
 //!
 //! [`super::cast::cast_to_table_schema`] calls [`coerce_blob_expr`].
 
+use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -69,7 +70,19 @@ pub(super) fn coerce_blob_expr(
                     ),
                 });
             }
+            let mut names = HashSet::with_capacity(children.len());
             for child in children {
+                // Name-based extraction must not discard an ambiguous payload
+                // or silently ignore a duplicate range child during narrowing.
+                if !names.insert(child.name()) {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "blob child '{}' in column '{}' is specified more than once",
+                            child.name(),
+                            table_field.name()
+                        ),
+                    });
+                }
                 if !declared_fields
                     .iter()
                     .any(|field| field.name() == child.name())
@@ -1311,7 +1324,7 @@ mod tests {
         captions: &[&str],
     ) -> RecordBatch {
         // Ancestor validity must not introduce nulls into a required blob child.
-        let mut field = if wide {
+        let field = if wide {
             crate::blob("image", false)
         } else {
             blob("image", false)
@@ -1327,7 +1340,18 @@ mod tests {
             columns.push(Arc::new(UInt64Array::from(vec![range])));
             columns.push(Arc::new(UInt64Array::from(vec![range])));
         }
-        let mut array: ArrayRef = Arc::new(StructArray::new(children, columns, None));
+        let array: ArrayRef = Arc::new(StructArray::new(children, columns, None));
+        nest_blob_batch(field, array, id, nesting, null_depth, captions)
+    }
+
+    fn nest_blob_batch(
+        mut field: Field,
+        mut array: ArrayRef,
+        id: i64,
+        nesting: &[&str],
+        null_depth: Option<usize>,
+        captions: &[&str],
+    ) -> RecordBatch {
         for (depth, kind) in nesting.iter().enumerate().rev() {
             let nulls = (null_depth == Some(depth)).then(|| NullBuffer::from(vec![false]));
             let data_type = match *kind {
@@ -1381,6 +1405,154 @@ mod tests {
             vec![Arc::new(Int64Array::from(vec![id])), array],
         )
         .unwrap()
+    }
+
+    fn duplicate_blob_child_batch(wide: bool, nesting: &[&str], child_index: usize) -> RecordBatch {
+        let field = if wide {
+            crate::blob("image", false)
+        } else {
+            blob("image", false)
+        };
+        let DataType::Struct(children) = field.data_type() else {
+            unreachable!()
+        };
+        let duplicate = children[child_index].clone();
+        let mut fields = children.to_vec();
+        fields.push(duplicate.clone());
+        let mut columns = children
+            .iter()
+            .map(|child| arrow_array::new_null_array(child.data_type(), 1))
+            .collect::<Vec<_>>();
+        columns[0] = Arc::new(LargeBinaryArray::from(vec![b"first".as_slice()]));
+        // Distinct duplicate values expose silent name-based selection. Range
+        // duplicates also must not bypass null-only narrowing to old layouts.
+        columns.push(match duplicate.name().as_str() {
+            "data" => Arc::new(LargeBinaryArray::from(vec![b"second".as_slice()])) as ArrayRef,
+            "uri" => Arc::new(StringArray::from(vec!["file:///discarded"])),
+            "position" | "size" => Arc::new(UInt64Array::from(vec![4])),
+            _ => unreachable!(),
+        });
+        let fields: Fields = fields.into();
+        let array = Arc::new(StructArray::new(fields.clone(), columns, None));
+        let field = field.with_data_type(DataType::Struct(fields));
+        nest_blob_batch(field, array, 1, nesting, None, &[])
+    }
+
+    #[rstest::rstest]
+    #[case(&[])]
+    #[case(&["struct"])]
+    #[case(&["list"])]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "struct"])]
+    #[case(&["fixed_size_list", "struct", "large_list"])]
+    #[tokio::test]
+    async fn projection_rejects_duplicate_blob_children(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_source: bool,
+        #[values(false, true)] wide_target: bool,
+    ) {
+        let target = nested_layout_batch(wide_target, 0, None, nesting);
+        for child_index in 0..if wide_source { 4 } else { 2 } {
+            let input = duplicate_blob_child_batch(wide_source, nesting, child_index);
+            let error = coerce_err(input, target.schema().as_ref())
+                .await
+                .to_string();
+            assert!(error.contains("specified more than once"), "{error}");
+        }
+    }
+
+    #[cfg(feature = "remote")]
+    #[rstest::rstest]
+    #[case(&[])]
+    #[case(&["struct"])]
+    #[case(&["list"])]
+    #[case(&["list", "struct"])]
+    #[case(&["list", "list", "struct"])]
+    #[case(&["struct", "list", "struct"])]
+    #[case(&["large_list", "struct"])]
+    #[tokio::test]
+    async fn writes_reject_duplicate_blob_children(
+        #[case] nesting: &[&str],
+        #[values(false, true)] wide_source: bool,
+        #[values(false, true)] wide_target: bool,
+        #[values(false, true)] remote: bool,
+        #[values(false, true)] merge: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+
+        let initial = nested_layout_batch(wide_target, 0, None, nesting);
+        let schema = initial.schema();
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let (table, receiver) = if remote {
+            let (table, receiver) = remote_layout_table(schema.as_ref());
+            (table, Some(receiver))
+        } else {
+            (
+                db.create_table("descriptors", initial)
+                    .execute()
+                    .await
+                    .unwrap(),
+                None,
+            )
+        };
+        let snapshot = if remote {
+            None
+        } else {
+            Some((
+                table.version().await.unwrap(),
+                table
+                    .query()
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap(),
+            ))
+        };
+        for child_index in 0..if wide_source { 4 } else { 2 } {
+            let input = duplicate_blob_child_batch(wide_source, nesting, child_index);
+            let result = if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                let schema = input.schema();
+                builder
+                    .execute(Box::new(arrow_array::RecordBatchIterator::new(
+                        vec![Ok(input)],
+                        schema,
+                    )))
+                    .await
+                    .map(|_| ())
+            } else {
+                table.add(input).execute().await.map(|_| ())
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("specified more than once"), "{error}");
+            if let Some(receiver) = &receiver {
+                assert!(
+                    receiver.try_recv().is_err(),
+                    "ambiguous write reached server"
+                );
+            } else {
+                let (version, before) = snapshot.as_ref().unwrap();
+                assert_eq!(table.version().await.unwrap(), *version);
+                assert_eq!(table.count_rows(None).await.unwrap(), 1);
+                assert_eq!(table.schema().await.unwrap(), schema);
+                let batches = table
+                    .query()
+                    .execute()
+                    .await
+                    .unwrap()
+                    .try_collect::<Vec<_>>()
+                    .await
+                    .unwrap();
+                assert_eq!(&batches, before);
+            }
+        }
     }
 
     #[rstest::rstest]
