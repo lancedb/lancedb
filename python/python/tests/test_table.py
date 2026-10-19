@@ -4545,10 +4545,10 @@ def test_optimize_retains_tagged_versions(tmp_db: DBConnection):
     table.optimize(cleanup_older_than=timedelta(seconds=1))
 
     # The index step ran after the prune step
-    assert table.stats()["fragment_stats"]["num_fragments"] == 1
     assert table.index_stats("id_idx").num_unindexed_rows == 0
     # It stays optimizable
     table.optimize(cleanup_older_than=timedelta(seconds=1))
+    assert table.stats()["fragment_stats"]["num_fragments"] == 1
 
     # Untagged old versions were pruned, the tagged one was retained
     versions = [v["version"] for v in table.list_versions()]
