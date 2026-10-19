@@ -58,6 +58,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     def sensitive_keys():
         return ["api_key"]
 
+    def endpoints(self) -> List[str]:
+        return [self.base_url] if self.base_url else []
+
     @staticmethod
     def model_names():
         return [
