@@ -15,7 +15,7 @@ CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
 CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
 ```
 
-Column types are Arrow types under SQL names -- see [Data types](/sql/data-types).
+Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
 A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 `prod.events.clicks`.
 
@@ -25,7 +25,7 @@ A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 DESCRIBE documents
 ```
 
-The table's columns and types, without a plan -- the SQL counterpart of
+The table's columns and types, without a plan. The SQL counterpart of
 `table.schema`.
 
 ## ALTER TABLE {#alter}
@@ -37,7 +37,7 @@ name.
 
 SQL `ADD COLUMN` requires an `AS` binding, so a plain column such as
 `ALTER TABLE t ADD COLUMN c INT` is rejected. Add an empty, nullable column
-with the SDK instead -- see
+with the SDK instead. See
 [Add nullable columns](/management/table#schema-add-nullable-columns).
 
 ### A computed column {#computed-column}
@@ -47,7 +47,7 @@ ALTER TABLE t ADD COLUMN doubled AS value * 2
 ```
 
 `AS <expression>` declares a [computed column](/feature-engineering/add-computed-column).
-The column is committed empty and the expression is stored, not evaluated --
+The column is committed empty and the expression is stored, not evaluated:
 declaring one on a billion-row table costs what declaring one on an empty table
 costs. [`REFRESH COLUMN`](/sql/dml/refresh) fills it.
 
@@ -129,9 +129,9 @@ rows a sample would draw from are not all in the fragments yet.
 | --- | --- |
 | `ALTER TABLE ... DROP COLUMN` | not supported |
 
-Dropping, renaming, or retyping a column is an SDK operation --
-[`drop_columns`](/management/table#schema) and
-[`alter_columns`](/management/table#schema) -- not a SQL statement.
+Dropping, renaming, or retyping a column is an SDK operation
+([`drop_columns`](/management/table#schema) and
+[`alter_columns`](/management/table#schema)), not a SQL statement.
 
 ## CLONE {#clone}
 
@@ -147,7 +147,7 @@ copying them, so it costs one metadata commit regardless of the source's size.
 
 `AT` pins the point in the source's history to clone. A bare integer is a
 version and a bare quoted string is a timestamp; `VERSION`, `TAG` and
-`TIMESTAMP` say so explicitly, and a tag always needs its keyword -- a bare
+`TIMESTAMP` say so explicitly, and a tag always needs its keyword: a bare
 quoted string cannot be both a tag name and a timestamp.
 
 <Warning>
