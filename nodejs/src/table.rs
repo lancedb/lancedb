@@ -949,7 +949,7 @@ impl From<LanceDbFtsToken> for FtsToken {
 /// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
 /// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
 /// `column` is required.
-#[napi(object)]
+#[napi(object, js_name = "RTEWriteSpec")]
 #[derive(Clone, Debug)]
 pub struct RTEWriteSpec {
     /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
@@ -1149,7 +1149,7 @@ impl From<lancedb::table::TableShardStats> for TableShardStats {
 ///
 /// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
-#[napi(object)]
+#[napi(object, js_name = "RTEStats")]
 #[derive(Clone, Debug)]
 pub struct RTEStats {
     /// One entry per table shard backing this table.

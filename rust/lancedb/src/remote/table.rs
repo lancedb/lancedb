@@ -14702,9 +14702,10 @@ mod tests {
 
     // WAL-PK-FUSION: delete everything from here to the end of `mod tests`.
 
-    /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
-    /// off this sentence, so a test that paraphrased it would prove nothing.
-    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_rte(false) to read the base table only (results will exclude un-compacted RTE data)"}"#;
+    /// Verbatim from sophon's `wal_unsupported(WITH_ROW_ID_UNSUPPORTED)`; the
+    /// fallback keys off this sentence, so a test that paraphrased it would prove
+    /// nothing.
+    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: WAL unsupported: the MemWAL fresh tier does not support with_row_id: it has no stable _rowid; set use_rte(false) to read the base table only (results will exclude un-compacted RTE data)"}"#;
 
     use lance::dataset::ROW_ID;
 
