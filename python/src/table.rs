@@ -39,13 +39,13 @@ use pyo3::{
 
 mod scannable;
 
-/// Convert `MemWalStats` to a Python dict, preserving the per-table-shard list.
+/// Convert `RTEStats` to a Python dict, preserving the per-table-shard list.
 ///
 /// Deliberately not flattened to a table-level summary: a table is N
 /// table shards on one node, and the per-shard detail is the reason the
 /// endpoint exists — flattening hides the single hot table shard someone opened
 /// it to find.
-fn memwal_stats_to_py(py: Python<'_>, stats: &lancedb::table::MemWalStats) -> PyResult<Py<PyDict>> {
+fn rte_stats_to_py(py: Python<'_>, stats: &lancedb::table::RTEStats) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
     let table_shards = PyList::empty(py);
     for b in &stats.table_shards {
@@ -261,8 +261,8 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `merge_insert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `merge_insert` through Lance's MemWAL LSM-style write path.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
@@ -270,17 +270,17 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
-pub struct MemWalWriteSpec {
-    inner: lancedb::table::MemWalWriteSpec,
+pub struct RTEWriteSpec {
+    inner: lancedb::table::RTEWriteSpec,
 }
 
 #[pymethods]
-impl MemWalWriteSpec {
+impl RTEWriteSpec {
     /// Hash-bucket sharding by the unenforced primary key column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {
-            inner: lancedb::table::MemWalWriteSpec::bucket(column, num_buckets),
+            inner: lancedb::table::RTEWriteSpec::bucket(column, num_buckets),
         }
     }
 
@@ -294,20 +294,20 @@ impl MemWalWriteSpec {
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
-            inner: lancedb::table::MemWalWriteSpec::identity(column),
+            inner: lancedb::table::RTEWriteSpec::identity(column),
         }
     }
 
     /// No sharding — every `merge_insert` call writes to a single
-    /// MemWAL shard.
+    /// RTE shard.
     #[staticmethod]
     pub fn unsharded() -> Self {
         Self {
-            inner: lancedb::table::MemWalWriteSpec::unsharded(),
+            inner: lancedb::table::RTEWriteSpec::unsharded(),
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default) is
+    /// Set which indexes the RTE maintains. `None` (the default) is
     /// every index the table has, including ones created later; a list is
     /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
@@ -327,33 +327,33 @@ impl MemWalWriteSpec {
 
     pub fn __repr__(&self) -> String {
         match &self.inner {
-            lancedb::table::MemWalWriteSpec::Bucket {
+            lancedb::table::RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "MemWalWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 num_buckets,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::MemWalWriteSpec::Identity {
+            lancedb::table::RTEWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "MemWalWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::MemWalWriteSpec::Unsharded {
+            lancedb::table::RTEWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "MemWalWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
@@ -365,9 +365,9 @@ impl MemWalWriteSpec {
     #[getter]
     pub fn spec_type(&self) -> &'static str {
         match &self.inner {
-            lancedb::table::MemWalWriteSpec::Bucket { .. } => "bucket",
-            lancedb::table::MemWalWriteSpec::Identity { .. } => "identity",
-            lancedb::table::MemWalWriteSpec::Unsharded { .. } => "unsharded",
+            lancedb::table::RTEWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::RTEWriteSpec::Identity { .. } => "identity",
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => "unsharded",
         }
     }
 
@@ -375,9 +375,9 @@ impl MemWalWriteSpec {
     #[getter]
     pub fn column(&self) -> Option<String> {
         match &self.inner {
-            lancedb::table::MemWalWriteSpec::Bucket { column, .. }
-            | lancedb::table::MemWalWriteSpec::Identity { column, .. } => Some(column.clone()),
-            lancedb::table::MemWalWriteSpec::Unsharded { .. } => None,
+            lancedb::table::RTEWriteSpec::Bucket { column, .. }
+            | lancedb::table::RTEWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => None,
         }
     }
 
@@ -385,12 +385,12 @@ impl MemWalWriteSpec {
     #[getter]
     pub fn num_buckets(&self) -> Option<u32> {
         match &self.inner {
-            lancedb::table::MemWalWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            lancedb::table::RTEWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
             _ => None,
         }
     }
 
-    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
+    /// Indexes the RTE keeps up to date, or `None` for every supported one.
     #[getter]
     pub fn maintained_indexes(&self) -> Option<Vec<String>> {
         self.inner.maintained_indexes().map(<[String]>::to_vec)
@@ -403,14 +403,14 @@ impl MemWalWriteSpec {
     }
 }
 
-impl From<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
-    fn from(spec: MemWalWriteSpec) -> Self {
+impl From<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
+    fn from(spec: RTEWriteSpec) -> Self {
         spec.inner
     }
 }
 
-impl From<lancedb::table::MemWalWriteSpec> for MemWalWriteSpec {
-    fn from(inner: lancedb::table::MemWalWriteSpec) -> Self {
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(inner: lancedb::table::RTEWriteSpec) -> Self {
         Self { inner }
     }
 }
@@ -1636,8 +1636,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_memwal) = parameters.use_memwal {
-            builder.use_memwal(use_memwal);
+        if let Some(use_rte) = parameters.use_rte {
+            builder.use_rte(use_rte);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1665,29 +1665,29 @@ impl Table {
         })
     }
 
-    pub fn enable_memwal<'a>(
+    pub fn enable_rte<'a>(
         self_: PyRef<'a, Self>,
-        spec: MemWalWriteSpec,
+        spec: RTEWriteSpec,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let native_spec = lancedb::table::MemWalWriteSpec::from(spec);
+        let native_spec = lancedb::table::RTEWriteSpec::from(spec);
         future_into_py(self_.py(), async move {
-            inner.enable_memwal(native_spec).await.infer_error()
+            inner.enable_rte(native_spec).await.infer_error()
         })
     }
 
-    pub fn disable_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn disable_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.disable_memwal().await.infer_error()
+            inner.disable_rte().await.infer_error()
         })
     }
 
-    pub fn get_memwal_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn get_rte_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let spec = inner.get_memwal_spec().await.infer_error()?;
-            Ok(spec.map(MemWalWriteSpec::from))
+            let spec = inner.get_rte_spec().await.infer_error()?;
+            Ok(spec.map(RTEWriteSpec::from))
         })
     }
 
@@ -1706,54 +1706,55 @@ impl Table {
         Ok(())
     }
 
-    /// Converge the table's MemWAL write path into its base table.
+    /// Converge the table's RTE write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
     /// pass. Errors if the table stops making progress.
-    pub fn checkpoint_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkpoint_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.checkpoint_memwal().await.infer_error()
+            inner.checkpoint_rte().await.infer_error()
         })
     }
 
     /// Freeze every table shard's active memtable into an SSTable.
-    pub fn flush_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn flush_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        future_into_py(self_.py(), async move {
-            inner.flush_memwal().await.infer_error()
-        })
+        future_into_py(
+            self_.py(),
+            async move { inner.flush_rte().await.infer_error() },
+        )
     }
 
     /// Trigger a background SSTable compaction pass per table shard. Returns once the
-    /// passes are dispatched, not once they finish — watch `get_memwal_stats`.
-    pub fn compact_memwal(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    /// passes are dispatched, not once they finish — watch `get_rte_stats`.
+    pub fn compact_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.compact_memwal().await.infer_error()
+            inner.compact_rte().await.infer_error()
         })
     }
 
-    /// Live MemWAL state, or `None` when the MemWAL write path is not enabled.
+    /// Live RTE state, or `None` when the RTE write path is not enabled.
     #[pyo3(signature = (include_sstable_rows=false))]
-    pub fn get_memwal_stats(
+    pub fn get_rte_stats(
         self_: PyRef<'_, Self>,
         include_sstable_rows: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner
-                .get_memwal_stats(include_sstable_rows)
+                .get_rte_stats(include_sstable_rows)
                 .await
                 .infer_error()?;
-            Python::attach(|py| stats.map(|s| memwal_stats_to_py(py, &s)).transpose())
+            Python::attach(|py| stats.map(|s| rte_stats_to_py(py, &s)).transpose())
         })
     }
 
-    pub fn close_memwal_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn close_rte_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.close_memwal_writers().await.infer_error()
+            inner.close_rte_writers().await.infer_error()
         })
     }
 
@@ -2085,7 +2086,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_memwal: Option<bool>,
+    use_rte: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

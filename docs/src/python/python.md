@@ -297,7 +297,7 @@ listing a storage directory.
 
 ::: lancedb.table.Branches
 
-::: lancedb.MemWalWriteSpec
+::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
 
