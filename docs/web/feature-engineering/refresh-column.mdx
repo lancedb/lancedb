@@ -57,6 +57,47 @@ That is what makes the call idempotent and safe to retry. However, unlike a
 spreadsheet formula, nothing is recomputed until you refresh, so a derived
 column is stale between an update and the next refresh.
 
+{/*
+Draft for automatic computed-column refresh. Keep the released manual-refresh
+instructions above until the server feature is available.
+
+## Automatic refresh {#automatic}
+
+Set scheduling options when declaring a computed column:
+
+```python
+table.add_columns(
+    computed={"doubled": "x * 2"},
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+Both options apply to every computed output declared in that call, including
+registered Function outputs. Column defaults are enabled with a 60-second
+interval. Local tables persist the options; automatic execution requires a
+Cloud or Enterprise server with its separate `column_refresh.enabled` switch
+turned on. That server switch is disabled in the base configuration.
+
+The interval is a positive minimum delay after the last successful refresh
+of that output. A first refresh is immediately eligible. The scheduler still
+checks input freshness and waits for computed ancestors to settle; the timer
+does not make unchanged inputs require recomputation. Each Function output's
+interval is independent, so refreshing a sibling does not postpone it.
+
+Change a stored setting through SQL:
+
+```sql
+ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = false;
+ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_interval_seconds = 600;
+ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = true;
+```
+
+Disabling automatic refresh prevents new automatic jobs. Inflight jobs may
+finish, and manual refresh remains available. Re-enabling wakes maintenance
+to consider accumulated changes under the interval and dependency rules.
+*/}
+
 ## Refreshing part of a table {#partial}
 
 <Badge color="red">Enterprise</Badge> In SQL a refresh can be scoped to a

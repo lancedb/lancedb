@@ -9519,10 +9519,12 @@ mod tests {
                     request.body().unwrap().as_bytes().unwrap(),
                 )
                 .unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_fixed_size_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -9565,10 +9567,12 @@ mod tests {
             "/v1/table/my_table/add_columns/" => {
                 let actual: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_multi_output_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
