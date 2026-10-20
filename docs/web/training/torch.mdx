@@ -56,14 +56,9 @@ straight from the Hugging Face Hub to train a policy that predicts each `action`
 | In PyTorch you would write | In LanceDB you use |
 | --- | --- |
 | An `IterableDataset` that reads files in `__iter__` | `StreamingDataset(table)` |
-| `DistributedSampler`, or sharding by rank in `__iter__` | `rank=` and `world_size=`. Each rank reads its own disjoint splits |
-| Sharding by `get_worker_info()` in `__iter__` | Automatic. Each DataLoader worker gets a disjoint group of splits |
-| `sampler.set_epoch(epoch)` | `epoch=`, combined with `shuffle_seed=` to pick the order |
+| `DistributedSampler`, or sharding by `get_worker_info()` in `__iter__` | `rank=` and `world_size=`. Each rank and each DataLoader worker reads its own disjoint splits |
 | Decoding in `__getitem__` or `collate_fn` | `transform=`, which receives a whole Arrow `RecordBatch` and runs in a thread pool |
-| `random_split`, `Subset`, or filtering a file list | `filter="<SQL predicate>"` |
-| Reading only the fields a model needs | `columns=[...]`. Unselected columns are never read from storage |
-| A loader thread, or `prefetch_factor` | `read_batch_size=` and `io_queue_depth=` |
-| A `try`/`except` that skips corrupt samples | `on_transform_error="skip"` |
+| `random_split`, `Subset`, or reading only the fields a model needs | `filter="<SQL predicate>"` and `columns=[...]`. Unselected columns are never read from storage |
 | `StatefulDataLoader` | `state_dict()` and `load_state_dict()`, plus `StreamingDataLoader` for workers |
 
 The dataset does not copy your data. At construction it computes a shuffled assignment of row IDs to
