@@ -263,17 +263,17 @@ impl PermutationBuilder {
         }
 
         // Unflushed rows have no row id, so a permutation cannot address them.
-        match self.base_table.base_table().get_memwal_spec().await {
+        match self.base_table.base_table().get_rte_spec().await {
             Ok(Some(_)) => {
                 return Err(Error::NotSupported {
-                    message: "the data loader does not support tables with a MemWAL write \
+                    message: "the data loader does not support tables with an RTE write \
                               spec: rows that have not been flushed to the base table \
                               have no row id, so a permutation cannot reference them"
                         .to_string(),
                 });
             }
             Ok(None) => {}
-            // No MemWAL write path means no spec.
+            // No RTE write path means no spec.
             Err(Error::NotSupported { .. }) => {}
             Err(err) => return Err(err),
         }
@@ -502,9 +502,9 @@ mod tests {
                         )
                         .unwrap()
                 }
-                "/v1/table/remote_base/get_memwal_spec/" => http::Response::builder()
+                "/v1/table/remote_base/get_rte_spec/" => http::Response::builder()
                     .status(200)
-                    .body(br#"{"memwal_spec":null}"#.to_vec())
+                    .body(br#"{"rte_spec":null}"#.to_vec())
                     .unwrap(),
                 "/v1/table/remote_base/count_rows/" => {
                     let body = body.unwrap();
@@ -750,12 +750,12 @@ mod tests {
     /// permutation cannot reference them.  Reading the base table alone would drop
     /// them from training without saying so, so the table is refused instead.
     #[tokio::test]
-    async fn test_permutation_rejects_memwal_spec() {
-        use crate::table::MemWalWriteSpec;
+    async fn test_permutation_rejects_rte_spec() {
+        use crate::table::RTEWriteSpec;
         use arrow_array::{Int32Array, RecordBatchIterator};
         use arrow_schema::{DataType, Field, Schema};
 
-        // MemWAL needs a real dataset directory and a non-nullable primary key.
+        // RTE needs a real dataset directory and a non-nullable primary key.
         let temp_dir = tempfile::tempdir().unwrap();
         let db = connect(temp_dir.path().to_str().unwrap())
             .execute()
@@ -778,14 +778,11 @@ mod tests {
             .unwrap();
 
         table.set_unenforced_primary_key(["idx"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let err = PermutationBuilder::new(table).build().await.unwrap_err();
         assert!(
-            err.to_string().contains("MemWAL write spec"),
+            err.to_string().contains("RTE write spec"),
             "expected the pre-check to refuse the table, got: {err}"
         );
     }
