@@ -590,29 +590,17 @@ impl Connection {
 
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_namespaces(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListNamespacesRequest;
-            let request = ListNamespacesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_namespaces(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("namespaces", response.namespaces)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[pyo3(signature = (namespace_path, mode=None, properties=None))]
@@ -725,29 +713,17 @@ impl Connection {
 
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_tables(
-        self_: PyRef<'_, Self>,
+        &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> PyResult<Bound<'_, PyAny>> {
-        let inner = self_.get_inner()?.clone();
-        let py = self_.py();
-        future_into_py(py, async move {
-            use lance_namespace::models::ListTablesRequest;
-            let request = ListTablesRequest {
-                id: namespace_path,
-                page_token,
-                limit: limit.map(|l| l as i32),
-                ..Default::default()
-            };
-            let response = inner.list_tables(request).await.infer_error()?;
-            Python::attach(|py| -> PyResult<Py<PyDict>> {
-                let dict = PyDict::new(py);
-                dict.set_item("tables", response.tables)?;
-                dict.set_item("page_token", response.page_token)?;
-                Ok(dict.unbind())
-            })
-        })
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Get the configuration for constructing an equivalent namespace client.

@@ -32,18 +32,24 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import EnforceOverrides, override  # type: ignore
 
-from lancedb.listing import AsyncListing, Listing
+from lancedb.listing import (
+    AsyncListing,
+    AsyncNamespaceListing,
+    AsyncTableListing,
+    Listing,
+    NamespaceListing,
+    TableListing,
+    validate_page_limit,
+)
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 from lance_namespace import (
     LanceNamespace,
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
     connect as namespace_connect,
 )
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
@@ -171,7 +177,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -187,12 +193,12 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return ListNamespacesResponse(namespaces=[], page_token=None)
+        return NamespaceListing(AsyncNamespaceListing(None, empty=True))
 
     def create_namespace(
         self,
@@ -317,8 +323,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -334,7 +340,7 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         raise NotImplementedError(
@@ -1436,7 +1442,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -1452,16 +1458,14 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
@@ -1512,8 +1516,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -1529,12 +1533,12 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -2286,12 +2290,12 @@ class AsyncConnection(object):
         else:
             return None
 
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> AsyncNamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -2306,15 +2310,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListNamespacesResponse
+        AsyncNamespaceListing
             Response containing namespace names and optional pagination token
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_namespaces(
+        validate_page_limit(limit)
+        inner = self._inner.list_namespaces(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListNamespacesResponse(**result)
+        if limit == 0:
+            return AsyncNamespaceListing(None, empty=True)
+        return AsyncNamespaceListing(inner, page_token)
 
     async def create_namespace(
         self,
@@ -2393,13 +2400,13 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> AsyncTableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -2415,15 +2422,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListTablesResponse
+        AsyncTableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_tables(
+        validate_page_limit(limit)
+        inner = self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListTablesResponse(**result)
+        if limit == 0:
+            return AsyncTableListing(None, empty=True)
+        return AsyncTableListing(inner, page_token)
 
     async def table_names(
         self,

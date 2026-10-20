@@ -20,12 +20,7 @@ const connections =
 
 async function tableNames(db: lancedb.Connection) {
   const names: string[] = [];
-  let pageToken: string | undefined;
-  do {
-    const page = await db.listTables({ pageToken });
-    names.push(...page.tables);
-    pageToken = page.pageToken;
-  } while (pageToken);
+  for await (const name of db.listTables()) names.push(name);
   return names;
 }
 

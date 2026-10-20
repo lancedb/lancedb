@@ -5,14 +5,14 @@ import { mkdirSync, readdirSync } from "fs";
 import { join } from "path";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import {
-  Connection,
-  ListTablesResponse,
-  Table,
-  connect,
-  connectNamespace,
-} from "../lancedb";
+import { Connection, Table, connect, connectNamespace } from "../lancedb";
 import { LocalTable } from "../lancedb/table";
+
+async function collectNames(items: AsyncIterable<string>): Promise<string[]> {
+  const names: string[] = [];
+  for await (const name of items) names.push(name);
+  return names;
+}
 
 describe("when connecting", () => {
   let tmpDir: tmp.DirResult;
@@ -135,7 +135,7 @@ describe("given a connection", () => {
     await db.close();
     expect(db.isOpen()).toBe(false);
     await expect(db.tableNames()).rejects.toThrow("Connection is closed");
-    await expect(db.listTables()).rejects.toThrow("Connection is closed");
+    expect(() => db.listTables()).toThrow("Connection is closed");
     await expect(db.renameTable("a", "b")).rejects.toThrow(
       "Connection is closed",
     );
@@ -247,15 +247,15 @@ describe("given a connection", () => {
         await db.createTable(name, [{ id: 1 }]);
       }
 
-      const first = await db.listTables(namespacePath, { limit: 1 });
-      expect(first.tables).toEqual(["a"]);
-      expect(first.pageToken).toBeDefined();
+      const first = db.listTables(namespacePath, { pageLimit: 1 });
+      expect(await first.next()).toEqual({ done: false, value: "a" });
+      expect(first.pageToken()).toBeDefined();
 
-      const second = await db.listTables(namespacePath, {
-        limit: 1,
-        pageToken: first.pageToken,
+      const second = db.listTables(namespacePath, {
+        pageLimit: 1,
+        pageToken: first.pageToken(),
       });
-      expect(second.tables).toEqual(["b"]);
+      expect(await second.next()).toEqual({ done: false, value: "b" });
     });
   });
   it("should keep the existing table when mode is exist_ok", async () => {
@@ -299,19 +299,18 @@ describe("given a connection", () => {
     await db.createTable("a", [{ id: 1 }]);
     await db.createTable("c", [{ id: 1 }]);
 
-    const all = await db.listTables();
-    expect(all.tables).toEqual(["a", "b", "c"]);
-    expect(all.pageToken).toBeUndefined();
+    expect(await collectNames(db.listTables())).toEqual(["a", "b", "c"]);
 
-    const first = await db.listTables({ limit: 1 });
-    expect(first.tables).toEqual(["a"]);
-    expect(first.pageToken).toBeDefined();
+    const first = db.listTables([], { pageLimit: 1 });
+    expect(first.numPageResults()).toBe(0);
+    expect(await first.next()).toEqual({ done: false, value: "a" });
+    expect(first.pageToken()).toBeDefined();
 
-    const second = await db.listTables({
-      limit: 1,
-      pageToken: first.pageToken,
+    const second = db.listTables([], {
+      pageLimit: 1,
+      pageToken: first.pageToken(),
     });
-    expect(second.tables).toEqual(["b"]);
+    expect(await second.next()).toEqual({ done: false, value: "b" });
   });
 
   it("should visit every table exactly once when walking pages", async () => {
@@ -322,18 +321,9 @@ describe("given a connection", () => {
       await db.createTable(name, [{ id: 1 }]);
     }
 
-    const seen: string[] = [];
-    let pageToken: string | undefined = undefined;
-    do {
-      const page: ListTablesResponse = await db.listTables({
-        limit: 2,
-        pageToken,
-      });
-      seen.push(...page.tables);
-      pageToken = page.pageToken;
-    } while (pageToken);
-
-    expect(seen).toEqual(created);
+    expect(await collectNames(db.listTables([], { pageLimit: 2 }))).toEqual(
+      created,
+    );
   });
 
   it.each([2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER])(
@@ -347,11 +337,10 @@ describe("given a connection", () => {
       ]) {
         await expect(names).resolves.toEqual(["a", "b"]);
       }
-      for (const page of [
-        db.listTables({ limit }),
-        db.listTables([], { limit }),
-      ]) {
-        await expect(page).resolves.toEqual({ tables: ["a", "b"] });
+      for (const namespacePath of [undefined, []]) {
+        expect(() =>
+          db.listTables(namespacePath, { pageLimit: limit }),
+        ).toThrow(/limit/);
       }
     },
   );
@@ -366,8 +355,11 @@ describe("given a connection", () => {
   ])("should reject an invalid table listing limit %s", async (limit) => {
     await expect(db.tableNames({ limit })).rejects.toThrow(/limit/);
     await expect(db.tableNames([], { limit })).rejects.toThrow(/limit/);
-    await expect(db.listTables({ limit })).rejects.toThrow(/limit/);
-    await expect(db.listTables([], { limit })).rejects.toThrow(/limit/);
+    for (const namespacePath of [undefined, []]) {
+      expect(() => db.listTables(namespacePath, { pageLimit: limit })).toThrow(
+        /limit/,
+      );
+    }
   });
 
   it("should preserve zero, small and unsigned-32-bit table listing limits", async () => {
@@ -379,11 +371,21 @@ describe("given a connection", () => {
       [2 ** 32 - 1, ["a", "b"]],
     ] as const) {
       await expect(db.tableNames({ limit })).resolves.toEqual(names);
-      const page = await db.listTables({ limit });
-      expect(page.tables).toEqual(names);
     }
     await expect(db.tableNames()).resolves.toEqual(["a", "b"]);
-    await expect(db.listTables()).resolves.toEqual({ tables: ["a", "b"] });
+    for (const namespacePath of [undefined, []]) {
+      for (const pageLimit of [1, 2 ** 31 - 1]) {
+        expect(
+          await collectNames(db.listTables(namespacePath, { pageLimit })),
+        ).toEqual(["a", "b"]);
+      }
+      for (const pageLimit of [0, 2 ** 31, 2 ** 32 - 1]) {
+        expect(() => db.listTables(namespacePath, { pageLimit })).toThrow(
+          /limit/,
+        );
+      }
+    }
+    expect(await collectNames(db.listTables())).toEqual(["a", "b"]);
   });
 
   it("should list all names and use a default page size of 100", async () => {
@@ -396,20 +398,17 @@ describe("given a connection", () => {
     }
     await expect(db.tableNames()).resolves.toEqual(names);
     await expect(db.tableNames({ limit: 0 })).resolves.toEqual([]);
-    const first = await db.listTables();
-    expect(first.tables).toEqual(names.slice(0, 100));
-    expect(first.pageToken).toBeDefined();
-    const second = await db.listTables({ pageToken: first.pageToken });
-    expect(second.tables).toEqual(names.slice(100));
-    expect(second.pageToken).toBeUndefined();
-    await expect(db.listTables({ limit: 200 })).resolves.toEqual({
-      tables: names,
-      pageToken: undefined,
-    });
-    await expect(db.listTables({ limit: 0 })).resolves.toEqual({
-      tables: [],
-      pageToken: undefined,
-    });
+    const first = db.listTables();
+    const firstPage: string[] = [];
+    for (let i = 0; i < 100; i++) firstPage.push((await first.next()).value!);
+    expect(firstPage).toEqual(names.slice(0, 100));
+    expect(first.pageToken()).toBeDefined();
+    expect(first.numPageResults()).toBe(0);
+    expect(await collectNames(first)).toEqual(names.slice(100));
+    expect(await collectNames(db.listTables([], { pageLimit: 200 }))).toEqual(
+      names,
+    );
+    expect(() => db.listTables([], { pageLimit: 0 })).toThrow(/limit/);
   });
 
   it("should list tables in a namespace", async () => {
@@ -420,12 +419,8 @@ describe("given a connection", () => {
     await db.createNamespace(["child"]);
     await db.createTable("nested", [{ id: 1 }], ["child"]);
 
-    await expect(db.listTables(["child"])).resolves.toEqual(
-      expect.objectContaining({ tables: ["nested"] }),
-    );
-    await expect(db.listTables()).resolves.toEqual(
-      expect.objectContaining({ tables: [] }),
-    );
+    expect(await collectNames(db.listTables(["child"]))).toEqual(["nested"]);
+    expect(await collectNames(db.listTables())).toEqual([]);
   });
 
   it("should create tables in v2 mode", async () => {
@@ -719,22 +714,35 @@ describe("namespaces", () => {
   it("should list namespaces created at the root", async () => {
     await db.createNamespace(["alpha"]);
     await db.createNamespace(["beta"]);
-    const list = await db.listNamespaces();
-    expect(list.namespaces).toEqual(expect.arrayContaining(["alpha", "beta"]));
+    const list = await collectNames(db.listNamespaces());
+    expect(list).toEqual(expect.arrayContaining(["alpha", "beta"]));
   });
 
   it("should list child namespaces under a parent", async () => {
     await db.createNamespace(["parent"]);
     await db.createNamespace(["parent", "child"]);
-    const list = await db.listNamespaces(["parent"]);
-    expect(list.namespaces).toContain("child");
+    const list = await collectNames(db.listNamespaces(["parent"]));
+    expect(list).toContain("child");
+  });
+
+  it("should resume a namespace listing from its page token", async () => {
+    await db.createNamespace(["alpha"]);
+    await db.createNamespace(["beta"]);
+    const first = db.listNamespaces([], { pageLimit: 1 });
+    expect(first.numPageResults()).toBe(0);
+    expect((await first.next()).value).toBe("alpha");
+    const second = db.listNamespaces([], {
+      pageLimit: 1,
+      pageToken: first.pageToken(),
+    });
+    expect(await collectNames(second)).toEqual(["beta"]);
   });
 
   it("should drop a namespace", async () => {
     await db.createNamespace(["ephemeral"]);
     await db.dropNamespace(["ephemeral"]);
-    const list = await db.listNamespaces();
-    expect(list.namespaces).not.toContain("ephemeral");
+    const list = await collectNames(db.listNamespaces());
+    expect(list).not.toContain("ephemeral");
   });
 
   it("should raise an error on any namespace op after close", async () => {
@@ -742,7 +750,7 @@ describe("namespaces", () => {
     await expect(db.describeNamespace(["foo"])).rejects.toThrow(
       "Connection is closed",
     );
-    await expect(db.listNamespaces()).rejects.toThrow("Connection is closed");
+    expect(() => db.listNamespaces()).toThrow("Connection is closed");
     await expect(db.createNamespace(["foo"])).rejects.toThrow(
       "Connection is closed",
     );

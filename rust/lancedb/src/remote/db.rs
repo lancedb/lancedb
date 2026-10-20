@@ -2349,16 +2349,8 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let page = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace),
-                limit: Some(0),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(page.tables.is_empty());
-        assert!(page.page_token.is_none());
+        let mut listing = conn.list_tables(&namespace, ListingOptions::default().page_limit(0));
+        assert!(listing.next_page().await.is_err());
     }
 
     #[rstest::rstest]
@@ -2393,25 +2385,17 @@ mod tests {
                 )
                 .unwrap()
         });
-        let first = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace.clone()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(first.tables.len(), 100);
+        let mut first_listing = conn.list_tables(&namespace, ListingOptions::default());
+        let first = first_listing.next_page().await.unwrap().unwrap();
+        assert_eq!(first.items.len(), 100);
         assert_eq!(first.page_token.as_deref(), Some("opaque-token"));
-        let second = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace),
-                page_token: first.page_token,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
+        let mut second_listing = conn.list_tables(
+            &namespace,
+            ListingOptions::default().page_token(first.page_token.unwrap()),
+        );
+        let second = second_listing.next_page().await.unwrap().unwrap();
         let expected: Vec<_> = (100..130).map(|i| format!("t{i:03}")).collect();
-        assert_eq!(second.tables, expected);
+        assert_eq!(second.items, expected);
         assert!(second.page_token.is_none());
     }
 
@@ -3680,14 +3664,9 @@ mod tests {
             assert!(table.is_ok(), "Failed to create table: {:?}", table.err());
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .expect("Failed to list tables");
-            assert_eq!(list_response.tables, vec!["test_table"]);
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names, vec!["test_table"]);
 
             // Get namespace client and verify it can also list tables
             let namespace_client = conn.namespace_client().await.unwrap();
@@ -3754,17 +3733,12 @@ mod tests {
             }
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            assert_eq!(list_response.tables.len(), 3);
-            assert!(list_response.tables.contains(&"table1".to_string()));
-            assert!(list_response.tables.contains(&"table2".to_string()));
-            assert!(list_response.tables.contains(&"table3".to_string()));
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names.len(), 3);
+            assert!(names.contains(&"table1".to_string()));
+            assert!(names.contains(&"table2".to_string()));
+            assert!(names.contains(&"table3".to_string()));
         }
     }
 
