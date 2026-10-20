@@ -1,23 +1,23 @@
 ---
-title: "Write-ahead log (MemWAL)"
-sidebarTitle: "Write-Ahead Log"
+title: "Realtime engine (RTE)"
+sidebarTitle: "Realtime Engine"
 description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
 icon: "bolt"
-keywords: ["wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 ---
 
 <Badge color="red">Enterprise</Badge>
 
-## What is MemWAL? {#what-is-memwal}
+## What is the realtime engine? {#what-is-rte}
 
 Every write to a LanceDB table is normally a commit to the underlying Lance
 dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
 stream of small commits, and each write is only visible once its commit lands.
 
-MemWAL puts an LSM-style write tier in front of the table. It turns many small
-writes into a few large commits, and makes each write **searchable within
-milliseconds** of being acknowledged. It is enabled per table, and nothing
-about how you query that table changes.
+The realtime engine (RTE) puts an LSM-style write tier in front of the table.
+It turns many small writes into a few large commits, and makes each write
+**searchable within milliseconds** of being acknowledged. It is enabled per
+table, and nothing about how you query that table changes.
 
 ## How it works {#how-it-works}
 
@@ -38,7 +38,7 @@ about how you query that table changes.
 
 ### 1. Create a table with a primary key {#primary-key}
 
-MemWAL deduplicates writes by primary key. Declare it as field metadata when
+RTE deduplicates writes by primary key. Declare it as field metadata when
 you create the table:
 
 ```python
@@ -48,7 +48,7 @@ from datetime import timedelta
 import lancedb
 import numpy as np
 import pyarrow as pa
-from lancedb import MemWalWriteSpec
+from lancedb import RTEWriteSpec
 from lancedb.index import FTS, IvfPq
 
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
@@ -75,8 +75,8 @@ table = db.create_table("docs", initial_data, schema=schema)
 
 ### 2. Create indexes {#indexes}
 
-Create indexes before enabling MemWAL, and wait for them to finish building.
-MemWAL maintains every index that exists when it is enabled.
+Create indexes before enabling RTE, and wait for them to finish building.
+RTE maintains every index that exists when it is enabled.
 
 ```python
 table.create_index("vector", config=IvfPq())
@@ -85,10 +85,10 @@ table.create_index("id")  # BTree on the primary key
 table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(minutes=5))
 ```
 
-### 3. Enable MemWAL {#enable}
+### 3. Enable RTE {#enable}
 
 ```python
-table.enable_memwal(MemWalWriteSpec.unsharded())
+table.enable_rte(RTEWriteSpec.unsharded())
 
 # Wait for the table metadata to propagate before writing.
 time.sleep(30)
@@ -97,13 +97,13 @@ time.sleep(30)
 Or in SQL:
 
 ```sql
-ALTER TABLE docs SET MEMWAL
+ALTER TABLE docs SET RTE
 ```
 
 ### 4. Write and query {#write-and-query}
 
 <Warning>
-On a MemWAL table, an upsert through `merge_insert` is the only way to write
+On an RTE table, an upsert through `merge_insert` is the only way to write
 rows. Use the form below exactly: `when_matched_update_all()` with no filter,
 plus `when_not_matched_insert_all()`. Other `merge_insert` forms, such as
 conditional updates or deleting rows missing from the source, are rejected.
@@ -149,31 +149,31 @@ table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all()
 table.delete("id IN (2000, 2001)")
 ```
 
-### Disabling MemWAL {#disable}
+### Disabling RTE {#disable}
 
 Stop writes and wait for in-flight writes to finish, then flush pending writes
-into the base table and disable. `checkpoint_memwal()` only drains writes that
+into the base table and disable. `checkpoint_rte()` only drains writes that
 existed when it started, so anything written during the checkpoint can be left
 behind.
 
 ```python
-table.checkpoint_memwal()
-table.disable_memwal()
+table.checkpoint_rte()
+table.disable_rte()
 ```
 
 ## Performance {#performance}
 
 ### Writes {#write-performance}
 
-MemWAL acknowledges a write as soon as it is durable in the write-ahead log, so
+RTE acknowledges a write as soon as it is durable in the write-ahead log, so
 ingest is no longer limited by how fast the table can commit.
 
 **Compared with writing directly to the table.** On tables ranging from
-hundreds of thousands to tens of millions of rows, MemWAL delivered 4–12× the
+hundreds of thousands to tens of millions of rows, RTE delivered 4–12× the
 write throughput and 24–52× lower p99 write latency, depending on the mix of
 inserts, updates, and deletes.
 
-**Scaling with shards.** A MemWAL table can be split into
+**Scaling with shards.** An RTE table can be split into
 [shards](/sql/ddl/table#properties) that write independently, and a single
 table's ingest grows with its shard count. In our testing on AWS, with every
 index on the table (vector, full-text, and BTree) kept current, a single table
@@ -192,15 +192,15 @@ Adding shards scales a table's ingest nearly linearly.
 
 ### Reads {#read-performance}
 
-Reads on a MemWAL table stay close to those on a fully compacted table, even
+Reads on an RTE table stay close to those on a fully compacted table, even
 with the fresh tier at its fullest before compaction.
 
 The table below compares a 5M-row table with a 128-dimension IVF-PQ index plus
-BTree and FTS indexes, with and without MemWAL. The MemWAL table holds one
+BTree and FTS indexes, with and without RTE. The RTE table holds one
 unflushed memtable and three SSTables, each from a 100k-row write wave, half of
 which are updates to existing rows. Latencies are p50 in milliseconds.
 
-| Query | Without MemWAL | With MemWAL |
+| Query | Without RTE | With RTE |
 | --- | --: | --: |
 | Primary-key lookup | 62 | 63 |
 | Vector search | 68 | 71 |
@@ -214,7 +214,7 @@ Most queries are within a few milliseconds of the base table. Hybrid and phrase
 queries add roughly 15 ms to merge the two tiers.
 
 <Note>
-Support for all table operations on MemWAL tables is coming soon. Time travel
+Support for all table operations on RTE tables is coming soon. Time travel
 and branching are among the features not yet available.
 </Note>
 
@@ -222,4 +222,4 @@ and branching are among the features not yet available.
 
 - [Merge insert](/ingestion/merge-insert)
 - [Background jobs](/maintenance/background-jobs#wal)
-- [`ALTER TABLE ... SET MEMWAL`](/sql/ddl/table#properties)
+- [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

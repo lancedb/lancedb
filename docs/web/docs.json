@@ -332,7 +332,7 @@
               "management/namespace",
               "management/table",
               "tables/branching",
-              "tables/memwal",
+              "tables/realtime-engine",
               "management/materialized-view",
               "management/view",
               "management/function"
