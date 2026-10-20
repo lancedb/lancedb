@@ -6944,7 +6944,8 @@ class AsyncTable:
             or not 0 < auto_refresh_interval_seconds <= (2**64 - 1) // 1000
         ):
             raise ValueError(
-                "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000"
+                "auto_refresh_interval_seconds must be a positive integer "
+                "no greater than u64::MAX / 1000"
             )
         options_supplied = (
             auto_refresh_enabled is not None
