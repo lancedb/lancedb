@@ -5059,9 +5059,7 @@ describe("LSM merge insert", () => {
     );
     // No spec: default read and useRTE(false) both succeed against the base table.
     await expect(table.query().toArray()).resolves.toBeDefined();
-    await expect(
-      table.query().useRTE(false).toArray(),
-    ).resolves.toBeDefined();
+    await expect(table.query().useRTE(false).toArray()).resolves.toBeDefined();
     // useRTE(true) demands RTE routing; without a spec it errors.
     await expect(table.query().useRTE(true).toArray()).rejects.toThrow();
   });
