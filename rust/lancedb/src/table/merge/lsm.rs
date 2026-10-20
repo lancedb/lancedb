@@ -24,8 +24,10 @@ use arrow_array::cast::AsArray;
 use arrow_array::types::{
     Int8Type, Int16Type, Int32Type, Int64Type, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
-use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch, RecordBatchReader};
+use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
 use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
+use datafusion_physical_plan::SendableRecordBatchStream;
+use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::mem_wal::{
     DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
@@ -707,7 +709,7 @@ pub(crate) async fn execute_lsm_merge_insert(
     table: &NativeTable,
     plan: LsmPlan,
     validate_single_shard: bool,
-    new_data: Box<dyn RecordBatchReader + Send>,
+    mut new_data: SendableRecordBatchStream,
 ) -> Result<MergeResult> {
     let dataset = table.dataset.get().await?;
     let target_schema: SchemaRef = Arc::new(ArrowSchema::from(dataset.schema()));
@@ -718,8 +720,7 @@ pub(crate) async fn execute_lsm_merge_insert(
     let mut batches: Vec<RecordBatch> = Vec::new();
     let mut total_rows: u64 = 0;
 
-    for batch in new_data {
-        let batch = batch.map_err(|e| Error::Arrow { source: e })?;
+    while let Some(batch) = new_data.try_next().await? {
         if batch.num_rows() == 0 {
             continue;
         }

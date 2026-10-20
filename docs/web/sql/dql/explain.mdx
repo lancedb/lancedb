@@ -1,7 +1,7 @@
 ---
 title: "Explain"
 sidebarTitle: "Explain"
-description: "EXPLAIN, EXPLAIN ANALYZE and EXPLAIN VERBOSE — reading and measuring a plan from SQL."
+description: "EXPLAIN, EXPLAIN ANALYZE and EXPLAIN VERBOSE: reading and measuring a plan from SQL."
 icon: map
 keywords: ["explain", "explain analyze", "explain verbose", "query plan"]
 ---
@@ -20,7 +20,7 @@ EXPLAIN ANALYZE SELECT * FROM documents WHERE identifier < 1000
 | `EXPLAIN VERBOSE <query>` | Adds intermediate optimizer plans on top of `EXPLAIN`. |
 
 The result is a small relation with `plan_type` and `plan` columns, read
-through the same client you use for regular queries -- see
+through the same client you use for regular queries. See
 [Connecting](/sql#connecting).
 
 SQL plans and the SDK's
@@ -46,7 +46,7 @@ SQL can also add joins, aggregates and other operators:
 | `FilterExec` above a search | the filter ran after search rather than pushing into it |
 | `ANNSubIndex` / `ANNIvfPartition` | the vector index was used |
 
-A `LanceScan` feeding a join is the common one worth acting on -- see
+A `LanceScan` feeding a join is the common one worth acting on. See
 [Joins](/sql/dql/join#performance).
 
 For a table's columns and types without a plan, see

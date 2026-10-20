@@ -13,11 +13,11 @@ availability:
 
 Every write keeps the version before it, which is what makes
 [time travel](/management/table#versioning) possible. Cleanup is what ends
-that -- pruning versions older than a retention window, and the files that only
+that: pruning versions older than a retention window, and the files that only
 those versions referenced.
 
 <Note>
-**Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
+**Enterprise job type:** `cleanup`. Distinct from `compact`: compaction
 merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
 Enterprise schedules them as separate jobs, and runs cleanup only when the
 deployment's configuration enables it.
@@ -100,7 +100,7 @@ cleanup jobs never set it.
 
 <Warning>
 `delete_unverified=True` removes them regardless of age. Only set it when you
-can guarantee **no other process is writing to the table** -- otherwise it can
+can guarantee **no other process is writing to the table**. Otherwise it can
 delete files belonging to a write that is genuinely in progress, and corrupt
 the table.
 </Warning>
@@ -109,7 +109,7 @@ the table.
 
 <CardGroup cols={2}>
   <Card title="Compaction" icon="broom" href="/maintenance/compaction">
-    Merging small files -- the other half of `optimize()`.
+    Merging small files, the other half of `optimize()`.
   </Card>
   <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
     The Enterprise jobs that run without a call from you.

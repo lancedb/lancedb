@@ -588,7 +588,7 @@ def _cast_to_target_schema(
 def _preserve_blob_v2_fields(
     inferred_schema: pa.Schema, existing_schema: pa.Schema
 ) -> pa.Schema:
-    """Keep existing blob fields when an overwrite infers a replacement schema."""
+    """Keep inferred blob semantics without overriding explicit replacement types."""
     existing_fields = {field.name: field for field in existing_schema}
     fields = [
         _preserve_blob_v2_field(field, existing_fields[field.name])
@@ -600,6 +600,9 @@ def _preserve_blob_v2_fields(
 
 
 def _preserve_blob_v2_field(inferred: pa.Field, existing: pa.Field) -> pa.Field:
+    if is_blob_v2_field(inferred):
+        # An explicitly declared blob layout is part of the replacement schema.
+        return inferred
     if is_blob_v2_field(existing):
         return existing
 
@@ -637,12 +640,10 @@ def _preserve_blob_v2_field(inferred: pa.Field, existing: pa.Field) -> pa.Field:
 def _coerce_blob_write_columns(
     batch: pa.RecordBatch, target_schema: pa.Schema
 ) -> pa.RecordBatch:
-    """Materialize blob storage structs before the stream leaves Python.
+    """Materialize Python bytes and URIs as blob structs before Arrow casting.
 
-    merge_insert requires its source reader to already match the table's
-    physical schema. Unlike add and insert, it does not pass through
-    LanceDB's Rust blob coercion, so preserving binary input here would
-    reach Lance as binary and fail the schema check.
+    Existing blob structs retain their input layout. Rust normalizes them to
+    the stored schema and rejects populated ranges on two-field targets.
     """
     columns = []
     fields = []
@@ -973,6 +974,17 @@ def _align_field(field: pa.Field, target_field: pa.Field) -> pa.Field:
                 "(Utf8, LargeUtf8, Utf8View), or a Struct with a "
                 "'data' or 'uri' child"
             )
+        if pa.types.is_struct(source_type) or (
+            isinstance(source_type, pa.ExtensionType)
+            and (
+                not isinstance(target_field.type, pa.ExtensionType)
+                or type(source_type) is type(target_field.type)
+            )
+        ):
+            # Keep the source layout until Rust can fill missing range fields or
+            # validate every batch before dropping all-null range fields. Arrow
+            # casting here would reject differing layouts before that validation.
+            return field.with_metadata(target_field.metadata)
     # LanceDB exposes stored JSON columns as lance.json (JSONB-backed LargeBinary), but
     # casting the input to that storage type here merely relabels the raw JSON bytes as
     # JSONB. Lance must see arrow.json so it can perform the JSONB encoding.
@@ -1832,8 +1844,8 @@ class Table(ABC):
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite". Overwrite infers a replacement schema
-            but preserves existing blob v2 fields present in the new data.
+            "append" and "overwrite". Overwrite adopts explicitly declared blob
+            layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
@@ -4111,8 +4123,8 @@ class LanceTable(Table):
             The data to insert into the table.
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite". Overwrite infers a replacement schema
-            but preserves existing blob v2 fields present in the new data.
+            "append" and "overwrite". Overwrite adopts explicitly declared blob
+            layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".
@@ -6145,8 +6157,8 @@ class AsyncTable:
             - pyarrow.Table or pyarrow.RecordBatch
         mode: str
             The mode to use when writing the data. Valid values are
-            "append" and "overwrite". Overwrite infers a replacement schema
-            but preserves existing blob v2 fields present in the new data.
+            "append" and "overwrite". Overwrite adopts explicitly declared blob
+            layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill", "null".

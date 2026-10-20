@@ -1,7 +1,7 @@
 ---
 title: "Full-Text Search"
 sidebarTitle: "Full-Text Search"
-description: "The fts() table function — match, fuzzy, phrase, boolean, boost and multi-match queries from SQL."
+description: "The fts() table function: match, fuzzy, phrase, boolean, boost and multi-match queries from SQL."
 icon: magnifying-glass
 keywords: ["fts", "sql", "full text search", "fuzzy", "phrase", "boolean", "boost", "multi-match"]
 ---
@@ -9,7 +9,7 @@ keywords: ["fts", "sql", "full text search", "fuzzy", "phrase", "boolean", "boos
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Full-text search is a **table function**, `fts(table, query)`, rather than a
-predicate -- it produces a relevance score alongside the matching rows, and a
+predicate: it produces a relevance score alongside the matching rows, and a
 `WHERE` clause has nowhere to put one. The two string-literal arguments are
 the table name and a JSON-encoded query, built with the same query-builder
 classes used from the SDK and serialized with `.to_json()`.
@@ -32,8 +32,8 @@ CREATE INDEX ON my_docs USING fts (text);
 ```
 
 <Warning>
-Phrase queries need position information, which costs extra index size --
-add `WITH (with_position = true)` to `CREATE INDEX`. Without it,
+Phrase queries need position information, which costs extra index size.
+Add `WITH (with_position = true)` to `CREATE INDEX`. Without it,
 [phrase queries](#phrase) find nothing. See
 [FTS parameters](/indexing/fts-index#fts-parameters).
 </Warning>
@@ -57,7 +57,7 @@ FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
 LIMIT 5
 ```
 
-By default the top 5 matches come back in **arbitrary order** -- select
+By default the top 5 matches come back in **arbitrary order**. Select
 `_score` and order by it for relevance ranking:
 
 ```sql
@@ -126,8 +126,8 @@ MultiMatchQuery("puppy", ["text", "category"], boosts=[2.0, 1.0])  # text weight
 
 ## Combining with SQL {#combining}
 
-`fts()` is a relation, so it composes with the rest of the SQL surface --
-filter, join, or aggregate over it same as any table:
+`fts()` is a relation, so it composes with the rest of the SQL surface.
+Filter, join, or aggregate over it same as any table:
 
 ```sql
 SELECT id, text, category
