@@ -198,6 +198,29 @@ mod tests {
         assert_eq!(counter.connect_failures, 0);
     }
 
+    #[test]
+    fn retry_limit_message_includes_last_status_error() {
+        let config = test_config();
+        let mut counter = RetryCounter::new(&config, "test".to_string());
+        for _ in 0..2 {
+            counter
+                .increment_request_failures(crate::Error::Http {
+                    source: "502 Bad Gateway".into(),
+                    request_id: "test".to_string(),
+                    status_code: Some(reqwest::StatusCode::BAD_GATEWAY),
+                })
+                .unwrap();
+        }
+        let error = counter
+            .increment_request_failures(crate::Error::Http {
+                source: "last response: 502 Bad Gateway".into(),
+                request_id: "test".to_string(),
+                status_code: Some(reqwest::StatusCode::BAD_GATEWAY),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("last response: 502 Bad Gateway"));
+    }
+
     #[tokio::test]
     async fn test_increment_from_error_respects_global_limits() {
         // If request_failures is already at max, a connect error should still

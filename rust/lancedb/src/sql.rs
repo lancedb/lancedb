@@ -17,6 +17,10 @@ pub enum QueryStatus {
     /// The server is still executing the query.
     Running,
     /// The server has made the complete result available.
+    ///
+    /// A query submitted with parameters streams its rows on the call that
+    /// runs it, so it reports `Finished` only once its reader has received
+    /// the last batch. Read it rather than waiting for this status.
     Finished,
     /// The server accepted cancellation but has not confirmed it yet.
     Cancelling,
@@ -60,7 +64,9 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// A handle to a submitted SQL query.
 ///
 /// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query.
+/// Dropping it does not cancel the server-side query, unless the query was
+/// submitted with parameters: those run on the call that returns their rows,
+/// so dropping the handle before reading, or dropping the reader, stops them.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {
@@ -88,6 +94,11 @@ impl Query {
     }
 
     /// Get a point-in-time description of the query.
+    ///
+    /// For a query submitted with parameters the status follows its result
+    /// stream: it stays [`QueryStatus::Running`] until the reader has received
+    /// every row, so open [`Self::reader`] directly instead of polling for
+    /// [`QueryStatus::Finished`] first.
     pub async fn describe(&self) -> Result<QueryDescription> {
         self.handle.describe().await
     }

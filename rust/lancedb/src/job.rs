@@ -3,6 +3,8 @@
 
 //! Handles to operations a server may run asynchronously.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
@@ -249,6 +251,18 @@ where
     /// A typed job running as a task in this process.
     pub(crate) fn spawned(task: JoinHandle<Result<T>>) -> Self {
         Self::new_typed(Box::new(SpawnedJob::new(task)))
+    }
+
+    pub(crate) fn spawned_with_cancellation<F, Fut>(task: JoinHandle<Result<T>>, cancel: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
+        Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+            task,
+            cancellation,
+        )))
     }
 }
 
@@ -501,10 +515,28 @@ impl Outcome {
 struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
+    cancellation: Option<Cancellation>,
 }
+
+type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+type Cancellation = Arc<dyn Fn() -> CancellationFuture + Send + Sync>;
 
 impl SpawnedJob {
     fn new<T>(task: JoinHandle<Result<T>>) -> Self
+    where
+        T: Serialize + Send + 'static,
+    {
+        Self::new_inner(task, None)
+    }
+
+    fn new_with_cancellation<T>(task: JoinHandle<Result<T>>, cancellation: Cancellation) -> Self
+    where
+        T: Serialize + Send + 'static,
+    {
+        Self::new_inner(task, Some(cancellation))
+    }
+
+    fn new_inner<T>(task: JoinHandle<Result<T>>, cancellation: Option<Cancellation>) -> Self
     where
         T: Serialize + Send + 'static,
     {
@@ -526,7 +558,11 @@ impl SpawnedJob {
             };
             let _ = tx.send(Some(outcome));
         });
-        Self { outcome, abort }
+        Self {
+            outcome,
+            abort,
+            cancellation,
+        }
     }
 }
 
@@ -556,6 +592,19 @@ impl JobHandle for SpawnedJob {
     }
 
     async fn cancel(&self) -> Result<()> {
+        if let Some(cancellation) = &self.cancellation {
+            let mut outcome = self.outcome.clone();
+            tokio::select! {
+                biased;
+                settled = outcome.wait_for(Option::is_some) => {
+                    settled.map_err(|_| Error::Runtime {
+                        message: "job outcome was dropped before cancellation completed".to_string(),
+                    })?;
+                    return Ok(());
+                }
+                result = cancellation() => result?,
+            }
+        }
         self.abort.abort();
         Ok(())
     }

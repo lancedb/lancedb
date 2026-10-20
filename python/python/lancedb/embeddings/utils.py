@@ -249,7 +249,7 @@ def retry_with_exponential_backoff(
         initial_delay (float): Initial delay in seconds (default is 1).
         exponential_base (float): The base for exponential backoff (default is 2).
         jitter (bool): Whether to add jitter to the delay (default is True).
-        max_retries (int): Maximum number of retries (default is 10).
+        max_retries (int): Maximum number of retries (default is 7).
 
     Returns:
         function: The decorated function.
@@ -304,6 +304,11 @@ def _is_non_retryable_error(error: Exception) -> bool:
     Returns:
         True if the error should not be retried, False otherwise
     """
+    from .base import UntrustedEmbeddingConfigError
+
+    if isinstance(error, UntrustedEmbeddingConfigError):
+        return True
+
     # Check for OpenAI authentication errors
     error_type = type(error).__name__
     if error_type == "AuthenticationError":

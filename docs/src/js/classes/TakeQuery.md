@@ -200,7 +200,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -267,16 +267,18 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
 
 ***
 
-### useLsm()
+### useMemWal()
 
 ```ts
-useLsm(enable): this
+useMemWal(enable): this
 ```
 
 Control MemWAL read routing for this take query.

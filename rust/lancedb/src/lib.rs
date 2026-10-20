@@ -167,13 +167,15 @@
 //! # }
 //! ```
 
-// The MemWAL LSM read path (`table::query::lsm`) deepens the `create_plan` future's
+// The MemWAL read path (`table::query::lsm`) deepens the `create_plan` future's
 // type graph enough to overflow the default trait-recursion limit while evaluating
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]
 
 pub mod arrow;
+pub mod authz;
 pub mod blob;
+pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
@@ -186,6 +188,7 @@ pub mod index;
 pub mod io;
 pub mod ipc;
 pub mod job;
+pub mod listing;
 pub mod materialized_view;
 #[cfg(feature = "metrics-otel")]
 pub mod metrics_otel;
@@ -195,11 +198,13 @@ pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod rerankers;
+pub mod secrets;
 pub mod sql;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
+pub mod view;
 
 use std::{fmt::Display, str::FromStr};
 
@@ -383,3 +388,9 @@ pub use lance_io::object_store::ObjectStoreRegistry;
 /// declaring their own (potentially mismatched) direct `datafusion` dependency.
 /// See <https://github.com/lancedb/lancedb/issues/3575>.
 pub use datafusion;
+
+/// Connect to a remote catalog through its HTTP(S) root namespace endpoint.
+#[cfg(feature = "remote")]
+pub fn connect_catalog(endpoint: impl Into<String>) -> catalog::ConnectCatalogBuilder {
+    catalog::ConnectCatalogBuilder::new(endpoint)
+}

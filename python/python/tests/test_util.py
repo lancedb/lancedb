@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
@@ -31,6 +32,7 @@ from lancedb.util import (
     flatten_columns,
     get_uri_location,
     get_uri_scheme,
+    inf_vector_column_query,
     join_uri,
     value_to_sql,
 )
@@ -179,6 +181,41 @@ def test_value_to_sql_string(tmp_path):
         assert table.to_pandas().query("search == @value")["replace"].item() == value
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
+
+
 def test_value_to_sql_dict():
     # Simple flat struct
     assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
@@ -233,6 +270,35 @@ def test_value_to_sql_numpy_scalars():
     assert value_to_sql(np.float64(1.5)) == "1.5"
     assert value_to_sql(np.bool_(True)) == "TRUE"
     assert value_to_sql(np.bool_(False)) == "FALSE"
+
+
+def test_value_to_sql_nan_and_infinity(tmp_path):
+    # str(float("nan")) is "nan", which SQL reads as a column named nan, so
+    # table.update(values={"x": float("nan")}) failed with "No field named nan".
+    import math
+
+    import numpy as np
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "f64": [1.0, 2.0, 3.0, 4.0],
+                "f32": pa.array([1.0, 2.0, 3.0, 4.0], pa.float32()),
+            }
+        ),
+    )
+    table.update(where="id = 1", values={"f64": float("nan"), "f32": np.nan})
+    table.update(where="id = 2", values={"f64": math.inf, "f32": np.float32("inf")})
+    table.update(where="id = 3", values={"f64": -math.inf, "f32": -math.inf})
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert math.isnan(rows[1]["f64"]) and math.isnan(rows[1]["f32"])
+    assert rows[2]["f64"] == math.inf and rows[2]["f32"] == math.inf
+    assert rows[3]["f64"] == -math.inf and rows[3]["f32"] == -math.inf
+    assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
 
 
 def test_append_vector_columns():
@@ -944,6 +1010,39 @@ def test_cast_to_target_schema_coerces_binary_to_blob_v2():
     ]
 
 
+@pytest.mark.parametrize(
+    "string_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_cast_to_target_schema_coerces_string_to_blob_v2_uri(string_type):
+    data = pa.table({"image": pa.array(["file:///payload", None], type=string_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": None, "uri": "file:///payload", "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_cast_to_target_schema_rejects_unsupported_blob_input(source_type, value):
+    data = pa.table({"image": pa.array([value], type=source_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        _cast_to_target_schema(data.to_reader(), target)
+
+
 def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
     storage = lancedb.blob("image").type.storage_type
     target = pa.schema(
@@ -968,6 +1067,55 @@ def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
         {"data": b"hello", "uri": None, "position": None, "size": None},
         None,
     ]
+
+
+def test_cast_to_target_schema_labels_json_text_with_table_extension_metadata():
+    # A table created from pa.json_() stores the empty ARROW:extension:metadata that
+    # pyarrow exports next to the name. Lance keeps that key when it turns the
+    # arrow.json label back into lance.json on write and then requires the field to
+    # match the stored one exactly, so the label has to mirror the table's metadata.
+    target = pa.schema(
+        [
+            pa.field(
+                "payload",
+                pa.large_binary(),
+                metadata={
+                    b"ARROW:extension:name": b"lance.json",
+                    b"ARROW:extension:metadata": b"",
+                },
+            ),
+            pa.field(
+                "docs",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.large_binary(),
+                        metadata={b"ARROW:extension:name": b"lance.json"},
+                    )
+                ),
+            ),
+        ]
+    )
+    data = pa.table(
+        {
+            "payload": pa.array(['{"a": 1}', None], type=pa.string()),
+            "docs": pa.array([['{"b": 2}'], []], type=pa.list_(pa.string())),
+        }
+    )
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    payload = output.schema.field("payload")
+    assert payload.type == pa.string()
+    assert payload.metadata == {
+        b"ARROW:extension:name": b"arrow.json",
+        b"ARROW:extension:metadata": b"",
+    }
+    docs_item = output.schema.field("docs").type.value_field
+    assert docs_item.type == pa.string()
+    assert docs_item.metadata == {b"ARROW:extension:name": b"arrow.json"}
+    assert output["payload"].to_pylist() == ['{"a": 1}', None]
+    assert output["docs"].to_pylist() == [['{"b": 2}'], []]
 
 
 def test_cast_to_target_schema_coerces_nested_binary_blob():
@@ -1126,3 +1274,41 @@ def test_infer_vector_column_raises_clear_error(tmp_path):
         # Plain vector search on a table with no vector column should raise
         # a clear ValueError, not a cryptic TypeError.
         table.search([1.0, 2.0]).to_list()
+
+
+def test_inf_vector_column_query_dim_mismatch_still_resolves():
+    """Regression: a query dimension that matches no column must not hide an
+    otherwise-unambiguous vector column behind "no vector column in the data".
+
+    `dim` exists to disambiguate between *multiple* vector columns of
+    different sizes. When the schema has exactly one vector column, that
+    column is still the only sensible one to search; a dimension mismatch is
+    a query-execution concern, not a missing-column one. This previously
+    broke remote search (#4409 wired up client-side inference there), which
+    expects the server to reject the mismatched dimension itself.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+            pa.field("s", pa.string(), False),
+        ]
+    )
+
+    assert inf_vector_column_query(schema, dim=32) == "vector_col"
+    assert inf_vector_column_query(schema, dim=120) == "vector_col"
+    assert inf_vector_column_query(schema) == "vector_col"
+
+
+def test_inf_vector_column_query_dim_mismatch_with_multiple_columns():
+    """With more than one vector column, a dimension that matches none of
+    them is still ambiguous and must raise, not silently pick one."""
+    schema = pa.schema(
+        [
+            pa.field("vector1", pa.list_(pa.float32(), 10), False),
+            pa.field("vector2", pa.list_(pa.float32(), 20), False),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="more than one vector column"):
+        inf_vector_column_query(schema, dim=99)
