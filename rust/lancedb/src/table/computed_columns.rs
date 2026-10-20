@@ -55,6 +55,108 @@ pub const EXPRESSION_META_KEY: &str = "computed_column.expression";
 /// Field metadata key holding the column's inputs, as a JSON array of names.
 pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 
+/// Whether the server may automatically refresh this output.
+pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
+/// Minimum interval between successful automatic refreshes, in seconds.
+pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
+
+/// Scheduling settings persisted on each computed output. Local tables store
+/// these settings; automatic scheduling requires a Cloud or Enterprise server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComputedColumnOptions {
+    /// Permit automatic refresh. Manual refresh is always available.
+    pub auto_refresh_enabled: bool,
+    /// Minimum seconds after a successful refresh before another is eligible.
+    pub auto_refresh_interval_seconds: u64,
+}
+
+impl Default for ComputedColumnOptions {
+    fn default() -> Self {
+        Self {
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: 60,
+        }
+    }
+}
+
+impl ComputedColumnOptions {
+    /// Reject intervals that cannot be represented by the server scheduler.
+    pub fn validate(&self) -> Result<()> {
+        if self.auto_refresh_interval_seconds == 0
+            || self
+                .auto_refresh_interval_seconds
+                .checked_mul(1000)
+                .is_none()
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read scheduling settings, using defaults for omitted properties.
+    pub fn from_metadata(metadata: &HashMap<String, String>) -> Result<Self> {
+        let mut options = Self::default();
+        if let Some(value) = metadata.get(AUTO_REFRESH_ENABLED_META_KEY) {
+            options.auto_refresh_enabled = value.parse().map_err(|_| Error::InvalidInput {
+                message: "auto_refresh_enabled must be true or false".into(),
+            })?;
+        }
+        if let Some(value) = metadata.get(AUTO_REFRESH_INTERVAL_META_KEY) {
+            options.auto_refresh_interval_seconds =
+                value.parse().map_err(|_| Error::InvalidInput {
+                    message: "auto_refresh_interval_seconds must be a positive integer".into(),
+                })?;
+        }
+        options.validate()?;
+        Ok(options)
+    }
+
+    /// Attach validated settings to newly declared computed output fields.
+    pub fn apply_to_schema(&self, schema: &ArrowSchema) -> Result<ArrowSchema> {
+        self.validate()?;
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if computed_column_from_field(field).is_none()
+                    || field
+                        .metadata()
+                        .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
+                        .is_some_and(|ordinal| {
+                            ordinal == &FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL.to_string()
+                        })
+                {
+                    return field.clone();
+                }
+                let mut metadata = field.metadata().clone();
+                metadata.extend(self.metadata());
+                Arc::new(field.as_ref().clone().with_metadata(metadata))
+            })
+            .collect::<Vec<_>>();
+        Ok(ArrowSchema::new_with_metadata(
+            fields,
+            schema.metadata().clone(),
+        ))
+    }
+
+    /// Field metadata values shared by native and server declaration paths.
+    pub fn metadata(&self) -> HashMap<String, String> {
+        HashMap::from([
+            (
+                AUTO_REFRESH_ENABLED_META_KEY.into(),
+                self.auto_refresh_enabled.to_string(),
+            ),
+            (
+                AUTO_REFRESH_INTERVAL_META_KEY.into(),
+                self.auto_refresh_interval_seconds.to_string(),
+            ),
+        ])
+    }
+}
+
 /// Field metadata key holding the Function binding identity.
 pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding_id";
 

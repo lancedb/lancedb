@@ -3497,7 +3497,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(result)
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        options: crate::table::computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
@@ -3516,7 +3520,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 },
             )
             .collect::<Vec<_>>();
-        let mut body = serde_json::json!({ "new_columns": entries });
+        let mut body = serde_json::json!({ "new_columns": entries, "auto_refresh_enabled": options.auto_refresh_enabled, "auto_refresh_interval_seconds": options.auto_refresh_interval_seconds });
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -3550,6 +3554,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         application: &crate::function::FunctionApplication,
         output_name: Option<&str>,
+        options: crate::table::computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         let schema = self.schema().await?;
@@ -3570,6 +3575,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
         let mut body = serde_json::json!({
             "new_columns": new_columns,
+            "auto_refresh_enabled": options.auto_refresh_enabled,
+            "auto_refresh_interval_seconds": options.auto_refresh_interval_seconds,
             "function": {
                 "application": plan.application,
                 "binding_metadata_version": plan.binding_metadata_version,
@@ -9273,6 +9280,8 @@ mod tests {
                     value["new_columns"],
                     serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
                 );
+                assert_eq!(value["auto_refresh_enabled"], false);
+                assert_eq!(value["auto_refresh_interval_seconds"], 300);
                 http::Response::builder()
                     .status(200)
                     .body(r#"{"version": 7}"#.to_string())
@@ -9284,6 +9293,10 @@ mod tests {
         let result = table
             .add_columns()
             .computed("doubled", "x * 2")
+            .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                auto_refresh_enabled: false,
+                auto_refresh_interval_seconds: 300,
+            })
             .execute()
             .await
             .unwrap();
@@ -9305,10 +9318,12 @@ mod tests {
                     request.body().unwrap().as_bytes().unwrap(),
                 )
                 .unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_scalar_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
+                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
