@@ -65,7 +65,95 @@ The dataset does not copy your data. At construction it computes a shuffled assi
 `num_splits` fixed splits, then reads rows from the table as it iterates. It reads the table version
 that exists at construction, so rows appended later do not appear mid-epoch.
 
-## Output Formats {#output-formats}
+## Optimizations {#optimizations}
+
+The quickstart works as written. These sections cover what to tune as training scales up: the transform that
+builds each sample, running across many GPUs, and the output format of a `Table` or `Permutation`.
+
+### Transform {#transform}
+
+A `transform` turns a batch of Arrow rows into the per-sample items your `DataLoader` collates. It receives a
+whole `pyarrow.RecordBatch` (`read_batch_size` rows, 64 by default) rather than one sample at a time, so
+vectorized code is cheap, and it must return exactly one item per row. The quickstart's transform is the
+whole pattern: columns become tensors and each row becomes a dict, which the default `collate_fn` stacks into
+a batch. Without a transform, rows arrive as plain Python dicts.
+
+Heavier per-sample work belongs in the same function, such as decoding video. Store each clip in a blob v2
+column (`lancedb.blob("video")`). A scan returns small descriptors instead of the video bytes, so reading
+other columns never pulls video in. `fetch_blob_files` opens the clips for a batch of rows as file handles,
+and torchcodec's `VideoDecoder` decodes just the frames you ask for. `ExtractFrames` samples 8 evenly spaced
+frames from each clip:
+
+```py Python icon=Python
+import functools
+from torchcodec.decoders import VideoDecoder
+
+class ExtractFrames:
+    def __init__(self, uri: str, name: str, num_frames: int = 8) -> None:
+        self.uri, self.name, self.num_frames = uri, name, num_frames
+
+    @functools.cached_property
+    def table(self) -> lancedb.table.Table:
+        return lancedb.connect(self.uri).open_table(self.name)
+
+    def __call__(self, rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+        samples = []
+        for blob in self.table.fetch_blob_files("video", rb["_rowid"]):
+            decoder = VideoDecoder(blob)
+            idx = torch.linspace(0, len(decoder) - 1, self.num_frames).long()
+            samples.append({"frames": decoder.get_frames_at(idx.tolist()).data})
+        return samples
+
+# `clips` is the table "clips" in the database at `uri`, with a blob v2 column "video"
+train = StreamingDataset(clips, columns=["_rowid"], transform=ExtractFrames(uri, "clips"))
+```
+
+Transforms run in a thread pool, one thread per CPU by default (`transform_parallelism`), overlapping with
+storage reads and your training step. NumPy, PyArrow and PyTorch release the GIL, so vectorized
+work runs in parallel. A pure-Python loop does not. If a profile shows the transform is the bottleneck, move
+it into [DataLoader workers](#using-multiple-dataloader-workers).
+
+Real data has bad rows, such as a truncated frame. Raise inside the transform and set
+`on_transform_error="skip"` (or `"warn"` to log each failure). LanceDB re-runs the failing batch one row at a
+time, drops only the rows that raise, and counts them in `dataset.rows_skipped`. When the bad rows match a SQL
+predicate, prefer `filter=`: it runs before the splits are built, so every split keeps the same length.
+
+### Distributed Training {#distributed-training}
+
+`StreamingDataset` takes the place of `DistributedSampler`. Pass the rank and world size, and each rank reads
+its own disjoint part of the table, together covering it once per epoch:
+
+```py Python icon=Python
+import torch.distributed as dist
+
+dist.init_process_group("nccl")
+train = StreamingDataset(
+    table, columns=["observation_state", "action"], transform=to_samples,
+    num_splits=48, shuffle_seed=42, epoch=epoch,
+    rank=dist.get_rank(), world_size=dist.get_world_size())
+```
+
+Everything after the dataset is standard distributed PyTorch. Wrap the model in `DistributedDataParallel`
+and pass `batch_size` to the `DataLoader` per GPU, so the global batch is `batch_size * world_size`. Nothing
+in the data path changes.
+
+Three arguments matter in distributed runs:
+
+- **`num_splits`** is how many fixed streams the table is divided into. It must be divisible by `world_size`,
+  and by `world_size * num_workers` when you use DataLoader workers. Choose a number with many divisors, such
+  as 48, and runs on 8, 4 or 2 GPUs see the same data at every step, provided the global batch size is a multiple of
+  `num_splits`.
+- **`shuffle_seed` and `epoch`** must be identical on every rank. Pass a fixed `shuffle_seed` and increase
+  `epoch` each epoch. `shuffle_seed=None` draws a different random seed in each process, so ranks would read
+  overlapping rows and miss others.
+- **`rank` and `world_size`** come from your launcher, for example `torchrun`.
+
+To resume after a failure, save `train.state_dict()` next to the model. It records progress per split, so the
+resumed run continues from the same row even on a different number of GPUs. See
+[Parallelism & Elasticity](/training/data-loading#parallelism-&-elasticity) and
+[Checkpointing](/training/data-loading#checkpointing) for the batch-size rules and the multi-worker case.
+
+### Output Formats {#output-formats}
 
 By default, a `Table` data loader will emit Arrow data. `collate_fn` is PyTorch's batching hook: PyTorch calls it to
 turn the fetched items into one batch. PyTorch's default collate function only knows how to combine tensors, NumPy
@@ -85,7 +173,7 @@ the Arrow data in different ways.  The `arrow` and `polars` formats will always 
 `pandas`, and `torch_col` formats will also avoid data copies in most cases.  The `python`, `python_col`, and
 `torch` formats will all require at least one full copy of the data and are the slowest options.
 
-### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
+#### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
 
 The `torch_col` format is the most efficient way to convert from Arrow to a `torch.Tensor`.  It will convert the
 entire Arrow batch to a _column-major_ `torch.Tensor`.  In other words, given C columns and R rows, the resulting
