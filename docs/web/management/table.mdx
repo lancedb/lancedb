@@ -427,7 +427,91 @@ Once you have the bytes back from the search result, you can decode them into th
     </CodeBlock>
 </CodeGroup>
 
-### Large Blobs (Blob API) {#multimodal-large-blobs-blob-api}
+### Managed blobs (Blob v2) {#managed-blobs}
+
+Use `lancedb.blob()` for images, audio, videos, and other binary values whose
+payloads should load separately from the rest of a row. Write Python `bytes`
+normally. Set the table schema metadata `lance.blob.managed` to `true` to
+store small values inline and larger values in managed objects under the table's `_blobs/` directory. Medium values can share a packed
+object; large values use a dedicated object.
+
+The table owns these objects. You do not upload them separately, keep an object
+catalog, or delete their files yourself. A descriptor records where to read the
+bytes. Compaction preserves the descriptor and its payload object, so merging
+table fragments does not rewrite the blob payloads.
+
+<Warning>
+Use an SDK and Enterprise deployment that support Blob v2 Managed storage.
+Upgrade every reader, writer, and maintenance worker before activating Managed
+blobs on a table, and reopen existing table handles after the upgrade. Older
+clients cannot safely maintain a table containing Managed blobs.
+</Warning>
+
+#### Write and read blobs {#managed-blobs-read-write}
+
+This example uses a local connection. The same schema, `add`, query, and
+`fetch_blobs` calls work with an Enterprise database connection:
+
+```python
+import lancedb
+import pyarrow as pa
+
+db = lancedb.connect("./media")
+table = db.create_table(
+    "images",
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        lancedb.blob("image"),
+    ], metadata={"lance.blob.managed": "true"}),
+)
+table.add([
+    {"id": 1, "image": b""},
+    {"id": 2, "image": bytes(range(256)) * 400},
+    {"id": 3, "image": None},
+])
+
+# Query descriptors first, then fetch only the selected rows' payloads.
+hits = (
+    table.search()
+    .where("id <= 2")
+    .select(["id", "image"])
+    .with_row_id(True)
+    .to_arrow()
+)
+images = table.fetch_blobs("image", hits).to_pylist()
+by_id = dict(zip(hits["id"].to_pylist(), images, strict=True))
+assert by_id[1] == b""
+assert len(by_id[2]) == 102400
+```
+
+`None` is a null value; `b""` is a present, empty blob. `fetch_blobs` returns
+bytes in the order of the supplied row IDs. It materializes the selected
+payloads, so fetch bounded batches when blobs are large. Row IDs belong to
+their table; fetch them from the same table and snapshot that produced the
+query result.
+
+Keep descriptors opaque in application code. Their representation can differ
+between inline values, Managed objects, and externally referenced blobs. For
+streaming and range reads, see the
+[Lance blob guide](https://lance.org/guide/blob/).
+
+#### Derived blobs and maintenance {#managed-blobs-lifecycle}
+
+Enterprise Functions can consume blob columns and
+return new blobs. Their output payloads are managed by the destination table.
+Local tables can also derive blob columns with
+[SQL computed columns](/feature-engineering/add-computed-column).
+
+Deleting a row or replacing its blob does not immediately remove the old
+payload: retained table versions may still reference it. [Cleanup](/maintenance/cleanup#managed-blobs)
+reclaims objects after those references expire. A packed object remains while
+any of its contained blobs is still referenced.
+
+### Legacy large-binary blobs {#multimodal-large-blobs-blob-api}
+
+The schema below describes the earlier large-binary Blob API. It is distinct
+from the `lancedb.blob()` schema above; changing the field's metadata alone does
+not migrate an existing column to Blob v2.
 
 For larger files like high-resolution images or videos, Lance provides a specialized **Blob API**. By using a large-binary Arrow type (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and `DataType::LargeBinary` in Rust) and specific metadata, you enable **lazy loading** and optimized encoding. This allows you to work with massive datasets without loading all binary data into memory upfront.
 

@@ -223,7 +223,7 @@ if TYPE_CHECKING:
         DeleteResult,
         DropColumnsResult,
         FtsToken,
-        MemWalWriteSpec,
+        RTEWriteSpec,
         MergeResult,
         UpdateResult,
     )
@@ -4849,47 +4849,47 @@ class LanceTable(Table):
         [`AsyncTable.set_unenforced_primary_key`][lancedb.AsyncTable.set_unenforced_primary_key]."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
-        """Install an MemWalWriteSpec. See
-        [`AsyncTable.enable_memwal`][lancedb.AsyncTable.enable_memwal]."""
-        return LOOP.run(self._table.enable_memwal(spec))
+    def enable_rte(self, spec: "RTEWriteSpec") -> None:
+        """Install an RTEWriteSpec. See
+        [`AsyncTable.enable_rte`][lancedb.AsyncTable.enable_rte]."""
+        return LOOP.run(self._table.enable_rte(spec))
 
-    def disable_memwal(self) -> None:
-        """Remove the MemWalWriteSpec. See
-        [`AsyncTable.disable_memwal`][lancedb.AsyncTable.disable_memwal]."""
-        return LOOP.run(self._table.disable_memwal())
+    def disable_rte(self) -> None:
+        """Remove the RTEWriteSpec. See
+        [`AsyncTable.disable_rte`][lancedb.AsyncTable.disable_rte]."""
+        return LOOP.run(self._table.disable_rte())
 
-    def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
-        """Read the installed MemWalWriteSpec, or ``None``. See
-        [`AsyncTable.get_memwal_spec`][lancedb.AsyncTable.get_memwal_spec]."""
-        return LOOP.run(self._table.get_memwal_spec())
+    def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
+        """Read the installed RTEWriteSpec, or ``None``. See
+        [`AsyncTable.get_rte_spec`][lancedb.AsyncTable.get_rte_spec]."""
+        return LOOP.run(self._table.get_rte_spec())
 
-    def checkpoint_memwal(self) -> None:
+    def checkpoint_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_memwal`][lancedb.AsyncTable.checkpoint_memwal]."""
-        return LOOP.run(self._table.checkpoint_memwal())
+        [`AsyncTable.checkpoint_rte`][lancedb.AsyncTable.checkpoint_rte]."""
+        return LOOP.run(self._table.checkpoint_rte())
 
-    def flush_memwal(self) -> None:
+    def flush_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_memwal`][lancedb.AsyncTable.flush_memwal]."""
-        return LOOP.run(self._table.flush_memwal())
+        [`AsyncTable.flush_rte`][lancedb.AsyncTable.flush_rte]."""
+        return LOOP.run(self._table.flush_rte())
 
-    def compact_memwal(self) -> None:
+    def compact_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_memwal`][lancedb.AsyncTable.compact_memwal]."""
-        return LOOP.run(self._table.compact_memwal())
+        [`AsyncTable.compact_rte`][lancedb.AsyncTable.compact_rte]."""
+        return LOOP.run(self._table.compact_rte())
 
-    def get_memwal_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
+    def get_rte_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_memwal_stats`][lancedb.AsyncTable.get_memwal_stats]."""
+        [`AsyncTable.get_rte_stats`][lancedb.AsyncTable.get_rte_stats]."""
         return LOOP.run(
-            self._table.get_memwal_stats(include_sstable_rows=include_sstable_rows)
+            self._table.get_rte_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_memwal_writers(self) -> None:
-        """Close cached MemWAL shard writers. See
-        [`AsyncTable.close_memwal_writers`][lancedb.AsyncTable.close_memwal_writers]."""
-        return LOOP.run(self._table.close_memwal_writers())
+    def close_rte_writers(self) -> None:
+        """Close cached RTE shard writers. See
+        [`AsyncTable.close_rte_writers`][lancedb.AsyncTable.close_rte_writers]."""
+        return LOOP.run(self._table.close_rte_writers())
 
     def uses_v2_manifest_paths(self) -> bool:
         """
@@ -5547,24 +5547,24 @@ class AsyncTable:
             columns = list(columns)
         await self._inner.set_unenforced_primary_key(columns)
 
-    async def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
-        """Install an MemWalWriteSpec on this table.
+    async def enable_rte(self, spec: "RTEWriteSpec") -> None:
+        """Install an RTEWriteSpec on this table.
 
         The spec selects Lance's MemWAL LSM-style write path for future
-        `merge_insert` calls. ``MemWalWriteSpec`` chooses one of three sharding
+        `merge_insert` calls. ``RTEWriteSpec`` chooses one of three sharding
         strategies:
 
-        - ``MemWalWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
+        - ``RTEWriteSpec.bucket(column, num_buckets)`` — hash-bucket writes by
           the single-column unenforced primary key.
-        - ``MemWalWriteSpec.identity(column)`` — shard by the raw value of a
+        - ``RTEWriteSpec.identity(column)`` — shard by the raw value of a
           scalar column.
-        - ``MemWalWriteSpec.unsharded()`` — route every write to a single shard.
+        - ``RTEWriteSpec.unsharded()`` — route every write to a single shard.
 
         All variants require the table to have an unenforced primary key set
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
-        By default the MemWAL maintains every index on the table, resolved
+        By default the RTE maintains every index on the table, resolved
         here — a snapshot, so an index created afterwards needs the spec unset
         and set again. This fails if one cannot be maintained; name the set
         with ``with_maintained_indexes`` to install anyway. That pins an exact
@@ -5573,30 +5573,30 @@ class AsyncTable:
 
         Parameters
         ----------
-        spec : MemWalWriteSpec
+        spec : RTEWriteSpec
             The sharding spec to install.
 
         Examples
         --------
-        >>> from lancedb import MemWalWriteSpec
+        >>> from lancedb import RTEWriteSpec
         >>> # table.set_unenforced_primary_key("id")
-        >>> # table.enable_memwal(MemWalWriteSpec.bucket("id", 16))
+        >>> # table.enable_rte(RTEWriteSpec.bucket("id", 16))
         """
-        await self._inner.enable_memwal(spec)
+        await self._inner.enable_rte(spec)
 
-    async def disable_memwal(self) -> None:
-        """Remove the MemWalWriteSpec from this table.
+    async def disable_rte(self) -> None:
+        """Remove the RTEWriteSpec from this table.
 
         Reverts to the standard `merge_insert` write path. Errors if no spec
         is currently set.
         """
-        await self._inner.disable_memwal()
+        await self._inner.disable_rte()
 
-    async def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
-        """Read the MemWalWriteSpec currently installed on this table.
+    async def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
+        """Read the RTEWriteSpec currently installed on this table.
 
-        Returns ``None`` when the MemWAL write path is not enabled at all — no
-        spec has been set, or one was removed with `disable_memwal`.
+        Returns ``None`` when the RTE write path is not enabled at all — no
+        spec has been set, or one was removed with `disable_rte`.
         That is a different answer from a spec whose ``maintained_indexes``
         is ``None``, which is an installed spec selecting indexes
         automatically.
@@ -5606,7 +5606,7 @@ class AsyncTable:
         or gains later, ``[]`` maintains none, and a non-empty list maintains
         exactly those. All three round-trip.
         """
-        return await self._inner.get_memwal_spec()
+        return await self._inner.get_rte_spec()
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
@@ -5617,12 +5617,12 @@ class AsyncTable:
         """See [`Table._note_hybrid_pk_fusion`][lancedb.table.Table]."""
         self._inner.note_hybrid_pk_fusion()
 
-    async def checkpoint_memwal(self) -> None:
-        """Converge this table's MemWAL write path into its base table.
+    async def checkpoint_rte(self) -> None:
+        """Converge this table's RTE write path into its base table.
 
         One flush, freezing every memtable into an SSTable, then compaction triggers
         until every SSTable that existed at that moment has reached base.
-        The loop runs client-side, reading progress from ``get_memwal_stats``.
+        The loop runs client-side, reading progress from ``get_rte_stats``.
 
         Best-effort: SSTables created *while* it runs are deliberately not
         waited on, which is what lets it terminate on a table taking writes.
@@ -5637,56 +5637,56 @@ class AsyncTable:
         ``asyncio.wait_for`` for a wall-clock bound; abandoning it partway
         costs nothing.
         """
-        await self._inner.checkpoint_memwal()
+        await self._inner.checkpoint_rte()
 
-    async def flush_memwal(self) -> None:
+    async def flush_rte(self) -> None:
         """Freeze every table shard's active memtable into an SSTable.
 
         Does not touch the base table — compacting SSTables into base is
-        `compact_memwal`. On a node that has not claimed this table, this claims
+        `compact_rte`. On a node that has not claimed this table, this claims
         it and replays its WAL log first.
         """
-        await self._inner.flush_memwal()
+        await self._inner.flush_rte()
 
-    async def compact_memwal(self) -> None:
+    async def compact_rte(self) -> None:
         """Trigger a background SSTable compaction pass per table shard.
 
         Returns once the passes are dispatched, not once they finish: watch
-        ``get_memwal_stats`` for progress, or use ``checkpoint_memwal`` to loop
+        ``get_rte_stats`` for progress, or use ``checkpoint_rte`` to loop
         until the current SSTables have reached base.
         """
-        await self._inner.compact_memwal()
+        await self._inner.compact_rte()
 
-    async def get_memwal_stats(
+    async def get_rte_stats(
         self, *, include_sstable_rows: bool = False
     ) -> Optional[dict]:
-        """Read live per-table-shard MemWAL state.
+        """Read live per-table-shard RTE state.
 
         Answers "how far behind is my fresh tier", "which table shard is hot", and
         "why is my fresh-tier vector search brute-force". Mutates no table
         state, though on a node that has not claimed this table it claims it,
         exactly as a read would.
 
-        Returns ``None`` only when the MemWAL write path is not enabled.
+        Returns ``None`` only when the RTE write path is not enabled.
 
         Parameters
         ----------
         include_sstable_rows
             Report a row count per SSTable. Off by default: each count
-            opens an uncached Lance dataset, and ``checkpoint_memwal`` polls this
+            opens an uncached Lance dataset, and ``checkpoint_rte`` polls this
             needing only generation numbers.
         """
-        return await self._inner.get_memwal_stats(include_sstable_rows)
+        return await self._inner.get_rte_stats(include_sstable_rows)
 
-    async def close_memwal_writers(self) -> None:
-        """Drain and close any cached MemWAL shard writers for this table.
+    async def close_rte_writers(self) -> None:
+        """Drain and close any cached RTE shard writers for this table.
 
-        When a MemWAL write spec is installed, `merge_insert` opens MemWAL shard
+        When an RTE write spec is installed, `merge_insert` opens RTE shard
         writers and caches them for reuse across calls. This closes them,
         flushing pending data; writers reopen lazily on the next
         `merge_insert`. It is a no-op when no writers are cached.
         """
-        await self._inner.close_memwal_writers()
+        await self._inner.close_rte_writers()
 
     @property
     def name(self) -> str:
@@ -6575,8 +6575,8 @@ class AsyncTable:
             take_query = self.take_offsets(query.take_offsets)
             if query.columns:
                 take_query = take_query.select(query.columns)
-            if query.use_memwal is not None:
-                take_query = take_query.use_memwal(query.use_memwal)
+            if query.use_rte is not None:
+                take_query = take_query.use_rte(query.use_rte)
             if query.with_row_id:
                 take_query = take_query.with_row_id()
             return take_query
@@ -6592,8 +6592,8 @@ class AsyncTable:
             async_query = async_query.where(query.filter)
         if query.fast_search:
             async_query = async_query.fast_search()
-        if query.use_memwal is not None:
-            async_query = async_query.use_memwal(query.use_memwal)
+        if query.use_rte is not None:
+            async_query = async_query.use_rte(query.use_rte)
         if query.with_row_id:
             async_query = async_query.with_row_id()
         if query.order_by:
@@ -6719,7 +6719,7 @@ class AsyncTable:
                 when_not_matched_by_source_condition_expr=merge._when_not_matched_by_source_condition_expr,
                 timeout=merge._timeout,
                 use_index=merge._use_index,
-                use_memwal=merge._use_memwal,
+                use_rte=merge._use_rte,
                 validate_single_shard=merge._validate_single_shard,
                 source_collect_threshold_bytes=merge._source_collect_threshold_bytes,
             ),

@@ -37,7 +37,7 @@ class LanceMergeInsertBuilder(object):
         self._when_not_matched_by_source_condition_expr = None
         self._timeout = None
         self._use_index = True
-        self._use_memwal = None
+        self._use_rte = None
         self._validate_single_shard = None
         self._source_collect_threshold_bytes = None
 
@@ -116,22 +116,22 @@ class LanceMergeInsertBuilder(object):
         self._use_index = use_index
         return self
 
-    def use_memwal(self, enable: bool) -> LanceMergeInsertBuilder:
+    def use_rte(self, enable: bool) -> LanceMergeInsertBuilder:
         """
-        Control MemWAL routing for this merge.
+        Control RTE routing for this merge.
 
-        By default (unset), a `merge_insert` on a table with a MemWAL write spec is
+        By default (unset), a `merge_insert` on a table with an RTE write spec is
         routed through Lance's MemWAL shard writer, and a table without one uses
         the standard path.
 
         Parameters
         ----------
         enable: bool
-            ``True`` forces MemWAL routing and errors if the table has no MemWAL
+            ``True`` forces RTE routing and errors if the table has no RTE
             write spec. ``False`` forces the standard write path even when a spec
             is set.
         """
-        self._use_memwal = enable
+        self._use_rte = enable
         return self
 
     def validate_single_shard(
@@ -140,13 +140,13 @@ class LanceMergeInsertBuilder(object):
         """
         Controls how an LSM merge checks that its input targets a single shard.
 
-        When a table has a MemWAL write spec, every row in a `merge_insert` call
+        When a table has an RTE write spec, every row in a `merge_insert` call
         must route to the same shard. When `True` (the default), every row is
         inspected to verify this. When `False`, only the first row is inspected
         and the shard it routes to is used for the whole input — a faster path
         for callers that have already pre-sharded their input.
 
-        Has no effect on tables without a MemWAL write spec.
+        Has no effect on tables without an RTE write spec.
 
         Parameters
         ----------

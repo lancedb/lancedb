@@ -1981,8 +1981,8 @@ async fn blob_layout_overwrite_replaces_schema_in_both_directions() -> Result<()
 }
 
 #[tokio::test]
-async fn blob_layout_memwal_merge_normalizes_before_writing() -> Result<()> {
-    use lancedb::{query::Select, table::MemWalWriteSpec};
+async fn blob_layout_rte_merge_normalizes_before_writing() -> Result<()> {
+    use lancedb::{query::Select, table::RTEWriteSpec};
     for wide in [false, true] {
         let tmp = tempdir().unwrap();
         let db = connect(tmp.path().to_str().unwrap()).execute().await?;
@@ -1991,7 +1991,7 @@ async fn blob_layout_memwal_merge_normalizes_before_writing() -> Result<()> {
             .execute()
             .await?;
         table.set_unenforced_primary_key(["id"]).await?;
-        table.enable_memwal(MemWalWriteSpec::unsharded()).await?;
+        table.enable_rte(RTEWriteSpec::unsharded()).await?;
         let mut merge = table.merge_insert(&["id"]);
         merge
             .when_matched_update_all(None)

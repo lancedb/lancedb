@@ -51,10 +51,10 @@ impl NativeMergeInsertBuilder {
         this
     }
 
-    #[napi(js_name = "useMemWal")]
-    pub fn use_memwal(&self, enable: bool) -> Self {
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&self, enable: bool) -> Self {
         let mut this = self.clone();
-        this.inner.use_memwal(enable);
+        this.inner.use_rte(enable);
         this
     }
 

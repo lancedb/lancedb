@@ -3259,6 +3259,22 @@ def test_doc_example_checkpoint(lance_table):
     )
 
 
+def test_streaming_dataset_over_table_with_schema_metadata(tmp_path):
+    """StreamingDataset builds its permutation at construction; base table schema
+    metadata (e.g. Hugging Face's `source-column-name-map`) must not break it."""
+    schema = pa.schema(
+        [pa.field("id", pa.int64())],
+        metadata={b"source-column-name-map": b"{}", b"huggingface": b"{}"},
+    )
+    table = lancedb.connect(tmp_path).create_table(
+        "data", pa.table({"id": list(range(NUM_ROWS))}, schema=schema)
+    )
+
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
 # ---------------------------------------------------------------------------
 # Remote tables (LanceDB Cloud / Enterprise)
 # ---------------------------------------------------------------------------
