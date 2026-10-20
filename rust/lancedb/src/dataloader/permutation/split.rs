@@ -214,9 +214,9 @@ impl Splitter {
             }
             arrays.push(Arc::new(split_ids));
 
-            std::future::ready(Some(Ok(
-                RecordBatch::try_new(new_schema.clone(), arrays).unwrap()
-            )))
+            std::future::ready(Some(
+                RecordBatch::try_new(new_schema.clone(), arrays).map_err(Error::from),
+            ))
         });
 
         Ok(Box::pin(SimpleRecordBatchStream::new(
@@ -289,23 +289,23 @@ impl Splitter {
             .collect::<Vec<_>>();
 
         let new_schema_clone = new_schema.clone();
-        let stream = source.map_ok(move |batch| {
+        let stream = source.and_then(move |batch| {
             let split_ids = Self::hash_split_id(&batch, &thresholds, total_weight);
 
-            if split_ids.null_count() > 0 {
-                let is_valid = split_ids.nulls().unwrap().inner();
-                let is_valid_mask = BooleanArray::new(is_valid.clone(), None);
-                let split_ids = arrow::compute::filter(&split_ids, &is_valid_mask).unwrap();
-                let row_ids = batch.column(row_id_index);
-                let row_ids = arrow::compute::filter(row_ids.as_ref(), &is_valid_mask).unwrap();
-                RecordBatch::try_new(new_schema.clone(), vec![row_ids, split_ids]).unwrap()
+            let batch = if let Some(nulls) = split_ids.nulls().filter(|n| n.null_count() > 0) {
+                let is_valid_mask = BooleanArray::new(nulls.inner().clone(), None);
+                arrow::compute::filter(&split_ids, &is_valid_mask).and_then(|split_ids| {
+                    let row_ids = batch.column(row_id_index);
+                    let row_ids = arrow::compute::filter(row_ids.as_ref(), &is_valid_mask)?;
+                    RecordBatch::try_new(new_schema.clone(), vec![row_ids, split_ids])
+                })
             } else {
                 RecordBatch::try_new(
                     new_schema.clone(),
                     vec![batch.column(row_id_index).clone(), Arc::new(split_ids)],
                 )
-                .unwrap()
-            }
+            };
+            std::future::ready(batch.map_err(Error::from))
         });
 
         Ok(Box::pin(SimpleRecordBatchStream::new(

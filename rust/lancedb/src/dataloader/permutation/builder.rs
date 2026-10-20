@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use arrow_array::RecordBatch;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
@@ -220,6 +221,12 @@ impl PermutationBuilder {
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
     }
 
+    /// Replaces the stream's schema metadata with the permutation config.
+    ///
+    /// The scan of the base table can carry the base table's schema metadata (e.g. Hugging
+    /// Face's `huggingface` key).  That metadata describes columns the permutation table does
+    /// not have, and its keys could collide with the config keys, so it is dropped rather
+    /// than merged.
     fn add_config_metadata(
         data: SendableRecordBatchStream,
         metadata: HashMap<String, String>,
@@ -227,7 +234,13 @@ impl PermutationBuilder {
         let schema = data.schema().as_ref().clone().with_metadata(metadata);
         let schema = Arc::new(schema);
         let schema_clone = schema.clone();
-        let stream = data.map_ok(move |batch| batch.with_schema(schema.clone()).unwrap());
+        // `RecordBatch::with_schema` only accepts a superset of the batch's schema, which a
+        // schema with replaced metadata is not, so rebuild the batch around the new schema.
+        let stream = data.and_then(move |batch| {
+            std::future::ready(
+                RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).map_err(Error::from),
+            )
+        });
         Ok(Box::pin(SimpleRecordBatchStream {
             schema: schema_clone,
             stream,
@@ -775,5 +788,70 @@ mod tests {
             err.to_string().contains("MemWAL write spec"),
             "expected the pre-check to refuse the table, got: {err}"
         );
+    }
+
+    /// Base table schema metadata (e.g. Hugging Face's `huggingface` key) describes the base
+    /// table's columns, so the permutation table drops it and keeps only its own config.
+    #[tokio::test]
+    async fn test_permutation_over_table_with_schema_metadata() {
+        use arrow_array::{Int64Array, RecordBatchIterator};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(
+            Schema::new(vec![Field::new("x", DataType::Int64, false)]).with_metadata(
+                HashMap::from([
+                    ("huggingface".to_string(), "{}".to_string()),
+                    // Collides with a config key; the config value must win.
+                    (SPLIT_NAMES_CONFIG_KEY.to_string(), "not json".to_string()),
+                ]),
+            ),
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from_iter_values(0..100))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let table = db.create_table("tbl", reader).execute().await.unwrap();
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .metadata
+                .contains_key("huggingface")
+        );
+
+        let permutation_table = PermutationBuilder::new(table)
+            .with_split_strategy(
+                SplitStrategy::Random {
+                    seed: Some(1),
+                    sizes: SplitSizes::Fixed(2),
+                    clump_size: None,
+                },
+                Some(vec!["train".to_string(), "test".to_string()]),
+            )
+            .with_shuffle_strategy(ShuffleStrategy::Random {
+                seed: Some(1),
+                clump_size: None,
+            })
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(permutation_table.count_rows(None).await.unwrap(), 100);
+        let metadata = permutation_table.schema().await.unwrap().metadata.clone();
+        assert!(!metadata.contains_key("huggingface"));
+        assert_eq!(
+            metadata.get(SPLIT_NAMES_CONFIG_KEY).map(String::as_str),
+            Some(r#"["train","test"]"#)
+        );
+        assert!(metadata.contains_key(BASE_VERSION_CONFIG_KEY));
     }
 }
