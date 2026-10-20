@@ -41,17 +41,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for the MemWAL LSM routes, run against a scripted local HTTP server.
+ * Unit tests for the RTE LSM routes, run against a scripted local HTTP server.
  *
  * <p>The wire assertions mirror the Rust mocked-endpoint tests in {@code
  * rust/lancedb/src/remote/table.rs}, which are the contract these routes have to match.
  */
-public class LanceDbTableMemWalTest {
+public class LanceDbTableRTETest {
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private HttpServer server;
   private LanceDbRestClient client;
-  private LanceDbTableMemWal memWal;
+  private LanceDbTableRTE rte;
 
   private final List<String> requestPaths = Collections.synchronizedList(new ArrayList<String>());
   private final List<String> requestBodies = Collections.synchronizedList(new ArrayList<String>());
@@ -101,7 +101,7 @@ public class LanceDbTableMemWalTest {
             .database("test-db")
             .endpoint("http://127.0.0.1:" + server.getAddress().getPort())
             .buildRestClient();
-    memWal = new LanceDbTableMemWal(client, "my_table");
+    rte = new LanceDbTableRTE(client, "my_table");
   }
 
   @AfterEach
@@ -115,12 +115,12 @@ public class LanceDbTableMemWalTest {
   // ===========================================================================
 
   @Test
-  public void testEnableMemWalUnsharded() throws Exception {
-    enqueue("enable_memwal", 200, "");
+  public void testEnableRTEUnsharded() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    memWal.enableMemWal(MemWalWriteSpec.unsharded());
+    rte.enableRTE(RTEWriteSpec.unsharded());
 
-    assertEquals("/v1/table/my_table/enable_memwal/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/enable_rte/", requestPaths.get(0));
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("unsharded", body.get("sharding").get("mode").asText());
     assertFalse(body.get("sharding").has("column"));
@@ -128,11 +128,10 @@ public class LanceDbTableMemWalTest {
   }
 
   @Test
-  public void testEnableMemWalBucket() throws Exception {
-    enqueue("enable_memwal", 200, "");
+  public void testEnableRTEBucket() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    memWal.enableMemWal(
-        MemWalWriteSpec.bucket("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
+    rte.enableRTE(RTEWriteSpec.bucket("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("bucket", body.get("sharding").get("mode").asText());
@@ -143,10 +142,10 @@ public class LanceDbTableMemWalTest {
   }
 
   @Test
-  public void testEnableMemWalIdentity() throws Exception {
-    enqueue("enable_memwal", 200, "");
+  public void testEnableRTEIdentity() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    memWal.enableMemWal(MemWalWriteSpec.identity("tenant"));
+    rte.enableRTE(RTEWriteSpec.identity("tenant"));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("identity", body.get("sharding").get("mode").asText());
@@ -160,55 +159,54 @@ public class LanceDbTableMemWalTest {
    */
   @Test
   public void testMaintainedIndexesNullAndEmptyAreDistinctOnTheWire() throws Exception {
-    enqueue("enable_memwal", 200, "");
+    enqueue("enable_rte", 200, "");
 
-    memWal.enableMemWal(MemWalWriteSpec.unsharded());
+    rte.enableRTE(RTEWriteSpec.unsharded());
     JsonNode fresh = MAPPER.readTree(requestBodies.get(0));
     assertTrue(fresh.has("maintained_indexes"), "the key must be present");
     assertTrue(fresh.get("maintained_indexes").isNull(), "a fresh spec sends null, not []");
 
-    memWal.enableMemWal(
-        MemWalWriteSpec.unsharded().withMaintainedIndexes(Collections.<String>emptyList()));
+    rte.enableRTE(RTEWriteSpec.unsharded().withMaintainedIndexes(Collections.<String>emptyList()));
     JsonNode none = MAPPER.readTree(requestBodies.get(1));
     assertTrue(none.get("maintained_indexes").isArray());
     assertEquals(0, none.get("maintained_indexes").size());
   }
 
   @Test
-  public void testEnableMemWalWriterConfigDefaults() throws Exception {
-    enqueue("enable_memwal", 200, "");
+  public void testEnableRTEWriterConfigDefaults() throws Exception {
+    enqueue("enable_rte", 200, "");
 
     Map<String, String> defaults = new HashMap<String, String>();
     defaults.put("max_memtable_rows", "50000");
-    memWal.enableMemWal(MemWalWriteSpec.unsharded().withWriterConfigDefaults(defaults));
+    rte.enableRTE(RTEWriteSpec.unsharded().withWriterConfigDefaults(defaults));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("50000", body.get("writer_config_defaults").get("max_memtable_rows").asText());
   }
 
   @Test
-  public void testDisableMemWal() {
-    enqueue("disable_memwal", 200, "");
+  public void testDisableRTE() {
+    enqueue("disable_rte", 200, "");
 
-    memWal.disableMemWal();
+    rte.disableRTE();
 
-    assertEquals("/v1/table/my_table/disable_memwal/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/disable_rte/", requestPaths.get(0));
     assertEquals("", requestBodies.get(0));
   }
 
   @Test
-  public void testGetMemWalSpec() {
+  public void testGetRTESpec() {
     enqueue(
-        "get_memwal_spec",
+        "get_rte_spec",
         200,
-        "{\"memwal_spec\":{\"sharding\":{\"mode\":\"bucket\",\"column\":\"id\","
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"bucket\",\"column\":\"id\","
             + "\"num_buckets\":16},\"maintained_indexes\":[\"id_idx\"],"
             + "\"writer_config_defaults\":{\"durable_write\":\"true\"}}}");
 
-    Optional<MemWalWriteSpec> spec = memWal.getMemWalSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
-    assertEquals(MemWalWriteSpec.Sharding.BUCKET, spec.get().sharding());
+    assertEquals(RTEWriteSpec.Sharding.BUCKET, spec.get().sharding());
     assertEquals("id", spec.get().column());
     assertEquals(Integer.valueOf(16), spec.get().numBuckets());
     assertEquals(Arrays.asList("id_idx"), spec.get().maintainedIndexes());
@@ -217,28 +215,28 @@ public class LanceDbTableMemWalTest {
 
   /** A null selection, every index the table has, reads back as null rather than an empty list. */
   @Test
-  public void testGetMemWalSpecRoundTripsEveryIndexSelection() {
+  public void testGetRTESpecRoundTripsEveryIndexSelection() {
     enqueue(
-        "get_memwal_spec",
+        "get_rte_spec",
         200,
-        "{\"memwal_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":null,\"writer_config_defaults\":{}}}");
 
-    Optional<MemWalWriteSpec> spec = memWal.getMemWalSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
     assertNull(spec.get().maintainedIndexes());
   }
 
   @Test
-  public void testGetMemWalSpecRoundTripsNoIndexSelection() {
+  public void testGetRTESpecRoundTripsNoIndexSelection() {
     enqueue(
-        "get_memwal_spec",
+        "get_rte_spec",
         200,
-        "{\"memwal_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":[],\"writer_config_defaults\":{}}}");
 
-    Optional<MemWalWriteSpec> spec = memWal.getMemWalSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
     assertEquals(Collections.emptyList(), spec.get().maintainedIndexes());
@@ -249,32 +247,32 @@ public class LanceDbTableMemWalTest {
    * rejected: reading a string or an object as null would turn a malformed response into a policy.
    */
   @Test
-  public void testGetMemWalSpecRejectsANonArrayMaintainedIndexes() {
+  public void testGetRTESpecRejectsANonArrayMaintainedIndexes() {
     enqueue(
-        "get_memwal_spec",
+        "get_rte_spec",
         200,
-        "{\"memwal_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":\"id_idx\",\"writer_config_defaults\":{}}}");
 
-    assertThrows(IllegalStateException.class, () -> memWal.getMemWalSpec());
+    assertThrows(IllegalStateException.class, () -> rte.getRTESpec());
   }
 
   @Test
-  public void testGetMemWalSpecRejectsNonStringIndexNames() {
+  public void testGetRTESpecRejectsNonStringIndexNames() {
     enqueue(
-        "get_memwal_spec",
+        "get_rte_spec",
         200,
-        "{\"memwal_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":[7],\"writer_config_defaults\":{}}}");
 
-    assertThrows(IllegalStateException.class, () -> memWal.getMemWalSpec());
+    assertThrows(IllegalStateException.class, () -> rte.getRTESpec());
   }
 
   @Test
-  public void testGetMemWalSpecAbsent() {
-    enqueue("get_memwal_spec", 200, "{\"memwal_spec\":null}");
+  public void testGetRTESpecAbsent() {
+    enqueue("get_rte_spec", 200, "{\"rte_spec\":null}");
 
-    assertFalse(memWal.getMemWalSpec().isPresent());
+    assertFalse(rte.getRTESpec().isPresent());
   }
 
   // ===========================================================================
@@ -282,12 +280,12 @@ public class LanceDbTableMemWalTest {
   // ===========================================================================
 
   @Test
-  public void testGetMemWalStats() throws Exception {
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
+  public void testGetRTEStats() throws Exception {
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
 
-    Optional<MemWalStats> got = memWal.getMemWalStats(true);
+    Optional<RTEStats> got = rte.getRTEStats(true);
 
-    assertEquals("/v1/table/my_table/get_memwal_stats/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/get_rte_stats/", requestPaths.get(0));
     assertTrue(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
     assertTrue(got.isPresent());
     TableShardStats decoded = got.get().tableShards().get(0);
@@ -305,18 +303,18 @@ public class LanceDbTableMemWalTest {
 
   /** The optional fields decode when the server does send them. */
   @Test
-  public void testGetMemWalStatsDecodesOptionalFields() {
+  public void testGetRTEStatsDecodesOptionalFields() {
     enqueue(
-        "get_memwal_stats",
+        "get_rte_stats",
         200,
-        "{\"memwal_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":3,\"wal_entry_position_last_seen\":11,"
             + "\"sstables\":[{\"generation\":7,\"bytes\":1024,\"rows\":42}],"
             + "\"compacting\":true,\"memtables\":[{\"generation\":8,\"rows\":5,"
             + "\"bytes\":64,\"batches\":2,\"indexes\":[\"id_idx\"]}]}]}}");
 
-    TableShardStats decoded = memWal.getMemWalStats(true).get().tableShards().get(0);
+    TableShardStats decoded = rte.getRTEStats(true).get().tableShards().get(0);
 
     assertEquals(3, decoded.replayAfterWalEntryPosition());
     assertEquals(11, decoded.walEntryPositionLastSeen());
@@ -332,17 +330,17 @@ public class LanceDbTableMemWalTest {
   }
 
   @Test
-  public void testGetMemWalStatsAbsentWhenMemWalDisabled() {
-    enqueue("get_memwal_stats", 200, "{\"memwal_stats\":null}");
+  public void testGetRTEStatsAbsentWhenRTEDisabled() {
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    assertFalse(memWal.getMemWalStats().isPresent());
+    assertFalse(rte.getRTEStats().isPresent());
   }
 
   @Test
-  public void testGetMemWalStatsDefaultsToExcludingGenerationRows() throws Exception {
-    enqueue("get_memwal_stats", 200, stats());
+  public void testGetRTEStatsDefaultsToExcludingGenerationRows() throws Exception {
+    enqueue("get_rte_stats", 200, stats());
 
-    memWal.getMemWalStats();
+    rte.getRTEStats();
 
     assertFalse(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
   }
@@ -353,22 +351,22 @@ public class LanceDbTableMemWalTest {
 
   @Test
   public void testFlushAndCompactRoutes() {
-    enqueue("flush_memwal", 200, "");
-    enqueue("compact_memwal", 200, "");
+    enqueue("flush_rte", 200, "");
+    enqueue("compact_rte", 200, "");
 
-    memWal.flushMemWal();
-    memWal.compactMemWal();
+    rte.flushRTE();
+    rte.compactRTE();
 
-    assertEquals("/v1/table/my_table/flush_memwal/", requestPaths.get(0));
-    assertEquals("/v1/table/my_table/compact_memwal/", requestPaths.get(1));
+    assertEquals("/v1/table/my_table/flush_rte/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/compact_rte/", requestPaths.get(1));
   }
 
   @Test
   public void testHttpErrorCarriesStatus() {
-    enqueue("flush_memwal", 404, "no such table");
+    enqueue("flush_rte", 404, "no such table");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> memWal.flushMemWal());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.flushRTE());
     assertEquals(404, e.statusCode());
   }
 
@@ -377,98 +375,97 @@ public class LanceDbTableMemWalTest {
   // ===========================================================================
 
   @Test
-  public void testCheckpointReturnsWhenMemWalDisabled() {
-    enqueue("flush_memwal", 200, "");
-    enqueue("get_memwal_stats", 200, "{\"memwal_stats\":null}");
+  public void testCheckpointReturnsWhenRTEDisabled() {
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_memwal"), "nothing to compact when the LSM path is off");
+    assertEquals(0, countCalls("compact_rte"), "nothing to compact when the LSM path is off");
   }
 
   @Test
   public void testCheckpointReturnsWhenNoGenerationsOutstanding() {
-    enqueue("flush_memwal", 200, "");
+    enqueue("flush_rte", 200, "");
     // A table shard with no SSTables yields no target, so the drain never starts.
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_memwal"));
+    assertEquals(0, countCalls("compact_rte"));
   }
 
   @Test
   public void testCheckpointConvergesOnceTargetGenerationsAreGone() {
-    enqueue("flush_memwal", 200, "");
+    enqueue("flush_rte", 200, "");
     // Watermark read: shard-0 holds sstables 7 and 8, so target = 8.
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // First drain poll: both still outstanding, nothing compacting -> dispatch a pass.
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // Second drain poll: drained past the target -> done.
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false, 9L)));
-    enqueue("compact_memwal", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 9L)));
+    enqueue("compact_rte", 200, "");
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(1, countCalls("compact_memwal"), "one pass dispatched");
-    assertEquals(3, countCalls("get_memwal_stats"), "watermark read plus two drain polls");
+    assertEquals(1, countCalls("compact_rte"), "one pass dispatched");
+    assertEquals(3, countCalls("get_rte_stats"), "watermark read plus two drain polls");
   }
 
   @Test
   public void testCheckpointDoesNotPileOnWhileEveryTargetBucketIsCompacting() {
-    enqueue("flush_memwal", 200, "");
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", true, 4L)));
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", true, 4L)));
     // Still compacting on the first poll, so no pass is dispatched; then it drains.
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", true, 4L)));
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false, 5L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", true, 4L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 5L)));
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_memwal"), "a latched table shard is left alone");
+    assertEquals(0, countCalls("compact_rte"), "a latched table shard is left alone");
   }
 
   @Test
   public void testCheckpointRetriesFromFlushAfterLostClaim() {
     // 421 on the watermark read: the node lost its claim, so the whole thing restarts
     // from flush rather than retrying the read in place.
-    enqueue("flush_memwal", 200, "");
-    enqueue("get_memwal_stats", 421, "no claim");
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false)));
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 421, "no claim");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(2, countCalls("flush_memwal"), "re-issued from flush");
+    assertEquals(2, countCalls("flush_rte"), "re-issued from flush");
   }
 
   @Test
   public void testCheckpointRetriesRetryableStatusInPlace() {
-    enqueue("flush_memwal", 429, "latch held");
-    enqueue("flush_memwal", 200, "");
-    enqueue("get_memwal_stats", 200, stats(tableShard("shard-0", false)));
+    enqueue("flush_rte", 429, "latch held");
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(2, countCalls("flush_memwal"), "429 retried in place, not re-issued");
+    assertEquals(2, countCalls("flush_rte"), "429 retried in place, not re-issued");
   }
 
   @Test
   public void testCheckpointPropagatesTerminalStatus() {
-    enqueue("flush_memwal", 400, "bad request");
+    enqueue("flush_rte", 400, "bad request");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> memWal.checkpointMemWal());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.checkpointRTE());
     assertEquals(400, e.statusCode());
-    assertEquals(1, countCalls("flush_memwal"), "a terminal status is not retried");
+    assertEquals(1, countCalls("flush_rte"), "a terminal status is not retried");
   }
 
   @Test
   public void testCheckpointGivesUpAfterRepeatedLostClaims() {
-    enqueue("flush_memwal", 421, "no claim");
+    enqueue("flush_rte", 421, "no claim");
 
-    IllegalStateException e =
-        assertThrows(IllegalStateException.class, () -> memWal.checkpointMemWal());
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> rte.checkpointRTE());
     assertTrue(e.getMessage().contains("kept losing its claim"), e.getMessage());
-    assertEquals(4, countCalls("flush_memwal"), "the initial attempt plus MAX_REISSUES");
+    assertEquals(4, countCalls("flush_rte"), "the initial attempt plus MAX_REISSUES");
   }
 
   // ===========================================================================
@@ -478,24 +475,24 @@ public class LanceDbTableMemWalTest {
   /**
    * A stats payload that does not decode must fail closed. Every one of these bodies used to be
    * read as "no table shards", which is indistinguishable from a drained table, so {@code
-   * checkpointMemWal} reported convergence for a checkpoint that never ran.
+   * checkpointRTE} reported convergence for a checkpoint that never ran.
    */
   @Test
   public void testCheckpointRejectsMalformedStats() {
     Map<String, String> malformed = new LinkedHashMap<String, String>();
     malformed.put("no response body at all", "");
-    malformed.put("stats object with no table shards", "{\"memwal_stats\":{}}");
+    malformed.put("stats object with no table shards", "{\"rte_stats\":{}}");
     malformed.put(
-        "table shard missing its required fields", "{\"memwal_stats\":{\"table_shards\":[{}]}}");
+        "table shard missing its required fields", "{\"rte_stats\":{\"table_shards\":[{}]}}");
     malformed.put(
         "table shard missing sstables",
-        "{\"memwal_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
             + "\"compacting\":false}]}}");
     malformed.put(
         "generation with a non-numeric generation number",
-        "{\"memwal_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
             + "\"sstables\":[{\"generation\":\"7\",\"bytes\":1024}],"
@@ -503,25 +500,25 @@ public class LanceDbTableMemWalTest {
 
     for (Map.Entry<String, String> each : malformed.entrySet()) {
       setUpFresh();
-      enqueue("flush_memwal", 200, "");
-      enqueue("get_memwal_stats", 200, each.getValue());
+      enqueue("flush_rte", 200, "");
+      enqueue("get_rte_stats", 200, each.getValue());
 
       assertThrows(
           IllegalStateException.class,
-          () -> memWal.checkpointMemWal(),
+          () -> rte.checkpointRTE(),
           each.getKey() + " must not report convergence");
     }
   }
 
-  /** The one shape that legitimately means "this table has no MemWAL write path". */
+  /** The one shape that legitimately means "this table has no RTE write path". */
   @Test
   public void testCheckpointTreatsNullStatsAsNotWalBacked() {
-    enqueue("flush_memwal", 200, "");
-    enqueue("get_memwal_stats", 200, "{\"memwal_stats\":null}");
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    memWal.checkpointMemWal();
+    rte.checkpointRTE();
 
-    assertEquals(1, countCalls("get_memwal_stats"));
+    assertEquals(1, countCalls("get_rte_stats"));
   }
 
   // ===========================================================================
@@ -531,19 +528,18 @@ public class LanceDbTableMemWalTest {
   /**
    * The transport must not retry on the checkpoint loop's behalf. Apache HttpClient's default
    * strategy retries exactly 429 and 503 — the two statuses {@code isRetryable} owns — which
-   * doubled every budget here and also retried {@code compact_memwal} in place, where the loop is
+   * doubled every budget here and also retried {@code compact_rte} in place, where the loop is
    * built to fall through to a fresh stats poll instead.
    */
   @Test
   public void testCheckpointRetryBudgetIsNotDoubledByTheTransport() {
-    enqueue("flush_memwal", 429, "latch held");
+    enqueue("flush_rte", 429, "latch held");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> memWal.checkpointMemWal());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.checkpointRTE());
 
     assertEquals(429, e.statusCode(), "the exhausted budget propagates the last error as itself");
-    assertEquals(
-        9, countCalls("flush_memwal"), "the initial request plus MAX_RETRIES, and no more");
+    assertEquals(9, countCalls("flush_rte"), "the initial request plus MAX_RETRIES, and no more");
   }
 
   // ===========================================================================
@@ -558,9 +554,9 @@ public class LanceDbTableMemWalTest {
     return numbers;
   }
 
-  /** Build a {@code memwal_stats} response body from table shard fragments. */
+  /** Build a {@code rte_stats} response body from table shard fragments. */
   private static String stats(String... tableShards) {
-    return "{\"memwal_stats\":{\"table_shards\":[" + String.join(",", tableShards) + "]}}";
+    return "{\"rte_stats\":{\"table_shards\":[" + String.join(",", tableShards) + "]}}";
   }
 
   private static String tableShard(String shardId, boolean compacting, Long... sstables) {
@@ -600,7 +596,7 @@ public class LanceDbTableMemWalTest {
     return requestPaths.stream().filter(path -> operationOf(path).equals(operation)).count();
   }
 
-  /** {@code /v1/table/my_table/flush_memwal/} -> {@code flush_memwal}. */
+  /** {@code /v1/table/my_table/flush_rte/} -> {@code flush_rte}. */
   private static String operationOf(String path) {
     String[] segments = path.split("/");
     return segments.length == 0 ? "" : segments[segments.length - 1];

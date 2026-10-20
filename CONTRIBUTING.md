@@ -88,6 +88,15 @@ npm i -g mint      # https://mintlify.com/docs/installation
 cd docs/web && mint dev
 ```
 
+Wording, names and punctuation follow the
+[LanceDB style guide](https://github.com/lancedb/docs/blob/main/STYLE.md).
+[Vale](https://vale.sh) checks part of it, and pull requests show its
+suggestions on the lines they change. To check a page yourself:
+
+```bash
+vale sync && vale docs/web/indexing/vector-index.mdx
+```
+
 This repository holds a page at every path the site publishes, so the whole
 navigation resolves locally. Enterprise pages exist here as open-source pages --
 what the capability is, and what the embedded form does instead. A separate

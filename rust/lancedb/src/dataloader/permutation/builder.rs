@@ -3,6 +3,7 @@
 
 use std::{collections::HashMap, sync::Arc};
 
+use arrow_array::RecordBatch;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_execution::{disk_manager::DiskManagerBuilder, runtime_env::RuntimeEnvBuilder};
 use datafusion_expr::col;
@@ -220,6 +221,12 @@ impl PermutationBuilder {
         Ok(Box::pin(SimpleRecordBatchStream { schema, stream }))
     }
 
+    /// Replaces the stream's schema metadata with the permutation config.
+    ///
+    /// The scan of the base table can carry the base table's schema metadata (e.g. Hugging
+    /// Face's `huggingface` key).  That metadata describes columns the permutation table does
+    /// not have, and its keys could collide with the config keys, so it is dropped rather
+    /// than merged.
     fn add_config_metadata(
         data: SendableRecordBatchStream,
         metadata: HashMap<String, String>,
@@ -227,7 +234,13 @@ impl PermutationBuilder {
         let schema = data.schema().as_ref().clone().with_metadata(metadata);
         let schema = Arc::new(schema);
         let schema_clone = schema.clone();
-        let stream = data.map_ok(move |batch| batch.with_schema(schema.clone()).unwrap());
+        // `RecordBatch::with_schema` only accepts a superset of the batch's schema, which a
+        // schema with replaced metadata is not, so rebuild the batch around the new schema.
+        let stream = data.and_then(move |batch| {
+            std::future::ready(
+                RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).map_err(Error::from),
+            )
+        });
         Ok(Box::pin(SimpleRecordBatchStream {
             schema: schema_clone,
             stream,
@@ -250,17 +263,17 @@ impl PermutationBuilder {
         }
 
         // Unflushed rows have no row id, so a permutation cannot address them.
-        match self.base_table.base_table().get_memwal_spec().await {
+        match self.base_table.base_table().get_rte_spec().await {
             Ok(Some(_)) => {
                 return Err(Error::NotSupported {
-                    message: "the data loader does not support tables with a MemWAL write \
+                    message: "the data loader does not support tables with an RTE write \
                               spec: rows that have not been flushed to the base table \
                               have no row id, so a permutation cannot reference them"
                         .to_string(),
                 });
             }
             Ok(None) => {}
-            // No MemWAL write path means no spec.
+            // No RTE write path means no spec.
             Err(Error::NotSupported { .. }) => {}
             Err(err) => return Err(err),
         }
@@ -489,9 +502,9 @@ mod tests {
                         )
                         .unwrap()
                 }
-                "/v1/table/remote_base/get_memwal_spec/" => http::Response::builder()
+                "/v1/table/remote_base/get_rte_spec/" => http::Response::builder()
                     .status(200)
-                    .body(br#"{"memwal_spec":null}"#.to_vec())
+                    .body(br#"{"rte_spec":null}"#.to_vec())
                     .unwrap(),
                 "/v1/table/remote_base/count_rows/" => {
                     let body = body.unwrap();
@@ -737,12 +750,12 @@ mod tests {
     /// permutation cannot reference them.  Reading the base table alone would drop
     /// them from training without saying so, so the table is refused instead.
     #[tokio::test]
-    async fn test_permutation_rejects_memwal_spec() {
-        use crate::table::MemWalWriteSpec;
+    async fn test_permutation_rejects_rte_spec() {
+        use crate::table::RTEWriteSpec;
         use arrow_array::{Int32Array, RecordBatchIterator};
         use arrow_schema::{DataType, Field, Schema};
 
-        // MemWAL needs a real dataset directory and a non-nullable primary key.
+        // RTE needs a real dataset directory and a non-nullable primary key.
         let temp_dir = tempfile::tempdir().unwrap();
         let db = connect(temp_dir.path().to_str().unwrap())
             .execute()
@@ -765,15 +778,77 @@ mod tests {
             .unwrap();
 
         table.set_unenforced_primary_key(["idx"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let err = PermutationBuilder::new(table).build().await.unwrap_err();
         assert!(
-            err.to_string().contains("MemWAL write spec"),
+            err.to_string().contains("RTE write spec"),
             "expected the pre-check to refuse the table, got: {err}"
         );
+    }
+
+    /// Base table schema metadata (e.g. Hugging Face's `huggingface` key) describes the base
+    /// table's columns, so the permutation table drops it and keeps only its own config.
+    #[tokio::test]
+    async fn test_permutation_over_table_with_schema_metadata() {
+        use arrow_array::{Int64Array, RecordBatchIterator};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let db = connect(temp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(
+            Schema::new(vec![Field::new("x", DataType::Int64, false)]).with_metadata(
+                HashMap::from([
+                    ("huggingface".to_string(), "{}".to_string()),
+                    // Collides with a config key; the config value must win.
+                    (SPLIT_NAMES_CONFIG_KEY.to_string(), "not json".to_string()),
+                ]),
+            ),
+        );
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int64Array::from_iter_values(0..100))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let table = db.create_table("tbl", reader).execute().await.unwrap();
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .metadata
+                .contains_key("huggingface")
+        );
+
+        let permutation_table = PermutationBuilder::new(table)
+            .with_split_strategy(
+                SplitStrategy::Random {
+                    seed: Some(1),
+                    sizes: SplitSizes::Fixed(2),
+                    clump_size: None,
+                },
+                Some(vec!["train".to_string(), "test".to_string()]),
+            )
+            .with_shuffle_strategy(ShuffleStrategy::Random {
+                seed: Some(1),
+                clump_size: None,
+            })
+            .build()
+            .await
+            .unwrap();
+
+        assert_eq!(permutation_table.count_rows(None).await.unwrap(), 100);
+        let metadata = permutation_table.schema().await.unwrap().metadata.clone();
+        assert!(!metadata.contains_key("huggingface"));
+        assert_eq!(
+            metadata.get(SPLIT_NAMES_CONFIG_KEY).map(String::as_str),
+            Some(r#"["train","test"]"#)
+        );
+        assert!(metadata.contains_key(BASE_VERSION_CONFIG_KEY));
     }
 }

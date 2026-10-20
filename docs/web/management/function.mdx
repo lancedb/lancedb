@@ -24,7 +24,7 @@ import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/co
 
 Some columns cannot be written as a SQL expression: an embedding, a model call,
 an image decode. A function is a Python callable registered with the database,
-versioned, and then applied as a column — the code runs where the data is
+versioned, and then applied as a column. The code runs where the data is
 rather than pulling rows to your process.
 
 Registering and running a function needs a LanceDB Enterprise deployment with
@@ -61,7 +61,7 @@ your process, without the database, so unit tests stay ordinary tests:
 </CodeBlock>
 
 Where annotations cannot express the Arrow type precisely, pass `input_schema`
-and `output_schema` together — one without the other is rejected. A scalar
+and `output_schema` together: one without the other is rejected. A scalar
 output must be non-nullable, because a physical NULL is what marks a
 computed-column row as unfilled. A named-struct output may declare nullable
 fields: whether a row has a result at all is the struct's own validity, which
@@ -143,6 +143,68 @@ rows added since the last one and recomputes rows whose inputs changed, and
 leaves filled rows with unchanged inputs alone. See
 [Refresh a column](/feature-engineering/refresh-column).
 
+## Read and produce blobs {#blobs}
+
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
+return another blob. In row mode, a top-level blob parameter arrives as Python
+`bytes`, or `None` for a nullable input. The worker reads the payload before
+calling your function. Return bytes and let the destination table store the
+Managed payload and descriptor.
+
+Declare blob inputs and outputs explicitly. This example reverses the bytes
+to demonstrate the round trip without requiring an image library. Here `db`
+is an Enterprise database and `table` contains an `image` Blob v2 column
+with table schema metadata `lance.blob.managed=true`, as in the
+[table creation example](/management/table#managed-blobs-read-write):
+
+```python
+from datetime import timedelta
+
+import lancedb
+from lancedb import col
+from lancedb.functions import udf
+import pyarrow as pa
+
+@udf(
+    name="reverse_image",
+    python_version="3.12",
+    pip=["pyarrow==26.0.0"],
+    input_schema=pa.schema([lancedb.blob("image")]),
+    output_schema=lancedb.blob("reversed", nullable=False),
+)
+def reverse_image(image):
+    return b"missing" if image is None else image[::-1]
+
+function = db.create_function_async(reverse_image).wait(
+    timeout=timedelta(minutes=15)
+)
+table.add_columns({"reversed": function(image=col("image"))})
+result = table.refresh_column_async("reversed").wait(
+    timeout=timedelta(minutes=15)
+)
+assert result.rows_failed == 0
+
+hits = table.search().select(["id", "reversed"]).with_row_id(True).to_arrow()
+values = table.fetch_blobs("reversed", hits).to_pylist()
+```
+
+An empty byte string is a filled result. A scalar output cannot be nullable,
+because a physical NULL marks an unfilled computed row. To return a nullable
+blob as a value, use a named-struct output schema with a nullable blob field;
+the struct itself records whether the result has been filled. Read a nested
+blob with `table.fetch_blobs("payload.image", hits)`.
+
+On deployments that support computed-column inputs, another Function can bind
+to `col("reversed")`. Refresh the producer first, then the consumer. Once
+outputs are current, a later refresh fills appended rows. A filtered refresh
+preserves payload references for unselected Managed outputs. An unfiltered
+refresh can recompute a whole fragment when it cannot establish that the
+fragment's outputs are current.
+
+Function output blobs follow the same compaction and cleanup lifecycle as
+ingested Managed blobs. Retained versions continue to own their payloads;
+cleanup reclaims an object only after its retained references are gone.
+
 ## Declare the environment {#environment}
 
 The function runs remotely, so its dependencies are part of its definition:
@@ -181,7 +243,7 @@ pydantic**.
 <Note>
 The client version defaults `python_version`, so a function registered from a
 3.11 environment runs on 3.11 unless you say otherwise. That default is usually
-right and occasionally surprising -- pin it when the function is sensitive to it.
+right and occasionally surprising. Pin it when the function is sensitive to it.
 </Note>
 
 ## Failure handling {#failures}
@@ -200,8 +262,8 @@ count on the retry costing only the rows that did not complete.
 
 <Warning>
 The artifact is a **snapshot**: the function source, plus exactly the
-module-level names it references — modules as imports, importable classes and
-functions as imports, literals inlined.
+module-level names it references (modules as imports, importable classes and
+functions as imports, literals inlined).
 
 Code that reaches the module namespace another way is rejected where it can be
 seen and unsupported where it cannot: `globals()`, `eval`, `sys.modules`,

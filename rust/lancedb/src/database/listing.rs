@@ -540,7 +540,7 @@ impl ListingDatabase {
                 // pairs survive (or none existed in the first place), so an empty
                 // string here must be treated the same as "no query" — otherwise
                 // every table URI ends up with a trailing `?`, which makes downstream
-                // sub-paths (e.g. MemWAL gen paths) re-parse as path=<base table> +
+                // sub-paths (e.g. RTE gen paths) re-parse as path=<base table> +
                 // query=<sub-path>, causing Lance to find the base table dataset
                 // when looking up the sub-path.
                 let query_string = url.query().filter(|q| !q.is_empty()).map(|s| s.to_string());
@@ -3104,7 +3104,7 @@ mod tests {
     ///
     /// Earlier, `query_pairs_mut().clear()` left the URL with
     /// `query=Some("")`, which then propagated as a trailing `?` on
-    /// every table URI. Sub-path lookups against that URI (e.g. MemWAL
+    /// every table URI. Sub-path lookups against that URI (e.g. RTE
     /// `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parsed as
     /// `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
@@ -3178,7 +3178,7 @@ mod tests {
     /// `url::Url::parse` and the `query_pairs_mut()` path) must not
     /// append a trailing `?` to per-table URIs when the input URI has
     /// no query string. Sub-path lookups against such a URI (e.g.
-    /// MemWAL `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// RTE `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
     /// as `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.
