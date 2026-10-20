@@ -204,6 +204,48 @@ impl<S: HttpSend> JobHandle for RemoteJob<S> {
         Some(&self.job_id)
     }
 
+    async fn details(&self) -> Result<crate::job::JobDetails> {
+        let (id, response) = self
+            .client
+            .send(
+                self.client
+                    .post("/v1/jobs/describe")
+                    .json(&serde_json::json!({"job_id": self.job_id})),
+            )
+            .await?;
+        self.client
+            .check_response(&id, response)
+            .await?
+            .json()
+            .await
+            .err_to_http(id)
+    }
+
+    async fn event_page(&self, request: crate::job::JobEventOptions) -> Result<Vec<RecordBatch>> {
+        let mut body = serde_json::to_value(request).map_err(|error| Error::InvalidInput {
+            message: error.to_string(),
+        })?;
+        body["job_id"] = self.job_id.clone().into();
+        body["limit_per_job"] = body["limit"].clone();
+        fetch_job_events(&self.client, body).await
+    }
+
+    async fn children(
+        &self,
+        request: crate::job::JobChildrenRequest,
+    ) -> Result<crate::job::JobChildrenPage> {
+        let (id, response) = self
+            .client
+            .send(self.client.post("/v1/jobs/list_children").json(&request))
+            .await?;
+        self.client
+            .check_response(&id, response)
+            .await?
+            .json()
+            .await
+            .err_to_http(id)
+    }
+
     async fn status(&self) -> Result<String> {
         Ok(self.fetch_description().await?.1.state().client_label())
     }

@@ -1,5 +1,5 @@
 [workspace]
-members = ["rust/lancedb", "nodejs", "python"]
+members = ["rust/lancedb/cli", "rust/lancedb", "nodejs", "python"]
 resolver = "2"
 
 [workspace.package]
