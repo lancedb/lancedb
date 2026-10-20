@@ -76,23 +76,23 @@ the query optimizer chooses a suboptimal path.
 
 ***
 
-### useMemWal()
+### useRTE()
 
 ```ts
-useMemWal(enable): MergeInsertBuilder
+useRTE(enable): MergeInsertBuilder
 ```
 
-Control MemWAL routing for this merge.
+Control RTE routing for this merge.
 
-By default (unset), a `mergeInsert` on a table with a MemWAL write spec is
+By default (unset), a `mergeInsert` on a table with an RTE write spec is
 routed through Lance's MemWAL shard writer, and a table without one uses the
 standard path.
 
 #### Parameters
 
 * **enable**: `boolean`
-    `true` forces MemWAL routing and errors if the table has no
-    MemWAL write spec. `false` forces the standard write path even when a spec is set.
+    `true` forces RTE routing and errors if the table has no
+    RTE write spec. `false` forces the standard write path even when a spec is set.
 
 #### Returns
 
@@ -108,12 +108,12 @@ validateSingleShard(validateSingleShard): MergeInsertBuilder
 
 Controls how an LSM merge checks that its input targets a single shard.
 
-When a table has a MemWAL write spec, every row in a `mergeInsert` call must
+When a table has an RTE write spec, every row in a `mergeInsert` call must
 route to the same shard. When `true` (the default), every row is inspected
 to verify this. When `false`, only the first row is inspected and the
 shard it routes to is used for the whole input — a faster path for callers
 that have already pre-sharded their input. Has no effect on tables without
-a MemWAL write spec.
+an RTE write spec.
 
 #### Parameters
 

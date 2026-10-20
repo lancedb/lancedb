@@ -30,15 +30,15 @@ use crate::table::BranchDiff;
 use crate::table::CherryPickResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
-use crate::table::MemWalStats;
-use crate::table::MemWalWriteSpec;
 use crate::table::MergeResult;
+use crate::table::RTEStats;
+use crate::table::RTEWriteSpec;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::memwal_stats::GetMemWalStatsResponse;
 use crate::table::merge::MergeFilter;
 use crate::table::primary_key;
 use crate::table::query::create_multi_vector_plan;
+use crate::table::rte_stats::GetRTEStatsResponse;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
     AlterColumnsResult, FieldMetadataUpdate, RefreshColumnResult, UpdateFieldMetadataResult,
@@ -1020,10 +1020,10 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<()> {
         params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
-        // Only forward use_memwal when explicitly set; a server that predates it
+        // Only forward use_rte when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
-        if let Some(use_memwal) = params.use_memwal {
-            body["use_memwal"] = serde_json::Value::Bool(use_memwal);
+        if let Some(use_rte) = params.use_rte {
+            body["use_rte"] = serde_json::Value::Bool(use_rte);
         }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -3236,43 +3236,42 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(())
     }
 
-    async fn flush_memwal(&self) -> Result<()> {
+    async fn flush_rte(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/flush_memwal/", self.identifier));
+            .post(&format!("/v1/table/{}/flush_rte/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn compact_memwal(&self) -> Result<()> {
+    async fn compact_rte(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/compact_memwal/", self.identifier));
+            .post(&format!("/v1/table/{}/compact_rte/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn get_memwal_stats(&self, include_sstable_rows: bool) -> Result<Option<MemWalStats>> {
-        // Read-semantics POST, like `get_memwal_spec`.
+    async fn get_rte_stats(&self, include_sstable_rows: bool) -> Result<Option<RTEStats>> {
+        // Read-semantics POST, like `get_rte_spec`.
         let request = self
             .client
-            .post(&format!("/v1/table/{}/get_memwal_stats/", self.identifier))
+            .post(&format!("/v1/table/{}/get_rte_stats/", self.identifier))
             .json(&serde_json::json!({
                 "include_sstable_rows": include_sstable_rows,
             }));
         let (request_id, response) = self.send_lsm_route(request).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-        let parsed: GetMemWalStatsResponse =
-            serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse get_memwal_stats response: {e}").into(),
-                request_id,
-                status_code: None,
-            })?;
-        // `null` — and only — when the table has no MemWAL write path.
-        Ok(parsed.memwal_stats)
+        let parsed: GetRTEStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_rte_stats response: {e}").into(),
+            request_id,
+            status_code: None,
+        })?;
+        // `null` — and only — when the table has no RTE write path.
+        Ok(parsed.rte_stats)
     }
 
-    async fn enable_memwal(&self, spec: MemWalWriteSpec) -> Result<()> {
+    async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
@@ -3280,7 +3279,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // `maintained_indexes` asks the server to resolve every maintainable
         // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
-            MemWalWriteSpec::Bucket {
+            RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 ..
@@ -3289,11 +3288,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "column": column,
                 "num_buckets": num_buckets,
             }),
-            MemWalWriteSpec::Identity { column, .. } => serde_json::json!({
+            RTEWriteSpec::Identity { column, .. } => serde_json::json!({
                 "mode": "identity",
                 "column": column,
             }),
-            MemWalWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
+            RTEWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
         };
         let body = serde_json::json!({
             "sharding": sharding,
@@ -3303,40 +3302,40 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = self
             .client
-            .post(&format!("/v1/table/{}/enable_memwal/", self.identifier))
+            .post(&format!("/v1/table/{}/enable_rte/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
 
-    async fn disable_memwal(&self) -> Result<()> {
+    async fn disable_rte(&self) -> Result<()> {
         self.check_mutable().await?;
         let request = self
             .client
-            .post(&format!("/v1/table/{}/disable_memwal/", self.identifier));
+            .post(&format!("/v1/table/{}/disable_rte/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         self.wal_pk_fusion.forget(); // WAL-PK-FUSION: delete.
         Ok(())
     }
 
-    async fn get_memwal_spec(&self) -> Result<Option<MemWalWriteSpec>> {
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         // Read counterpart to set/unset, resolved server-side against HEAD. The
         // server reads the spec from the `__lance_mem_wal` system index (shard
         // column mapped from its Lance field id against the current schema) and
         // re-encodes it into the same sophon-owned shape the set endpoint
-        // accepts — no lance/lancedb types cross the wire. `memwal_spec` is
-        // null when the MemWAL write path is not enabled for the table.
+        // accepts — no lance/lancedb types cross the wire. `rte_spec` is
+        // null when the RTE write path is not enabled for the table.
         let request = self
             .client
-            .post(&format!("/v1/table/{}/get_memwal_spec/", self.identifier));
+            .post(&format!("/v1/table/{}/get_rte_spec/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         // Mirror of sophon's `Sharding` (internally tagged on `mode`) and
-        // `MemWalWriteSpecBody` / `GetMemWalSpecResponse`.
+        // `RTEWriteSpecBody` / `GetRTESpecResponse`.
         #[derive(Deserialize)]
         #[serde(tag = "mode", rename_all = "snake_case")]
         enum Sharding {
@@ -3345,7 +3344,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Identity { column: String },
         }
         #[derive(Deserialize)]
-        struct MemWalWriteSpecBody {
+        struct RTEWriteSpecBody {
             sharding: Sharding,
             /// `null` selects every index the table has; `[]` selects none.
             #[serde(default)]
@@ -3354,19 +3353,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             writer_config_defaults: std::collections::HashMap<String, String>,
         }
         #[derive(Deserialize)]
-        struct GetMemWalSpecResponse {
-            memwal_spec: Option<MemWalWriteSpecBody>,
+        struct GetRTESpecResponse {
+            rte_spec: Option<RTEWriteSpecBody>,
         }
 
-        let parsed: GetMemWalSpecResponse =
-            serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse get_memwal_spec response: {}", e).into(),
-                request_id,
-                status_code: None,
-            })?;
+        let parsed: GetRTESpecResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_rte_spec response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
 
-        let Some(body) = parsed.memwal_spec else {
-            // The MemWAL write path is not enabled for this table.
+        let Some(body) = parsed.rte_spec else {
+            // The RTE write path is not enabled for this table.
             return Ok(None);
         };
 
@@ -3374,9 +3372,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Sharding::Bucket {
                 column,
                 num_buckets,
-            } => MemWalWriteSpec::bucket(column, num_buckets),
-            Sharding::Identity { column } => MemWalWriteSpec::identity(column),
-            Sharding::Unsharded => MemWalWriteSpec::unsharded(),
+            } => RTEWriteSpec::bucket(column, num_buckets),
+            Sharding::Identity { column } => RTEWriteSpec::identity(column),
+            Sharding::Unsharded => RTEWriteSpec::unsharded(),
         }
         .with_maintained_indexes(body.maintained_indexes)
         .with_writer_config_defaults(body.writer_config_defaults);
@@ -3979,10 +3977,10 @@ pub struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
-    // Only serialize use_memwal when explicitly set (Some); a server that predates
+    // Only serialize use_rte when explicitly set (Some); a server that predates
     // it ignores the field and routes as it would by default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    use_memwal: Option<bool>,
+    use_rte: Option<bool>,
 }
 
 impl MergeInsertRequest {
@@ -4040,7 +4038,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
-            use_memwal: value.use_memwal,
+            use_rte: value.use_rte,
         })
     }
 }
@@ -10296,10 +10294,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enable_memwal_unsharded() {
+    async fn test_enable_rte_unsharded() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(body["sharding"], serde_json::json!({ "mode": "unsharded" }));
@@ -10313,17 +10311,17 @@ mod tests {
                 .body(r#"{"maintained_indexes":["id_idx"]}"#)
                 .unwrap()
         });
-        let spec = crate::table::MemWalWriteSpec::unsharded()
+        let spec = crate::table::RTEWriteSpec::unsharded()
             .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
-        table.enable_memwal(spec).await.unwrap();
+        table.enable_rte(spec).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_enable_memwal_bucket() {
+    async fn test_enable_rte_bucket() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -10335,14 +10333,14 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .enable_memwal(crate::table::MemWalWriteSpec::bucket("id", 16))
+            .enable_rte(crate::table::RTEWriteSpec::bucket("id", 16))
             .await
             .unwrap();
     }
 
     /// `[]` (none) must stay distinguishable on the wire from null (all).
     #[tokio::test]
-    async fn test_enable_memwal_no_maintained_indexes() {
+    async fn test_enable_rte_no_maintained_indexes() {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -10350,18 +10348,18 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .enable_memwal(
-                crate::table::MemWalWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
+            .enable_rte(
+                crate::table::RTEWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
             )
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_enable_memwal_identity() {
+    async fn test_enable_rte_identity() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/enable_memwal/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -10371,32 +10369,32 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .enable_memwal(crate::table::MemWalWriteSpec::identity("tenant"))
+            .enable_rte(crate::table::RTEWriteSpec::identity("tenant"))
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_disable_memwal() {
+    async fn test_disable_rte() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/disable_memwal/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/disable_rte/");
             http::Response::builder().status(200).body("{}").unwrap()
         });
-        table.disable_memwal().await.unwrap();
+        table.disable_rte().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_get_memwal_spec() {
+    async fn test_get_rte_spec() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_spec/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_spec/");
 
             // The server resolves the spec and re-encodes it into the same
             // sophon-owned shape the set endpoint accepts (`Sharding` internally
-            // tagged on `mode`, wrapped in `memwal_spec`).
+            // tagged on `mode`, wrapped in `rte_spec`).
             let response = serde_json::json!({
-                "memwal_spec": {
+                "rte_spec": {
                     "sharding": { "mode": "bucket", "column": "id", "num_buckets": 4 },
                     "maintained_indexes": ["id_idx"],
                     "writer_config_defaults": { "durable_write": "false" },
@@ -10409,12 +10407,12 @@ mod tests {
         });
 
         let spec = table
-            .get_memwal_spec()
+            .get_rte_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
         match spec {
-            crate::table::MemWalWriteSpec::Bucket {
+            crate::table::RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
@@ -10441,13 +10439,13 @@ mod tests {
     #[case::no_index(serde_json::json!([]), Some(vec![]))]
     #[case::named(serde_json::json!(["id_idx"]), Some(vec!["id_idx".to_string()]))]
     #[tokio::test]
-    async fn test_get_memwal_spec_round_trips_the_selection(
+    async fn test_get_rte_spec_round_trips_the_selection(
         #[case] reported: serde_json::Value,
         #[case] expected: Option<Vec<String>>,
     ) {
         let table = Table::new_with_handler("my_table", move |_| {
             let response = serde_json::json!({
-                "memwal_spec": {
+                "rte_spec": {
                     "sharding": { "mode": "unsharded" },
                     "maintained_indexes": reported,
                     "writer_config_defaults": {},
@@ -10460,7 +10458,7 @@ mod tests {
         });
 
         let spec = table
-            .get_memwal_spec()
+            .get_rte_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
@@ -10472,23 +10470,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_memwal_spec_absent() {
+    async fn test_get_rte_spec_absent() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_spec/");
-            // Null spec → the MemWAL write path is not enabled.
-            let response = serde_json::json!({ "memwal_spec": null });
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_spec/");
+            // Null spec → the RTE write path is not enabled.
+            let response = serde_json::json!({ "rte_spec": null });
             http::Response::builder()
                 .status(200)
                 .body(response.to_string())
                 .unwrap()
         });
-        assert!(table.get_memwal_spec().await.unwrap().is_none());
+        assert!(table.get_rte_spec().await.unwrap().is_none());
     }
 
-    /// Build a `get_memwal_stats` body for one table shard holding `sstables`.
+    /// Build a `get_rte_stats` body for one table shard holding `sstables`.
     fn stats_body(sstables: &[u64], compacting: bool) -> String {
         serde_json::json!({
-            "memwal_stats": {
+            "rte_stats": {
                 "table_shards": [{
                     "shard_id": "b0",
                     "status": "Active",
@@ -10508,7 +10506,7 @@ mod tests {
         .to_string()
     }
 
-    /// `flush_memwal` / `compact_memwal` answer 202 with no body at all.
+    /// `flush_rte` / `compact_rte` answer 202 with no body at all.
     fn accepted() -> http::Response<String> {
         http::Response::builder()
             .status(202)
@@ -10529,18 +10527,18 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 panic!("an already-converged table must issue no compact calls");
             }
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            assert_eq!(path, "/v1/table/my_table/get_memwal_stats/");
+            assert_eq!(path, "/v1/table/my_table/get_rte_stats/");
             ok_json(stats_body(&[], false))
         });
 
-        table.checkpoint_memwal().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(compacts.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -10552,10 +10550,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10565,7 +10563,7 @@ mod tests {
             ok_json(stats_body(&left, false))
         });
 
-        table.checkpoint_memwal().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             3,
@@ -10582,10 +10580,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10599,7 +10597,7 @@ mod tests {
             ok_json(body)
         });
 
-        table.checkpoint_memwal().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             1,
@@ -10616,10 +10614,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 // First two triggers: every table shard already latched.
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
                     return http::Response::builder()
@@ -10641,7 +10639,7 @@ mod tests {
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("contention must not abort the checkpoint");
         assert_eq!(
@@ -10661,7 +10659,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") || path.contains("compact_memwal") {
+            if path.contains("flush_rte") || path.contains("compact_rte") {
                 return accepted();
             }
             // The opening read lands; the next two polls are latched out.
@@ -10676,7 +10674,7 @@ mod tests {
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("a contended poll must be retried, not surfaced");
         assert_eq!(
@@ -10696,7 +10694,7 @@ mod tests {
         let seen = flushes.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5 {
                     return http::Response::builder()
                         .status(429)
@@ -10705,14 +10703,14 @@ mod tests {
                 }
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 return accepted();
             }
             ok_json(stats_body(&[], false))
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("contention must not be reported as a lost claim");
         assert_eq!(
@@ -10737,7 +10735,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_memwal().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 429),
             "the fault that spent the budget must be the one reported: {err:?}"
@@ -10767,7 +10765,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_memwal().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         let message = err.to_string();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 503),
@@ -10795,7 +10793,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") || path.contains("compact_memwal") {
+            if path.contains("flush_rte") || path.contains("compact_rte") {
                 return accepted();
             }
             // Flat for far longer than any bound this loop ever had, with
@@ -10805,7 +10803,7 @@ mod tests {
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("a stall is the server being slow, not the client's call to make");
         assert!(
@@ -10825,10 +10823,10 @@ mod tests {
         let seen_compacts = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 seen_compacts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10842,7 +10840,7 @@ mod tests {
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("a running pass is progress, not a stall");
         assert_eq!(
@@ -10856,9 +10854,9 @@ mod tests {
     /// defaulting to a zero it did not measure. `include_sstable_rows`
     /// rides in the body and is off unless asked for.
     #[tokio::test]
-    async fn test_get_memwal_stats_round_trip() {
+    async fn test_get_rte_stats_round_trip() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/get_memwal_stats/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_stats/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -10866,7 +10864,7 @@ mod tests {
                 "the flag must reach the server, not be silently dropped"
             );
             let response = serde_json::json!({
-                "memwal_stats": {
+                "rte_stats": {
                     "table_shards": [{
                         "shard_id": "b0",
                         "status": "Active",
@@ -10891,7 +10889,7 @@ mod tests {
         });
 
         let stats = table
-            .get_memwal_stats(true)
+            .get_rte_stats(true)
             .await
             .unwrap()
             .expect("a WAL-backed table reports Some");
@@ -10923,7 +10921,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_memwal().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         assert!(
             matches!(err, Error::TableNotFound { .. }),
             "a missing table must say so: {err:?}"
@@ -10944,12 +10942,12 @@ mod tests {
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
             let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if path.contains("flush_memwal") {
+            if path.contains("flush_rte") {
                 // First flush lands; the claim is then lost, and the
                 // re-issued flush succeeds.
                 return accepted();
             }
-            if path.contains("compact_memwal") {
+            if path.contains("compact_rte") {
                 if n < 4 {
                     return http::Response::builder()
                         .status(421)
@@ -10962,20 +10960,20 @@ mod tests {
         });
 
         table
-            .checkpoint_memwal()
+            .checkpoint_rte()
             .await
             .expect("a lost claim must be recovered by re-flushing, not surfaced");
     }
 
     #[tokio::test]
-    async fn test_get_memwal_stats_absent_when_wal_off() {
+    async fn test_get_rte_stats_absent_when_wal_off() {
         let table = Table::new_with_handler("my_table", |_request| {
             http::Response::builder()
                 .status(200)
-                .body(serde_json::json!({ "memwal_stats": null }).to_string())
+                .body(serde_json::json!({ "rte_stats": null }).to_string())
                 .unwrap()
         });
-        assert!(table.get_memwal_stats(false).await.unwrap().is_none());
+        assert!(table.get_rte_stats(false).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -15006,9 +15004,10 @@ mod tests {
 
     // WAL-PK-FUSION: delete everything from here to the end of `mod tests`.
 
-    /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
-    /// off this sentence, so a test that paraphrased it would prove nothing.
-    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_memwal(false) to read the base table only (results will exclude un-compacted MemWAL data)"}"#;
+    /// Verbatim from sophon's `wal_unsupported(WITH_ROW_ID_UNSUPPORTED)`; the
+    /// fallback keys off this sentence, so a test that paraphrased it would prove
+    /// nothing.
+    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: WAL unsupported: the MemWAL fresh tier does not support with_row_id: it has no stable _rowid; set use_rte(false) to read the base table only (results will exclude un-compacted RTE data)"}"#;
 
     use lance::dataset::ROW_ID;
 
@@ -15052,7 +15051,7 @@ mod tests {
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
-    /// A server that refuses `_rowid` the way a MemWAL table does, recording
+    /// A server that refuses `_rowid` the way an RTE table does, recording
     /// every query body so a test can see which key each attempt asked for.
     fn wal_refusing_table(bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Table {
         Table::new_with_handler("my_table", move |request| match request.url().path() {
@@ -15093,7 +15092,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The optimistic path: ask for `_rowid`, and when a MemWAL table refuses,
+    /// The optimistic path: ask for `_rowid`, and when an RTE table refuses,
     /// fall back to the primary key rather than failing.
     #[tokio::test]
     async fn test_hybrid_falls_back_to_the_primary_key_when_row_id_is_refused() {
@@ -15267,7 +15266,7 @@ mod tests {
         // Translated, not passed through: the caller gets the reason and the
         // way out, which a bare 400 does not carry.
         assert!(matches!(err, Error::NotSupported { .. }), "{err:?}");
-        assert!(err.to_string().contains("use_memwal(false)"), "{err}");
+        assert!(err.to_string().contains("use_rte(false)"), "{err}");
         assert!(
             bodies
                 .lock()
