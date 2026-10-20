@@ -116,8 +116,23 @@ import {
     PyBlobApiIngest as BlobApiIngest,
     TsBlobApiIngest as TsBlobApiIngest,
     RsBlobApiIngest as RsBlobApiIngest,
+    PyBlobApiFetch as BlobApiFetch,
+    TsBlobApiFetch as TsBlobApiFetch,
+    RsBlobApiFetch as RsBlobApiFetch,
+    PyBlobApiRanges as BlobApiRanges,
+    TsBlobApiRanges as TsBlobApiRanges,
+    RsBlobApiRanges as RsBlobApiRanges,
+    TsBlobApiBytesMode as TsBlobApiBytesMode,
     PyBlobApiToPandas as BlobApiToPandas,
     PyQueryToPandasKwargs as QueryToPandasKwargs,
+    PyLegacyBlobApiSchema as LegacyBlobApiSchema,
+    TsLegacyBlobApiSchema as TsLegacyBlobApiSchema,
+    RsLegacyBlobApiSchema as RsLegacyBlobApiSchema,
+    PyLegacyBlobApiIngest as LegacyBlobApiIngest,
+    TsLegacyBlobApiIngest as TsLegacyBlobApiIngest,
+    RsLegacyBlobApiIngest as RsLegacyBlobApiIngest,
+    PyLegacyBlobApiToPandas as LegacyBlobApiToPandas,
+    PyLegacyQueryToPandasKwargs as LegacyQueryToPandasKwargs,
 } from '/snippets/multimodal.mdx';
 
 A table stores data in rows and columns and keeps a history of committed
@@ -307,21 +322,23 @@ extension types and pseudo-columns.
 
 ## Multimodal data {#multimodal}
 
-Binary data (images, audio, video, model artifacts) lives in the table
-beside the structured columns and embeddings that describe it, and is governed
-by the same versioning and search.
+Store images, audio, video, and documents alongside structured columns and
+embeddings in the same versioned table.
 
-Small values go in an ordinary `binary` column. Large ones go in a **blob**
-column, stored out of line so a scan over the other columns stays fast. See
-[Data types](/sql/data-types#blobs) for how the two differ to a reader.
+### Choose between `blob` and `binary` {#multimodal-select-between-blob-and-binary}
+
+| Column type | Values | Use case |
+| --- | --- | --- |
+| `blob` | Stores payload bytes and returns lightweight descriptors by default, so queries don't load the payload. | Store images, video, audio, and documents, and fetch bytes only for the rows you need. |
+| `binary` | Raw bytes returned with each query. | Store small payloads that every query reads, such as thumbnails or short audio clips. Payloads under about 64 KiB are a good fit. |
 
 ### Store binary data {#multimodal-store-binary-data}
 
-To store binary data, define a binary Arrow field in your schema (`pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust).
+To store small binary payloads inline, declare a binary Arrow field in your schema: `pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust.
 
 #### 1\. Setup and imports {#multimodal-1-setup-and-imports}
 
-First, import the necessary libraries for LanceDB and Arrow in your SDK.
+Import LanceDB and Arrow in your SDK.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -339,7 +356,7 @@ First, import the necessary libraries for LanceDB and Arrow in your SDK.
 
 #### 2\. Prepare data {#multimodal-2-prepare-data}
 
-For this example, we'll create some dummy in-memory images. In a real application, you would read these from files or an API. The key is to convert your data (image, audio, etc.) into a raw `bytes` object.
+Encode each image or file into raw bytes before writing.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -357,7 +374,7 @@ For this example, we'll create some dummy in-memory images. In a real applicatio
 
 #### 3\. Define the schema {#multimodal-3-define-the-schema}
 
-When creating the table, it is **highly recommended** to define the schema explicitly. This ensures that your binary data is correctly interpreted as a `binary` type by Arrow/LanceDB and not as a generic string or list.
+Declare the schema explicitly so Arrow and LanceDB store the field as `binary` instead of inferring a string or integer list.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -375,7 +392,7 @@ When creating the table, it is **highly recommended** to define the schema expli
 
 #### 4\. Ingest data {#multimodal-4-ingest-data}
 
-Now, create the table using the data and the defined schema.
+Create the table from the rows and schema.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -391,9 +408,9 @@ Now, create the table using the data and the defined schema.
     </CodeBlock>
 </CodeGroup>
 
-### Retrieve and use blobs {#multimodal-retrieve-and-use-blobs}
+### Retrieve binary data {#multimodal-retrieve-and-use-blobs}
 
-When you search your LanceDB table, you can retrieve the binary column just like any other metadata.
+When you search the table, select the `binary` column alongside your metadata columns.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -411,7 +428,7 @@ When you search your LanceDB table, you can retrieve the binary column just like
 
 #### Convert bytes back to objects {#multimodal-convert-bytes-back-to-objects}
 
-Once you have the bytes back from the search result, you can decode them into the original format (for example, an image object or audio buffer).
+Decode the returned bytes into an image or media buffer in your application.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -427,18 +444,223 @@ Once you have the bytes back from the search result, you can decode them into th
     </CodeBlock>
 </CodeGroup>
 
+### Blob columns {#multimodal-blob-v2}
+
+A `blob` column separates metadata from payload bytes. Queries return a
+lightweight descriptor struct by default, so filtering and scanning rows do not
+read the underlying files. You fetch the bytes or open a seekable file handle
+only for the rows you need.
+
+When you write raw bytes, Lance chooses a storage layout from the payload size:
+
+| Storage mode | `kind` | Default threshold | Storage behavior |
+| --- | --- | --- | --- |
+| `Inline` | `0` | Up to 64 KiB | Stored in the main data file. |
+| `Packed` | `1` | Above 64 KiB, up to 4 MiB | Packed with other blobs into a shared sidecar file, up to 1 GiB per file by default. |
+| `Dedicated` | `2` | Above 4 MiB | Stored in its own raw sidecar file. |
+
+Blob columns can also reference external objects by URI, including byte ranges,
+without copying their bytes into the table. Local writes referencing objects
+outside registered bases require explicit opt-in, and the objects must remain
+readable. See the Lance [blob guide](https://lance.org/guide/blob/) for details.
+
+#### 1\. Define a blob schema {#multimodal-blob-v2-schema}
+
+Declare a blob column with `lancedb.blob()` in Python and TypeScript, or
+`lancedb::blob` and `lancedb::blob::blob_with_options` in Rust. Python and
+TypeScript support per-column inline, dedicated, and pack-file size thresholds.
+Rust supports inline and dedicated thresholds through `blob_with_options()`.
+Passing a threshold in Python requires the `pylance` package. Install it with
+`pip install "lancedb[pylance]"`. Without it, `lancedb.blob()` raises
+`Setting blob tier thresholds requires pylance to be installed`:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiSchema}
+    </CodeBlock>
+</CodeGroup>
+
+Thresholds are set when the table is created. If you append data with different
+blob thresholds, LanceDB uses the thresholds from the existing table.
+
+#### 2\. Ingest blobs {#multimodal-blob-v2-ingest}
+
+Pass raw bytes for each blob value. In Python, a blob column accepts `bytes`.
+In TypeScript, it accepts a `Buffer`. Lance stores each payload with the
+layout that matches its size:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiIngest}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiIngest}
+    </CodeBlock>
+</CodeGroup>
+
+#### 3\. Read blob bytes {#multimodal-read-blobs}
+
+Selecting a blob column in a query returns a descriptor struct rather than the
+payload bytes. Field definitions are in [SQL data types](/sql/data-types#blob-descriptor-fields).
+
+To read bytes, query with row IDs and pass the `_rowid` values to a fetch
+method. Choose the method by how much of each blob you need:
+
+| Need | Python | TypeScript | Rust |
+| --- | --- | --- | --- |
+| Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
+| Seekable handles that read on demand | `fetch_blob_files` | `fetchBlobFiles` | `fetch_blob_files` |
+| Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
+| Bytes in query results | `blob_mode="bytes"` | `blobMode: "bytes"` | Not available. Use `fetch_blobs`. |
+
+- `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
+  produce null entries, and empty blobs produce empty byte strings.
+- `fetch_blob_files` opens seekable `BlobFile` handles that load bytes only when
+  you call `read`, `read_range`, or `read_ranges`. Range reads don't move the
+  file cursor. Null blobs produce null handles.
+- `fetch_blob_ranges` takes `(row_id, offset, length)` requests and returns one
+  slice per request, in order. A request list can repeat a row to read more
+  than one slice of that blob.
+
+Fetch whole payloads, or open a handle and read part of one:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiFetch}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiFetch}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiFetch}
+    </CodeBlock>
+</CodeGroup>
+
+Read headers, frames, or other slices without loading whole blobs. Python and
+Rust read slices across rows with `fetch_blob_ranges`. On a handle,
+`read_ranges` reads more than one slice of one blob. Python takes
+`(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
+exclusive `end`, and Rust takes `start..end` ranges:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiRanges}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiRanges}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiRanges}
+    </CodeBlock>
+</CodeGroup>
+
+<Card>
+For more details on the blob format, see the Lance [blob guide](https://lance.org/guide/blob/). For SQL queries over blob columns, see [SQL data types](/sql/data-types#blobs).
+</Card>
+
+#### 4\. Return bytes in query results {#multimodal-blob-query-results}
+
+A query returns blob descriptors by default. Python and TypeScript can return
+the bytes instead. Rust queries return descriptors only, so read bytes with
+`fetch_blobs`.
+
+##### Python {#multimodal-blob-python}
+
+In the Python SDK, `Table.to_pandas()`, `Table.to_arrow()`, and the query builder
+methods `to_pandas()`, `to_arrow()`, and `to_list()` accept a `blob_mode`
+argument:
+
+| `blob_mode` | `to_pandas()` | `to_arrow()` and `to_list()` |
+| --- | --- | --- |
+| `"lazy"` | Default. Plain scans return seekable `BlobFile` handles. Vector, full-text, hybrid, and ordered queries return descriptor dicts. | Default. Returns descriptor structs carrying `_lance_row_id` so the result table can be passed to `fetch_blobs` or `fetch_blob_files`. |
+| `"descriptions"` | Returns descriptor dicts with `kind`, `position`, `size`, `blob_id`, and `blob_uri`. | Returns the 5-field descriptor struct without `_lance_row_id`. |
+| `"bytes"` | Materializes each blob as `bytes` in the DataFrame. | Materializes each blob as `large_binary` in Arrow or `bytes` in Python dicts. |
+
+`blob_mode="bytes"` requires a local table snapshot, so remote and in-memory
+tables raise `NotImplementedError`. On a remote table, `Table.to_pandas()` and
+`Table.to_arrow()` aren't supported, and a query's `to_pandas()` also raises in
+the default `"lazy"` mode because it would open `BlobFile` handles. Query with
+`blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
+`fetch_blob_files`.
+
+`blob_mode="bytes"` materializes top-level and struct-nested blob columns. It
+raises `ValueError` when the selected columns include blobs
+inside a list. Select those columns with `blob_mode="descriptions"`, or leave
+them out of the projection. Extra keyword arguments on
+`to_pandas()`, such as `split_blocks` and `self_destruct`, are forwarded to
+PyArrow:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiToPandas}
+    </CodeBlock>
+</CodeGroup>
+
+Sync and async query builders accept the same `blob_mode` values:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {QueryToPandasKwargs}
+    </CodeBlock>
+</CodeGroup>
+
+##### TypeScript {#multimodal-blob-typescript}
+
+In TypeScript, `toArray()` and `toArrow()` accept a `blobMode` option:
+
+| `blobMode` | Result |
+| --- | --- |
+| `"descriptions"` | Default. Returns descriptor structs. |
+| `"bytes"` | Returns each top-level blob as bytes, or `null` for a null blob. Blobs nested in a struct or list keep their descriptors. |
+
+With `"bytes"`, the rows and the bytes come from the same table version. If the
+table changes while the query runs, the query runs again, up to three times:
+
+<CodeGroup>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiBytesMode}
+    </CodeBlock>
+</CodeGroup>
+
+#### Notes and limits {#multimodal-blob-notes}
+
+Blob fetches fail if any requested row ID is missing or deleted. With stable
+row IDs enabled, IDs remain valid across compaction.
+
+A blob field can sit at the top level of the schema or inside a struct or list.
+Struct-nested blob columns use dotted paths such as `clip.video` in the fetch
+APIs. Blobs inside lists can be written and queried as descriptors. A table
+row ID does not address one list element, so `blob_columns()`, `fetch_blobs`,
+`fetch_blob_files`, and `blob_mode="bytes"` can't return those bytes.
+
 ### Managed blobs (Blob v2) {#managed-blobs}
 
-Use `lancedb.blob()` for images, audio, videos, and other binary values whose
-payloads should load separately from the rest of a row. Write Python `bytes`
-normally. Set the table schema metadata `lance.blob.managed` to `true` to
-store small values inline and larger values in managed objects under the table's `_blobs/` directory. Medium values can share a packed
-object; large values use a dedicated object.
+Set the table schema metadata `lance.blob.managed` to `true` on a table with
+[`lancedb.blob()`](#multimodal-blob-v2) columns to store small values inline and
+larger values in managed objects under the table's `_blobs/` directory. Medium
+values can share a packed object, and large values use a dedicated object.
 
 The table owns these objects. You do not upload them separately, keep an object
-catalog, or delete their files yourself. A descriptor records where to read the
-bytes. Compaction preserves the descriptor and its payload object, so merging
-table fragments does not rewrite the blob payloads.
+catalog, or delete their files yourself. Compaction preserves each descriptor
+and its payload object, so merging table fragments does not rewrite the blob
+payloads.
 
 <Warning>
 Use an SDK and Enterprise deployment that support Blob v2 Managed storage.
@@ -484,16 +706,10 @@ assert by_id[1] == b""
 assert len(by_id[2]) == 102400
 ```
 
-`None` is a null value; `b""` is a present, empty blob. `fetch_blobs` returns
-bytes in the order of the supplied row IDs. It materializes the selected
-payloads, so fetch bounded batches when blobs are large. Row IDs belong to
-their table; fetch them from the same table and snapshot that produced the
-query result.
-
-Keep descriptors opaque in application code. Their representation can differ
-between inline values, Managed objects, and externally referenced blobs. For
-streaming and range reads, see the
-[Lance blob guide](https://lance.org/guide/blob/).
+`fetch_blobs` materializes the selected payloads in memory, so fetch bounded
+batches when blobs are large. Row IDs belong to their table and snapshot. Keep
+descriptors opaque in application code, because their representation can differ
+between inline values, Managed objects, and externally referenced blobs.
 
 #### Derived blobs and maintenance {#managed-blobs-lifecycle}
 
@@ -509,92 +725,81 @@ any of its contained blobs is still referenced.
 
 ### Legacy large-binary blobs {#multimodal-large-blobs-blob-api}
 
-The schema below describes the earlier large-binary Blob API. It is distinct
-from the `lancedb.blob()` schema above; changing the field's metadata alone does
-not migrate an existing column to Blob v2.
-
-For larger files like high-resolution images or videos, Lance provides a specialized **Blob API**. By using a large-binary Arrow type (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and `DataType::LargeBinary` in Rust) and specific metadata, you enable **lazy loading** and optimized encoding. This allows you to work with massive datasets without loading all binary data into memory upfront.
+Use [`lancedb.blob()`](#multimodal-blob-v2) for new tables. The sections below
+cover existing tables that use the V1 large-binary Blob API
+(`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and
+`DataType::LargeBinary` in Rust with `{"lance-encoding:blob": "true"}` field
+metadata). Changing a field's metadata alone does not migrate an existing V1
+column to Blob v2.
 
 #### 1\. Define a blob schema {#multimodal-1-define-a-blob-schema}
 
-To use the Blob API, you must mark the column with `{"lance-encoding:blob": "true"}` metadata.
+V1 blob columns use a `large_binary` field marked with `{"lance-encoding:blob": "true"}` metadata:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {BlobApiSchema}
+    {LegacyBlobApiSchema}
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsBlobApiSchema}
+    {TsLegacyBlobApiSchema}
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsBlobApiSchema}
+    {RsLegacyBlobApiSchema}
     </CodeBlock>
 </CodeGroup>
 
 #### 2\. Ingest large blobs {#multimodal-2-ingest-large-blobs}
 
-You can then ingest data normally, and Lance will handle the optimized storage.
+Write raw bytes to a V1 blob column:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {BlobApiIngest}
+    {LegacyBlobApiIngest}
     </CodeBlock>
 
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsBlobApiIngest}
+    {TsLegacyBlobApiIngest}
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsBlobApiIngest}
+    {RsLegacyBlobApiIngest}
     </CodeBlock>
 </CodeGroup>
-
-<Card>
-For more advanced usage, including random access and file-like reading of blobs, see the
-Lance format's [blob API documentation](https://lance.org/guide/blob/).
-</Card>
 
 #### 3\. Convert blob tables to pandas {#multimodal-3-convert-blob-tables-to-pandas}
 
-When you call `to_pandas()` on a local LanceDB table that contains Blob API columns, the `blob_mode` argument controls how those columns materialize. This is available in the Python SDK on local tables; remote tables raise `NotImplementedError`.
-
-`blob_mode` accepts:
-
-- `"lazy"` (default): returns blob columns as lazy `BlobFile` objects without eagerly materializing their payloads. Use this when you want to stream blob bytes on demand or only inspect a subset of rows. Namespace-backed local tables also use the Lance native blob-aware pandas conversion for lazy blobs; in-memory datasets fall back to the standard PyArrow `to_pandas()` path.
-- `"bytes"`: eagerly materializes each blob as `bytes`. Use this when you need the raw payload in the DataFrame, for example to decode an image or audio clip in-process.
-- `"descriptions"`: returns blob descriptors (offsets, sizes, and positions) instead of the data itself. Use this when you want to plan I/O without paying the cost of loading every blob.
-
-`"bytes"` is not supported on in-memory tables.
-
-Extra keyword arguments are forwarded to the underlying PyArrow / Lance pandas conversion, so you can also pass options like `split_blocks` or `self_destruct`:
+On local tables with V1 blob columns, `to_pandas()` in Python accepts `blob_mode`
+(`"lazy"`, `"bytes"`, or `"descriptions"`). Remote tables raise
+`NotImplementedError`, and `"bytes"` is not supported on in-memory tables.
+Extra keyword arguments such as `split_blocks` or `self_destruct` are forwarded
+to the PyArrow / Lance pandas conversion:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {BlobApiToPandas}
+    {LegacyBlobApiToPandas}
     </CodeBlock>
 </CodeGroup>
 
-Query builders also accept `blob_mode` on their `to_pandas()` method:
-
-- Plain scans support `"lazy"`, `"bytes"`, and `"descriptions"` with filters, projections, aliases, `limit`, and `offset`.
-- Vector, FTS, hybrid, and ordered queries can't materialize blob columns through `to_pandas()`; omit blob columns from the projection for those query shapes.
-- This works on both sync and async query builders. Extra PyArrow kwargs like `split_blocks` and `self_destruct` are still forwarded.
+On query builders with V1 blob columns, plain scans support `"lazy"`, `"bytes"`,
+and `"descriptions"`. Vector, FTS, hybrid, and ordered queries cannot
+materialize V1 blob columns through `to_pandas()`, so omit those columns from
+the projection:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
-    {QueryToPandasKwargs}
+    {LegacyQueryToPandasKwargs}
     </CodeBlock>
 </CodeGroup>
 
 ### Other modalities {#multimodal-other-modalities}
 
-The `pa.binary()` and `pa.large_binary()` types are universal. You can use this same pattern for other types of multimodal data:
+Both `binary` and `blob` columns store arbitrary bytes:
 
-- **Audio:** Read `.wav` or `.mp3` files as bytes.
-- **Video:** Store video transitions or full clips using the Blob API.
-- **PDFs/Documents:** Store the raw file content for document search.
+- **Audio:** Store short `.wav` or `.mp3` clips in `binary`, or full recordings in `blob`.
+- **Video:** Store clips in `blob` and read frame byte ranges with `BlobFile.read_range`.
+- **Documents:** Store PDFs and archives in `blob`. Filter on columns stored beside the blob before reading bytes.
 
 ### bfloat16 {#multimodal-bfloat16}
 

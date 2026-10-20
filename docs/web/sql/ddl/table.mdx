@@ -16,6 +16,12 @@ CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERV
 ```
 
 Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
+
+`CREATE TABLE ... AS SELECT` can't copy a [blob](/sql/data-types#blobs) column.
+A query returns a descriptor, not the payload bytes, and the writer refuses
+that descriptor. Select the other columns in SQL, and copy the blob payloads
+through the SDKs.
+
 A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 `prod.events.clicks`.
 
