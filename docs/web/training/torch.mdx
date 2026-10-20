@@ -1,7 +1,7 @@
 ---
 title: "PyTorch Integration"
 sidebarTitle: "PyTorch"
-description: Learn how to use LanceDB with PyTorch for training and inference.
+description: Use a LanceDB table as a PyTorch IterableDataset, mapped onto the torch.utils.data concepts you already know.
 icon: fire
 availability:
   oss: available
@@ -11,42 +11,64 @@ availability:
     tables in the Python SDK.
 ---
 
-Use LanceDB tables as input to a PyTorch `DataLoader`. Select the columns you
-need, choose a batch format, and read data in parallel for training or inference.
+`StreamingDataset` is a LanceDB table exposed as a PyTorch
+[`IterableDataset`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.IterableDataset),
+so it drops into a stock [`DataLoader`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader).
+It handles per-epoch shuffling, sharding across ranks and workers, prefetching, and exact resume, so you
+don't write those yourself.
 
 ## Quickstart {#quickstart}
 
-The `Table` class in LanceDB implements a contract for a PyTorch
-[Dataset](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.Dataset).
- This means you can simply use a LanceDB table in a PyTorch dataloader directly.
+```py Python icon=Python
+import lancedb, pyarrow as pa, torch
+from torch import nn
+from lancedb.streaming import StreamingDataset
 
-```py Python icon=Python 
-import lancedb
-import torch
-import pyarrow as pa
-from lancedb.util import tbl_to_tensor
+def to_samples(rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+    f = lambda c: torch.from_dlpack(rb[c].flatten()).view(len(rb), -1)
+    rows = zip(f("observation_state"), f("action"))
+    return [{"state": s, "action": a} for s, a in rows]
 
-mem_db = lancedb.connect("memory://")
-table = mem_db.create_table("test_table", pa.table({"a": range(1000)}))
-
-# Any LanceDB table can be used as a PyTorch Dataset
-dataloader = torch.utils.data.DataLoader(
-    table, batch_size=1024, shuffle=True, collate_fn=tbl_to_tensor
-)
-
-for batch in dataloader:
-    print(batch)
+uri = "hf://datasets/lance-format/lerobot-xvla-soft-fold/data"
+table = lancedb.connect(uri).open_table("frames")
+train = StreamingDataset(
+    table, columns=["observation_state", "action"], num_splits=8,
+    transform=to_samples, shuffle_clump_size=1024)
+model = nn.Sequential(
+    nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 14))
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+for batch in torch.utils.data.DataLoader(train, batch_size=256):
+    loss = nn.MSELoss()(model(batch["state"]), batch["action"])
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
 ```
 
-Although the `Table` class in LanceDB implements the `torch.utils.data.Dataset` interface, you may find that using
-a table [Permutation](/training/data-loading) is more flexible.
+`StreamingDataset` is a standard PyTorch `IterableDataset`, so it works with everything built for one: a stock
+`DataLoader`, its default `collate_fn`, and worker processes. The transform returns plain tensors, so the
+model, loss and optimizer are unmodified PyTorch. Here it streams the
+[`lerobot-xvla-soft-fold`](https://huggingface.co/datasets/lance-format/lerobot-xvla-soft-fold) dataset
+straight from the Hugging Face Hub to train a policy that predicts each `action` from the robot's
+`observation_state`.
 
-```py Python icon=Python 
-from lancedb.permutation import Permutation
+## PyTorch concepts in LanceDB {#concept-map}
 
-permutation = Permutation.identity(table)
-dataloader = torch.utils.data.DataLoader(permutation)
-```
+| In PyTorch you would write | In LanceDB you use |
+| --- | --- |
+| An `IterableDataset` that reads files in `__iter__` | `StreamingDataset(table)` |
+| `DistributedSampler`, or sharding by rank in `__iter__` | `rank=` and `world_size=`. Each rank reads its own disjoint splits |
+| Sharding by `get_worker_info()` in `__iter__` | Automatic. Each DataLoader worker gets a disjoint group of splits |
+| `sampler.set_epoch(epoch)` | `epoch=`, combined with `shuffle_seed=` to pick the order |
+| Decoding in `__getitem__` or `collate_fn` | `transform=`, which receives a whole Arrow `RecordBatch` and runs in a thread pool |
+| `random_split`, `Subset`, or filtering a file list | `filter="<SQL predicate>"` |
+| Reading only the fields a model needs | `columns=[...]`. Unselected columns are never read from storage |
+| A loader thread, or `prefetch_factor` | `read_batch_size=` and `io_queue_depth=` |
+| A `try`/`except` that skips corrupt samples | `on_transform_error="skip"` |
+| `StatefulDataLoader` | `state_dict()` and `load_state_dict()`, plus `StreamingDataLoader` for workers |
+
+The dataset does not copy your data. At construction it computes a shuffled assignment of row IDs to
+`num_splits` fixed splits, then reads rows from the table as it iterates. It reads the table version
+that exists at construction, so rows appended later do not appear mid-epoch.
 
 ## Output Formats {#output-formats}
 
