@@ -143,6 +143,68 @@ rows added since the last one and recomputes rows whose inputs changed, and
 leaves filled rows with unchanged inputs alone. See
 [Refresh a column](/feature-engineering/refresh-column).
 
+## Read and produce blobs {#blobs}
+
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
+return another blob. In row mode, a top-level blob parameter arrives as Python
+`bytes`, or `None` for a nullable input. The worker reads the payload before
+calling your function. Return bytes and let the destination table store the
+Managed payload and descriptor.
+
+Declare blob inputs and outputs explicitly. This example reverses the bytes
+to demonstrate the round trip without requiring an image library. Here `db`
+is an Enterprise database and `table` contains an `image` Blob v2 column
+with table schema metadata `lance.blob.managed=true`, as in the
+[table creation example](/management/table#managed-blobs-read-write):
+
+```python
+from datetime import timedelta
+
+import lancedb
+from lancedb import col
+from lancedb.functions import udf
+import pyarrow as pa
+
+@udf(
+    name="reverse_image",
+    python_version="3.12",
+    pip=["pyarrow==26.0.0"],
+    input_schema=pa.schema([lancedb.blob("image")]),
+    output_schema=lancedb.blob("reversed", nullable=False),
+)
+def reverse_image(image):
+    return b"missing" if image is None else image[::-1]
+
+function = db.create_function_async(reverse_image).wait(
+    timeout=timedelta(minutes=15)
+)
+table.add_columns({"reversed": function(image=col("image"))})
+result = table.refresh_column_async("reversed").wait(
+    timeout=timedelta(minutes=15)
+)
+assert result.rows_failed == 0
+
+hits = table.search().select(["id", "reversed"]).with_row_id(True).to_arrow()
+values = table.fetch_blobs("reversed", hits).to_pylist()
+```
+
+An empty byte string is a filled result. A scalar output cannot be nullable,
+because a physical NULL marks an unfilled computed row. To return a nullable
+blob as a value, use a named-struct output schema with a nullable blob field;
+the struct itself records whether the result has been filled. Read a nested
+blob with `table.fetch_blobs("payload.image", hits)`.
+
+On deployments that support computed-column inputs, another Function can bind
+to `col("reversed")`. Refresh the producer first, then the consumer. Once
+outputs are current, a later refresh fills appended rows. A filtered refresh
+preserves payload references for unselected Managed outputs. An unfiltered
+refresh can recompute a whole fragment when it cannot establish that the
+fragment's outputs are current.
+
+Function output blobs follow the same compaction and cleanup lifecycle as
+ingested Managed blobs. Retained versions continue to own their payloads;
+cleanup reclaims an object only after its retained references are gone.
+
 ## Declare the environment {#environment}
 
 The function runs remotely, so its dependencies are part of its definition:
