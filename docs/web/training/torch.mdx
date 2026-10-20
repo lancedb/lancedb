@@ -1,7 +1,7 @@
 ---
 title: "PyTorch Integration"
 sidebarTitle: "PyTorch"
-description: Use a LanceDB table as a PyTorch IterableDataset, mapped onto the torch.utils.data concepts you already know.
+description: Use a LanceDB table as a PyTorch IterableDataset, mapped onto the `torch.utils.data` concepts you already know.
 icon: fire
 availability:
   oss: available
@@ -24,7 +24,7 @@ import lancedb, pyarrow as pa, torch
 from torch import nn
 from lancedb.streaming import StreamingDataset
 
-def to_samples(rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+def to_samples(rb: pa.RecordBatch):
     f = lambda c: torch.from_dlpack(rb[c].flatten()).view(len(rb), -1)
     rows = zip(f("observation_state"), f("action"))
     return [{"state": s, "action": a} for s, a in rows]
@@ -32,10 +32,10 @@ def to_samples(rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
 uri = "hf://datasets/lance-format/lerobot-xvla-soft-fold/data"
 table = lancedb.connect(uri).open_table("frames")
 train = StreamingDataset(
-    table, columns=["observation_state", "action"], num_splits=8,
-    transform=to_samples, shuffle_clump_size=1024)
-model = nn.Sequential(
-    nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 14))
+    table, columns=["observation_state", "action"],
+    transform=to_samples)
+
+model = nn.Sequential(nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 14))
 opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
 for batch in torch.utils.data.DataLoader(train, batch_size=256):
     loss = nn.MSELoss()(model(batch["state"]), batch["action"])
