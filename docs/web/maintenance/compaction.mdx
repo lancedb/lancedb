@@ -12,7 +12,7 @@ availability:
     background, and `optimize()` is not available there.
 ---
 
-import { PyStorageRebuildVectorIndex } from '/snippets/doc_storage_examples.mdx';
+import { PyStorageCompactionTuning, PyStorageRebuildVectorIndex } from '/snippets/doc_storage_examples.mdx';
 
 Every write commits a new table version, and versions accumulate: small files
 from frequent appends, superseded files from updates and deletes, and rows added
@@ -104,3 +104,31 @@ table.optimize(cleanup_older_than=timedelta(days=1))   # reclaim space sooner
 ```
 
 The best practice is to run `optimize()` after large writes or on a schedule. It also bundles incremental index updates. See [Build & Repair](/indexing/reindexing) for the breakdown. Updates also move rows out of the vector index, so they remain searchable but unindexed. Update or rebuild the index after large update batches.
+
+{/*
+Draft for the Python compaction_options release. Keep this section unpublished
+until the first supported release is confirmed.
+
+### Tune compaction for wide rows {#tune-wide-rows}
+
+For an existing local Python table, derive a fragment row target from the
+expected row size. This example uses rows averaging 1 KiB and a 64 KiB fragment
+target; choose sizes for your workload. Smaller scan batches and one compaction
+task at a time can also reduce memory use.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyStorageCompactionTuning}
+    </CodeBlock>
+</CodeGroup>
+
+Planning remains row based. The row target bounds later passes after existing
+oversized fragments have been rewritten; the first pass rewrites those
+fragments whole, so peak memory can exceed the target. `max_bytes_per_file`
+limits output file size rather than compaction memory.
+
+The `max_source_rows` and `max_source_bytes` budgets admit whole planned tasks.
+If the first task exceeds a budget, that run performs no compaction. See the
+[CompactionOptions reference](https://lancedb.github.io/lancedb/python/python/#lancedb.table.CompactionOptions)
+for all options and their limits.
+*/}
