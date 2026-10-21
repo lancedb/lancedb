@@ -222,10 +222,12 @@ impl TerminalResult {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn value(&self) -> Option<&Value> {
         self.value.as_ref()
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn with_value(mut self, value: Value) -> Self {
         self.value = Some(value);
         self
@@ -362,6 +364,7 @@ impl Job<()> {
         }
     }
 
+    #[cfg(any(feature = "remote", test))]
     pub(crate) fn new(handle: Box<dyn JobHandle>) -> Self {
         Self {
             inner: JobInner::Handle {
@@ -455,6 +458,7 @@ where
         job
     }
 
+    #[cfg(any(feature = "remote", test))]
     pub(crate) fn from_query_task<F, Fut>(
         query_id: Uuid,
         task: JoinHandle<Result<T>>,
@@ -1172,6 +1176,7 @@ impl SpawnedJob {
         Self::new_inner(task, None)
     }
 
+    #[cfg(any(feature = "remote", test))]
     fn new_with_cancellation<T>(
         query_id: Uuid,
         task: JoinHandle<Result<T>>,

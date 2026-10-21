@@ -40,7 +40,9 @@ use lance_namespace::models::{JsonArrowDataType, JsonArrowField, JsonArrowSchema
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionApplication, FunctionBinding, OutputMapping};
+#[cfg(any(feature = "remote", test))]
+use crate::function::FunctionApplication;
+use crate::function::{FUNCTION_BLOB_V2_TYPE, FunctionBinding, OutputMapping};
 use crate::materialized_view::without_declarations;
 use crate::utils::resolve_arrow_field_path;
 use crate::{Error, Result};
@@ -853,6 +855,7 @@ pub fn computed_columns(schema: &ArrowSchema) -> Vec<ComputedColumn> {
         .collect()
 }
 
+#[cfg(any(feature = "remote", test))]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct FunctionOutputTarget {
     pub result_field: String,
@@ -860,6 +863,7 @@ pub(crate) struct FunctionOutputTarget {
     pub output_ordinal: u32,
 }
 
+#[cfg(any(feature = "remote", test))]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct FunctionInputTarget {
     pub parameter: String,
@@ -868,6 +872,7 @@ pub(crate) struct FunctionInputTarget {
     pub nullable: bool,
 }
 
+#[cfg(any(feature = "remote", test))]
 #[derive(Debug, Clone, Serialize)]
 pub(crate) struct FunctionDeclarationPlan {
     pub application: FunctionApplication,
@@ -1059,6 +1064,7 @@ pub fn function_input_is_computed(root: &ArrowField, path: &str) -> Result<bool>
 /// Nullability of the parameter a Function input binds: the source field's,
 /// except that a computed source never passes a null (see
 /// [`function_input_is_computed`]).
+#[cfg(any(feature = "remote", test))]
 fn function_input_nullability(resolved: &ResolvedFieldPath<'_>, path: &str) -> Result<bool> {
     Ok(!function_input_is_computed(resolved.root, path)? && resolved.leaf.is_nullable())
 }
@@ -1623,6 +1629,7 @@ fn ensure_binding_matches_schema(schema: &ArrowSchema, binding: &FunctionBinding
 /// Resolve a Function application against a table schema before any request is
 /// serialized. Input paths and the complete sibling output schema are fixed in
 /// one plan.
+#[cfg(any(feature = "remote", test))]
 pub(crate) fn plan_function_application(
     schema: &ArrowSchema,
     application: &FunctionApplication,
@@ -1635,6 +1642,7 @@ pub(crate) fn plan_function_application(
 
 /// All output types are known from the registered signatures. Resolve inputs
 /// against the complete set so an application can read a later sibling.
+#[cfg(any(feature = "remote", test))]
 pub(crate) fn plan_function_bindings(
     schema: &ArrowSchema,
     bindings: &[(FunctionApplication, Option<String>)],
@@ -1674,6 +1682,7 @@ pub(crate) fn plan_function_bindings(
         .collect()
 }
 
+#[cfg(any(feature = "remote", test))]
 fn plan_function_outputs(
     schema: &ArrowSchema,
     application: &FunctionApplication,
@@ -1818,6 +1827,7 @@ fn plan_function_outputs(
     Ok((outputs, JsonArrowSchema::new(output_fields)))
 }
 
+#[cfg(any(feature = "remote", test))]
 fn plan_function_inputs(
     schema: &ArrowSchema,
     new_outputs: &HashSet<String>,
