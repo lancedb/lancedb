@@ -457,7 +457,11 @@ def test_create_ivfrq_accelerator_preserves_layout(tmp_path, num_bits, layered):
     data = pa.table(
         {
             "id": range(len(vectors)),
-            "vector": pa.FixedSizeListArray.from_arrays(pa.array(vectors.ravel()), 32),
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.ravel()),
+                32,
+                mask=pa.array([row in (127, 255) for row in range(len(vectors))]),
+            ),
         }
     )
     db = connect(tmp_path)

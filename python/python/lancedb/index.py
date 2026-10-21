@@ -897,6 +897,7 @@ class IvfRq:
 
     target_partition_size: int, default is 8192
         Target size of each partition.
+
     accelerator: Optional[str], default None
         Reserved for accelerator support. IVF RQ currently builds on CPU,
         preserving all configured index options.
