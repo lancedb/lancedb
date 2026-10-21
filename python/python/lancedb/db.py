@@ -3411,7 +3411,8 @@ class AsyncConnection(object):
     ) -> StorageIntegrationInfo:
         """Register S3 configuration and return AWS setup instructions.
 
-        See [create_storage_integration][lancedb.db.DBConnection.create_storage_integration].
+        See
+        [create_storage_integration][lancedb.db.DBConnection.create_storage_integration].
         """
         value = await self._inner.create_storage_integration(
             validate_storage_integration_name(name),

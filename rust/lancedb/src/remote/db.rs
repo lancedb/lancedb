@@ -2052,6 +2052,7 @@ impl From<StorageOptions> for RemoteOptions {
 mod tests {
     use super::{NamespaceHeaderProviderContext, build_cache_key};
     use crate::listing::{Listing, ListingOptions};
+    use crate::storage_integration::CreateStorageIntegrationRequest;
     use futures::TryStreamExt;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
