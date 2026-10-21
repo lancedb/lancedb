@@ -1671,6 +1671,7 @@ impl CreateMaterializedViewBuilder {
     /// When omitted, the server determines when to refresh.
     ///
     /// ```no_run
+    /// # #![recursion_limit = "256"]
     /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
     /// db.create_materialized_view("recent_orders", "orders")
     ///     .auto_refresh_enabled(true)
