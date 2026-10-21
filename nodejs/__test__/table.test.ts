@@ -3385,6 +3385,78 @@ describe("when dealing with blob columns", () => {
     expect(bytes[0]!.equals(payload)).toBe(true);
   });
 
+  it("returns bytes for blobs nested in structs", async () => {
+    const { table, alpha, empty } = await openNestedBlobTable();
+    const rows = await table.query().toArray({ blobMode: "bytes" });
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(Buffer.from(byId.get(1)!.info.image)).toEqual(alpha);
+    expect(byId.get(1)!.info.caption).toBe("one");
+    expect(byId.get(2)!.info.image).toBeNull();
+    expect(byId.get(2)!.info.caption).toBe("two");
+    expect(byId.get(3)!.info).toBeNull();
+    expect(Buffer.from(byId.get(4)!.info.image)).toEqual(empty);
+  });
+
+  it("lines up nested rows and bytes across single-row batches", async () => {
+    const { table, alpha, empty } = await openNestedBlobTable();
+    const result = await table
+      .query()
+      .toArrow({ blobMode: "bytes", maxBatchLength: 1 });
+    expect(result.batches.length).toBe(4);
+    const byId = new Map(result.toArray().map((row) => [Number(row.id), row]));
+    expect(Buffer.from(byId.get(1)!.info.image)).toEqual(alpha);
+    expect(byId.get(1)!.info.caption).toBe("one");
+    expect(byId.get(2)!.info.image).toBeNull();
+    expect(byId.get(2)!.info.caption).toBe("two");
+    expect(byId.get(3)!.info).toBeNull();
+    expect(Buffer.from(byId.get(4)!.info.image)).toEqual(empty);
+  });
+
+  it("returns nested blob bytes for a struct selection", async () => {
+    const { table, alpha } = await openNestedBlobTable();
+    const [row] = await table
+      .query()
+      .where("id = 1")
+      .select(["info"])
+      .toArray({ blobMode: "bytes" });
+    expect(Object.keys(row)).toEqual(["info"]);
+    expect(Buffer.from(row.info.image)).toEqual(alpha);
+    expect(row.info.caption).toBe("one");
+  });
+
+  it("returns nested blob bytes through aliases", async () => {
+    const { table, alpha } = await openNestedBlobTable();
+    const [row] = await table
+      .query()
+      .where("id = 1")
+      .select(
+        new Map([
+          ["picture", "info.image"],
+          ["details", "info"],
+        ]),
+      )
+      .toArray({ blobMode: "bytes" });
+    expect(Buffer.from(row.picture)).toEqual(alpha);
+    expect(Buffer.from(row.details.image)).toEqual(alpha);
+    expect(row.details.caption).toBe("one");
+  });
+
+  it("returns a nested bytes schema for an empty result", async () => {
+    const { table } = await openNestedBlobTable();
+    const result = await table
+      .query()
+      .where("id > 100")
+      .toArrow({ blobMode: "bytes" });
+    expect(result.numRows).toBe(0);
+    const field = result.schema.fields.find((f) => f.name === "info")!;
+    expect(arrow.DataType.isStruct(field.type)).toBe(true);
+    const image = (field.type as Struct).children.find(
+      (f) => f.name === "image",
+    )!;
+    expect(arrow.DataType.isLargeBinary(image.type)).toBe(true);
+    expect(isBlobField(image)).toBe(false);
+  });
+
   it("creates list blobs without advertising unfetchable elements", async () => {
     const db = await connect(tmpDir.name);
     const schema = new Schema([
@@ -3591,6 +3663,31 @@ describe("when dealing with blob columns", () => {
     );
     const rowIds = [1, 2, 3].map((id) => rowIdById.get(id)!);
     return { table, rowIds, alpha, beta };
+  }
+
+  async function openNestedBlobTable() {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "info",
+        new Struct([blob("image"), new Field("caption", new Utf8(), true)]),
+        true,
+      ),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const empty = Buffer.alloc(0);
+    const table = await db.createTable(
+      "nested_blobs",
+      [{ id: 1n, info: { image: alpha, caption: "one" } }],
+      { schema },
+    );
+    await table.add([
+      { id: 2n, info: { image: null, caption: "two" } },
+      { id: 3n, info: null },
+      { id: 4n, info: { image: empty, caption: "four" } },
+    ]);
+    return { table, alpha, empty };
   }
 
   async function openExternalBlobTable() {
