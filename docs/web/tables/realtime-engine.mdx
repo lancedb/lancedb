@@ -30,37 +30,33 @@ table, and nothing about how you query that table changes.
 - **Reads.** Every query runs against the base table and the fresh tier
   (memtables and SSTables) in parallel. Fresh rows supersede base rows with the
   same primary key, and the two are merged into one result.
-- **Indexes stay fresh.** Vector, full-text, BTree, and other supported indexes
-  are maintained on the memtable, so new rows are searchable through the index
-  as soon as they are written.
+- **Indexes stay fresh.** Vector, full-text, BTree, bitmap, and most other
+  scalar indexes are maintained on the memtable, so new rows are searchable
+  through the index as soon as they are written.
 
 ## Getting started {#getting-started}
 
 ### 1. Create a table with a primary key {#primary-key}
 
-RTE deduplicates writes by primary key. Declare it as field metadata when
-you create the table:
+RTE deduplicates writes by primary key. Create the table with a non-nullable
+key column, then declare it with `set_unenforced_primary_key`. The key is a
+single `int32`, `int64`, string, or binary column, and cannot be changed once
+set.
 
 ```python
-import time
 from datetime import timedelta
 
 import lancedb
 import numpy as np
 import pyarrow as pa
 from lancedb import RTEWriteSpec
-from lancedb.index import FTS, IvfPq
+from lancedb.index import FTS, BTree, IvfPq
 
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
 
 n, dim = 1024, 128
 schema = pa.schema([
-    pa.field(
-        "id",
-        pa.int64(),
-        nullable=False,
-        metadata={"lance-schema:unenforced-primary-key:position": "0"},
-    ),
+    pa.field("id", pa.int64(), nullable=False),
     pa.field("vector", pa.list_(pa.float32(), dim)),
     pa.field("text", pa.utf8()),
 ])
@@ -71,17 +67,25 @@ initial_data = pa.table({
     "text": pa.array([f"doc {i} alpha bravo" for i in range(n)]),
 }, schema=schema)
 table = db.create_table("docs", initial_data, schema=schema)
+table.set_unenforced_primary_key("id")
+```
+
+Or in SQL:
+
+```sql
+ALTER TABLE docs SET UNENFORCED PRIMARY KEY (id)
 ```
 
 ### 2. Create indexes {#indexes}
 
-Create indexes before enabling RTE, and wait for them to finish building.
-RTE maintains every index that exists when it is enabled.
+By default, RTE maintains every supported index on the table, including
+indexes created after it is enabled. A scalar index on the primary key is
+required for partial updates and deletes.
 
 ```python
 table.create_index("vector", config=IvfPq())
 table.create_index("text", config=FTS())
-table.create_index("id")  # BTree on the primary key
+table.create_index("id", config=BTree())
 table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(minutes=5))
 ```
 
@@ -89,9 +93,6 @@ table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(min
 
 ```python
 table.enable_rte(RTEWriteSpec.unsharded())
-
-# Wait for the table metadata to propagate before writing.
-time.sleep(30)
 ```
 
 Or in SQL:
@@ -143,7 +144,8 @@ table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all()
 ```
 
 **Deletes.** The predicate must bind the primary key to literal values. Ranges,
-`OR`, and filters on other columns are rejected.
+`OR`, and filters on other columns are rejected. Deletes require a scalar index
+on the primary key.
 
 ```python
 table.delete("id IN (2000, 2001)")
@@ -154,7 +156,8 @@ table.delete("id IN (2000, 2001)")
 Stop writes and wait for in-flight writes to finish, then flush pending writes
 into the base table and disable. `checkpoint_rte()` only drains writes that
 existed when it started, so anything written during the checkpoint can be left
-behind.
+behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
+so run `checkpoint_rte()` first.
 
 ```python
 table.checkpoint_rte()
@@ -214,8 +217,9 @@ Most queries are within a few milliseconds of the base table. Hybrid and phrase
 queries add roughly 15 ms to merge the two tiers.
 
 <Note>
-Support for all table operations on RTE tables is coming soon. Time travel
-and branching are among the features not yet available.
+Support for all table operations on RTE tables is coming soon. Time travel,
+branching, `count_rows`, row IDs (`with_row_id`), and `TABLESAMPLE` are not yet
+available.
 </Note>
 
 ## Next steps {#next-steps}
