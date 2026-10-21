@@ -449,6 +449,7 @@ sdist = { url = "https://files.pythonhosted.org/packages/a6/bd/1436c50cc46699de0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl", hash = "sha256:42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b", size = 136464, upload-time = "2026-10-20T02:24:15.072Z" },
 ]
+
 [[package]]
 name = "cffi"
 version = "2.1.0"
