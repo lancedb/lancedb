@@ -7,6 +7,7 @@ import httpx
 import numpy as np
 import pyarrow as pa
 import pytest
+from pydantic import ValidationError
 
 from lancedb.embeddings import get_registry
 
@@ -54,6 +55,10 @@ def ollama_embeddings():
         pytest.param(["hello", "世界"], id="list"),
         pytest.param(np.array(["hello", "世界"]), id="numpy-unicode"),
         pytest.param(np.array(["hello", "世界"], dtype=object), id="numpy-object"),
+        pytest.param(
+            np.array([b"hello", "世界".encode("utf-8")]), id="numpy-utf8-bytes"
+        ),
+        pytest.param([b"hello", "世界".encode("utf-8")], id="list-utf8-bytes"),
         pytest.param(np.array(["hello", "unused", "世界"])[::2], id="numpy-slice"),
         pytest.param(pa.array(["hello", "世界"]), id="arrow"),
         pytest.param(pa.chunked_array([["hello"], ["世界"]]), id="chunked-arrow"),
@@ -71,6 +76,26 @@ def test_ollama_source_embeddings_inputs(ollama_embeddings, texts):
             "keep_alive": "10m",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        pytest.param(np.array([["hello"], ["world"]]), id="numpy-two-dimensional"),
+        pytest.param([["hello"], ["world"]], id="list-two-dimensional"),
+        pytest.param(np.array([b"\xff"]), id="numpy-invalid-utf8"),
+        pytest.param([b"\xff"], id="list-invalid-utf8"),
+    ],
+)
+def test_ollama_source_embeddings_rejects_invalid_input_locally(
+    ollama_embeddings, texts
+):
+    function, requests = ollama_embeddings
+
+    with pytest.raises(ValidationError, match="valid string"):
+        function.compute_source_embeddings(texts)
+
+    assert requests == []
 
 
 def test_ollama_generate_embeddings_empty_array(ollama_embeddings):
