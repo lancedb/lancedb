@@ -465,8 +465,10 @@ def test_create_ivfrq_accelerator_preserves_layout(tmp_path, num_bits, layered):
         }
     )
     db = connect(tmp_path)
-    table = db.create_table("test", data.slice(0, 128))
-    table.add(data.slice(128))
+    table = db.create_table("test", data.slice(0, 128), on_bad_vectors="null")
+    table.add(data.slice(128), on_bad_vectors="null")
+    assert table.count_rows() == 256
+    assert table.to_arrow()["vector"].null_count == 2
     table.create_index(
         "vector",
         config=IvfRq(
