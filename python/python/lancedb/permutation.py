@@ -182,17 +182,19 @@ class PermutationBuilder:
         """
         Sample rows uniformly **with replacement**, independently per split.
 
-        Unlike the other split strategies, the number of output rows is ``num_samples``,
-        not the number of (optionally filtered) input rows: the same row can appear zero,
-        one, or many times, and ``num_samples`` may be larger or smaller than the input
-        row count. Useful for bootstrap resampling, oversampling rare classes, or any
-        training workload that wants a fixed-size stream of random draws rather than a
-        single deterministic pass over every row. Combine with :meth:`filter` to restrict
-        the eligible population.
+        Unlike the other split strategies, the number of output rows is
+        ``num_samples``, not the number of (optionally filtered) input rows: the
+        same row can appear zero, one, or many times, and ``num_samples`` may be
+        larger or smaller than the input row count. Useful for bootstrap
+        resampling, oversampling rare classes, or any training workload that
+        wants a fixed-size stream of random draws rather than a single
+        deterministic pass over every row. Combine with :meth:`filter` to
+        restrict the eligible population.
 
-        One of ratios, counts, or fixed must be provided, with the same meaning as in
-        :meth:`split_random`, except they divide ``num_samples`` across splits rather than
-        the input row count: if fixed is 4, each split gets ``num_samples // 4`` samples.
+        One of ratios, counts, or fixed must be provided, with the same meaning
+        as in :meth:`split_random`, except they divide ``num_samples`` across
+        splits rather than the input row count: if fixed is 4, each split gets
+        ``num_samples // 4`` samples.
 
         Each split draws its own sample using a seed derived independently from
         ``(seed, split_index)``, so a split's content does not change if the samples are
