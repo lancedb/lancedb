@@ -1,9 +1,14 @@
 ---
 title: "Creating a table"
 sidebarTitle: "Create Table"
-description: "Start here: turn the data you already have into a LanceDB table."
+description: "Create a table from records or a schema and choose input formats."
 icon: table
 keywords: ["create table", "ingest", "arrow", "pandas", "polars", "pydantic", "schema"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Create and open tables in OSS and Enterprise.
 ---
 
 import {
@@ -11,65 +16,60 @@ import {
     RsConnect,
 } from '/snippets/connection.mdx';
 import {
-    PyCreateTableFromDicts as CreateTableFromDicts,
     TsCreateTableFromDicts as TsCreateTableFromDicts,
     RsCreateTableFromDicts as RsCreateTableFromDicts,
-    PyCreateTableConflictHandling as CreateTableConflictHandling,
     TsCreateTableConflictHandling as TsCreateTableConflictHandling,
     RsCreateTableConflictHandling as RsCreateTableConflictHandling,
-    PyCreateTableFromPandas as CreateTableFromPandas,
-    PyCreateTableCustomSchema as CreateTableCustomSchema,
     TsCreateTableCustomSchema as TsCreateTableCustomSchema,
     RsCreateTableCustomSchema as RsCreateTableCustomSchema,
-    PyCreateTableFromPolars as CreateTableFromPolars,
-    PyCreateTableFromArrow as CreateTableFromArrow,
     TsCreateTableFromArrow as TsCreateTableFromArrow,
     RsCreateTableFromArrow as RsCreateTableFromArrow,
-    PyCreateTableFromPydantic as CreateTableFromPydantic,
-    PyCreateTableNestedSchema as CreateTableNestedSchema,
-    PyOpenExistingTable as OpenExistingTable,
     TsOpenExistingTable as TsOpenExistingTable,
     RsOpenExistingTable as RsOpenExistingTable,
-    PyCreateEmptyTable as CreateEmptyTable,
     TsCreateEmptyTable as TsCreateEmptyTable,
     RsCreateEmptyTable as RsCreateEmptyTable,
-    PyCreateEmptyTablePydantic as CreateEmptyTablePydantic,
-    PyDropTable as DropTable,
     TsDropTable as TsDropTable,
     RsDropTable as RsDropTable,
     PyTablesBasicConnect as TablesBasicConnect,
     PyTablesDocumentModel as TablesDocumentModel,
     PyTablesTzValidator as TablesTzValidator,
 } from '/snippets/tables.mdx';
+import {
+    PyCreateTableFromDicts as CreateTableFromDicts,
+    PyCreateTableConflictHandling as CreateTableConflictHandling,
+    PyCreateTableFromPandas as CreateTableFromPandas,
+    PyCreateTableCustomSchema as CreateTableCustomSchema,
+    PyCreateTableFromPolars as CreateTableFromPolars,
+    PyCreateTableFromArrow as CreateTableFromArrow,
+    PyCreateTableFromPydantic as CreateTableFromPydantic,
+    PyCreateTableNestedSchema as CreateTableNestedSchema,
+    PyOpenExistingTable as OpenExistingTable,
+    PyCreateEmptyTable as CreateEmptyTable,
+    PyCreateEmptyTablePydantic as CreateEmptyTablePydantic,
+    PyDropTable as DropTable,
+} from '/snippets/ingestion_examples.mdx';
 
-A table is created from data you already have -- a list of objects, an Arrow
-table, a pandas or polars frame, Pydantic models -- or from a schema alone when
-the rows come later.
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+
+Create a table from existing records, or define an empty table before data
+arrives. Define a schema to specify column types, allow or disallow missing
+values, and set the size of your vectors.
 
 ## Create a table with data {#create-a-table-with-data}
 
-Initialize a LanceDB connection and create a table
+The Python input examples below are complete programs. Install `lancedb` and
+any additional libraries imported by the example, save one as a Python file,
+and run it. Each uses its own temporary local database.
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {TablesBasicConnect}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsConnect}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsConnect}
-    </CodeBlock>
-</CodeGroup>
-
-Depending on the SDK, LanceDB can ingest arrays of records, Arrow tables or record batches, and Arrow batch iterators or readers. Let's take a look at some of the common patterns.
+The TypeScript and Rust blocks illustrate the corresponding input formats.
+For a complete connection-to-result program in either language, expand
+[the write workflow](#complete-example). Table names follow the
+[naming rules](/basics/naming).
 
 ### From list of objects {#from-list-of-objects}
 
 You can provide a list of objects to create a table. The Python and TypeScript SDKs
-support lists/arrays of dictionaries, while the Rust SDK supports lists of structs.
+support lists/arrays of records. The Rust example converts structs to Arrow batches.
 In Python, pass a list or other batch-like object; a single bare `dict` or single
 `LanceModel` is rejected.
 
@@ -87,37 +87,42 @@ In Python, pass a list or other batch-like object; a single bare `dict` or singl
     </CodeBlock>
 </CodeGroup>
 
-### Handle existing tables {#handle-existing-tables}
+### If the table already exists {#handle-existing-tables}
 
-By default, `create_table` raises an error if a table with the same name already exists.
-You can change this behavior with two parameters that resolve the conflict in different ways:
+By default, creating a table fails if its name is already in use. Choose whether
+to open that table or overwrite it.
 
-- **Idempotent open**: return the existing table without modifying it. Use when your
-  code may run more than once (notebooks, retries, init scripts) and you want to reuse
-  the table on subsequent runs. The provided data is ignored, but the schema is
-  validated against the existing table and a mismatch raises an error.
-- **Overwrite**: drop the existing table and create a new one with the provided data.
-  Use this for test fixtures or when you intentionally want to replace prior contents.
-  This permanently discards the old table's data.
+#### Open the existing table
 
-<CodeGroup>
+Use `exist_ok=True` in Python or `existOk: true` in TypeScript to return the
+existing table without changing its contents. This is useful for setup code
+that may run more than once. Any data supplied to the create call is ignored
+when the table already exists.
+
+Inspect the returned table's schema if your code depends on specific columns
+or types. Opening an existing table does not change its schema to match the
+data supplied in the create call.
+
+#### Overwrite the table
+
+Use `mode="overwrite"` in Python or `mode: "overwrite"` in TypeScript to replace
+the existing table with the supplied data and schema. Choose this only when
+you intend to replace its previous contents.
+
+The following Python program demonstrates both choices:
+
     <CodeBlock filename="Python" language="Python" icon="python">
     {CreateTableConflictHandling}
     </CodeBlock>
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsCreateTableConflictHandling}
-    </CodeBlock>
 
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsCreateTableConflictHandling}
-    </CodeBlock>
-</CodeGroup>
+
 
 <Note>
 `exist_ok` / `existOk` does not append the provided data to an existing table. Use
 [`table.add()`](/ingestion/insert) for that. If you need to ensure a table exists *and*
-contains specific rows, prefer the [empty-table-then-add pattern](#create-empty-table).
+contains specific rows, choose an explicit [merge policy](/ingestion/merge-insert). Creating an empty table
+and repeatedly appending the same batch does not deduplicate it.
 </Note>
 
 ### From a custom schema {#from-a-custom-schema}
@@ -138,7 +143,7 @@ You can define a custom Arrow schema for the table. This is useful when you want
     </CodeBlock>
 </CodeGroup>
 
-An explicit schema is also where you control nullability. If later writes omit a
+An explicit schema also determines which columns accept missing values (`null`). If later writes omit a
 non-nullable column, or provide actual nulls for it, ingestion fails; nullable columns can be
 omitted or written with null values. Without an explicit schema, Python infers list-like vector
 values as fixed-size `float32` vector fields from the observed dimension.
@@ -186,10 +191,8 @@ The **`vector`** column needs to be a [Vector](/integrations/data/pydantic#vecto
 ### From a Polars DataFrame {#from-a-polars-dataframe}
 <Badge color="green">Python Only</Badge>
 
-LanceDB supports [Polars](https://pola.rs/), a modern, fast DataFrame library
-written in Rust. Just like in Pandas, the Polars integration is enabled by PyArrow
-under the hood. A deeper integration between LanceDB Tables and Polars DataFrames
-is on the way.
+Pass a Polars DataFrame as input. Install `polars` for this example; the
+conversion preserves the table structure through Arrow.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -263,12 +266,14 @@ for a `created_at` field.
     </CodeBlock>
 </CodeGroup>
 
-When you run this code it, should raise the `ValidationError`.
+The example catches a `ValidationError` for the timestamp with a different
+timezone. A validator runs when the Pydantic model is constructed; declaring a
+model as the table schema does not make every later write run that validator.
 
 <Note>
-Datasets too large to pass to `create_table` at once are covered separately --
-see [Insert data](/ingestion/insert#large-datasets), which explains why
-`table.add()` parallelizes where `create_table` does not.
+Datasets too large to pass to `create_table` at once are covered separately;
+see [Insert data](/ingestion/insert#large-datasets) for batches, file-backed
+input and write parallelism.
 </Note>
 
 ## Create empty table {#create-empty-table}
@@ -292,9 +297,8 @@ An empty table can be initialized via an Arrow schema.
     </CodeBlock>
 </CodeGroup>
 
-Alternatively, you can also use Pydantic to specify the schema for the empty table. Note that we do not
-directly import `pydantic` but instead use `lancedb.pydantic` which is a subclass of `pydantic.BaseModel`
-that has been extended to support LanceDB specific types like `Vector`.
+Alternatively, define the schema with `LanceModel`, a Pydantic model class
+provided by `lancedb.pydantic`. Its `Vector` type declares a fixed vector dimension.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -342,6 +346,46 @@ Use the `drop_table()` method on the database to remove a table.
     </CodeBlock>
 </CodeGroup>
 
-This permanently removes the table and is not recoverable, unlike deleting rows.
-By default, if the table does not exist an exception is raised. To suppress this,
-you can pass in `ignore_missing=True`.
+Dropping a table removes the table object. Deleting rows keeps the table and
+changes its contents; retained versions and cleanup are described in
+[Cleanup](/maintenance/cleanup).
+On a local database, dropping a table that does not exist raises an error; in
+Python, pass `ignore_missing=True` to suppress it. A deployment may report
+success instead, depending on how it stores its catalog, so do not rely on the
+error to tell you a table was missing. Python's deployment connection does not
+take `ignore_missing`.
+
+<span id="verify"></span>
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

@@ -115,6 +115,35 @@ def test_split_random_fixed(mem_db):
         assert split_ids.count(split_id) == 25
 
 
+def test_permutation_over_table_with_schema_metadata(tmp_path):
+    """Schema-level metadata on the base table must not break the build.
+
+    Hugging Face datasets carry keys like `huggingface` or `source-column-name-map`.
+    """
+    schema = pa.schema(
+        [pa.field("x", pa.int64())],
+        # `split_names` collides with a permutation config key; the config must win.
+        metadata={b"huggingface": b"{}", b"split_names": b'["base"]'},
+    )
+    tbl = connect(tmp_path).create_table(
+        "t", pa.table({"x": list(range(100))}, schema=schema)
+    )
+    permutation_tbl = (
+        permutation_builder(tbl)
+        .split_random(fixed=2, seed=1, split_names=["train", "test"])
+        .execute()
+    )
+
+    permutations = Permutations(tbl, permutation_tbl)
+    assert permutations.split_names == ["train", "test"]
+    train = Permutation.from_tables(tbl, permutation_tbl, "train")
+    test = Permutation.from_tables(tbl, permutation_tbl, "test")
+    assert train.num_rows + test.num_rows == 100
+    train_x = [row["x"] for batch in train.iter(16) for row in batch]
+    test_x = [row["x"] for batch in test.iter(16) for row in batch]
+    assert sorted(train_x + test_x) == list(range(100))
+
+
 def test_split_random_with_seed(mem_db):
     """Test that seeded random splits are reproducible."""
     tbl = mem_db.create_table("test_table", pa.table({"x": range(50), "y": range(50)}))

@@ -39,16 +39,16 @@ use pyo3::{
 
 mod scannable;
 
-/// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
+/// Convert `RTEStats` to a Python dict, preserving the per-table-shard list.
 ///
 /// Deliberately not flattened to a table-level summary: a table is N
-/// buckets on one node, and the per-bucket detail is the reason the
-/// endpoint exists — flattening hides the single hot bucket someone opened
+/// table shards on one node, and the per-shard detail is the reason the
+/// endpoint exists — flattening hides the single hot table shard someone opened
 /// it to find.
-fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
+fn rte_stats_to_py(py: Python<'_>, stats: &lancedb::table::RTEStats) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
-    let buckets = PyList::empty(py);
-    for b in &stats.buckets {
+    let table_shards = PyList::empty(py);
+    for b in &stats.table_shards {
         let e = PyDict::new(py);
         e.set_item("shard_id", &b.shard_id)?;
         e.set_item("status", &b.status)?;
@@ -64,15 +64,15 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
             b.wal_entry_position_last_seen,
         )?;
 
-        let generations = PyList::empty(py);
-        for g in &b.generations {
+        let sstables = PyList::empty(py);
+        for g in &b.sstables {
             let ge = PyDict::new(py);
             ge.set_item("generation", g.generation)?;
             ge.set_item("bytes", g.bytes)?;
             ge.set_item("rows", g.rows)?;
-            generations.append(ge)?;
+            sstables.append(ge)?;
         }
-        e.set_item("generations", generations)?;
+        e.set_item("sstables", sstables)?;
         e.set_item("compacting", b.compacting)?;
 
         e.set_item(
@@ -94,9 +94,9 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
                 })
                 .transpose()?,
         )?;
-        buckets.append(e)?;
+        table_shards.append(e)?;
     }
-    out.set_item("buckets", buckets)?;
+    out.set_item("table_shards", table_shards)?;
     Ok(out.unbind())
 }
 
@@ -261,8 +261,8 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `merge_insert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `merge_insert` through Lance's MemWAL LSM-style write path.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
@@ -270,17 +270,17 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
 /// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
-pub struct LsmWriteSpec {
-    inner: lancedb::table::LsmWriteSpec,
+pub struct RTEWriteSpec {
+    inner: lancedb::table::RTEWriteSpec,
 }
 
 #[pymethods]
-impl LsmWriteSpec {
+impl RTEWriteSpec {
     /// Hash-bucket sharding by the unenforced primary key column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::bucket(column, num_buckets),
+            inner: lancedb::table::RTEWriteSpec::bucket(column, num_buckets),
         }
     }
 
@@ -294,20 +294,20 @@ impl LsmWriteSpec {
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::identity(column),
+            inner: lancedb::table::RTEWriteSpec::identity(column),
         }
     }
 
     /// No sharding — every `merge_insert` call writes to a single
-    /// MemWAL shard.
+    /// RTE shard.
     #[staticmethod]
     pub fn unsharded() -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::unsharded(),
+            inner: lancedb::table::RTEWriteSpec::unsharded(),
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default) is
+    /// Set which indexes the RTE maintains. `None` (the default) is
     /// every index the table has, including ones created later; a list is
     /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
@@ -327,33 +327,33 @@ impl LsmWriteSpec {
 
     pub fn __repr__(&self) -> String {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket {
+            lancedb::table::RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 num_buckets,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Identity {
+            lancedb::table::RTEWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Unsharded {
+            lancedb::table::RTEWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
@@ -365,9 +365,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn spec_type(&self) -> &'static str {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
-            lancedb::table::LsmWriteSpec::Identity { .. } => "identity",
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
+            lancedb::table::RTEWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::RTEWriteSpec::Identity { .. } => "identity",
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => "unsharded",
         }
     }
 
@@ -375,9 +375,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn column(&self) -> Option<String> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { column, .. }
-            | lancedb::table::LsmWriteSpec::Identity { column, .. } => Some(column.clone()),
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => None,
+            lancedb::table::RTEWriteSpec::Bucket { column, .. }
+            | lancedb::table::RTEWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => None,
         }
     }
 
@@ -385,12 +385,12 @@ impl LsmWriteSpec {
     #[getter]
     pub fn num_buckets(&self) -> Option<u32> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            lancedb::table::RTEWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
             _ => None,
         }
     }
 
-    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
+    /// Indexes the RTE keeps up to date, or `None` for every supported one.
     #[getter]
     pub fn maintained_indexes(&self) -> Option<Vec<String>> {
         self.inner.maintained_indexes().map(<[String]>::to_vec)
@@ -403,14 +403,14 @@ impl LsmWriteSpec {
     }
 }
 
-impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
-    fn from(spec: LsmWriteSpec) -> Self {
+impl From<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
+    fn from(spec: RTEWriteSpec) -> Self {
         spec.inner
     }
 }
 
-impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
-    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(inner: lancedb::table::RTEWriteSpec) -> Self {
         Self { inner }
     }
 }
@@ -1636,8 +1636,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_lsm) = parameters.use_lsm {
-            builder.use_lsm(use_lsm);
+        if let Some(use_rte) = parameters.use_rte {
+            builder.use_rte(use_rte);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1662,29 +1662,29 @@ impl Table {
         })
     }
 
-    pub fn set_lsm_write_spec<'a>(
+    pub fn enable_rte<'a>(
         self_: PyRef<'a, Self>,
-        spec: LsmWriteSpec,
+        spec: RTEWriteSpec,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let native_spec = lancedb::table::LsmWriteSpec::from(spec);
+        let native_spec = lancedb::table::RTEWriteSpec::from(spec);
         future_into_py(self_.py(), async move {
-            inner.set_lsm_write_spec(native_spec).await.infer_error()
+            inner.enable_rte(native_spec).await.infer_error()
         })
     }
 
-    pub fn unset_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn disable_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.unset_lsm_write_spec().await.infer_error()
+            inner.disable_rte().await.infer_error()
         })
     }
 
-    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn get_rte_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let spec = inner.get_lsm_write_spec().await.infer_error()?;
-            Ok(spec.map(LsmWriteSpec::from))
+            let spec = inner.get_rte_spec().await.infer_error()?;
+            Ok(spec.map(RTEWriteSpec::from))
         })
     }
 
@@ -1703,55 +1703,55 @@ impl Table {
         Ok(())
     }
 
-    /// Converge the table's LSM write path into its base table.
+    /// Converge the table's RTE write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
     /// pass. Errors if the table stops making progress.
-    pub fn checkpoint_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkpoint_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.checkpoint_lsm().await.infer_error()
+            inner.checkpoint_rte().await.infer_error()
         })
     }
 
-    /// Seal every bucket's active memtable into L0.
-    pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    /// Freeze every table shard's active memtable into an SSTable.
+    pub fn flush_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
             self_.py(),
-            async move { inner.flush_lsm().await.infer_error() },
+            async move { inner.flush_rte().await.infer_error() },
         )
     }
 
-    /// Trigger a background L0 → base pass per bucket. Returns once the
-    /// passes are dispatched, not once they finish — watch `get_lsm_stats`.
-    pub fn compact_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    /// Trigger a background SSTable compaction pass per table shard. Returns once the
+    /// passes are dispatched, not once they finish — watch `get_rte_stats`.
+    pub fn compact_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.compact_lsm().await.infer_error()
+            inner.compact_rte().await.infer_error()
         })
     }
 
-    /// Live LSM state, or `None` when the LSM write path is not enabled.
-    #[pyo3(signature = (include_generation_rows=false))]
-    pub fn get_lsm_stats(
+    /// Live RTE state, or `None` when the RTE write path is not enabled.
+    #[pyo3(signature = (include_sstable_rows=false))]
+    pub fn get_rte_stats(
         self_: PyRef<'_, Self>,
-        include_generation_rows: bool,
+        include_sstable_rows: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner
-                .get_lsm_stats(include_generation_rows)
+                .get_rte_stats(include_sstable_rows)
                 .await
                 .infer_error()?;
-            Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
+            Python::attach(|py| stats.map(|s| rte_stats_to_py(py, &s)).transpose())
         })
     }
 
-    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn close_rte_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.close_lsm_writers().await.infer_error()
+            inner.close_rte_writers().await.infer_error()
         })
     }
 
@@ -2083,7 +2083,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_lsm: Option<bool>,
+    use_rte: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

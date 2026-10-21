@@ -2036,6 +2036,92 @@ def test_transform_queue_depth_bounds_cooked_rows(lance_table):
     )
 
 
+def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
+    """io_queue_depth bounds raw_batches even when transform is the bottleneck.
+
+    Regression test for a bug where Stage 1 (I/O) applied no backpressure at
+    all: _fill_io only capped io_pending (in-flight fetches) at
+    io_queue_depth, but every completed fetch was drained into raw_batches
+    unconditionally (_drain_io) and immediately replaced by a new fetch
+    (_fill_io again), so I/O kept racing arbitrarily far ahead of a slow
+    transform stage -- raw_batches had no cap of its own.
+    transform_queue_depth did not help either: its admission check in
+    _try_submit_tx only counts cooked rows and in-flight transform futures
+    (`len(cooked[i]) + len(tx_pending[i]) * batch_size`); it never looks at
+    len(raw_batches[i]), so it cannot throttle Stage 1.
+
+    The fix makes _fill_io count both io_pending and raw_batches against the
+    io_queue_depth budget, so raw_queue_depth should never exceed
+    io_queue_depth * read_batch_size per split, regardless of how slow the
+    transform stage is.
+
+    I/O is forced to run synchronously (same technique as
+    test_transform_queue_depth_does_not_admit_at_capacity_minus_one) so the
+    assertion is deterministic regardless of machine load, rather than
+    relying on a real-time race between I/O and transform threads.  Only the
+    transform runs on a real background thread (with a short sleep) so the
+    consumer genuinely blocks waiting for it, letting Stage 1 attempt to run
+    ahead between blocking waits.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import pyarrow as pa
+    import time
+
+    n_rows = 200
+    read_batch_size = 10
+    io_queue_depth = 2
+    transform_queue_depth = 2
+    max_allowed = io_queue_depth * read_batch_size
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(n_rows))}))
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.005)
+        return batch.column("id").to_pylist()
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def synchronous_io_submit(self, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_io_call":
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", synchronous_io_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            read_batch_size=read_batch_size,
+            io_queue_depth=io_queue_depth,
+            transform_queue_depth=transform_queue_depth,
+            transform_parallelism=1,
+            transform=slow_transform,
+        )
+
+        peak_raw = 0
+        ids = []
+        for item in ds:
+            ids.append(item)  # slow_transform yields bare ids, not dicts
+            if ds.raw_queue_depth > peak_raw:
+                peak_raw = ds.raw_queue_depth
+
+    assert peak_raw <= max_allowed, (
+        f"raw_queue_depth peaked at {peak_raw}, expected <= {max_allowed} "
+        "(io_queue_depth * read_batch_size)"
+    )
+    # The backpressure fix must not come at the cost of dropping or
+    # duplicating rows.
+    assert sorted(ids) == list(range(n_rows))
+
+
 def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     """Admission requires a full read_batch_size of free space, not just one slot.
 
@@ -3171,6 +3257,22 @@ def test_doc_example_checkpoint(lance_table):
     assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
         "Consumed + remaining must cover every row exactly once"
     )
+
+
+def test_streaming_dataset_over_table_with_schema_metadata(tmp_path):
+    """StreamingDataset builds its permutation at construction; base table schema
+    metadata (e.g. Hugging Face's `source-column-name-map`) must not break it."""
+    schema = pa.schema(
+        [pa.field("id", pa.int64())],
+        metadata={b"source-column-name-map": b"{}", b"huggingface": b"{}"},
+    )
+    table = lancedb.connect(tmp_path).create_table(
+        "data", pa.table({"id": list(range(NUM_ROWS))}, schema=schema)
+    )
+
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
 
 
 # ---------------------------------------------------------------------------

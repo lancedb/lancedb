@@ -10,12 +10,13 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Fields, Schema};
 use futures::TryStreamExt;
 use lance::Dataset;
+use lance::blob::blob_field as blob;
 use lance::dataset::WriteParams;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
 use lance_table::format::BasePath;
 use lancedb::{
     Connection, Error, Result, Table,
-    blob::{BlobRangeRequest, blob},
+    blob::BlobRangeRequest,
     connect, connect_namespace,
     database::listing::{
         ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
@@ -1611,6 +1612,88 @@ async fn external_uri_struct_round_trips_with_flag() -> Result<()> {
 }
 
 #[tokio::test]
+async fn external_ranges_round_trip_with_registered_base_and_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"0123456789abcdef";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let base_uri = url::Url::from_directory_path(tmp.path())
+        .unwrap()
+        .to_string();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    for registered_base in [false, true] {
+        let field = lancedb::blob("image", true);
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!("blob field is a struct");
+        };
+        let schema = Arc::new(Schema::new(vec![field]));
+        let name = if registered_base {
+            "registered"
+        } else {
+            "opt_in"
+        };
+        let table = db
+            .create_empty_table(name, schema.clone())
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    initial_bases: registered_base.then(|| {
+                        vec![BasePath {
+                            id: 1,
+                            name: Some("external".to_string()),
+                            path: base_uri.clone(),
+                            is_dataset_root: false,
+                        }]
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await?;
+        let values = StructArray::new(
+            children,
+            vec![
+                Arc::new(LargeBinaryArray::from(vec![
+                    None,
+                    None,
+                    None,
+                    Some(b"inline".as_slice()),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    None,
+                ])),
+                Arc::new(UInt64Array::from(vec![Some(0), Some(4), None, None])),
+                Arc::new(UInt64Array::from(vec![Some(6), Some(6), None, None])),
+            ],
+            None,
+        );
+        table
+            .add(RecordBatch::try_new(schema, vec![Arc::new(values)])?)
+            .allow_external_blob_outside_bases(!registered_base)
+            .execute()
+            .await?;
+        let reopened = db.open_table(name).execute().await?;
+        let ids = collect_row_ids(&reopened).await?;
+        let bytes = reopened.fetch_blobs("image", &ids).await?;
+        assert_eq!(bytes.value(0), &payload[..6]);
+        assert_eq!(bytes.value(1), &payload[4..10]);
+        assert_eq!(bytes.value(2), payload);
+        assert_eq!(bytes.value(3), b"inline");
+        let files = reopened.fetch_blob_files("image", &ids).await?;
+        assert_eq!(files[1].as_ref().unwrap().size(), 6);
+        assert_eq!(
+            files[1].as_ref().unwrap().read_range(1..3).await?,
+            &payload[5..7]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn external_uri_add_requires_opt_in() -> Result<()> {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().join("db").to_str().unwrap())
@@ -1759,5 +1842,190 @@ async fn malformed_string_uri_is_rejected_at_write() -> Result<()> {
 
     assert!(err.to_string().contains("not a uri"), "got: {err}");
     assert_eq!(table.count_rows(None).await?, 0);
+    Ok(())
+}
+
+fn layout_batch(wide: bool, id: i64, position: Option<u64>, size: Option<u64>) -> RecordBatch {
+    let field = if wide {
+        lancedb::blob("image", true)
+    } else {
+        blob("image", true)
+    };
+    let DataType::Struct(children) = field.data_type().clone() else {
+        unreachable!()
+    };
+    let mut columns: Vec<arrow_array::ArrayRef> = vec![
+        Arc::new(LargeBinaryArray::from(vec![Some(b"payload".as_slice())])),
+        new_null_array(&DataType::Utf8, 1),
+    ];
+    if wide {
+        columns.push(Arc::new(UInt64Array::from(vec![position])));
+        columns.push(Arc::new(UInt64Array::from(vec![size])));
+    }
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            field,
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![id])),
+            Arc::new(StructArray::new(children, columns, None)),
+        ],
+    )
+    .unwrap()
+}
+
+fn layout_reader(batches: Vec<RecordBatch>) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+    let schema = batches[0].schema();
+    Box::new(arrow_array::RecordBatchIterator::new(
+        batches.into_iter().map(Ok),
+        schema,
+    ))
+}
+
+#[tokio::test]
+async fn blob_layout_append_and_merge_normalize_both_directions() -> Result<()> {
+    for wide in [false, true] {
+        for merge in [false, true] {
+            let tmp = tempdir().unwrap();
+            let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+            let initial = layout_batch(wide, 1, None, None);
+            let schema = initial.schema();
+            let table = db.create_table("layouts", initial).execute().await?;
+            let input = layout_batch(!wide, if merge { 1 } else { 2 }, None, None);
+            if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                let result = builder
+                    .execute(layout_reader(vec![
+                        input,
+                        layout_batch(!wide, 2, None, None),
+                    ]))
+                    .await?;
+                assert_eq!(result.num_updated_rows, 1);
+                assert_eq!(result.num_inserted_rows, 1);
+            } else {
+                table.add(input).execute().await?;
+            }
+            assert_eq!(table.schema().await?, schema);
+            assert_eq!(table.count_rows(None).await?, 2);
+            let ids = collect_row_ids(&table).await?;
+            let values = table.fetch_blobs("image", &ids).await?;
+            assert_eq!(values.value(0), b"payload");
+            assert_eq!(values.value(1), b"payload");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_rejects_non_null_ranges_atomically_in_later_batches() -> Result<()> {
+    for merge in [false, true] {
+        for (position, size) in [(Some(0), None), (None, Some(6)), (Some(0), Some(6))] {
+            let tmp = tempdir().unwrap();
+            let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+            let table = db
+                .create_table("layouts", layout_batch(false, 1, None, None))
+                .execute()
+                .await?;
+            let version = table.version().await?;
+            // A successful first batch must not commit when a later batch has a range.
+            let input = layout_reader(vec![
+                layout_batch(true, 2, None, None),
+                layout_batch(true, 3, position, size),
+            ]);
+            let result = if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(input).await.map(|_| ())
+            } else {
+                table.add(input).execute().await.map(|_| ())
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("cannot store byte ranges"), "{error}");
+            assert_eq!(table.version().await?, version);
+            assert_eq!(table.count_rows(None).await?, 1);
+            let ids = collect_row_ids(&table).await?;
+            assert_eq!(table.fetch_blobs("image", &ids).await?.value(0), b"payload");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_overwrite_replaces_schema_in_both_directions() -> Result<()> {
+    for wide in [false, true] {
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+        let table = db
+            .create_table("layouts", layout_batch(wide, 1, None, None))
+            .execute()
+            .await?;
+        let input = layout_batch(!wide, 2, None, None);
+        let expected_schema = input.schema();
+        table
+            .add(input)
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await?;
+        assert_eq!(table.schema().await?, expected_schema);
+        assert_eq!(table.count_rows(None).await?, 1);
+        let ids = collect_row_ids(&table).await?;
+        assert_eq!(table.fetch_blobs("image", &ids).await?.value(0), b"payload");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_rte_merge_normalizes_before_writing() -> Result<()> {
+    use lancedb::{query::Select, table::RTEWriteSpec};
+    for wide in [false, true] {
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+        let table = db
+            .create_table("layouts", layout_batch(wide, 1, None, None))
+            .execute()
+            .await?;
+        table.set_unenforced_primary_key(["id"]).await?;
+        table.enable_rte(RTEWriteSpec::unsharded()).await?;
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        merge
+            .clone()
+            .execute(layout_reader(vec![layout_batch(!wide, 2, None, None)]))
+            .await?;
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .execute()
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+        if !wide {
+            let error = merge
+                .execute(layout_reader(vec![
+                    layout_batch(true, 3, None, None),
+                    layout_batch(true, 4, Some(0), Some(6)),
+                ]))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("cannot store byte ranges"));
+            let batches = table
+                .query()
+                .select(Select::columns(&["id"]))
+                .execute()
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+        }
+    }
     Ok(())
 }

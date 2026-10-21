@@ -261,10 +261,15 @@ class StreamingDataset(IterableDataset):
         storage) at the cost of higher memory usage per split buffer.  Defaults
         to ``DEFAULT_READ_BATCH_SIZE`` (64).
     io_queue_depth:
-        Number of I/O batches to keep in flight per split.  Higher values
-        overlap storage latency with transform and training compute at the cost
-        of more memory and threads.  Must be greater than zero.  Defaults to
-        ``DEFAULT_PREFETCH_BATCHES`` (4).
+        Number of fetched batches to keep ahead of the transform stage per
+        split: this bounds the combined count of in-flight fetches and
+        already-fetched batches still waiting for a transform slot.  Higher
+        values overlap storage latency with transform and training compute
+        at the cost of more memory and threads, but I/O stops running ahead
+        once this many batches are buffered, applying backpressure when the
+        transform stage (or ``transform_queue_depth``) is the bottleneck.
+        Must be greater than zero.  Defaults to ``DEFAULT_PREFETCH_BATCHES``
+        (4).
     columns:
         Optional list of column names to read.  When set, only those columns
         are fetched from storage; all others are omitted.  ``None`` (the
@@ -836,8 +841,17 @@ class StreamingDataset(IterableDataset):
             io_pending[i].append((abs_start, io_pool.submit(_io_call, perm_i, indices)))
 
         def _fill_io(i: int) -> None:
+            # Budget covers both in-flight fetches (io_pending) and batches
+            # that have already landed but are still waiting for a transform
+            # slot (raw_batches).  Without raw_batches in the count, a slow
+            # transform stage never applies backpressure to Stage 1: each
+            # completed fetch is drained into raw_batches and immediately
+            # replaced by a new one, so I/O keeps racing arbitrarily far
+            # ahead of the transform stage instead of merely overlapping
+            # storage latency with it.
             while (
-                len(io_pending[i]) < io_queue_depth and fetch_head[i] < split_sizes[i]
+                len(io_pending[i]) + len(raw_batches[i]) < io_queue_depth
+                and fetch_head[i] < split_sizes[i]
             ):
                 _submit_io(i)
 

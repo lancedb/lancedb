@@ -2197,7 +2197,7 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// every declaration. For callers that stage declarations behind other work
 /// and need those rejections before any of it lands.
 ///
-/// Only the schema is consulted. Declaring also refuses a table with an LSM
+/// Only the schema is consulted. Declaring also refuses a table with an RTE
 /// write spec or retained SSTables; that is table state, checked at commit.
 ///
 /// ```
@@ -3025,7 +3025,7 @@ mod tests {
     /// The gate's reproducer: the reciprocal of the declare-under-spec check.
     #[tokio::test]
     async fn test_installing_an_lsm_spec_over_computed_columns_is_refused() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -3053,14 +3053,14 @@ mod tests {
             .unwrap();
 
         let err = table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(
             matches!(&err, Error::NotSupported { message } if message.contains("computed")),
             "{err:?}"
         );
-        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+        assert!(table.get_rte_spec().await.unwrap().is_none());
     }
 
     /// The gate's reproducer: declaration metadata is admitted only through
@@ -3233,10 +3233,10 @@ mod tests {
         );
     }
 
-    /// Stale handles must not commit the computed/LSM state in either order.
+    /// Stale handles must not commit the computed/RTE state in either order.
     #[tokio::test]
     async fn test_stale_handles_cannot_mix_computed_and_lsm() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -3260,7 +3260,7 @@ mod tests {
             .await
             .unwrap();
         let err = stale
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }), "install won");
@@ -3274,10 +3274,7 @@ mod tests {
         let table = conn.create_table("mix2", batch).execute().await.unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
         let stale = conn.open_table("mix2").execute().await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let err = add_computed(&stale, &[("doubled".into(), "x * 2".into())])
             .await
             .unwrap_err();
@@ -3289,7 +3286,7 @@ mod tests {
     /// flag is the durable marker; declaration refuses on it.
     #[tokio::test]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
         use arrow_array::{Int64Array, RecordBatchIterator};
 
         let tmp_dir = tempfile::tempdir().unwrap();
@@ -3315,21 +3312,18 @@ mod tests {
             .await
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let mut merge = table.merge_insert(&["id"]);
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_lsm(true);
+            .use_rte(true);
         merge
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_rte().await.unwrap();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await

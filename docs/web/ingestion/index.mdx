@@ -1,125 +1,97 @@
 ---
 title: "Ingesting data"
 sidebarTitle: "Overview"
-description: "Getting data into a table: creating one from your data, and the four write operations that follow."
+description: "Choose how to create a table, append records or change existing data."
 icon: inbox
 keywords: ["ingest", "create table", "add", "insert", "arrow", "pandas", "polars", "pydantic"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Create tables and write records through the SDKs in OSS and Enterprise. Enterprise also provides SQL write statements.
 ---
 
-import {
-    PyUpdateConnectEnterprise as UpdateConnectEnterprise,
-    PyUpdateConnectLocal as UpdateConnectLocal,
-    PyUpdateExampleTableSetup as UpdateExampleTableSetup,
-    TsUpdateConnectEnterprise,
-    TsUpdateConnectLocal,
-    TsUpdateExampleTableSetup,
-    RsUpdateConnectEnterprise,
-    RsUpdateConnectLocal,
-    RsUpdateExampleTableSetup,
-    RsUpdateMakeUsersReader,
-} from '/snippets/tables.mdx';
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
 
-In LanceDB, tables store records with a defined schema that specifies column
-names and types. Across the SDKs, you can create tables from row-oriented data
-and Apache Arrow data structures. The Python SDK additionally supports PyArrow
-schemas for explicit schema control, and `LanceModel` for Pydantic-based
-validation.
+Ingestion brings data into a LanceDB table. Start by choosing a schema and
+creating the table, then choose a write operation according to how incoming
+records relate to data already stored.
 
-Getting data in has two halves: creating a table from data you already have, and
-writing to a table that exists. This page covers the first and introduces the
-second.
+## Choose a write operation {#choose-a-write-method}
 
-<Note>
-Every operation here has a SQL form -- see [DML](/sql#dml).
-</Note>
-
-Start by [creating a table](/ingestion/create-table); the rest of this
-section writes to one that exists.
-
-## Choose a write method {#choose-a-write-method}
-
-| Family |  Method | Use this when... |
-| --------------- | --------------- | ---------------- |
-| [`add`](/ingestion/insert) | `add(data)` | You are appending new rows and do not need to match against existing ones. |
-| `update` | `update(where=..., values=...)` | You want to edit rows that already exist, using a SQL filter. |
-| `merge_insert` | `.when_matched_update_all()` | You have incoming rows and want to update keys that already exist in the table. |
-| `merge_insert` | `.when_not_matched_insert_all()` | You have incoming rows and want to insert keys that do not exist yet. |
-| `merge_insert` | `.when_matched_update_all()` + `.when_not_matched_insert_all()` | You want both behaviors together (often called **upsert**: update existing keys **and** insert missing keys in the same operation). |
-| `merge_insert` | `.when_not_matched_by_source_delete(...)` | You want to remove target rows that are missing from the incoming source set. |
-
-Write operations return status metadata. For example, `update` reports updated row count and
-committed `version`, `delete` reports deleted row count and `version`, and `merge_insert` reports
-inserted, updated, deleted, retry-attempt, and `version` fields. Writes require a mutable table
-handle; after checking out an older version for reads, call `checkout_latest` / `checkoutLatest`
-before modifying data.
-The committed `version` advances even for writes that affect zero rows, such as a delete predicate
-that matches nothing.
-
-## Connect to LanceDB {#connect-to-lancedb}
-
-Connect to your local LanceDB instance:
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateConnectLocal}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateConnectLocal}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateConnectLocal}
-    </CodeBlock>
-</CodeGroup>
-
-Or, connect to LanceDB Enterprise:
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateConnectEnterprise}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateConnectEnterprise}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateConnectEnterprise}
-    </CodeBlock>
-</CodeGroup>
-
-In the Rust snippets, a `make_users_reader` helper is used  to build Arrow input data.
-
-<CodeGroup>
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateMakeUsersReader}
-    </CodeBlock>
-</CodeGroup>
-
-## Create the example table {#create-the-example-table}
-
-We'll start by creating a simple table with `id`, `name`, and `login_count` columns. All examples below use the same table.
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateExampleTableSetup}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateExampleTableSetup}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateExampleTableSetup}
-    </CodeBlock>
-</CodeGroup>
-
-Expected table contents:
-
-| id | name | login_count |
+| Task | Operation | What happens |
 | --- | --- | --- |
-| 1 | Alice | 10 |
-| 2 | Bob | 20 |
+| [Create a table](/ingestion/create-table) | `create_table` / `createTable` | Create a table from data or an explicit schema. |
+| [Append records](/ingestion/insert) | `add` | Add rows without matching existing keys. |
+| [Upsert by key](/ingestion/merge-insert) | `merge_insert` / `mergeInsert` | Choose whether matching rows are updated and new keys inserted. |
+| [Update selected rows](/ingestion/update) | `update` | Change values in rows selected by a predicate. |
+| [Delete selected rows](/ingestion/delete) | `delete` | Remove matching rows from the current table contents. |
 
-The example above shows a PyArrow schema. You can just as well create the table using other
-table creation patterns (Pandas, Polars, Pydantic, iterators, etc.) -- see [Create a table](/ingestion/create-table#create-a-table-with-data).
+Appending the same input twice can create duplicate records. Use merge insert
+with a stable key when the incoming data should update existing records.
+
+## Connect and prepare the data {#connect-to-lancedb}
+
+Use the [connection guide](/basics/connect) to connect to OSS or Enterprise.
+The SDK write operations in this section work with both. Enterprise also
+supports [SQL write statements](/sql#dml); an SDK filter expression does not
+require a separate SQL connection.
+
+Choose the column types, required fields and vector dimensions before a large
+load. SDKs support different input representations, including row objects and
+Arrow batches. The [table creation guide](/ingestion/create-table) covers
+those choices.
+
+## Try a complete write workflow {#create-the-example-table}
+
+This example starts with Alice and Bob, appends Charlie, updates Bob's name
+and login count, then merges a batch containing Charlie and Dana. Finally, it
+selects Dana's row for inspection and deletes it.
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>
+
+## Verify the result {#verify}
+
+After a write completes, inspect the affected keys and fields and check the row
+count. SDK return values differ by operation and language; use the relevant
+API reference when relying on returned counts or version metadata.
+
+Readers with older snapshots may not see another handle's writes immediately.
+See [Consistency](/tables/consistency). A table checked out at a historical
+version must return to the latest version before it can be modified.
+
+## Load larger datasets {#large-loads}
+
+Use batches or file-backed input when the dataset is too large to hold in
+memory. The [insert guide](/ingestion/insert#large-datasets) covers input
+formats, progress reporting and write parallelism. Keep retry behavior in mind:
+repeating an append is not the same as retrying a key-based upsert.

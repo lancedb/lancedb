@@ -41,17 +41,17 @@ import java.util.concurrent.ConcurrentHashMap;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Unit tests for the MemWAL LSM routes, run against a scripted local HTTP server.
+ * Unit tests for the RTE LSM routes, run against a scripted local HTTP server.
  *
  * <p>The wire assertions mirror the Rust mocked-endpoint tests in {@code
  * rust/lancedb/src/remote/table.rs}, which are the contract these routes have to match.
  */
-public class LanceDbTableLsmTest {
+public class LanceDbTableRTETest {
   private static final ObjectMapper MAPPER = new ObjectMapper();
 
   private HttpServer server;
   private LanceDbRestClient client;
-  private LanceDbTableLsm lsm;
+  private LanceDbTableRTE rte;
 
   private final List<String> requestPaths = Collections.synchronizedList(new ArrayList<String>());
   private final List<String> requestBodies = Collections.synchronizedList(new ArrayList<String>());
@@ -101,7 +101,7 @@ public class LanceDbTableLsmTest {
             .database("test-db")
             .endpoint("http://127.0.0.1:" + server.getAddress().getPort())
             .buildRestClient();
-    lsm = new LanceDbTableLsm(client, "my_table");
+    rte = new LanceDbTableRTE(client, "my_table");
   }
 
   @AfterEach
@@ -115,12 +115,12 @@ public class LanceDbTableLsmTest {
   // ===========================================================================
 
   @Test
-  public void testSetLsmWriteSpecUnsharded() throws Exception {
-    enqueue("set_lsm_write_spec", 200, "");
+  public void testEnableRTEUnsharded() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    lsm.setLsmWriteSpec(LsmWriteSpec.unsharded());
+    rte.enableRTE(RTEWriteSpec.unsharded());
 
-    assertEquals("/v1/table/my_table/set_lsm_write_spec/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/enable_rte/", requestPaths.get(0));
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("unsharded", body.get("sharding").get("mode").asText());
     assertFalse(body.get("sharding").has("column"));
@@ -128,11 +128,10 @@ public class LanceDbTableLsmTest {
   }
 
   @Test
-  public void testSetLsmWriteSpecBucket() throws Exception {
-    enqueue("set_lsm_write_spec", 200, "");
+  public void testEnableRTEBucket() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    lsm.setLsmWriteSpec(
-        LsmWriteSpec.bucket("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
+    rte.enableRTE(RTEWriteSpec.bucket("id", 16).withMaintainedIndexes(Arrays.asList("id_idx")));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("bucket", body.get("sharding").get("mode").asText());
@@ -143,10 +142,10 @@ public class LanceDbTableLsmTest {
   }
 
   @Test
-  public void testSetLsmWriteSpecIdentity() throws Exception {
-    enqueue("set_lsm_write_spec", 200, "");
+  public void testEnableRTEIdentity() throws Exception {
+    enqueue("enable_rte", 200, "");
 
-    lsm.setLsmWriteSpec(LsmWriteSpec.identity("tenant"));
+    rte.enableRTE(RTEWriteSpec.identity("tenant"));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("identity", body.get("sharding").get("mode").asText());
@@ -160,55 +159,54 @@ public class LanceDbTableLsmTest {
    */
   @Test
   public void testMaintainedIndexesNullAndEmptyAreDistinctOnTheWire() throws Exception {
-    enqueue("set_lsm_write_spec", 200, "");
+    enqueue("enable_rte", 200, "");
 
-    lsm.setLsmWriteSpec(LsmWriteSpec.unsharded());
+    rte.enableRTE(RTEWriteSpec.unsharded());
     JsonNode fresh = MAPPER.readTree(requestBodies.get(0));
     assertTrue(fresh.has("maintained_indexes"), "the key must be present");
     assertTrue(fresh.get("maintained_indexes").isNull(), "a fresh spec sends null, not []");
 
-    lsm.setLsmWriteSpec(
-        LsmWriteSpec.unsharded().withMaintainedIndexes(Collections.<String>emptyList()));
+    rte.enableRTE(RTEWriteSpec.unsharded().withMaintainedIndexes(Collections.<String>emptyList()));
     JsonNode none = MAPPER.readTree(requestBodies.get(1));
     assertTrue(none.get("maintained_indexes").isArray());
     assertEquals(0, none.get("maintained_indexes").size());
   }
 
   @Test
-  public void testSetLsmWriteSpecWriterConfigDefaults() throws Exception {
-    enqueue("set_lsm_write_spec", 200, "");
+  public void testEnableRTEWriterConfigDefaults() throws Exception {
+    enqueue("enable_rte", 200, "");
 
     Map<String, String> defaults = new HashMap<String, String>();
     defaults.put("max_memtable_rows", "50000");
-    lsm.setLsmWriteSpec(LsmWriteSpec.unsharded().withWriterConfigDefaults(defaults));
+    rte.enableRTE(RTEWriteSpec.unsharded().withWriterConfigDefaults(defaults));
 
     JsonNode body = MAPPER.readTree(requestBodies.get(0));
     assertEquals("50000", body.get("writer_config_defaults").get("max_memtable_rows").asText());
   }
 
   @Test
-  public void testUnsetLsmWriteSpec() {
-    enqueue("unset_lsm_write_spec", 200, "");
+  public void testDisableRTE() {
+    enqueue("disable_rte", 200, "");
 
-    lsm.unsetLsmWriteSpec();
+    rte.disableRTE();
 
-    assertEquals("/v1/table/my_table/unset_lsm_write_spec/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/disable_rte/", requestPaths.get(0));
     assertEquals("", requestBodies.get(0));
   }
 
   @Test
-  public void testGetLsmWriteSpec() {
+  public void testGetRTESpec() {
     enqueue(
-        "get_lsm_write_spec",
+        "get_rte_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"bucket\",\"column\":\"id\","
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"bucket\",\"column\":\"id\","
             + "\"num_buckets\":16},\"maintained_indexes\":[\"id_idx\"],"
             + "\"writer_config_defaults\":{\"durable_write\":\"true\"}}}");
 
-    Optional<LsmWriteSpec> spec = lsm.getLsmWriteSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
-    assertEquals(LsmWriteSpec.Sharding.BUCKET, spec.get().sharding());
+    assertEquals(RTEWriteSpec.Sharding.BUCKET, spec.get().sharding());
     assertEquals("id", spec.get().column());
     assertEquals(Integer.valueOf(16), spec.get().numBuckets());
     assertEquals(Arrays.asList("id_idx"), spec.get().maintainedIndexes());
@@ -217,28 +215,28 @@ public class LanceDbTableLsmTest {
 
   /** A null selection, every index the table has, reads back as null rather than an empty list. */
   @Test
-  public void testGetLsmWriteSpecRoundTripsEveryIndexSelection() {
+  public void testGetRTESpecRoundTripsEveryIndexSelection() {
     enqueue(
-        "get_lsm_write_spec",
+        "get_rte_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":null,\"writer_config_defaults\":{}}}");
 
-    Optional<LsmWriteSpec> spec = lsm.getLsmWriteSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
     assertNull(spec.get().maintainedIndexes());
   }
 
   @Test
-  public void testGetLsmWriteSpecRoundTripsNoIndexSelection() {
+  public void testGetRTESpecRoundTripsNoIndexSelection() {
     enqueue(
-        "get_lsm_write_spec",
+        "get_rte_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":[],\"writer_config_defaults\":{}}}");
 
-    Optional<LsmWriteSpec> spec = lsm.getLsmWriteSpec();
+    Optional<RTEWriteSpec> spec = rte.getRTESpec();
 
     assertTrue(spec.isPresent());
     assertEquals(Collections.emptyList(), spec.get().maintainedIndexes());
@@ -249,32 +247,32 @@ public class LanceDbTableLsmTest {
    * rejected: reading a string or an object as null would turn a malformed response into a policy.
    */
   @Test
-  public void testGetLsmWriteSpecRejectsANonArrayMaintainedIndexes() {
+  public void testGetRTESpecRejectsANonArrayMaintainedIndexes() {
     enqueue(
-        "get_lsm_write_spec",
+        "get_rte_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":\"id_idx\",\"writer_config_defaults\":{}}}");
 
-    assertThrows(IllegalStateException.class, () -> lsm.getLsmWriteSpec());
+    assertThrows(IllegalStateException.class, () -> rte.getRTESpec());
   }
 
   @Test
-  public void testGetLsmWriteSpecRejectsNonStringIndexNames() {
+  public void testGetRTESpecRejectsNonStringIndexNames() {
     enqueue(
-        "get_lsm_write_spec",
+        "get_rte_spec",
         200,
-        "{\"lsm_write_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
+        "{\"rte_spec\":{\"sharding\":{\"mode\":\"unsharded\"},"
             + "\"maintained_indexes\":[7],\"writer_config_defaults\":{}}}");
 
-    assertThrows(IllegalStateException.class, () -> lsm.getLsmWriteSpec());
+    assertThrows(IllegalStateException.class, () -> rte.getRTESpec());
   }
 
   @Test
-  public void testGetLsmWriteSpecAbsent() {
-    enqueue("get_lsm_write_spec", 200, "{\"lsm_write_spec\":null}");
+  public void testGetRTESpecAbsent() {
+    enqueue("get_rte_spec", 200, "{\"rte_spec\":null}");
 
-    assertFalse(lsm.getLsmWriteSpec().isPresent());
+    assertFalse(rte.getRTESpec().isPresent());
   }
 
   // ===========================================================================
@@ -282,15 +280,15 @@ public class LanceDbTableLsmTest {
   // ===========================================================================
 
   @Test
-  public void testGetLsmStats() throws Exception {
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+  public void testGetRTEStats() throws Exception {
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
 
-    Optional<LsmStats> got = lsm.getLsmStats(true);
+    Optional<RTEStats> got = rte.getRTEStats(true);
 
-    assertEquals("/v1/table/my_table/get_lsm_stats/", requestPaths.get(0));
-    assertTrue(MAPPER.readTree(requestBodies.get(0)).get("include_generation_rows").asBoolean());
+    assertEquals("/v1/table/my_table/get_rte_stats/", requestPaths.get(0));
+    assertTrue(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
     assertTrue(got.isPresent());
-    BucketStats decoded = got.get().buckets().get(0);
+    TableShardStats decoded = got.get().tableShards().get(0);
     assertEquals("shard-0", decoded.shardId());
     assertEquals("Active", decoded.status());
     assertEquals(1, decoded.writerEpoch());
@@ -298,30 +296,30 @@ public class LanceDbTableLsmTest {
     assertEquals(9, decoded.currentGeneration());
     assertFalse(decoded.compacting());
     assertEquals(Arrays.asList(7L, 8L), generationNumbers(decoded));
-    assertEquals(1024, decoded.generations().get(0).bytes());
-    assertFalse(decoded.generations().get(0).rows().isPresent(), "rows absent unless requested");
+    assertEquals(1024, decoded.sstables().get(0).bytes());
+    assertFalse(decoded.sstables().get(0).rows().isPresent(), "rows absent unless requested");
     assertFalse(decoded.memtables().isPresent(), "absent memtables stay absent");
   }
 
   /** The optional fields decode when the server does send them. */
   @Test
-  public void testGetLsmStatsDecodesOptionalFields() {
+  public void testGetRTEStatsDecodesOptionalFields() {
     enqueue(
-        "get_lsm_stats",
+        "get_rte_stats",
         200,
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":3,\"wal_entry_position_last_seen\":11,"
-            + "\"generations\":[{\"generation\":7,\"bytes\":1024,\"rows\":42}],"
+            + "\"sstables\":[{\"generation\":7,\"bytes\":1024,\"rows\":42}],"
             + "\"compacting\":true,\"memtables\":[{\"generation\":8,\"rows\":5,"
             + "\"bytes\":64,\"batches\":2,\"indexes\":[\"id_idx\"]}]}]}}");
 
-    BucketStats decoded = lsm.getLsmStats(true).get().buckets().get(0);
+    TableShardStats decoded = rte.getRTEStats(true).get().tableShards().get(0);
 
     assertEquals(3, decoded.replayAfterWalEntryPosition());
     assertEquals(11, decoded.walEntryPositionLastSeen());
     assertTrue(decoded.compacting());
-    assertEquals(42, decoded.generations().get(0).rows().getAsLong());
+    assertEquals(42, decoded.sstables().get(0).rows().getAsLong());
     assertTrue(decoded.memtables().isPresent());
     MemtableStats memtable = decoded.memtables().get().get(0);
     assertEquals(8, memtable.generation());
@@ -332,19 +330,19 @@ public class LanceDbTableLsmTest {
   }
 
   @Test
-  public void testGetLsmStatsAbsentWhenLsmDisabled() {
-    enqueue("get_lsm_stats", 200, "{\"lsm_stats\":null}");
+  public void testGetRTEStatsAbsentWhenRTEDisabled() {
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    assertFalse(lsm.getLsmStats().isPresent());
+    assertFalse(rte.getRTEStats().isPresent());
   }
 
   @Test
-  public void testGetLsmStatsDefaultsToExcludingGenerationRows() throws Exception {
-    enqueue("get_lsm_stats", 200, stats());
+  public void testGetRTEStatsDefaultsToExcludingGenerationRows() throws Exception {
+    enqueue("get_rte_stats", 200, stats());
 
-    lsm.getLsmStats();
+    rte.getRTEStats();
 
-    assertFalse(MAPPER.readTree(requestBodies.get(0)).get("include_generation_rows").asBoolean());
+    assertFalse(MAPPER.readTree(requestBodies.get(0)).get("include_sstable_rows").asBoolean());
   }
 
   // ===========================================================================
@@ -353,22 +351,22 @@ public class LanceDbTableLsmTest {
 
   @Test
   public void testFlushAndCompactRoutes() {
-    enqueue("flush_lsm", 200, "");
-    enqueue("compact_lsm", 200, "");
+    enqueue("flush_rte", 200, "");
+    enqueue("compact_rte", 200, "");
 
-    lsm.flushLsm();
-    lsm.compactLsm();
+    rte.flushRTE();
+    rte.compactRTE();
 
-    assertEquals("/v1/table/my_table/flush_lsm/", requestPaths.get(0));
-    assertEquals("/v1/table/my_table/compact_lsm/", requestPaths.get(1));
+    assertEquals("/v1/table/my_table/flush_rte/", requestPaths.get(0));
+    assertEquals("/v1/table/my_table/compact_rte/", requestPaths.get(1));
   }
 
   @Test
   public void testHttpErrorCarriesStatus() {
-    enqueue("flush_lsm", 404, "no such table");
+    enqueue("flush_rte", 404, "no such table");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> lsm.flushLsm());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.flushRTE());
     assertEquals(404, e.statusCode());
   }
 
@@ -377,97 +375,97 @@ public class LanceDbTableLsmTest {
   // ===========================================================================
 
   @Test
-  public void testCheckpointReturnsWhenLsmDisabled() {
-    enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, "{\"lsm_stats\":null}");
+  public void testCheckpointReturnsWhenRTEDisabled() {
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_lsm"), "nothing to compact when the LSM path is off");
+    assertEquals(0, countCalls("compact_rte"), "nothing to compact when the LSM path is off");
   }
 
   @Test
   public void testCheckpointReturnsWhenNoGenerationsOutstanding() {
-    enqueue("flush_lsm", 200, "");
-    // A bucket with no L0 generations yields no target, so the drain never starts.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    enqueue("flush_rte", 200, "");
+    // A table shard with no SSTables yields no target, so the drain never starts.
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_lsm"));
+    assertEquals(0, countCalls("compact_rte"));
   }
 
   @Test
   public void testCheckpointConvergesOnceTargetGenerationsAreGone() {
-    enqueue("flush_lsm", 200, "");
-    // Watermark read: shard-0 holds generations 7 and 8, so target = 8.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+    enqueue("flush_rte", 200, "");
+    // Watermark read: shard-0 holds sstables 7 and 8, so target = 8.
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // First drain poll: both still outstanding, nothing compacting -> dispatch a pass.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 7L, 8L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 7L, 8L)));
     // Second drain poll: drained past the target -> done.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 9L)));
-    enqueue("compact_lsm", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 9L)));
+    enqueue("compact_rte", 200, "");
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(1, countCalls("compact_lsm"), "one pass dispatched");
-    assertEquals(3, countCalls("get_lsm_stats"), "watermark read plus two drain polls");
+    assertEquals(1, countCalls("compact_rte"), "one pass dispatched");
+    assertEquals(3, countCalls("get_rte_stats"), "watermark read plus two drain polls");
   }
 
   @Test
   public void testCheckpointDoesNotPileOnWhileEveryTargetBucketIsCompacting() {
-    enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", true, 4L)));
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", true, 4L)));
     // Still compacting on the first poll, so no pass is dispatched; then it drains.
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", true, 4L)));
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false, 5L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", true, 4L)));
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false, 5L)));
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(0, countCalls("compact_lsm"), "a latched bucket is left alone");
+    assertEquals(0, countCalls("compact_rte"), "a latched table shard is left alone");
   }
 
   @Test
   public void testCheckpointRetriesFromFlushAfterLostClaim() {
     // 421 on the watermark read: the node lost its claim, so the whole thing restarts
     // from flush rather than retrying the read in place.
-    enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 421, "no claim");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 421, "no claim");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(2, countCalls("flush_lsm"), "re-issued from flush");
+    assertEquals(2, countCalls("flush_rte"), "re-issued from flush");
   }
 
   @Test
   public void testCheckpointRetriesRetryableStatusInPlace() {
-    enqueue("flush_lsm", 429, "latch held");
-    enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, stats(bucket("shard-0", false)));
+    enqueue("flush_rte", 429, "latch held");
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, stats(tableShard("shard-0", false)));
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(2, countCalls("flush_lsm"), "429 retried in place, not re-issued");
+    assertEquals(2, countCalls("flush_rte"), "429 retried in place, not re-issued");
   }
 
   @Test
   public void testCheckpointPropagatesTerminalStatus() {
-    enqueue("flush_lsm", 400, "bad request");
+    enqueue("flush_rte", 400, "bad request");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> lsm.checkpointLsm());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.checkpointRTE());
     assertEquals(400, e.statusCode());
-    assertEquals(1, countCalls("flush_lsm"), "a terminal status is not retried");
+    assertEquals(1, countCalls("flush_rte"), "a terminal status is not retried");
   }
 
   @Test
   public void testCheckpointGivesUpAfterRepeatedLostClaims() {
-    enqueue("flush_lsm", 421, "no claim");
+    enqueue("flush_rte", 421, "no claim");
 
-    IllegalStateException e = assertThrows(IllegalStateException.class, () -> lsm.checkpointLsm());
+    IllegalStateException e = assertThrows(IllegalStateException.class, () -> rte.checkpointRTE());
     assertTrue(e.getMessage().contains("kept losing its claim"), e.getMessage());
-    assertEquals(4, countCalls("flush_lsm"), "the initial attempt plus MAX_REISSUES");
+    assertEquals(4, countCalls("flush_rte"), "the initial attempt plus MAX_REISSUES");
   }
 
   // ===========================================================================
@@ -476,50 +474,51 @@ public class LanceDbTableLsmTest {
 
   /**
    * A stats payload that does not decode must fail closed. Every one of these bodies used to be
-   * read as "no buckets", which is indistinguishable from a drained table, so {@code checkpointLsm}
-   * reported convergence for a checkpoint that never ran.
+   * read as "no table shards", which is indistinguishable from a drained table, so {@code
+   * checkpointRTE} reported convergence for a checkpoint that never ran.
    */
   @Test
   public void testCheckpointRejectsMalformedStats() {
     Map<String, String> malformed = new LinkedHashMap<String, String>();
     malformed.put("no response body at all", "");
-    malformed.put("stats object with no buckets", "{\"lsm_stats\":{}}");
-    malformed.put("bucket missing its required fields", "{\"lsm_stats\":{\"buckets\":[{}]}}");
+    malformed.put("stats object with no table shards", "{\"rte_stats\":{}}");
     malformed.put(
-        "bucket missing generations",
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "table shard missing its required fields", "{\"rte_stats\":{\"table_shards\":[{}]}}");
+    malformed.put(
+        "table shard missing sstables",
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
             + "\"compacting\":false}]}}");
     malformed.put(
         "generation with a non-numeric generation number",
-        "{\"lsm_stats\":{\"buckets\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
+        "{\"rte_stats\":{\"table_shards\":[{\"shard_id\":\"shard-0\",\"status\":\"Active\","
             + "\"writer_epoch\":1,\"manifest_version\":2,\"current_generation\":9,"
             + "\"replay_after_wal_entry_position\":0,\"wal_entry_position_last_seen\":0,"
-            + "\"generations\":[{\"generation\":\"7\",\"bytes\":1024}],"
+            + "\"sstables\":[{\"generation\":\"7\",\"bytes\":1024}],"
             + "\"compacting\":false}]}}");
 
     for (Map.Entry<String, String> each : malformed.entrySet()) {
       setUpFresh();
-      enqueue("flush_lsm", 200, "");
-      enqueue("get_lsm_stats", 200, each.getValue());
+      enqueue("flush_rte", 200, "");
+      enqueue("get_rte_stats", 200, each.getValue());
 
       assertThrows(
           IllegalStateException.class,
-          () -> lsm.checkpointLsm(),
+          () -> rte.checkpointRTE(),
           each.getKey() + " must not report convergence");
     }
   }
 
-  /** The one shape that legitimately means "this table has no LSM write path". */
+  /** The one shape that legitimately means "this table has no RTE write path". */
   @Test
   public void testCheckpointTreatsNullStatsAsNotWalBacked() {
-    enqueue("flush_lsm", 200, "");
-    enqueue("get_lsm_stats", 200, "{\"lsm_stats\":null}");
+    enqueue("flush_rte", 200, "");
+    enqueue("get_rte_stats", 200, "{\"rte_stats\":null}");
 
-    lsm.checkpointLsm();
+    rte.checkpointRTE();
 
-    assertEquals(1, countCalls("get_lsm_stats"));
+    assertEquals(1, countCalls("get_rte_stats"));
   }
 
   // ===========================================================================
@@ -529,40 +528,40 @@ public class LanceDbTableLsmTest {
   /**
    * The transport must not retry on the checkpoint loop's behalf. Apache HttpClient's default
    * strategy retries exactly 429 and 503 — the two statuses {@code isRetryable} owns — which
-   * doubled every budget here and also retried {@code compact_lsm} in place, where the loop is
+   * doubled every budget here and also retried {@code compact_rte} in place, where the loop is
    * built to fall through to a fresh stats poll instead.
    */
   @Test
   public void testCheckpointRetryBudgetIsNotDoubledByTheTransport() {
-    enqueue("flush_lsm", 429, "latch held");
+    enqueue("flush_rte", 429, "latch held");
 
     LanceDbRestClient.HttpException e =
-        assertThrows(LanceDbRestClient.HttpException.class, () -> lsm.checkpointLsm());
+        assertThrows(LanceDbRestClient.HttpException.class, () -> rte.checkpointRTE());
 
     assertEquals(429, e.statusCode(), "the exhausted budget propagates the last error as itself");
-    assertEquals(9, countCalls("flush_lsm"), "the initial request plus MAX_RETRIES, and no more");
+    assertEquals(9, countCalls("flush_rte"), "the initial request plus MAX_RETRIES, and no more");
   }
 
   // ===========================================================================
   // harness
   // ===========================================================================
 
-  private static List<Long> generationNumbers(BucketStats bucket) {
+  private static List<Long> generationNumbers(TableShardStats tableShard) {
     List<Long> numbers = new ArrayList<Long>();
-    for (GenerationStats generation : bucket.generations()) {
+    for (SsTableStats generation : tableShard.sstables()) {
       numbers.add(generation.generation());
     }
     return numbers;
   }
 
-  /** Build an {@code lsm_stats} response body from bucket fragments. */
-  private static String stats(String... buckets) {
-    return "{\"lsm_stats\":{\"buckets\":[" + String.join(",", buckets) + "]}}";
+  /** Build a {@code rte_stats} response body from table shard fragments. */
+  private static String stats(String... tableShards) {
+    return "{\"rte_stats\":{\"table_shards\":[" + String.join(",", tableShards) + "]}}";
   }
 
-  private static String bucket(String shardId, boolean compacting, Long... generations) {
+  private static String tableShard(String shardId, boolean compacting, Long... sstables) {
     StringBuilder gens = new StringBuilder();
-    for (Long generation : generations) {
+    for (Long generation : sstables) {
       if (gens.length() > 0) {
         gens.append(",");
       }
@@ -572,7 +571,7 @@ public class LanceDbTableLsmTest {
         + shardId
         + "\",\"status\":\"Active\",\"writer_epoch\":1,\"manifest_version\":2,"
         + "\"current_generation\":9,\"replay_after_wal_entry_position\":0,"
-        + "\"wal_entry_position_last_seen\":0,\"generations\":["
+        + "\"wal_entry_position_last_seen\":0,\"sstables\":["
         + gens
         + "],\"compacting\":"
         + compacting
@@ -597,7 +596,7 @@ public class LanceDbTableLsmTest {
     return requestPaths.stream().filter(path -> operationOf(path).equals(operation)).count();
   }
 
-  /** {@code /v1/table/my_table/flush_lsm/} -> {@code flush_lsm}. */
+  /** {@code /v1/table/my_table/flush_rte/} -> {@code flush_rte}. */
   private static String operationOf(String path) {
     String[] segments = path.split("/");
     return segments.length == 0 ? "" : segments[segments.length - 1];

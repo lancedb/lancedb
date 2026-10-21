@@ -131,7 +131,7 @@ pub(crate) async fn execute_declare(
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
-    // An LSM write spec keeps visible rows in tiers refresh cannot reach;
+    // An RTE write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
     computed_columns::ensure_not_function_bound(
@@ -149,7 +149,7 @@ pub(crate) async fn execute_declare(
         .list_mem_wal_latest_shard_ids()
         .await?
         .is_empty();
-    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
+    if retained_sstables || table.get_rte_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "computed columns are not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
