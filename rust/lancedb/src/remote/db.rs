@@ -882,13 +882,12 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                     .to_string(),
             });
         }
-        if let Some(seconds) = request.auto_refresh_interval_seconds {
-            if !seconds.is_finite() || seconds <= 0.0 {
-                return Err(Error::InvalidInput {
-                    message: "auto_refresh_interval_seconds must be positive, finite seconds"
-                        .into(),
-                });
-            }
+        if let Some(seconds) = request.auto_refresh_interval_seconds
+            && (!seconds.is_finite() || seconds <= 0.0)
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be positive, finite seconds".into(),
+            });
         }
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let body = RemoteCreateMaterializedViewRequest {

@@ -412,6 +412,7 @@ impl Connection {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
@@ -448,6 +449,7 @@ impl Connection {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
