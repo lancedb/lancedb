@@ -35,11 +35,10 @@ use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_sta
 use crate::remote::util::stream_as_body;
 use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
-use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use crate::table::BaseTable;
 use crate::utils::{
     validate_database_name, validate_function_name, validate_namespace, validate_secret_name,
-    validate_storage_integration_name, validate_table_name, validate_view_name,
+    validate_table_name, validate_view_name,
 };
 use crate::view::ViewDescription;
 
@@ -221,7 +220,7 @@ impl RemoteDatabaseOptionsBuilder {
 
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
-    client: RestfulLanceDbClient<S>,
+    pub(super) client: RestfulLanceDbClient<S>,
     // Cache existence and server capabilities, not mutable per-handle table state.
     table_cache: Cache<String, ServerVersion>,
     uri: String,
@@ -674,11 +673,6 @@ fn build_function_identifier(name: &str, namespace: &[String]) -> Result<String>
     build_compound_identifier(name, namespace)
 }
 
-fn build_storage_integration_identifier(name: &str, namespace: &[String]) -> Result<String> {
-    validate_storage_integration_name(name)?;
-    build_compound_identifier(name, namespace)
-}
-
 /// Build a full path to a secret. Note that we do not need to percent-encode
 /// this when using it in a URL because the validation functions ensure that
 /// only URL-safe characters are present.
@@ -1107,96 +1101,6 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }
         };
         Ok((dropped.dropped, job))
-    }
-
-    async fn create_storage_integration(
-        &self,
-        name: &str,
-        request: CreateStorageIntegrationRequest,
-        namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        let id = build_storage_integration_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/storage_integration/{id}/create"))
-            .json(&request);
-        let (request_id, response) = self.client.send(req).await?;
-        self.client
-            .check_response(&request_id, response)
-            .await?
-            .json()
-            .await
-            .err_to_http(request_id)
-    }
-
-    async fn describe_storage_integration(
-        &self,
-        name: &str,
-        namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        let id = build_storage_integration_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/storage_integration/{id}/describe"));
-        let (request_id, response) = self.client.send(req).await?;
-        self.client
-            .check_response(&request_id, response)
-            .await?
-            .json()
-            .await
-            .err_to_http(request_id)
-    }
-
-    async fn list_storage_integrations(
-        &self,
-        namespace_path: &[String],
-        options: ListingOptions,
-    ) -> Result<ListingPage<String>> {
-        #[derive(serde::Deserialize)]
-        struct Response {
-            storage_integrations: Vec<Named>,
-            page_token: Option<String>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Named {
-            name: String,
-        }
-        let id = build_namespace_identifier(namespace_path)?;
-        let mut req = self
-            .client
-            .get(&format!("/v1/namespace/{id}/storage_integration/list"));
-        if let Some(token) = options.page_token {
-            req = req.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        let (request_id, response) = self.client.send(req).await?;
-        let response: Response = self
-            .client
-            .check_response(&request_id, response)
-            .await?
-            .json()
-            .await
-            .err_to_http(request_id)?;
-        Ok(ListingPage {
-            items: response
-                .storage_integrations
-                .into_iter()
-                .map(|item| item.name)
-                .collect(),
-            page_token: response.page_token,
-        })
-    }
-
-    async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let id = build_storage_integration_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/storage_integration/{id}/drop"));
-        let (request_id, response) = self.client.send(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
     }
 
     async fn create_secret(
@@ -2052,7 +1956,6 @@ impl From<StorageOptions> for RemoteOptions {
 mod tests {
     use super::{NamespaceHeaderProviderContext, build_cache_key};
     use crate::listing::{Listing, ListingOptions};
-    use crate::storage_integration::CreateStorageIntegrationRequest;
     use futures::TryStreamExt;
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -4479,83 +4382,6 @@ mod tests {
                     .unwrap();
             }
         }
-    }
-
-    #[tokio::test]
-    async fn storage_integrations_preserve_namespaces_configuration_and_pagination() {
-        let conn = Connection::new_with_handler(|request| {
-            let path = request.url().path();
-            let body = if path == "/v1/namespace/analytics$ingest/storage_integration/list" {
-                assert_eq!(request.method(), &reqwest::Method::GET);
-                let next = request
-                    .url()
-                    .query_pairs()
-                    .any(|(key, value)| key == "page_token" && value == "next");
-                if next {
-                    r#"{"storage_integrations":[{"name":"zeta"}]}"#
-                } else {
-                    r#"{"storage_integrations":[{"name":"raw"}],"page_token":"next"}"#
-                }
-            } else if path == "/v1/storage_integration/analytics$ingest$raw/drop" {
-                r#"{"dropped":true}"#
-            } else {
-                assert!(
-                    path == "/v1/storage_integration/analytics$ingest$raw/create"
-                        || path == "/v1/storage_integration/analytics$ingest$raw/describe"
-                );
-                if path.ends_with("/create") {
-                    let body: serde_json::Value =
-                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
-                            .unwrap();
-                    assert_eq!(
-                        body,
-                        serde_json::json!({"storage_provider":"S3", "storage_prefix":"s3://customer-bucket/raw/", "aws_role_arn":"arn:aws:iam::123456789012:role/access"})
-                    );
-                }
-                include_str!("../../tests/fixtures/storage_integration.json")
-            };
-            http::Response::builder().status(200).body(body).unwrap()
-        });
-        let namespace = vec!["analytics".into(), "ingest".into()];
-        let created = conn
-            .create_storage_integration(
-                "raw",
-                CreateStorageIntegrationRequest::s3(
-                    "s3://customer-bucket/raw/",
-                    "arn:aws:iam::123456789012:role/access",
-                ),
-                &namespace,
-            )
-            .await
-            .unwrap();
-        assert_eq!(created.aws_account_id, "001122334455");
-        assert!(!created.access_verified);
-        assert_eq!(
-            created.trust_policy["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"],
-            created.aws_external_id
-        );
-        assert_eq!(
-            conn.describe_storage_integration("raw", &namespace)
-                .await
-                .unwrap()
-                .aws_external_id,
-            created.aws_external_id
-        );
-        assert_eq!(
-            conn.list_storage_integrations(&namespace, Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap(),
-            ["raw", "zeta"]
-        );
-        conn.drop_storage_integration("raw", &namespace)
-            .await
-            .unwrap();
-        assert!(
-            conn.drop_storage_integration("a/b", &namespace)
-                .await
-                .is_err()
-        );
     }
 
     #[tokio::test]

@@ -1,9 +1,5 @@
 {
-  "name": "raw",
-  "namespace_path": [
-    "analytics",
-    "ingest"
-  ],
+  "name": "platform/raw",
   "storage_provider": "S3",
   "storage_prefix": "s3://customer-bucket/raw/",
   "aws_role_arn": "arn:aws:iam::123456789012:role/access",

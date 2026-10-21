@@ -33,7 +33,6 @@ use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
-use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use crate::table::{BaseTable, WriteOptions};
 use crate::view::ViewDescription;
 
@@ -305,12 +304,6 @@ fn function_catalog_not_supported<T>() -> Result<T> {
     })
 }
 
-fn storage_integration_not_supported<T>() -> Result<T> {
-    Err(crate::Error::NotSupported {
-        message: "Storage integrations require a supporting remote server".into(),
-    })
-}
-
 fn secret_catalog_not_supported<T>() -> Result<T> {
     Err(crate::error::Error::NotSupported {
         message: "Secret operations are not supported by this database".to_string(),
@@ -522,40 +515,6 @@ pub trait Database:
     async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
         secret_catalog_not_supported()
     }
-    /// Register a namespace-scoped storage integration on a supporting server.
-    async fn create_storage_integration(
-        &self,
-        _name: &str,
-        _request: CreateStorageIntegrationRequest,
-        _namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        storage_integration_not_supported()
-    }
-    /// Describe a storage integration and its AWS setup instructions.
-    async fn describe_storage_integration(
-        &self,
-        _name: &str,
-        _namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        storage_integration_not_supported()
-    }
-    /// Fetch one page of integration names within a namespace.
-    async fn list_storage_integrations(
-        &self,
-        _namespace_path: &[String],
-        _options: ListingOptions,
-    ) -> Result<ListingPage<String>> {
-        storage_integration_not_supported()
-    }
-    /// Remove an integration name.
-    async fn drop_storage_integration(
-        &self,
-        _name: &str,
-        _namespace_path: &[String],
-    ) -> Result<()> {
-        storage_integration_not_supported()
-    }
-
     /// Create a view from a defining query. The query is planned once, by the
     /// database, so one that cannot be planned is refused now rather than at
     /// the first read.

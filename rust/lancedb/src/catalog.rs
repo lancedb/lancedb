@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Catalogs manage databases. A remote catalog is the root namespace of a server.
+//! Catalogs manage databases and storage integrations at the server root.
 //!
 //! ```
 //! # #[cfg(feature = "remote")]
@@ -26,6 +26,8 @@ use crate::Result;
 use crate::connection::Connection;
 use crate::database::Database;
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
+use crate::listing::{Listing, ListingOptions, ListingPage};
+use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 
 /// Options for creating a database. By default an existing name is an error.
 #[derive(Clone, Debug)]
@@ -200,13 +202,45 @@ impl Stream for DatabaseNames {
     }
 }
 
-/// A backend that manages databases. Implementations own database lifecycle semantics.
+/// A backend that manages databases and catalog storage integrations.
 #[async_trait::async_trait]
 pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
     /// Obtain deployment-wide authorization, if supported by this backend.
     fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
         Err(crate::Error::NotSupported {
             message: "Authorization administration is not supported by this catalog".into(),
+        })
+    }
+
+    /// Register catalog-scoped S3 configuration and return AWS setup instructions.
+    async fn create_storage_integration(
+        &self,
+        _name: &str,
+        _request: CreateStorageIntegrationRequest,
+    ) -> Result<StorageIntegrationInfo> {
+        Err(crate::Error::NotSupported {
+            message: "Storage integrations are unsupported by this catalog".into(),
+        })
+    }
+    /// Describe a catalog storage integration.
+    async fn describe_storage_integration(&self, _name: &str) -> Result<StorageIntegrationInfo> {
+        Err(crate::Error::NotSupported {
+            message: "Storage integrations are unsupported by this catalog".into(),
+        })
+    }
+    /// List one page of catalog storage integration names.
+    async fn list_storage_integrations(
+        &self,
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        Err(crate::Error::NotSupported {
+            message: "Storage integrations are unsupported by this catalog".into(),
+        })
+    }
+    /// Drop a catalog storage integration with ownership permission.
+    async fn drop_storage_integration(&self, _name: &str) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "Storage integrations are unsupported by this catalog".into(),
         })
     }
 
@@ -264,6 +298,42 @@ impl CatalogConnection {
     /// Access the underlying backend.
     pub fn catalog(&self) -> &Arc<dyn Catalog> {
         &self.catalog
+    }
+
+    /// Register an S3 prefix under a catalog-relative name such as `platform/raw`.
+    /// Registration does not verify access or configure database storage operations.
+    pub async fn create_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        request: CreateStorageIntegrationRequest,
+    ) -> Result<StorageIntegrationInfo> {
+        crate::utils::validate_database_name(name.as_ref())?;
+        self.catalog
+            .create_storage_integration(name.as_ref(), request)
+            .await
+    }
+    /// Return the stable external ID and complete AWS setup policies.
+    pub async fn describe_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+    ) -> Result<StorageIntegrationInfo> {
+        crate::utils::validate_database_name(name.as_ref())?;
+        self.catalog
+            .describe_storage_integration(name.as_ref())
+            .await
+    }
+    /// Lazily list storage integration names throughout this catalog.
+    pub fn list_storage_integrations(&self, options: ListingOptions) -> Listing<String> {
+        let catalog = self.catalog.clone();
+        Listing::new(options, move |options| {
+            let catalog = catalog.clone();
+            async move { catalog.list_storage_integrations(options).await }
+        })
+    }
+    /// Drop an integration. Recreation generates a new external ID.
+    pub async fn drop_storage_integration(&self, name: impl AsRef<str>) -> Result<()> {
+        crate::utils::validate_database_name(name.as_ref())?;
+        self.catalog.drop_storage_integration(name.as_ref()).await
     }
 
     /// Create a database; pass a name or [`CreateDatabaseRequest`] for additional options.

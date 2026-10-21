@@ -263,14 +263,8 @@ impl AuthzObject {
     }
 
     #[staticmethod]
-    fn storage_integration(
-        database: &str,
-        namespace: &Bound<'_, PyAny>,
-        name: &str,
-    ) -> PyResult<Self> {
+    fn storage_integration(name: &str) -> PyResult<Self> {
         Self::validated(Object::StorageIntegration(StorageIntegrationObject {
-            database: database.into(),
-            namespace: namespace_path(namespace)?,
             storage_integration: name.into(),
         }))
     }

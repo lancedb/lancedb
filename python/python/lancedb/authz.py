@@ -173,15 +173,9 @@ class Object:
         return cls(str(_lancedb.AuthzObject.secret(database, namespace_path, name)))
 
     @classmethod
-    def storage_integration(
-        cls, *, database: str, name: str, namespace_path: Sequence[str] = ("public",)
-    ) -> "Object":
-        """A storage integration, defaulting to the database's public namespace."""
-        return cls(
-            str(
-                _lancedb.AuthzObject.storage_integration(database, namespace_path, name)
-            )
-        )
+    def storage_integration(cls, *, name: str) -> "Object":
+        """A catalog storage integration, including slash-bearing logical names."""
+        return cls(str(_lancedb.AuthzObject.storage_integration(name)))
 
     @classmethod
     def function(

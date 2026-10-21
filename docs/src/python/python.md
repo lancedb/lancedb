@@ -863,23 +863,27 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.storage_integration.StorageIntegrationInfo
 
 
+Integrations belong to the catalog and use the same name rules as databases, including
+slash-bearing names such as `platform/raw`. Their keyspace is separate from database
+names. They remain registered when databases are dropped.
+
 Register an S3 prefix and give the returned setup instructions to your AWS administrator:
 
 ```python
-integration = db.create_storage_integration(
-    "raw", "s3://customer-bucket/raw/",
+catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
+integration = catalog.create_storage_integration(
+    "platform/raw", "s3://customer-bucket/raw/",
     aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
-    namespace_path=["analytics", "ingest"],
 )
 print(integration.configuration_instructions)
 
-integration = db.describe_storage_integration("raw", namespace_path=["analytics", "ingest"])
-for name in db.list_storage_integrations(namespace_path=["analytics", "ingest"]):
+integration = catalog.describe_storage_integration("platform/raw")
+for name in catalog.list_storage_integrations():
     print(name)
-db.drop_storage_integration("raw", namespace_path=["analytics", "ingest"])
+catalog.drop_storage_integration("platform/raw")
 ```
 
-Async connections provide the same methods; await create, describe and drop, and use
+AsyncCatalog provides the same methods; await create, describe and drop, and use
 `async for` for listing. Registration returns a stable external ID and account-specific
 trust policy, plus an example prefix-scoped S3 read policy. AWS access remains unverified,
 and this version does not configure storage operations to use the integration.

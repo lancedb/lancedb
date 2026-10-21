@@ -3,7 +3,7 @@
 
 use crate::utils::{
     validate_database_name, validate_namespace_component, validate_secret_name,
-    validate_storage_integration_name, validate_table_name, validate_view_name,
+    validate_table_name, validate_view_name,
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as _, ser::Error as _};
 
@@ -134,7 +134,7 @@ impl Object {
             Self::Table(object) => Some(&object.database),
             Self::View(object) => Some(&object.database),
             Self::Secret(object) => Some(&object.database),
-            Self::StorageIntegration(object) => Some(&object.database),
+            Self::StorageIntegration(_) => None,
             Self::Function(object) => Some(&object.database),
             Self::Unknown(_) => None,
         }
@@ -517,54 +517,32 @@ impl<'de> Deserialize<'de> for SecretObject {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StorageIntegrationObject {
-    pub database: String,
-    pub namespace: NamespacePath,
     pub storage_integration: String,
 }
-
 impl StorageIntegrationObject {
     fn validate(&self) -> Result<(), String> {
-        validate_database_name(&self.database).map_err(|error| error.to_string())?;
-        validate_storage_integration_name(&self.storage_integration)
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        validate_database_name(&self.storage_integration).map_err(|error| error.to_string())
     }
 }
-
 impl std::fmt::Display for StorageIntegrationObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "storage_integration:{}:{}${}",
-            self.database, self.namespace, self.storage_integration
-        )
+        write!(f, "storage_integration:{}", self.storage_integration)
     }
 }
-
 impl Serialize for StorageIntegrationObject {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         self.validate().map_err(S::Error::custom)?;
         self.to_string().serialize(serializer)
     }
 }
-
 impl<'de> Deserialize<'de> for StorageIntegrationObject {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        let invalid = || D::Error::custom(format!("invalid StorageIntegrationObject {s:?}"));
-        let rest = s.strip_prefix("storage_integration:").ok_or_else(invalid)?;
-        let (database, path) = rest.split_once(':').ok_or_else(invalid)?;
-        let (namespace, storage_integration) = path.rsplit_once('$').ok_or_else(invalid)?;
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = String::deserialize(deserializer)?;
+        let name = value
+            .strip_prefix("storage_integration:")
+            .ok_or_else(|| D::Error::custom("Invalid storage integration"))?;
         let object = Self {
-            database: database.to_string(),
-            namespace: NamespacePath::parse(namespace).map_err(D::Error::custom)?,
-            storage_integration: storage_integration.to_string(),
+            storage_integration: name.to_owned(),
         };
         object.validate().map_err(D::Error::custom)?;
         Ok(object)
