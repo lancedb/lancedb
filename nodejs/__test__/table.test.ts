@@ -3412,6 +3412,34 @@ describe("when dealing with blob columns", () => {
     expect(Buffer.from(byId.get(4)!.info.image)).toEqual(empty);
   });
 
+  it("handles struct fields named like Object prototypes", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "info",
+        new Struct([
+          new Field("constructor", new Struct([blob("image")]), true),
+        ]),
+        true,
+      ),
+    ]);
+    const payload = Buffer.from("proto");
+    const table = await db.createTable(
+      "prototype_named_blobs",
+      [{ id: 1n, info: { constructor: { image: payload } } }],
+      { schema },
+    );
+    expect(await table.blobColumns()).toEqual(["info.constructor.image"]);
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    // Arrow's StructRow shadows the `constructor` property, so read the
+    // field through the JSON form instead of property access.
+    const info = JSON.parse(JSON.stringify(row.info));
+    expect(Buffer.from(Object.values<number>(info.constructor.image))).toEqual(
+      payload,
+    );
+  });
+
   it("returns nested blob bytes for a struct selection", async () => {
     const { table, alpha } = await openNestedBlobTable();
     const [row] = await table

@@ -85,20 +85,18 @@ function blobSources(
 }
 
 // Fetched bytes for the blobs under one output column. A blob column is a
-// leaf; a struct holds the blobs nested in it, keyed by field name.
-type BlobBytes = (Buffer | null)[] | { [field: string]: BlobBytes };
+// leaf; a struct holds the blobs nested in it, keyed by field name. A Map
+// keeps struct field names from reaching shared JavaScript prototypes.
+type BlobBytes = (Buffer | null)[] | Map<string, BlobBytes>;
 
 function isLeaf(bytes: BlobBytes): bytes is (Buffer | null)[] {
   return Array.isArray(bytes);
 }
 
-function nestedFieldType(
-  type: Struct,
-  bytes: { [field: string]: BlobBytes },
-): Struct {
+function nestedFieldType(type: Struct, bytes: Map<string, BlobBytes>): Struct {
   return new Struct(
     type.children.map((field) => {
-      const inner = bytes[field.name];
+      const inner = bytes.get(field.name);
       if (inner === undefined) {
         return field;
       }
@@ -118,12 +116,12 @@ function nestedFieldType(
 // validity, so a null struct stays null.
 function nestedData(
   data: ArrowData,
-  bytes: { [field: string]: BlobBytes },
+  bytes: Map<string, BlobBytes>,
   offset: number,
 ): ArrowData {
   const type = data.type as Struct;
   const children = data.children.map((child, index) => {
-    const inner = bytes[type.children[index].name];
+    const inner = bytes.get(type.children[index].name);
     if (inner === undefined) {
       return child;
     }
@@ -178,17 +176,21 @@ async function readBlobBytes(
     if (!DataType.isStruct(table.schema.fields[index].type)) {
       continue;
     }
-    const nested: { [field: string]: BlobBytes } = {};
+    const nested = new Map<string, BlobBytes>();
     for (const column of blobColumns.filter((c) =>
       c.startsWith(`${source}.`),
     )) {
       const path = column.slice(source.length + 1).split(".");
       let level = nested;
       for (const name of path.slice(0, -1)) {
-        level[name] ??= {};
-        level = level[name] as { [field: string]: BlobBytes };
+        let next = level.get(name);
+        if (next === undefined) {
+          next = new Map<string, BlobBytes>();
+          level.set(name, next);
+        }
+        level = next as Map<string, BlobBytes>;
       }
-      level[path[path.length - 1]] = await fetch(column);
+      level.set(path[path.length - 1], await fetch(column));
     }
     replacements.set(index, nested);
   }
