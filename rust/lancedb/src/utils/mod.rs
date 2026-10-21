@@ -1238,3 +1238,22 @@ mod tests {
         assert_eq!(collect_batch_sizes(sendable_stream, 0).await, vec![2, 7]);
     }
 }
+
+/// Validate a storage integration name in its independent naming keyspace.
+pub fn validate_storage_integration_name(name: &str) -> crate::Result<()> {
+    validate_secret_name(name).map_err(|error| crate::Error::InvalidInput {
+        message: error
+            .to_string()
+            .replace("Secret", "Storage integration")
+            .replace("secret", "storage integration"),
+    })
+}
+
+/// Validate the name and namespace path of a storage integration.
+pub fn validate_storage_integration_reference(
+    name: &str,
+    namespace_path: &[String],
+) -> crate::Result<()> {
+    validate_storage_integration_name(name)?;
+    validate_namespace(namespace_path)
+}

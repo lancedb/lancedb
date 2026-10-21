@@ -173,6 +173,17 @@ class Object:
         return cls(str(_lancedb.AuthzObject.secret(database, namespace_path, name)))
 
     @classmethod
+    def storage_integration(
+        cls, *, database: str, name: str, namespace_path: Sequence[str] = ("public",)
+    ) -> "Object":
+        """A storage integration, defaulting to the database's public namespace."""
+        return cls(
+            str(
+                _lancedb.AuthzObject.storage_integration(database, namespace_path, name)
+            )
+        )
+
+    @classmethod
     def function(
         cls, *, database: str, name: str, namespace_path: Sequence[str] = ("public",)
     ) -> "Object":
@@ -216,6 +227,7 @@ class Privilege(str, Enum):
     CREATE_VIEW = "CREATE_VIEW"
     CREATE_SECRET = "CREATE_SECRET"
     CREATE_FUNCTION = "CREATE_FUNCTION"
+    CREATE_STORAGE_INTEGRATION = "CREATE_STORAGE_INTEGRATION"
     OPERATE = "OPERATE"
 
 
