@@ -706,6 +706,7 @@ pub enum AnalyzePlanDistributedMetrics {
 }
 
 impl AnalyzePlanDistributedMetrics {
+    #[cfg(feature = "remote")]
     pub(crate) fn as_query_param(self) -> &'static str {
         match self {
             Self::Aggregate => "aggregate",

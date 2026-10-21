@@ -520,6 +520,7 @@ pub(crate) fn public_fts_field_path_by_id(
     })
 }
 
+#[cfg(any(feature = "remote", test))]
 pub(crate) fn resolve_arrow_fts_field_path(
     schema: &Schema,
     column: &str,

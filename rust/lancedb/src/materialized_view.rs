@@ -1922,6 +1922,7 @@ impl RefreshMaterializedViewOptions {
         Ok(())
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn sql_clause(&self, full: bool) -> Result<String> {
         self.validate()?;
         let mut values = Vec::new();
