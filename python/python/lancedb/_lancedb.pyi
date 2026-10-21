@@ -850,9 +850,9 @@ class RTEWriteSpec:
     @staticmethod
     def unsharded() -> "RTEWriteSpec": ...
     def with_maintained_indexes(self, indexes: Optional[List[str]]) -> "RTEWriteSpec":
-        """Set which indexes the RTE keeps up to date. None resolves every
-        index on the table at install, failing if one cannot be maintained;
-        a list is verbatim, empty means none."""
+        """Set which indexes the RTE keeps up to date. None is every index on
+        the table, now and later, skipping any it cannot maintain; a list is
+        verbatim, empty means none."""
         ...
     def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "RTEWriteSpec":
         """Return a copy of this spec recording the given default
