@@ -1061,7 +1061,7 @@ class DBConnection(EnforceOverrides):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> None:
-        """Drop an integration; repeated drops succeed.
+        """Drop an integration with the caller's ownership permission.
 
         Recreation generates a new external ID.
         """
@@ -3378,7 +3378,7 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> None:
-        """Drop a registered integration. A repeated drop succeeds."""
+        """Drop an integration with the caller's ownership permission."""
         await self._inner.drop_storage_integration(
             validate_storage_integration_name(name),
             list(validate_namespace_path(namespace_path)),

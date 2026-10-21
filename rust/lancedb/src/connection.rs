@@ -912,7 +912,7 @@ impl Connection {
         })
     }
 
-    /// Drop an integration. Repeating a drop succeeds; recreating generates a new external ID.
+    /// Drop an integration. Requires ownership; recreation generates a new external ID.
     pub async fn drop_storage_integration(
         &self,
         name: impl AsRef<str>,
