@@ -286,6 +286,7 @@ mod tests {
     use super::*;
     use crate::catalog::CatalogConnection;
     use serde_json::{Value, json};
+    use serial_test::serial;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::task::JoinHandle;
@@ -368,6 +369,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial(request_limits_env)]
     async fn create_database_forwards_properties_without_changing_database_scope() {
         for exist_ok in [false, true] {
             for properties in [
