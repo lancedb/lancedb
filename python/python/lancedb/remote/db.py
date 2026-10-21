@@ -45,7 +45,6 @@ from ..sql import QueryDescription, QueryParameters
 from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
 from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
-from ..storage_integration import StorageIntegrationInfo
 
 if TYPE_CHECKING:
     from .._lancedb import JobInfo
@@ -972,64 +971,6 @@ class RemoteDBConnection(DBConnection):
             )
         )
         return dropped, Job(job)
-
-    @override
-    def create_storage_integration(
-        self,
-        name: str,
-        storage_prefix: str,
-        *,
-        aws_role_arn: str,
-        aws_region: Optional[str] = None,
-        namespace_path: Optional[List[str]] = None,
-    ) -> StorageIntegrationInfo:
-        return LOOP.run(
-            self._conn.create_storage_integration(
-                name,
-                storage_prefix,
-                aws_role_arn=aws_role_arn,
-                aws_region=aws_region,
-                namespace_path=namespace_path,
-            )
-        )
-
-    @override
-    def describe_storage_integration(
-        self,
-        name: str,
-        *,
-        namespace_path: Optional[List[str]] = None,
-    ) -> StorageIntegrationInfo:
-        return LOOP.run(
-            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
-        )
-
-    @override
-    def list_storage_integrations(
-        self,
-        *,
-        namespace_path: Optional[List[str]] = None,
-        page_token: Optional[str] = None,
-        page_limit: Optional[int] = None,
-    ) -> Listing[str]:
-        return Listing(
-            self._conn.list_storage_integrations(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                page_limit=page_limit,
-            )
-        )
-
-    @override
-    def drop_storage_integration(
-        self,
-        name: str,
-        *,
-        namespace_path: Optional[List[str]] = None,
-    ) -> None:
-        LOOP.run(
-            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
-        )
 
     @override
     def create_secret(

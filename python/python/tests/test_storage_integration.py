@@ -12,6 +12,7 @@ import pytest
 
 import lancedb
 from lancedb.authz import Object, Privilege
+from lancedb.db import AsyncConnection, DBConnection
 
 
 INFO = json.loads(
@@ -20,7 +21,7 @@ INFO = json.loads(
         / "rust/lancedb/tests/fixtures/storage_integration.json"
     ).read_text()
 )
-NAMESPACE = ["analytics", "ingest"]
+NAME = "platform/raw"
 ROLE = "arn:aws:iam::123456789012:role/access"
 
 
@@ -42,7 +43,7 @@ def remote_server():
                     {"storage_integrations": [{"name": "zeta"}]}
                     if query.get("page_token") == ["next"]
                     else {
-                        "storage_integrations": [{"name": "raw"}],
+                        "storage_integrations": [{"name": NAME}],
                         "page_token": "next",
                     }
                 )
@@ -71,16 +72,20 @@ def remote_server():
         thread.join()
 
 
+def test_storage_integration_methods_belong_to_catalogs():
+    assert not hasattr(DBConnection, "create_storage_integration")
+    assert not hasattr(AsyncConnection, "create_storage_integration")
+
+
 def test_sync_storage_integration_lifecycle_and_aws_information():
     with remote_server() as (host, calls):
-        db = lancedb.connect(
-            "db://dev",
+        db = lancedb.connect_catalog(
+            host,
             api_key="fake",
-            host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
         info = db.create_storage_integration(
-            "raw", INFO["storage_prefix"], aws_role_arn=ROLE, namespace_path=NAMESPACE
+            NAME, INFO["storage_prefix"], aws_role_arn=ROLE
         )
         assert isinstance(info, lancedb.StorageIntegrationInfo)
         assert info.aws_account_id == "001122334455"
@@ -91,48 +96,42 @@ def test_sync_storage_integration_lifecycle_and_aws_information():
             ]
             == info.aws_external_id
         )
-        assert db.describe_storage_integration("raw", namespace_path=NAMESPACE) == info
-        listing = db.list_storage_integrations(namespace_path=NAMESPACE, page_limit=1)
+        assert db.describe_storage_integration(NAME) == info
+        listing = db.list_storage_integrations(page_limit=1)
         assert len(calls) == 2
-        assert list(listing) == ["raw", "zeta"]
-        assert db.drop_storage_integration("raw", namespace_path=NAMESPACE) is None
-    assert calls[0][1] == "/v1/storage_integration/analytics$ingest$raw/create"
+        assert list(listing) == ["platform/raw", "zeta"]
+        assert db.drop_storage_integration(NAME) is None
+    assert calls[0][1] == "/v1/storage_integration/platform%2Fraw/create"
     assert calls[0][2] == {
         "storage_provider": "S3",
         "storage_prefix": INFO["storage_prefix"],
         "aws_role_arn": ROLE,
     }
-    assert calls[-1][1] == "/v1/storage_integration/analytics$ingest$raw/drop"
+    assert calls[-1][1] == "/v1/storage_integration/platform%2Fraw/drop"
 
 
 @pytest.mark.asyncio
 async def test_async_storage_integration_lifecycle():
     with remote_server() as (host, _calls):
-        db = await lancedb.connect_async(
-            "db://dev",
+        db = await lancedb.connect_catalog_async(
+            host,
             api_key="fake",
-            host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
         info = await db.create_storage_integration(
-            "raw", INFO["storage_prefix"], aws_role_arn=ROLE, namespace_path=NAMESPACE
+            NAME, INFO["storage_prefix"], aws_role_arn=ROLE
         )
-        assert (
-            await db.describe_storage_integration("raw", namespace_path=NAMESPACE)
-            == info
-        )
-        assert [
-            name
-            async for name in db.list_storage_integrations(namespace_path=NAMESPACE)
-        ] == ["raw", "zeta"]
-        await db.drop_storage_integration("raw", namespace_path=NAMESPACE)
+        assert await db.describe_storage_integration(NAME) == info
+        assert [name async for name in db.list_storage_integrations()] == [
+            "platform/raw",
+            "zeta",
+        ]
+        await db.drop_storage_integration(NAME)
         with pytest.raises(ValueError):
-            await db.describe_storage_integration("a/b")
+            await db.describe_storage_integration("a//b")
 
 
 def test_integration_authorization_object_and_creation_privilege():
-    value = Object.storage_integration(
-        database="db", name="raw", namespace_path=NAMESPACE
-    )
-    assert str(value) == "storage_integration:db:analytics$ingest$raw"
+    value = Object.storage_integration(name=NAME)
+    assert str(value) == "storage_integration:platform/raw"
     assert Privilege.CREATE_STORAGE_INTEGRATION.value == "CREATE_STORAGE_INTEGRATION"

@@ -1,12 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Namespace-scoped cloud storage integrations and AWS setup information."""
+"""Catalog-scoped cloud storage integrations and AWS setup information."""
 
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional
-
-from .secrets import validate_secret_name
+from typing import Any, Dict, Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -20,7 +18,6 @@ class StorageIntegrationInfo:
     """
 
     name: str
-    namespace_path: List[str]
     storage_provider: Literal["S3"]
     storage_prefix: str
     aws_role_arn: str
@@ -33,11 +30,3 @@ class StorageIntegrationInfo:
     trust_policy: Dict[str, Any]
     permissions_policy: Dict[str, Any]
     configuration_instructions: str
-
-
-def validate_storage_integration_name(name: str) -> str:
-    """Validate an integration name in its dedicated keyspace."""
-    try:
-        return validate_secret_name(name)
-    except ValueError as error:
-        raise ValueError(str(error).replace("Secret", "Storage integration")) from None

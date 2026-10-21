@@ -28,6 +28,69 @@ impl Catalog {
         })
     }
 
+    #[pyo3(signature = (name, storage_prefix, aws_role_arn, aws_region=None))]
+    pub fn create_storage_integration(
+        self_: PyRef<'_, Self>,
+        name: String,
+        storage_prefix: String,
+        aws_role_arn: String,
+        aws_region: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let mut request = lancedb::storage_integration::CreateStorageIntegrationRequest::s3(
+                storage_prefix,
+                aws_role_arn,
+            );
+            request.aws_region = aws_region;
+            let info = inner
+                .create_storage_integration(name, request)
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+        })
+    }
+
+    #[pyo3(signature = (name))]
+    pub fn describe_storage_integration(
+        self_: PyRef<'_, Self>,
+        name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let info = inner
+                .describe_storage_integration(name)
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info)
+                .map_err(|error| pyo3::exceptions::PyValueError::new_err(error.to_string()))
+        })
+    }
+
+    #[pyo3(signature = (*, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.inner
+                .list_storage_integrations(crate::listing::options(page_token, page_limit)),
+        ))
+    }
+
+    #[pyo3(signature = (name))]
+    pub fn drop_storage_integration(
+        self_: PyRef<'_, Self>,
+        name: String,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            inner.drop_storage_integration(name).await.infer_error()
+        })
+    }
+
     #[getter]
     fn uri(&self) -> &str {
         self.inner.uri()

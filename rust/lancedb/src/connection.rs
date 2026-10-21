@@ -38,11 +38,7 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
-use crate::utils::{
-    validate_namespace, validate_secret_reference, validate_storage_integration_reference,
-    validate_view_reference,
-};
+use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -848,79 +844,6 @@ impl Connection {
         validate_secret_reference(name.as_ref(), namespace_path)?;
         self.internal
             .describe_secret(name.as_ref(), namespace_path)
-            .await
-    }
-
-    /// Register a namespace-scoped S3 integration and return AWS setup instructions.
-    ///
-    /// The service does not verify access during registration. Local databases
-    /// return [`Error::NotSupported`].
-    ///
-    /// ```
-    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
-    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
-    /// let info = db.create_storage_integration(
-    ///     "raw", CreateStorageIntegrationRequest::s3(
-    ///         "s3://customer-bucket/raw/", "arn:aws:iam::123456789012:role/lancedb"
-    ///     ), &["analytics".into()],
-    /// ).await?;
-    /// println!("{}", info.configuration_instructions);
-    /// # Ok(())
-    /// # }
-    /// ```
-    pub async fn create_storage_integration(
-        &self,
-        name: impl AsRef<str>,
-        request: CreateStorageIntegrationRequest,
-        namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        validate_storage_integration_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .create_storage_integration(name.as_ref(), request, namespace_path)
-            .await
-    }
-
-    /// Describe a storage integration, including its stable external ID and setup policies.
-    pub async fn describe_storage_integration(
-        &self,
-        name: impl AsRef<str>,
-        namespace_path: &[String],
-    ) -> Result<StorageIntegrationInfo> {
-        validate_storage_integration_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .describe_storage_integration(name.as_ref(), namespace_path)
-            .await
-    }
-
-    /// Lazily list integration names in exactly one namespace, following pagination tokens.
-    pub fn list_storage_integrations(
-        &self,
-        namespace_path: &[String],
-        options: ListingOptions,
-    ) -> Listing<String> {
-        let database = self.database().clone();
-        let namespace_path = namespace_path.to_vec();
-        Listing::new(options, move |options| {
-            let database = database.clone();
-            let namespace_path = namespace_path.clone();
-            async move {
-                validate_namespace(&namespace_path)?;
-                database
-                    .list_storage_integrations(&namespace_path, options)
-                    .await
-            }
-        })
-    }
-
-    /// Drop an integration. Requires ownership; recreation generates a new external ID.
-    pub async fn drop_storage_integration(
-        &self,
-        name: impl AsRef<str>,
-        namespace_path: &[String],
-    ) -> Result<()> {
-        validate_storage_integration_reference(name.as_ref(), namespace_path)?;
-        self.internal
-            .drop_storage_integration(name.as_ref(), namespace_path)
             .await
     }
 

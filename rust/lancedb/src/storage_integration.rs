@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Named cloud-storage access configurations managed by the remote service.
+//! Catalog-level cloud-storage access configurations managed by the remote service.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -51,8 +51,6 @@ impl CreateStorageIntegrationRequest {
 #[non_exhaustive]
 pub struct StorageIntegrationInfo {
     pub name: String,
-    #[serde(default)]
-    pub namespace_path: Vec<String>,
     pub storage_provider: StorageProvider,
     pub storage_prefix: String,
     pub aws_role_arn: String,

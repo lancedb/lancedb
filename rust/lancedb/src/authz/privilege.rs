@@ -81,7 +81,7 @@ pub enum Privilege {
     /// - can read server configuration.
     Operate,
 
-    /// On a namespace: can register a storage integration.
+    /// On the catalog: can register a storage integration.
     CreateStorageIntegration,
 
     /// A future privilege name, preserved verbatim.

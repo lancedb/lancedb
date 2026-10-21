@@ -193,20 +193,6 @@ pub fn validate_namespace(namespace: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Validate a storage integration name in its independent naming keyspace.
-pub fn validate_storage_integration_name(name: &str) -> crate::Result<()> {
-    validate_view_or_namespace_or_secret(name, "storage integration name", MAX_SECRET_NAME_CHARS)
-}
-
-/// Validate the name and namespace path of a storage integration.
-pub fn validate_storage_integration_reference(
-    name: &str,
-    namespace_path: &[String],
-) -> crate::Result<()> {
-    validate_storage_integration_name(name)?;
-    validate_namespace(namespace_path)
-}
-
 /// Validate a secret name.
 pub fn validate_secret_name(name: &str) -> Result<()> {
     validate_view_or_namespace_or_secret(name, "secret name", MAX_SECRET_NAME_CHARS)
