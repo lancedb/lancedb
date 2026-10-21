@@ -67,18 +67,33 @@ export interface QueryBlobContext {
 
 const BLOB_BYTES_ATTEMPTS = 3;
 
+interface BlobSource {
+  // Output names are literal: an alias containing dots is still one field.
+  output: string;
+  path: string[];
+  source: string;
+}
+
 function blobSources(
   blobColumns: string[],
   projection: [string, string][] | undefined,
-): Map<string, string> {
+): BlobSource[] {
   if (projection === undefined) {
-    return new Map(blobColumns.map((column) => [column, column]));
+    return blobColumns.map((source) => {
+      const [output, ...path] = source.split(".");
+      return { output, path, source };
+    });
   }
-  const sources = new Map<string, string>();
+  const sources: BlobSource[] = [];
   for (const [output, source] of projection) {
     for (const column of blobColumns) {
       if (column === source || column.startsWith(`${source}.`)) {
-        sources.set(output + column.slice(source.length), column);
+        sources.push({
+          output,
+          path:
+            column === source ? [] : column.slice(source.length + 1).split("."),
+          source: column,
+        });
       }
     }
   }
@@ -87,7 +102,7 @@ function blobSources(
 
 async function readBlobBytes(
   table: ArrowTable,
-  sources: Map<string, string>,
+  sources: BlobSource[],
   snapshot: NativeTable,
   dropRowId: boolean,
 ): Promise<ArrowTable> {
@@ -99,20 +114,18 @@ async function readBlobBytes(
     rowIdColumn === null
       ? []
       : Array.from(rowIdColumn.toArray() as BigUint64Array);
-  const outputFields = new Map<string, Field>();
-  const visit = (fields: Field[], prefix = "") => {
-    for (const field of fields) {
-      const path = prefix + field.name;
-      outputFields.set(path, field);
-      if (DataType.isStruct(field.type)) {
-        visit(field.type.children, `${path}.`);
-      }
-    }
-  };
-  visit(table.schema.fields);
+  const outputFields = new Map(
+    table.schema.fields.map((field) => [field.name, field]),
+  );
   const replacements = new Map<Field, (Buffer | null)[]>();
-  for (const [output, source] of sources) {
-    const field = outputFields.get(output);
+  for (const { output, path, source } of sources) {
+    let field = outputFields.get(output);
+    for (const name of path) {
+      field =
+        field !== undefined && DataType.isStruct(field.type)
+          ? field.type.children.find((child) => child.name === name)
+          : undefined;
+    }
     if (field === undefined) {
       continue;
     }
@@ -491,7 +504,7 @@ export class QueryBase<
         await snapshot.blobColumns(),
         context.projection,
       );
-      if (sources.size === 0) {
+      if (sources.length === 0) {
         return this.collect(options, false);
       }
       const addRowId = !context.withRowId;

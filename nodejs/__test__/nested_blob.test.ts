@@ -157,6 +157,82 @@ describe('nested blobs with blobMode "bytes"', () => {
   });
 
   it.each([false, true])(
+    "preserves a literal scalar alias matching a nested blob path (reverse: %s)",
+    async (reverse) => {
+      const projection: [string, string][] = [
+        ["info", "info"],
+        ["info.image", "id"],
+      ];
+      if (reverse) {
+        projection.reverse();
+      }
+      const [row] = await table
+        .query()
+        .where("id = 1")
+        .select(new Map(projection))
+        .toArray({ blobMode: "bytes" });
+      expect(row["info.image"]).toBe(1n);
+      expect(Buffer.from(row.info.image).toString()).toBe("hello");
+    },
+  );
+
+  it.each([false, true])(
+    "materializes every overlapping blob projection (reverse: %s)",
+    async (reverse) => {
+      const columns = ["info.image", "info"];
+      if (reverse) {
+        columns.reverse();
+      }
+      const result = await table
+        .query()
+        .orderBy({ columnName: "id", ascending: true })
+        .select(columns)
+        .toArrow({ blobMode: "bytes", maxBatchLength: 1 });
+      expect(result.schema.fields.map((field) => field.name)).toEqual(columns);
+      expect(DataType.isLargeBinary(result.getChild("info.image")!.type)).toBe(
+        true,
+      );
+      expect(
+        DataType.isLargeBinary(
+          result.getChild("info")!.getChild("image")!.type,
+        ),
+      ).toBe(true);
+      const rows = result.toArray();
+      expect(Buffer.from(rows[0]["info.image"]).toString()).toBe("hello");
+      expect(Buffer.from(rows[0].info.image).toString()).toBe("hello");
+      expect(rows[0].info.caption).toBe("first");
+      expect(rows[1]["info.image"]).toBeNull();
+      expect(rows[1].info).toBeNull();
+      expect(rows[2]["info.image"]).toBeNull();
+      expect(rows[2].info.image).toBeNull();
+      expect(Buffer.from(rows[3]["info.image"])).toEqual(Buffer.alloc(0));
+      expect(Buffer.from(rows[3].info.image)).toEqual(Buffer.alloc(0));
+    },
+  );
+
+  it("materializes dotted aliases independently of nested fields", async () => {
+    const [row] = await table
+      .query()
+      .where("id = 1")
+      .select({
+        details: "info",
+        "details.image": "info.image",
+        "details.preview": "info.preview",
+        "details.preview.image": "info.preview.image",
+      })
+      .toArray({ blobMode: "bytes" });
+    expect(Buffer.from(row.details.image).toString()).toBe("hello");
+    expect(Buffer.from(row["details.image"]).toString()).toBe("hello");
+    expect(Buffer.from(row.details.preview.image).toString()).toBe("preview");
+    expect(Buffer.from(row["details.preview"].image).toString()).toBe(
+      "preview",
+    );
+    expect(Buffer.from(row["details.preview.image"]).toString()).toBe(
+      "preview",
+    );
+  });
+
+  it.each([false, true])(
     "converts the empty result schema (alias: %s)",
     async (alias) => {
       const query = table.query().where("id < 0");
