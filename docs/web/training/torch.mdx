@@ -30,7 +30,8 @@ def to_samples(rb: pa.RecordBatch):
     return [{"state": s, "action": a} for s, a in rows]
 
 uri = "hf://datasets/lance-format/lerobot-xvla-soft-fold/data"
-table = lancedb.connect(uri).open_table("frames")
+table = lancedb.connect(uri, storage_options={"hf_enable_resolve_cache": "true"})
+    .open_table("frames")
 train = StreamingDataset(
     table, columns=["observation_state", "action"],
     transform=to_samples)
@@ -48,7 +49,7 @@ for batch in torch.utils.data.DataLoader(train, batch_size=256):
 `DataLoader`, its default `collate_fn`, and worker processes. The transform returns plain tensors, so the
 model, loss and optimizer are unmodified PyTorch. Here it streams the
 [`lerobot-xvla-soft-fold`](https://huggingface.co/datasets/lance-format/lerobot-xvla-soft-fold) dataset
-straight from the Hugging Face Hub to train a policy that predicts each `action` from the robot's
+straight from the HuggingFace Hub to train a policy that predicts each `action` from the robot's
 `observation_state`.
 
 ## PyTorch concepts in LanceDB {#concept-map}
