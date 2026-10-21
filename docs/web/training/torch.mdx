@@ -50,7 +50,7 @@ for batch in torch.utils.data.DataLoader(train, batch_size=256):
 `DataLoader`, its default `collate_fn`, and worker processes. The transform returns plain tensors, so the
 model, loss and optimizer are unmodified PyTorch. Here it streams the
 [`lerobot-xvla-soft-fold`](https://huggingface.co/datasets/lance-format/lerobot-xvla-soft-fold) dataset
-straight from the HuggingFace Hub to train a policy that predicts each `action` from the robot's
+straight from the Hugging Face Hub to train a policy that predicts each `action` from the robot's
 `observation_state`.
 
 ## PyTorch concepts in LanceDB {#concept-map}
