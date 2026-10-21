@@ -3314,51 +3314,64 @@ describe("when dealing with blob columns", () => {
     ).rejects.toThrow(/blobMode must be/);
   });
 
-  it("reruns the query when the table changes before the version check", async () => {
-    const { table, native, update } = await openVersionedBlobTable();
-    const liveVersion = native.version.bind(native);
-    native.version = async () => {
-      native.version = liveVersion;
-      await update(2n, "new");
-      return liveVersion();
-    };
-    const [row] = await table.query().toArray({ blobMode: "bytes" });
-    expect(row.generation).toBe(2n);
-    expect(Buffer.from(row.image).toString()).toBe("new");
-  });
+  it.each([false, true])(
+    "reruns the query when the table changes before the version check (nested: %s)",
+    async (nested) => {
+      const { table, native, update } = await openVersionedBlobTable(nested);
+      const liveVersion = native.version.bind(native);
+      native.version = async () => {
+        native.version = liveVersion;
+        await update(2n, "new");
+        return liveVersion();
+      };
+      const [row] = await table.query().toArray({ blobMode: "bytes" });
+      expect(row.generation).toBe(2n);
+      expect(Buffer.from(nested ? row.info.image : row.image).toString()).toBe(
+        "new",
+      );
+    },
+  );
 
-  it("reads bytes from the query's version when a write lands before the fetch", async () => {
-    const { table, native, update } = await openVersionedBlobTable();
-    const liveVersion = native.version.bind(native);
-    native.version = async () => {
-      native.version = liveVersion;
-      const version = await liveVersion();
-      await update(2n, "new");
-      return version;
-    };
-    const [row] = await table.query().toArray({ blobMode: "bytes" });
-    expect(row.generation).toBe(1n);
-    expect(Buffer.from(row.image).toString()).toBe("old");
-  });
+  it.each([false, true])(
+    "reads bytes from the query's version when a write lands before the fetch (nested: %s)",
+    async (nested) => {
+      const { table, native, update } = await openVersionedBlobTable(nested);
+      const liveVersion = native.version.bind(native);
+      native.version = async () => {
+        native.version = liveVersion;
+        const version = await liveVersion();
+        await update(2n, "new");
+        return version;
+      };
+      const [row] = await table.query().toArray({ blobMode: "bytes" });
+      expect(row.generation).toBe(1n);
+      expect(Buffer.from(nested ? row.info.image : row.image).toString()).toBe(
+        "old",
+      );
+    },
+  );
 
-  it("fails when the table changes during every attempt", async () => {
-    const { table, native, update } = await openVersionedBlobTable();
-    const liveVersion = native.version.bind(native);
-    let generation = 1n;
-    native.version = async () => {
-      generation += 1n;
-      await update(generation, `generation ${generation}`);
-      return liveVersion();
-    };
-    try {
-      await expect(
-        table.query().toArray({ blobMode: "bytes" }),
-      ).rejects.toThrow(/changed during each of 3 attempts/);
-      expect(generation).toBe(4n);
-    } finally {
-      native.version = liveVersion;
-    }
-  });
+  it.each([false, true])(
+    "fails when the table changes during every attempt (nested: %s)",
+    async (nested) => {
+      const { table, native, update } = await openVersionedBlobTable(nested);
+      const liveVersion = native.version.bind(native);
+      let generation = 1n;
+      native.version = async () => {
+        generation += 1n;
+        await update(generation, `generation ${generation}`);
+        return liveVersion();
+      };
+      try {
+        await expect(
+          table.query().toArray({ blobMode: "bytes" }),
+        ).rejects.toThrow(/changed during each of 3 attempts/);
+        expect(generation).toBe(4n);
+      } finally {
+        native.version = liveVersion;
+      }
+    },
+  );
 
   it("rejects fetchBlobs on a non-blob column", async () => {
     const { table, rowIds } = await openBlobTable();
@@ -3542,18 +3555,28 @@ describe("when dealing with blob columns", () => {
     ).map((value) => (value == null ? null : Number(value.size)));
   }
 
-  async function openVersionedBlobTable() {
+  async function openVersionedBlobTable(nested = false) {
     const db = await connect(tmpDir.name, {
       storageOptions: { newTableEnableStableRowIds: "true" },
     });
     const schema = new Schema([
       new Field("id", new Int64(), false),
       new Field("generation", new Int64(), true),
-      blob("image"),
+      nested
+        ? new Field("info", new Struct([blob("image")]), true)
+        : blob("image"),
     ]);
     const table = await db.createTable(
       "versions",
-      [{ id: 1n, generation: 1n, image: Buffer.from("old") }],
+      [
+        {
+          id: 1n,
+          generation: 1n,
+          ...(nested
+            ? { info: { image: Buffer.from("old") } }
+            : { image: Buffer.from("old") }),
+        },
+      ],
       { schema },
     );
     const native = (
@@ -3563,7 +3586,15 @@ describe("when dealing with blob columns", () => {
       await table
         .mergeInsert("id")
         .whenMatchedUpdateAll()
-        .execute([{ id: 1n, generation, image: Buffer.from(image) }]);
+        .execute([
+          {
+            id: 1n,
+            generation,
+            ...(nested
+              ? { info: { image: Buffer.from(image) } }
+              : { image: Buffer.from(image) }),
+          },
+        ]);
     };
     return { table, native, update };
   }
