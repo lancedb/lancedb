@@ -349,6 +349,7 @@ mod tests {
             (11, Privilege::CreateSecret),
             (12, Privilege::CreateFunction),
             (13, Privilege::Operate),
+            (14, Privilege::CreateStorageIntegration),
         ] {
             assert_eq!(u8::try_from(&privilege).unwrap(), number);
             assert_eq!(u8::try_from(privilege.clone()).unwrap(), number);
