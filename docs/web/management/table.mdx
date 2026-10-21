@@ -110,6 +110,9 @@ import {
     PyProcessResults as ProcessResults,
     TsProcessResults as TsProcessResults,
     RsProcessResults as RsProcessResults,
+    PyBlobApiSetup as BlobApiSetup,
+    TsBlobApiSetup as TsBlobApiSetup,
+    RsBlobApiSetup as RsBlobApiSetup,
     PyBlobApiSchema as BlobApiSchema,
     TsBlobApiSchema as TsBlobApiSchema,
     RsBlobApiSchema as RsBlobApiSchema,
@@ -325,124 +328,9 @@ extension types and pseudo-columns.
 Store images, audio, video, and documents alongside structured columns and
 embeddings in the same versioned table.
 
-### Choose between `blob` and `binary` {#multimodal-select-between-blob-and-binary}
-
-| Column type | Values | Use case |
-| --- | --- | --- |
-| `blob` | Stores payload bytes and returns lightweight descriptors by default, so queries don't load the payload. | Store images, video, audio, and documents, and fetch bytes only for the rows you need. |
-| `binary` | Raw bytes returned with each query. | Store small payloads that every query reads, such as thumbnails or short audio clips. Payloads under about 64 KiB are a good fit. |
-
-### Store binary data {#multimodal-store-binary-data}
-
-To store small binary payloads inline, declare a binary Arrow field in your schema: `pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust.
-
-#### 1\. Setup and imports {#multimodal-1-setup-and-imports}
-
-Import LanceDB and Arrow in your SDK.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {MultimodalImports}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsMultimodalImports}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsMultimodalImports}
-    </CodeBlock>
-</CodeGroup>
-
-#### 2\. Prepare data {#multimodal-2-prepare-data}
-
-Encode each image or file into raw bytes before writing.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {CreateDummyData}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsCreateDummyData}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsCreateDummyData}
-    </CodeBlock>
-</CodeGroup>
-
-#### 3\. Define the schema {#multimodal-3-define-the-schema}
-
-Declare the schema explicitly so Arrow and LanceDB store the field as `binary` instead of inferring a string or integer list.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {DefineSchema}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsDefineSchema}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsDefineSchema}
-    </CodeBlock>
-</CodeGroup>
-
-#### 4\. Ingest data {#multimodal-4-ingest-data}
-
-Create the table from the rows and schema.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {IngestData}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsIngestData}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsIngestData}
-    </CodeBlock>
-</CodeGroup>
-
-### Retrieve binary data {#multimodal-retrieve-and-use-blobs}
-
-When you search the table, select the `binary` column alongside your metadata columns.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {SearchData}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsSearchData}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsSearchData}
-    </CodeBlock>
-</CodeGroup>
-
-#### Convert bytes back to objects {#multimodal-convert-bytes-back-to-objects}
-
-Decode the returned bytes into an image or media buffer in your application.
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {ProcessResults}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsProcessResults}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsProcessResults}
-    </CodeBlock>
-</CodeGroup>
+Use `blob` columns for these payloads. Small blobs are stored inline by
+default, so you don't need to choose [`binary`](#multimodal-store-binary-data)
+based on size.
 
 ### Blob columns {#multimodal-blob-v2}
 
@@ -463,6 +351,24 @@ Blob columns can also reference external objects by URI, including byte ranges,
 without copying their bytes into the table. Local writes referencing objects
 outside registered bases require explicit opt-in, and the objects must remain
 readable. See the Lance [blob guide](https://lance.org/guide/blob/) for details.
+
+#### Setup {#multimodal-blob-v2-setup}
+
+Import the SDK and open a local database. The examples in this section use `db`.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMultimodalImports}{"\n"}{TsBlobApiSetup}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMultimodalImports}{"\n"}{RsBlobApiSetup}
+    </CodeBlock>
+</CodeGroup>
 
 #### 1\. Define a blob schema {#multimodal-blob-v2-schema}
 
@@ -793,13 +699,122 @@ the projection:
     </CodeBlock>
 </CodeGroup>
 
+### Store binary data {#multimodal-store-binary-data}
+
+Use a `binary` column when the query should return the raw bytes. Declare it as `pa.binary()` in Python, `Binary` in TypeScript, and `DataType::Binary` in Rust.
+
+#### 1\. Setup and imports {#multimodal-1-setup-and-imports}
+
+Import LanceDB and Arrow in your SDK.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMultimodalImports}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMultimodalImports}
+    </CodeBlock>
+</CodeGroup>
+
+#### 2\. Prepare data {#multimodal-2-prepare-data}
+
+Encode each image or file into raw bytes before writing.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {CreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsCreateDummyData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsCreateDummyData}
+    </CodeBlock>
+</CodeGroup>
+
+#### 3\. Define the schema {#multimodal-3-define-the-schema}
+
+Declare the schema explicitly so Arrow and LanceDB store the field as `binary` instead of inferring a string or integer list.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {DefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsDefineSchema}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsDefineSchema}
+    </CodeBlock>
+</CodeGroup>
+
+#### 4\. Ingest data {#multimodal-4-ingest-data}
+
+Create the table from the rows and schema.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {IngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsIngestData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsIngestData}
+    </CodeBlock>
+</CodeGroup>
+
+### Retrieve binary data {#multimodal-retrieve-and-use-blobs}
+
+When you search the table, select the `binary` column alongside your metadata columns.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {SearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsSearchData}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsSearchData}
+    </CodeBlock>
+</CodeGroup>
+
+#### Convert bytes back to objects {#multimodal-convert-bytes-back-to-objects}
+
+Decode the returned bytes into an image or media buffer in your application.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {ProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsProcessResults}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsProcessResults}
+    </CodeBlock>
+</CodeGroup>
+
 ### Other modalities {#multimodal-other-modalities}
 
-Both `binary` and `blob` columns store arbitrary bytes:
-
-- **Audio:** Store short `.wav` or `.mp3` clips in `binary`, or full recordings in `blob`.
-- **Video:** Store clips in `blob` and read frame byte ranges with `BlobFile.read_range`.
-- **Documents:** Store PDFs and archives in `blob`. Filter on columns stored beside the blob before reading bytes.
+For PDFs, audio recordings, and other files, keep searchable fields in separate
+columns so you can filter rows before fetching blob bytes.
 
 ### bfloat16 {#multimodal-bfloat16}
 

@@ -140,6 +140,13 @@ async fn main() {
     let search_rows: usize = results.iter().map(|batch| batch.num_rows()).sum();
     assert_eq!(search_rows, 1);
 
+    let original_dir = std::env::current_dir().unwrap();
+    std::env::set_current_dir(temp_dir.path()).unwrap();
+
+    // --8<-- [start:blob_api_setup]
+    let db = connect("./blob_db").execute().await.unwrap();
+    // --8<-- [end:blob_api_setup]
+
     // --8<-- [start:blob_api_schema]
     let blob_options = BlobOptions {
         inline_size_threshold: Some(64 * 1024),
@@ -280,4 +287,5 @@ async fn main() {
         .unwrap();
     // --8<-- [end:legacy_blob_api_ingest]
     assert_eq!(legacy_blob_table.count_rows(None).await.unwrap(), 2);
+    std::env::set_current_dir(original_dir).unwrap();
 }

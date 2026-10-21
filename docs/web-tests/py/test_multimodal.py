@@ -85,6 +85,13 @@ def test_multimodal_ingestion(db_path_factory):
 def test_blob_api_definition(tmp_path, monkeypatch):
     pytest.importorskip("lance")
     monkeypatch.chdir(tmp_path)
+    # --8<-- [start:blob_api_setup]
+    import lancedb
+
+    db = lancedb.connect("./blob_db")
+    # --8<-- [end:blob_api_setup]
+    assert db.list_tables().tables == []
+
     # --8<-- [start:blob_api_schema]
     import lancedb
     import pyarrow as pa
@@ -102,7 +109,6 @@ def test_blob_api_definition(tmp_path, monkeypatch):
     # --8<-- [end:blob_api_schema]
 
     # --8<-- [start:blob_api_ingest]
-    db = lancedb.connect("./blob_db")
     tbl = db.create_table("videos", schema=schema)
 
     tbl.add(

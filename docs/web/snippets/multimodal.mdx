@@ -2,11 +2,13 @@
 
 export const PyBlobApiFetch = "rows = tbl.search().select([\"id\", \"video\"]).with_row_id(True).to_list()\nrow_ids = [row[\"_rowid\"] for row in rows]\n\npayloads = tbl.fetch_blobs(\"video\", row_ids)\n\nwith tbl.fetch_blob_files(\"video\", [row_ids[0]])[0] as blob_file:\n    header = blob_file.read_range(0, 6)\n";
 
-export const PyBlobApiIngest = "db = lancedb.connect(\"./blob_db\")\ntbl = db.create_table(\"videos\", schema=schema)\n\ntbl.add(\n    [\n        {\"id\": 1, \"video\": b\"inline_video_bytes\"},\n        {\"id\": 2, \"video\": b\"second_video_bytes\"},\n    ]\n)\n";
+export const PyBlobApiIngest = "tbl = db.create_table(\"videos\", schema=schema)\n\ntbl.add(\n    [\n        {\"id\": 1, \"video\": b\"inline_video_bytes\"},\n        {\"id\": 2, \"video\": b\"second_video_bytes\"},\n    ]\n)\n";
 
 export const PyBlobApiRanges = "slices = tbl.fetch_blob_ranges(\n    \"video\",\n    [(row_ids[0], 0, 6), (row_ids[1], 0, 6), (row_ids[1], 7, 5)],\n)\n\nwith tbl.fetch_blob_files(\"video\", [row_ids[1]])[0] as blob_file:\n    parts = blob_file.read_ranges([(0, 6), (7, 5)])\n";
 
 export const PyBlobApiSchema = "import lancedb\nimport pyarrow as pa\n\nschema = pa.schema(\n    [\n        pa.field(\"id\", pa.int64()),\n        lancedb.blob(\n            \"video\",\n            inline_size_threshold=64 * 1024,\n            dedicated_size_threshold=4 * 1024 * 1024,\n        ),\n    ]\n)\n";
+
+export const PyBlobApiSetup = "import lancedb\n\ndb = lancedb.connect(\"./blob_db\")\n";
 
 export const PyBlobApiToPandas = "df_lazy = tbl.to_pandas()\n\ndf_bytes = tbl.to_pandas(blob_mode=\"bytes\")\n\ndf_desc = tbl.to_pandas(blob_mode=\"descriptions\")\n\narrow_bytes = tbl.to_arrow(blob_mode=\"bytes\")\n\ndf_typed = tbl.to_pandas(split_blocks=True, self_destruct=True)\n";
 
@@ -42,6 +44,8 @@ export const TsBlobApiRanges = "const [secondClip] = await blobTable.fetchBlobFi
 
 export const TsBlobApiSchema = "const blobSchema = new arrow.Schema([\n  new arrow.Field(\"id\", new arrow.Int64()),\n  lancedb.blob(\"video\", {\n    inlineSizeThreshold: 64 * 1024,\n    dedicatedSizeThreshold: 4 * 1024 * 1024,\n  }),\n]);\n";
 
+export const TsBlobApiSetup = "const db = await lancedb.connect(\"./blob_db\");\n";
+
 export const TsCreateDummyData = "const createDummyImage = (color: string): Uint8Array => {\n  const pngHeader = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);\n  return Buffer.concat([Buffer.from(pngHeader), Buffer.from(color, \"utf8\")]);\n};\n\nconst data = [\n  {\n    id: 1,\n    filename: \"red_square.png\",\n    vector: Array.from({ length: 128 }, (_, i) => (i % 16) / 16),\n    image_blob: createDummyImage(\"red\"),\n    label: \"red\",\n  },\n  {\n    id: 2,\n    filename: \"blue_square.png\",\n    vector: Array.from({ length: 128 }, (_, i) => ((i + 8) % 16) / 16),\n    image_blob: createDummyImage(\"blue\"),\n    label: \"blue\",\n  },\n];\n";
 
 export const TsDefineSchema = "const schema = new arrow.Schema([\n  new arrow.Field(\"id\", new arrow.Int32()),\n  new arrow.Field(\"filename\", new arrow.Utf8()),\n  new arrow.Field(\n    \"vector\",\n    new arrow.FixedSizeList(\n      128,\n      new arrow.Field(\"item\", new arrow.Float32(), true),\n    ),\n  ),\n  new arrow.Field(\"image_blob\", new arrow.Binary()),\n  new arrow.Field(\"label\", new arrow.Utf8()),\n]);\n";
@@ -65,6 +69,8 @@ export const RsBlobApiIngest = "let blob_table = db\n    .create_empty_table(\"v
 export const RsBlobApiRanges = "let slices = blob_table\n    .fetch_blob_ranges(\n        \"video\",\n        [\n            BlobRangeRequest::new(row_ids[0], 0, 6),\n            BlobRangeRequest::new(row_ids[1], 0, 6),\n            BlobRangeRequest::new(row_ids[1], 7, 5),\n        ],\n    )\n    .await\n    .unwrap();\n\nlet second_handles = blob_table\n    .fetch_blob_files(\"video\", &row_ids[1..2])\n    .await\n    .unwrap();\nlet second_clip = second_handles[0].as_ref().unwrap();\nlet parts = second_clip.read_ranges(&[0..6, 7..12]).await.unwrap();\nsecond_clip.close().await.unwrap();\n";
 
 export const RsBlobApiSchema = "let blob_options = BlobOptions {\n    inline_size_threshold: Some(64 * 1024),\n    dedicated_size_threshold: NonZeroUsize::new(4 * 1024 * 1024),\n};\nlet blob_schema = Arc::new(Schema::new(vec![\n    Field::new(\"id\", DataType::Int64, false),\n    blob_with_options(\"video\", true, blob_options),\n]));\n";
+
+export const RsBlobApiSetup = "let db = connect(\"./blob_db\").execute().await.unwrap();\n";
 
 export const RsCreateDummyData = "let create_dummy_image = |color: u8| -> Vec<u8> {\n    let mut png_like = vec![137, 80, 78, 71, 13, 10, 26, 10];\n    png_like.push(color);\n    png_like\n};\n\nlet data = vec![\n    (\n        1_i32,\n        \"red_square.png\",\n        vec![0.1_f32; 128],\n        create_dummy_image(1),\n        \"red\",\n    ),\n    (\n        2_i32,\n        \"blue_square.png\",\n        vec![0.2_f32; 128],\n        create_dummy_image(2),\n        \"blue\",\n    ),\n];\n";
 
