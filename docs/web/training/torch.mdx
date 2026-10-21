@@ -31,8 +31,8 @@ def to_samples(rb: pa.RecordBatch):
     return [{"state": s, "action": a} for s, a in rows]
 
 uri = "hf://datasets/lance-format/lerobot-xvla-soft-fold/data"
-table = lancedb.connect(uri, storage_options={"hf_enable_resolve_cache": "true"})
-    .open_table("frames")
+db = lancedb.connect(uri, storage_options={"hf_enable_resolve_cache": "true"})
+table = db.open_table("frames")
 train = StreamingDataset(
     table, columns=["observation_state", "action"],
     transform=to_samples)
