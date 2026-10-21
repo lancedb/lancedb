@@ -15,7 +15,8 @@ availability:
 [`IterableDataset`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.IterableDataset),
 so it drops into a stock [`DataLoader`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader).
 It handles per-epoch shuffling, sharding across ranks and workers, prefetching, and exact resume, so you
-don't write those yourself.
+don't write those yourself. The shuffle is fixed when the dataset is constructed, so each epoch needs a new
+`StreamingDataset` built with that epoch's number.
 
 ## Quickstart {#quickstart}
 
