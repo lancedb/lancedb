@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import json
+
 from abc import abstractmethod
 import asyncio
 from datetime import timedelta
@@ -85,6 +87,10 @@ from .util import (
     validate_table_name,
 )
 from .view import ViewDescription
+from .storage_integration import (
+    StorageIntegrationInfo,
+    validate_storage_integration_name,
+)
 
 import deprecation
 
@@ -1024,6 +1030,71 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
+        )
+
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: str,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Register an S3 prefix and return complete AWS setup instructions.
+
+        The integration has its own naming keyspace inside ``namespace_path``.
+        Nested paths are supported. Registration does not verify AWS access or
+        configure any storage operation. Local connections raise NotImplementedError.
+
+        Examples
+        --------
+        >>> integration = db.create_storage_integration(  # doctest: +SKIP
+        ...     "raw", "s3://customer-bucket/raw/",
+        ...     aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
+        ...     namespace_path=["analytics", "ingest"],
+        ... )
+        >>> print(integration.configuration_instructions)  # doctest: +SKIP
+        """
+        raise NotImplementedError(
+            "Storage integrations require a supporting remote server"
+        )
+
+    def describe_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Return an integration's configuration, stable external ID and AWS policies."""
+        raise NotImplementedError(
+            "Storage integrations require a supporting remote server"
+        )
+
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """Lazily list names in one namespace. ``page_limit`` bounds each request.
+
+        ``page_token`` resumes a previous listing. See [Listing][lancedb.listing.Listing].
+        """
+        raise NotImplementedError(
+            "Storage integrations require a supporting remote server"
+        )
+
+    def drop_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        """Drop an integration. Repeated drops succeed; recreation gets a new external ID."""
+        raise NotImplementedError(
+            "Storage integrations require a supporting remote server"
         )
 
     def create_secret(
@@ -2098,6 +2169,64 @@ class LanceDBConnection(DBConnection):
             )
         )
         return dropped, Job(job)
+
+    @override
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: str,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.create_storage_integration(
+                name,
+                storage_prefix,
+                aws_role_arn=aws_role_arn,
+                aws_region=aws_region,
+                namespace_path=namespace_path,
+            )
+        )
+
+    @override
+    def describe_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_storage_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
+        )
 
     @override
     def create_secret(
@@ -3266,6 +3395,66 @@ class AsyncConnection(object):
             name, version, namespace_path
         )
         return dropped, AsyncJob(job)
+
+    async def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: str,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Register S3 configuration; see [create_storage_integration][lancedb.db.DBConnection.create_storage_integration]."""
+        value = await self._inner.create_storage_integration(
+            validate_storage_integration_name(name),
+            storage_prefix,
+            aws_role_arn,
+            aws_region,
+            list(validate_namespace_path(namespace_path)),
+        )
+        return StorageIntegrationInfo(**json.loads(value))
+
+    async def describe_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Return the registered configuration and complete AWS setup instructions."""
+        value = await self._inner.describe_storage_integration(
+            validate_storage_integration_name(name),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return StorageIntegrationInfo(**json.loads(value))
+
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """Lazily list names in one namespace, following continuation tokens."""
+        return AsyncListing(
+            self._inner.list_storage_integrations(
+                namespace_path=list(validate_namespace_path(namespace_path)),
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def drop_storage_integration(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> None:
+        """Drop a registered integration. A repeated drop succeeds."""
+        await self._inner.drop_storage_integration(
+            validate_storage_integration_name(name),
+            list(validate_namespace_path(namespace_path)),
+        )
 
     async def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None

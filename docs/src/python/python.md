@@ -42,6 +42,12 @@ table names. `db.list_tables().tables` is a list of the first page; `limit`
 controls its page size and `page_token` resumes at a saved token. The same
 patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
+Resource listings (`list_storage_integrations`, `list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
+`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
+collect synchronous results, or `[name async for name in db.list_views()]` with
+an asynchronous connection. `page_limit` controls each request, and `page_token`
+resumes a listing. Drain the iterator's cached results before saving its token.
+
 ::: lancedb.listing.Listing
 
 ::: lancedb.listing.TableListing
@@ -851,3 +857,29 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.query.AsyncTakeQuery
     options:
       inherited_members: true
+
+## Storage integrations
+
+::: lancedb.storage_integration.StorageIntegrationInfo
+
+
+Register an S3 prefix and give the returned setup instructions to your AWS administrator:
+
+```python
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
+    namespace_path=["analytics", "ingest"],
+)
+print(integration.configuration_instructions)
+
+integration = db.describe_storage_integration("raw", namespace_path=["analytics", "ingest"])
+for name in db.list_storage_integrations(namespace_path=["analytics", "ingest"]):
+    print(name)
+db.drop_storage_integration("raw", namespace_path=["analytics", "ingest"])
+```
+
+Async connections provide the same methods; await create, describe and drop, and use
+`async for` for listing. Registration returns a stable external ID and account-specific
+trust policy, plus an example prefix-scoped S3 read policy. AWS access remains unverified,
+and this version does not configure storage operations to use the integration.
