@@ -3267,3 +3267,83 @@ def test_split_strategy_is_reproducible_across_instances(lance_table):
     ds2 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
 
     assert [row["id"] for row in ds1] == [row["id"] for row in ds2]
+
+
+def test_split_strategy_num_splits_mismatch_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose split
+    count doesn't match num_splits. `_rank_splits` assumes split ids are exactly
+    0..num_splits-1 with no gaps; a mismatch would otherwise silently drop rows
+    (split ids >= num_splits) or leave some ranks reading an empty split (missing
+    ids < num_splits)."""
+    with pytest.raises(ValueError, match="num_splits"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+            ),
+            num_splits=NUM_SPLITS + 1,  # the strategy above always builds NUM_SPLITS
+        )
+
+
+def test_split_strategy_permutation_mismatch_on_resume_raises(lance_table):
+    """load_state_dict must reject resuming against a different permutation than
+    the one that produced the checkpoint. num_splits/shuffle_seed alone can't catch
+    this for split_strategy, since that path ignores shuffle_seed entirely: a
+    bootstrap_sample reseeded differently resamples completely differently while
+    shuffle_seed keeps whatever value the caller passed either way, so the
+    pre-existing checks would pass despite the mismatch."""
+
+    def strategy(seed):
+        return lambda b: b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=seed)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(1),
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):  # one full cycle: every split advances uniformly
+        next(it)
+    checkpoint = ds1.state_dict()
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(2),  # different seed -> a different permutation
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,  # unchanged -- irrelevant on this path
+    )
+    with pytest.raises(ValueError, match="permutation mismatch"):
+        ds2.load_state_dict(checkpoint)
+
+
+def test_split_strategy_resume_with_matching_permutation_succeeds(lance_table):
+    """The common case: resuming against the same split_strategy (same seed) must
+    work exactly like the non-split_strategy checkpoint/resume path, continuing
+    from exactly the same position with no gaps or repeats."""
+
+    def strategy(b):
+        return b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=7)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds1.state_dict()
+    remaining_original = [row["id"] for row in it]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds2.load_state_dict(checkpoint)  # must not raise
+    remaining_resumed = [row["id"] for row in ds2]
+
+    assert remaining_original == remaining_resumed

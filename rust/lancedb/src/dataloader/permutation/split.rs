@@ -393,7 +393,6 @@ impl Splitter {
     async fn apply_bootstrap(
         &self,
         source: SendableRecordBatchStream,
-        num_rows: u64,
         num_samples: u64,
         sizes: &SplitSizes,
         seed: Option<u64>,
@@ -405,12 +404,44 @@ impl Splitter {
             .iter()
             .map(|b| b.column(0).as_ref())
             .collect::<Vec<_>>();
-        let row_ids = arrow::compute::concat(&row_id_arrays).unwrap();
+        let row_ids = arrow::compute::concat(&row_id_arrays)?;
+        // Sample against however many rows this scan actually returned, not the
+        // separately computed `num_rows` count checked by `validate` -- that count and
+        // this scan are two different queries, not pinned to one snapshot, so a
+        // concurrent append or delete between them could otherwise push
+        // `random_range` out of `row_ids`'s real bounds.
+        let num_eligible_rows = row_ids.len() as u64;
+        if num_eligible_rows == 0 {
+            return Err(Error::InvalidInput {
+                message: "Bootstrap strategy found no eligible rows to sample from in \
+                          this scan (the table or its filter may have changed since \
+                          validation)"
+                    .to_string(),
+            });
+        }
 
         let split_sample_counts = sizes.to_counts(num_samples);
 
-        let mut position_indices = Vec::<u64>::with_capacity(num_samples as usize);
-        let mut split_ids = Vec::<u64>::with_capacity(num_samples as usize);
+        // `try_reserve_exact` (fallible) rather than `with_capacity` (infallible --
+        // aborts the whole process via `handle_alloc_error` on failure, which no
+        // caller can catch) so an unreasonably large `num_samples` becomes a normal,
+        // catchable error instead of a crash. This bounds the failure mode, not peak
+        // memory itself: the output is still one fully materialized RecordBatch, not
+        // streamed in chunks.
+        let too_large = || Error::InvalidInput {
+            message: format!(
+                "Bootstrap strategy's num_samples ({num_samples}) is too large to \
+                 allocate in memory"
+            ),
+        };
+        let mut position_indices = Vec::<u64>::new();
+        position_indices
+            .try_reserve_exact(num_samples as usize)
+            .map_err(|_| too_large())?;
+        let mut split_ids = Vec::<u64>::new();
+        split_ids
+            .try_reserve_exact(num_samples as usize)
+            .map_err(|_| too_large())?;
         for (split_idx, &count) in split_sample_counts.iter().enumerate() {
             // Derive an independent seed per split (rather than one RNG shared across all
             // splits) so a split's sample doesn't depend on how many other splits there are.
@@ -423,13 +454,13 @@ impl Splitter {
             });
             let mut rng = non_crypto_rng(&split_seed);
             for _ in 0..count {
-                position_indices.push(rng.random_range(0..num_rows));
+                position_indices.push(rng.random_range(0..num_eligible_rows));
                 split_ids.push(split_idx as u64);
             }
         }
 
         let indices = UInt64Array::from(position_indices);
-        let sampled_row_ids = arrow::compute::take(row_ids.as_ref(), &indices, None).unwrap();
+        let sampled_row_ids = arrow::compute::take(row_ids.as_ref(), &indices, None)?;
         let split_id_array: Arc<dyn Array> = Arc::new(UInt64Array::from(split_ids));
 
         let new_schema = Arc::new(Schema::new(vec![
@@ -437,8 +468,7 @@ impl Splitter {
             Field::new(SPLIT_ID_COLUMN, DataType::UInt64, false),
         ]));
         let result_batch =
-            RecordBatch::try_new(new_schema.clone(), vec![sampled_row_ids, split_id_array])
-                .unwrap();
+            RecordBatch::try_new(new_schema.clone(), vec![sampled_row_ids, split_id_array])?;
 
         Ok(Box::pin(SimpleRecordBatchStream::new(
             futures::stream::once(std::future::ready(Ok(result_batch))),
@@ -494,7 +524,7 @@ impl Splitter {
                 sizes,
                 seed,
             } => {
-                self.apply_bootstrap(source, num_rows, *num_samples, sizes, *seed)
+                self.apply_bootstrap(source, *num_samples, sizes, *seed)
                     .await
             }
         }
@@ -529,6 +559,18 @@ impl Splitter {
             // It may be strange but for random we shuffle and then assign splits so the result is
             // sorted by split id
             | SplitStrategy::Random { .. } => false,
+        }
+    }
+
+    /// The row count `apply` produces from `num_rows` input rows. Equal to `num_rows`
+    /// for every strategy except `Bootstrap`, whose output size is `num_samples`
+    /// regardless of how many (filtered) input rows it draws from. Callers that need
+    /// to validate or pre-size `apply`'s output (e.g. the shuffler) must use this
+    /// instead of assuming the input and output row counts match.
+    pub fn output_row_count(&self, num_rows: u64) -> u64 {
+        match &self.strategy {
+            SplitStrategy::Bootstrap { num_samples, .. } => *num_samples,
+            _ => num_rows,
         }
     }
 }
@@ -1046,5 +1088,63 @@ mod tests {
             panic!("expected Bootstrap over zero eligible rows to fail");
         };
         assert!(err.to_string().contains("at least one eligible row"));
+    }
+
+    fn empty_data() -> SendableRecordBatchStream {
+        lance_datagen::gen_batch()
+            .with_seed(Seed::from(42))
+            .col(ID_COLUMN, lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(0), BatchCount::from(1))
+    }
+
+    #[test]
+    fn test_output_row_count() {
+        // Bootstrap's output row count is num_samples, independent of the input size --
+        // every other strategy's output matches its input. The shuffler relies on this
+        // (see builder.rs) instead of assuming input and output row counts always match.
+        let bootstrap = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: 1000,
+                sizes: SplitSizes::Fixed(4),
+                seed: Some(42),
+            },
+        );
+        assert_eq!(bootstrap.output_row_count(50), 1000);
+
+        let sequential = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Fixed(2),
+            },
+        );
+        assert_eq!(sequential.output_row_count(50), 50);
+    }
+
+    #[tokio::test]
+    async fn test_bootstrap_rejects_empty_scan_cleanly() {
+        // The eligibility count `validate` checks and this scan are two separate
+        // queries against the table, not pinned to one snapshot -- a concurrent
+        // delete could shrink the real scan to zero rows after `validate` already
+        // passed on a nonzero count. Calling `apply_bootstrap` directly (bypassing
+        // `apply`'s `validate`) reproduces exactly that: a scan that returns zero
+        // rows regardless of what count was validated upstream. It must return a
+        // clean `Err`, not panic on an out-of-range `take` or an empty-range
+        // `random_range`.
+        let splitter = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: 10,
+                sizes: SplitSizes::Fixed(1),
+                seed: Some(1),
+            },
+        );
+        let Err(err) = splitter
+            .apply_bootstrap(empty_data(), 10, &SplitSizes::Fixed(1), Some(1))
+            .await
+        else {
+            panic!("expected Bootstrap over an empty scan to fail cleanly, not panic");
+        };
+        assert!(err.to_string().contains("no eligible rows"));
     }
 }
