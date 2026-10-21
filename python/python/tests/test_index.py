@@ -2,13 +2,15 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
+import json
 import random
 from typing import get_args, get_type_hints
 
+import numpy as np
 import pyarrow as pa
 import pytest
 import pytest_asyncio
-from lancedb import AsyncConnection, AsyncTable, connect_async
+from lancedb import AsyncConnection, AsyncTable, connect, connect_async
 from lancedb.index import (
     BTree,
     IvfFlat,
@@ -443,6 +445,41 @@ async def test_create_ivfrq_index(some_table: AsyncTable, num_bits, layered):
         .limit(10)
         .to_arrow()
     )
+    assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
+
+
+@pytest.mark.parametrize("num_bits", [1, 2, 5])
+@pytest.mark.parametrize("layered", [None, False, True])
+def test_create_ivfrq_accelerator_preserves_layout(tmp_path, num_bits, layered):
+    from lance.file import LanceFileReader
+
+    vectors = np.random.default_rng(4252).normal(size=(256, 32)).astype("float32")
+    data = pa.table(
+        {
+            "id": range(len(vectors)),
+            "vector": pa.FixedSizeListArray.from_arrays(pa.array(vectors.ravel()), 32),
+        }
+    )
+    db = connect(tmp_path)
+    table = db.create_table("test", data.slice(0, 128))
+    table.add(data.slice(128))
+    table.create_index(
+        "vector",
+        config=IvfRq(
+            num_partitions=2,
+            num_bits=num_bits,
+            layered=layered,
+            accelerator="cuda",
+        ),
+    )
+
+    path = next((tmp_path / "test.lance" / "_indices").glob("*/auxiliary.idx"))
+    schema = LanceFileReader(str(path)).metadata().schema
+    metadata = json.loads(json.loads(schema.metadata[b"storage_metadata"])[0])
+    assert metadata.get("layered", False) is (layered is True and num_bits > 2)
+
+    expected = table.search(vectors[0]).bypass_vector_index().limit(10).to_arrow()
+    actual = table.search(vectors[0]).nprobes(2).refine_factor(26).limit(10).to_arrow()
     assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
 
 

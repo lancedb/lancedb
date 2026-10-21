@@ -897,6 +897,9 @@ class IvfRq:
 
     target_partition_size: int, default is 8192
         Target size of each partition.
+    accelerator: Optional[str], default None
+        Reserved for accelerator support. IVF RQ currently builds on CPU,
+        preserving all configured index options.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -905,8 +908,7 @@ class IvfRq:
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None
-    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
-    # create_index() dispatches to pylance to build the index on the accelerator.
+    # IVF RQ currently uses the native CPU builder even when this is set.
     accelerator: Optional[str] = None
     layered: Optional[bool] = None
 
