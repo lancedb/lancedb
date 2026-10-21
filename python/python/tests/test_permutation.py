@@ -169,12 +169,8 @@ def test_bootstrap_sample_draws_with_replacement(mem_db):
 def test_bootstrap_sample_with_seed_is_reproducible(mem_db):
     tbl = mem_db.create_table("test_table", pa.table({"x": range(50)}))
 
-    perm1 = (
-        permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
-    )
-    perm2 = (
-        permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
-    )
+    perm1 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
+    perm2 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
 
     data1 = perm1.search(None).to_arrow().to_pydict()
     data2 = perm2.search(None).to_arrow().to_pydict()
