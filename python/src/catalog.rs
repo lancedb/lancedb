@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,16 +34,19 @@ impl Catalog {
         self.inner.uri()
     }
 
-    #[pyo3(signature = (name, *, exist_ok=false))]
+    #[pyo3(signature = (name, *, exist_ok=false, properties=None))]
     fn create_database<'py>(
         self_: PyRef<'py, Self>,
         name: String,
         exist_ok: bool,
+        properties: Option<HashMap<String, String>>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
+            let mut request = CreateDatabaseRequest::new(name).exist_ok(exist_ok);
+            request.properties = properties;
             inner
-                .create_database(CreateDatabaseRequest::new(name).exist_ok(exist_ok))
+                .create_database(request)
                 .await
                 .map(Connection::new)
                 .infer_error()

@@ -47,6 +47,23 @@ are ordinary connections. Dropping a database requires it to be empty.
 
 ::: lancedb.catalog.DatabaseNames
 
+Pass server-specific database properties through `create_database(properties=...)`.
+For a server supporting relative directory imports:
+
+```python
+import lancedb
+
+catalog = lancedb.connect_catalog("https://catalog.example.com", api_key=api_key)
+db = catalog.create_database(
+    "analytics", exist_ok=True, properties={"location": "sub/path"}
+)
+```
+
+Properties are forwarded unchanged to the server's root `CreateNamespace` API.
+The server interprets `location` relative to its configured catalog storage root
+and validates supported locations and other properties. The asynchronous
+`AsyncCatalog.create_database()` accepts the same `properties` argument.
+
 
 ## Authorization
 

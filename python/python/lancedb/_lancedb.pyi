@@ -961,7 +961,11 @@ class Catalog:
     @property
     def uri(self) -> str: ...
     async def create_database(
-        self, name: str, *, exist_ok: bool = False
+        self,
+        name: str,
+        *,
+        exist_ok: bool = False,
+        properties: Optional[Dict[str, str]] = None,
     ) -> Connection: ...
     async def connect_database(self, name: str) -> Connection: ...
     async def drop_database(

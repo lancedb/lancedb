@@ -133,6 +133,66 @@ async def test_catalog_async_and_errors(catalog_server):
     assert requests[4][2] == {"mode": "Fail", "behavior": "Restrict"}
 
 
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("exist_ok", [False, True])
+@pytest.mark.parametrize(
+    "properties", [None, {}, {"location": "sub/path", "owner": "team"}]
+)
+@pytest.mark.asyncio
+async def test_create_database_properties_round_trip(
+    catalog_server, asynchronous, exist_ok, properties
+):
+    endpoint, requests, responses = catalog_server
+    responses.extend([(200, {}), (200, {"tables": []})])
+    catalog = (
+        await lancedb.connect_catalog_async(endpoint, api_key="secret")
+        if asynchronous
+        else lancedb.connect_catalog(endpoint, api_key="secret")
+    )
+    expected = {"mode": "ExistOk" if exist_ok else "Create"}
+    if properties is not None:
+        expected["properties"] = dict(properties)
+    options = {"exist_ok": exist_ok, "properties": properties}
+    db = (
+        await catalog.create_database("team/search", **options)
+        if asynchronous
+        else catalog.create_database("team/search", **options)
+    )
+    assert isinstance(db, AsyncConnection if asynchronous else DBConnection)
+    assert (await db.table_names() if asynchronous else db.table_names()) == []
+    assert requests[0][0] == "/v1/namespace/team%2Fsearch/create"
+    assert requests[0][2] == expected
+    assert requests[1][0] == "/v1/table/"
+    assert properties == expected.get("properties")
+    for index, (_, headers, _) in enumerate(requests):
+        headers = {key.lower(): value for key, value in headers.items()}
+        assert headers["x-api-key"] == "secret"
+        assert headers.get("x-lancedb-database") == ("team/search" if index else None)
+        assert "x-lancedb-database-prefix" not in headers
+
+
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.asyncio
+async def test_create_database_properties_do_not_leak_to_later_requests(
+    catalog_server, asynchronous
+):
+    endpoint, requests, responses = catalog_server
+    responses.extend([(200, {}), (200, {})])
+    catalog = (
+        await lancedb.connect_catalog_async(endpoint)
+        if asynchronous
+        else lancedb.connect_catalog(endpoint)
+    )
+    if asynchronous:
+        await catalog.create_database("imported", properties={"location": "sub/path"})
+        await catalog.create_database("generated")
+    else:
+        catalog.create_database("imported", properties={"location": "sub/path"})
+        catalog.create_database("generated")
+    assert requests[0][2] == {"mode": "Create", "properties": {"location": "sub/path"}}
+    assert requests[1][2] == {"mode": "Create"}
+
+
 @pytest.mark.parametrize("endpoint", ["/tmp/catalog", "s3://bucket", "db://db"])
 def test_catalog_requires_remote_endpoint(endpoint):
     with pytest.raises(ValueError, match="endpoint"):

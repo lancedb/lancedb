@@ -189,6 +189,7 @@ impl Catalog for RemoteCatalog {
         self.root
             .create_namespace(CreateNamespaceRequest {
                 id: Some(vec![request.name.clone()]),
+                properties: request.properties,
                 mode: Some(
                     if request.exist_ok {
                         "ExistOk"
@@ -363,6 +364,51 @@ mod tests {
                 ("X-LanceDB-Database".into(), "wrong-dynamic".into()),
                 ("X-LanceDB-Database-Prefix".into(), "wrong-prefix".into()),
             ]))
+        }
+    }
+
+    #[tokio::test]
+    async fn create_database_forwards_properties_without_changing_database_scope() {
+        for exist_ok in [false, true] {
+            for properties in [
+                None,
+                Some(HashMap::new()),
+                Some(HashMap::from([
+                    ("location".into(), "sub/path".into()),
+                    ("owner".into(), "team".into()),
+                ])),
+            ] {
+                let (endpoint, task) =
+                    server(vec![(200, json!({})), (200, json!({"namespaces": []}))]).await;
+                let catalog =
+                    RemoteCatalog::try_new(&endpoint, RemoteCatalogOptions::default()).unwrap();
+                let mut request = CreateDatabaseRequest::new("team/search").exist_ok(exist_ok);
+                if let Some(properties) = properties.clone() {
+                    request = request.properties(properties);
+                }
+                let database = catalog.create_database(request).await.unwrap();
+                database
+                    .list_namespaces(ListNamespacesRequest::default())
+                    .await
+                    .unwrap();
+                let requests = task.await.unwrap();
+                let mut expected = json!({"mode": if exist_ok { "ExistOk" } else { "Create" }});
+                if let Some(properties) = properties {
+                    expected["properties"] = json!(properties);
+                }
+                assert_eq!(requests[0].body, expected);
+                assert_eq!(
+                    requests[0].line,
+                    "POST /v1/namespace/team%2Fsearch/create HTTP/1.1"
+                );
+                assert!(!requests[0].headers.contains_key("x-lancedb-database"));
+                assert!(
+                    !requests[0]
+                        .headers
+                        .contains_key("x-lancedb-database-prefix")
+                );
+                assert_eq!(requests[1].headers["x-lancedb-database"], "team/search");
+            }
         }
     }
 

@@ -14,6 +14,7 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
 use std::fmt;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -35,6 +36,8 @@ pub struct CreateDatabaseRequest {
     pub name: String,
     /// Open the existing database if it is already registered.
     pub exist_ok: bool,
+    /// Namespace properties forwarded to the server when creating the database.
+    pub properties: Option<HashMap<String, String>>,
 }
 
 impl CreateDatabaseRequest {
@@ -43,7 +46,25 @@ impl CreateDatabaseRequest {
         Self {
             name: name.into(),
             exist_ok: false,
+            properties: None,
         }
+    }
+
+    /// Set namespace properties for database creation.
+    ///
+    /// Properties are interpreted by the server. For example, a server may accept
+    /// `location` to import a directory relative to its configured catalog root.
+    ///
+    /// ```
+    /// use std::collections::HashMap;
+    /// use lancedb::catalog::CreateDatabaseRequest;
+    ///
+    /// let request = CreateDatabaseRequest::new("analytics")
+    ///     .properties(HashMap::from([("location".into(), "sub/path".into())]));
+    /// ```
+    pub fn properties(mut self, properties: HashMap<String, String>) -> Self {
+        self.properties = Some(properties);
+        self
     }
 
     /// Open an existing database instead of failing if its name already exists.

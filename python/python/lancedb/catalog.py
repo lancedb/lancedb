@@ -99,11 +99,23 @@ class AsyncCatalog:
         return self._inner.uri
 
     async def create_database(
-        self, name: str, *, exist_ok: bool = False
+        self,
+        name: str,
+        *,
+        exist_ok: bool = False,
+        properties: Optional[dict[str, str]] = None,
     ) -> AsyncConnection:
-        """Create a database, or open an existing one when ``exist_ok=True``."""
+        """Create a database, or open an existing one when ``exist_ok=True``.
+
+        ``properties`` are forwarded to the server as namespace properties.
+        For servers supporting directory import, pass
+        ``properties={"location": "sub/path"}`` to import a subdirectory of
+        the configured catalog root. Other properties can carry user metadata.
+        """
         return AsyncConnection(
-            await self._inner.create_database(name, exist_ok=exist_ok)
+            await self._inner.create_database(
+                name, exist_ok=exist_ok, properties=properties
+            )
         )
 
     async def connect_database(self, name: str) -> AsyncConnection:
@@ -174,9 +186,23 @@ class Catalog:
         """The catalog's root namespace endpoint."""
         return self._inner.uri
 
-    def create_database(self, name: str, *, exist_ok: bool = False) -> DBConnection:
-        """Create a database, or open an existing one when ``exist_ok=True``."""
-        inner = LOOP.run(self._inner.create_database(name, exist_ok=exist_ok))
+    def create_database(
+        self,
+        name: str,
+        *,
+        exist_ok: bool = False,
+        properties: Optional[dict[str, str]] = None,
+    ) -> DBConnection:
+        """Create a database, or open an existing one when ``exist_ok=True``.
+
+        ``properties`` are forwarded to the server as namespace properties.
+        For servers supporting directory import, pass
+        ``properties={"location": "sub/path"}`` to import a subdirectory of
+        the configured catalog root. Other properties can carry user metadata.
+        """
+        inner = LOOP.run(
+            self._inner.create_database(name, exist_ok=exist_ok, properties=properties)
+        )
         return self._wrap_database(name, inner)
 
     def connect_database(self, name: str) -> DBConnection:
