@@ -85,6 +85,12 @@ checks input freshness and waits for computed ancestors to settle; the timer
 does not make unchanged inputs require recomputation. Each Function output's
 interval is independent, so refreshing a sibling does not postpone it.
 
+Pacing uses retained live Job Registry history. If completed jobs are archived
+before a configured interval expires, the scheduler can lose the last-success
+timestamp and refresh earlier. Leave archival disabled, or retain live history
+for at least the longest configured column interval. Archival is disabled in
+the base configuration; its default retention threshold is seven days.
+
 Change a stored setting through SQL:
 
 ```sql
