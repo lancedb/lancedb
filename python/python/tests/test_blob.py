@@ -63,6 +63,25 @@ def _blob_array(name, values):
     return pa.ExtensionArray.from_storage(blob_type, storage)
 
 
+def _blob_layout_data(rows, with_ranges, *, as_extension=True):
+    field = lancedb.blob("image")
+    storage_type = field.type.storage_type
+    if not with_ranges or not as_extension:
+        storage_type = pa.struct(list(storage_type)[: (4 if with_ranges else 2)])
+        field = pa.field(
+            "image",
+            storage_type,
+            metadata={"ARROW:extension:name": "lance.blob.v2"},
+        )
+    images = pa.array([row["image"] for row in rows], type=storage_type)
+    if isinstance(field.type, pa.ExtensionType):
+        images = pa.ExtensionArray.from_storage(field.type, images)
+    return pa.Table.from_arrays(
+        [pa.array([row["id"] for row in rows], type=pa.int64()), images],
+        schema=pa.schema([pa.field("id", pa.int64()), field]),
+    )
+
+
 def _row_ids_by_id(table):
     hits = table.search().with_row_id(True).limit(1000).to_arrow()
     assert "_rowid" in hits.column_names
@@ -996,6 +1015,133 @@ def test_merge_insert_writes_python_bytes():
     by_id = _row_ids_by_id(table)
     blobs = table.fetch_blobs("image", [by_id[1], by_id[2]])
     assert blobs.to_pylist() == [b"updated", b"inserted"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("input_type", ["extension", "struct", "reader"])
+@pytest.mark.parametrize("target_with_ranges", [False, True])
+async def test_merge_insert_normalizes_blob_layouts(
+    use_async, input_type, target_with_ranges
+):
+    data = _blob_layout_data(
+        [{"id": 1, "image": {"data": b"before"}}], target_with_ranges
+    )
+    table = lancedb.connect("memory:///").create_table("merge_layouts", data=data)
+    original_schema = table.schema
+    updates = _blob_layout_data(
+        [
+            {"id": 1, "image": {"data": b"updated"}},
+            {"id": 2, "image": {"data": b"inserted"}},
+            {"id": 3, "image": None},
+        ],
+        not target_with_ranges,
+        as_extension=input_type != "struct",
+    )
+    if input_type == "reader":
+        updates = updates.to_reader(max_chunksize=1)
+    writer = table._table if use_async else table
+    result = (
+        writer.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(updates)
+    )
+    if use_async:
+        result = await result
+
+    assert result.num_updated_rows == 1
+    assert result.num_inserted_rows == 2
+    assert table.schema == original_schema
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[i] for i in (1, 2, 3)]).to_pylist() == [
+        b"updated",
+        b"inserted",
+        None,
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize(
+    "byte_range", [{"position": 0}, {"size": 6}, {"position": 4, "size": 6}]
+)
+async def test_merge_insert_legacy_blob_rejects_ranges_atomically(
+    use_async, byte_range
+):
+    data = _blob_layout_data([{"id": 1, "image": {"data": b"before"}}], False)
+    table = lancedb.connect("memory:///").create_table("reject_ranges", data=data)
+    original_schema, original_version = table.schema, table.version
+    updates = _blob_layout_data(
+        [
+            {"id": 1, "image": {"data": b"updated"}},
+            {"id": 2, "image": {"uri": "file:///payload", **byte_range}},
+        ],
+        True,
+    ).to_reader(max_chunksize=1)
+    writer = table._table if use_async else table
+    with pytest.raises(RuntimeError, match="cannot store byte ranges"):
+        result = (
+            writer.merge_insert("id")
+            .when_matched_update_all()
+            .when_not_matched_insert_all()
+            .execute(updates)
+        )
+        if use_async:
+            await result
+
+    assert table.version == original_version
+    assert table.schema == original_schema
+    assert table.count_rows() == 1
+    assert table.fetch_blobs("image", [_row_ids_by_id(table)[1]]).to_pylist() == [
+        b"before"
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("input_type", ["extension", "struct", "reader"])
+@pytest.mark.parametrize("source_with_ranges", [False, True])
+async def test_add_overwrite_adopts_explicit_blob_layout(
+    tmp_path, use_async, input_type, source_with_ranges
+):
+    data = _blob_layout_data(
+        [{"id": 1, "image": {"data": b"before"}}], not source_with_ranges
+    )
+    table = lancedb.connect("memory:///").create_table("overwrite_layouts", data=data)
+    payload = b"0123456789abcdef"
+    path = tmp_path / "payload.bin"
+    path.write_bytes(payload)
+    value = (
+        {"uri": path.as_uri(), "position": 4, "size": 6}
+        if source_with_ranges
+        else {"data": b"updated"}
+    )
+    updates = _blob_layout_data(
+        [{"id": 2, "image": value}, {"id": 3, "image": None}],
+        source_with_ranges,
+        as_extension=input_type != "struct",
+    )
+    if input_type == "reader":
+        updates = updates.to_reader(max_chunksize=1)
+    writer = table._table if use_async else table
+    result = writer.add(
+        updates, mode="overwrite", allow_external_blob_outside_bases=True
+    )
+    if use_async:
+        await result
+
+    blob_type = table.schema.field("image").type
+    if isinstance(blob_type, pa.ExtensionType):
+        blob_type = blob_type.storage_type
+    assert blob_type.num_fields == (4 if source_with_ranges else 2)
+    assert table.blob_columns() == ["image"]
+    assert table.count_rows() == 2
+    by_id = _row_ids_by_id(table)
+    assert table.fetch_blobs("image", [by_id[2], by_id[3]]).to_pylist() == [
+        payload[4:10] if source_with_ranges else b"updated",
+        None,
+    ]
 
 
 @pytest.mark.parametrize("write", ["merge_insert", "create_table"])
