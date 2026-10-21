@@ -74,8 +74,9 @@ table.add_columns(
 ```
 
 Both options apply to every computed output declared in that call, including
-registered Function outputs. Column defaults are enabled with a 60-second
-interval. Local tables persist the options; automatic execution requires a
+registered Function outputs. Automatic refresh is enabled by default. When
+the interval is omitted, the server determines when to refresh. Local tables
+persist only an explicitly configured interval; automatic execution requires a
 Cloud or Enterprise server with its separate `column_refresh.enabled` switch
 turned on. That server switch is disabled in the base configuration.
 

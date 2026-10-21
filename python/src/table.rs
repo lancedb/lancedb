@@ -1814,7 +1814,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
-            auto_refresh_interval_seconds: auto_refresh_interval_seconds.unwrap_or(60),
+            auto_refresh_interval_seconds,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
@@ -1844,7 +1844,7 @@ impl Table {
         let inner = self_.inner_ref()?.clone();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
-            auto_refresh_interval_seconds: auto_refresh_interval_seconds.unwrap_or(60),
+            auto_refresh_interval_seconds,
         };
         options.validate().infer_error()?;
         future_into_py(self_.py(), async move {

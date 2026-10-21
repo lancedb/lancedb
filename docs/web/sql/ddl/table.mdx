@@ -66,8 +66,9 @@ ALTER TABLE t ALTER COLUMN doubled SET auto_refresh_interval_seconds = 600;
 ALTER TABLE t ALTER COLUMN doubled SET auto_refresh_enabled = true;
 ```
 
-Both options are stored in each computed output's field metadata. They default
-to enabled and a 60-second interval. The interval must be a positive integer
+Automatic refresh is enabled by default. An explicitly configured interval is
+stored in each computed output's field metadata; when omitted, the server
+determines when to refresh. The interval must be a positive integer
 and is minimum pacing after a successful refresh of that output; unchanged
 inputs do not force work. A new column is immediately eligible for its first
 refresh. The server's separate automatic-refresh switch must also be enabled.

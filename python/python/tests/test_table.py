@@ -4871,20 +4871,24 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
 
 
-def test_computed_auto_refresh_options(tmp_path):
+@pytest.mark.parametrize("interval", [None, 300])
+def test_computed_auto_refresh_options(tmp_path, interval):
     db = lancedb.connect(tmp_path)
     table = db.create_table("refresh_options", [{"x": 1}])
     before = table.version
     table.add_columns(
         computed={"doubled": "x * 2", "tripled": "x * 3"},
         auto_refresh_enabled=False,
-        auto_refresh_interval_seconds=300,
+        auto_refresh_interval_seconds=interval,
     )
     assert table.version == before + 1
     for column in ("doubled", "tripled"):
         metadata = table.schema.field(column).metadata
         assert metadata[b"computed_column.auto_refresh_enabled"] == b"false"
-        assert metadata[b"computed_column.auto_refresh_interval_seconds"] == b"300"
+        if interval is None:
+            assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+        else:
+            assert metadata[b"computed_column.auto_refresh_interval_seconds"] == b"300"
     table.refresh_column("doubled")
     assert table.to_arrow()["doubled"].to_pylist() == [2]
 
@@ -4903,3 +4907,15 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
     table = lancedb.connect(tmp_path).create_table("invalid_kind", [{"x": 1}])
     with pytest.raises(ValueError, match="require computed"):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("server_interval", [{"x": 1}])
+    before = await table.version()
+    await table.add_columns(computed={"doubled": "x * 2"})
+    assert await table.version() == before + 1
+    metadata = (await table.schema()).field("doubled").metadata
+    assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
+    assert b"computed_column.auto_refresh_interval_seconds" not in metadata

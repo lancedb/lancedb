@@ -2612,7 +2612,8 @@ class Table(ABC):
             to True. Local tables store this option; scheduling requires a server.
         auto_refresh_interval_seconds: int, optional
             Positive minimum interval after a successful refresh, in seconds.
-            Defaults to 60. Applies to every computed output in this call.
+            When omitted, the server determines when to refresh. Applies to every
+            computed output in this call.
             Scheduling options require computed or Function columns.
 
         Returns
@@ -6918,7 +6919,8 @@ class AsyncTable:
             scheduling requires Cloud or Enterprise.
         auto_refresh_interval_seconds: int, optional
             Positive minimum seconds after a successful refresh before another
-            automatic refresh is eligible. Defaults to 60. Unchanged inputs do
+            automatic refresh is eligible. When omitted, the server determines when
+            to refresh. Unchanged inputs do
             not force recomputation. Applies to every declared computed output.
             These options cannot be used with one-time transforms or ordinary
             all-null columns.

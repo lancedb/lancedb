@@ -3520,7 +3520,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 },
             )
             .collect::<Vec<_>>();
-        let mut body = serde_json::json!({ "new_columns": entries, "auto_refresh_enabled": options.auto_refresh_enabled, "auto_refresh_interval_seconds": options.auto_refresh_interval_seconds });
+        let mut body = serde_json::json!({ "new_columns": entries, "auto_refresh_enabled": options.auto_refresh_enabled });
+        if let Some(interval) = options.auto_refresh_interval_seconds {
+            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -3576,7 +3579,6 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let mut body = serde_json::json!({
             "new_columns": new_columns,
             "auto_refresh_enabled": options.auto_refresh_enabled,
-            "auto_refresh_interval_seconds": options.auto_refresh_interval_seconds,
             "function": {
                 "application": plan.application,
                 "binding_metadata_version": plan.binding_metadata_version,
@@ -3586,6 +3588,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "outputs": plan.outputs,
             },
         });
+        if let Some(interval) = options.auto_refresh_interval_seconds {
+            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -9270,37 +9275,44 @@ mod tests {
     /// client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => simple_describe_response(),
-            "/v1/table/my_table/add_columns/" => {
-                assert_eq!(request.method(), "POST");
-                let body = request.body().unwrap().as_bytes().unwrap();
-                let value: serde_json::Value = serde_json::from_slice(body).unwrap();
-                assert_eq!(
-                    value["new_columns"],
-                    serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
-                );
-                assert_eq!(value["auto_refresh_enabled"], false);
-                assert_eq!(value["auto_refresh_interval_seconds"], 300);
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version": 7}"#.to_string())
-                    .unwrap()
-            }
-            path => panic!("Unexpected path: {path}"),
-        });
+        for interval in [None, Some(300)] {
+            let table =
+                Table::new_with_handler("my_table", move |request| match request.url().path() {
+                    "/v1/table/my_table/describe/" => simple_describe_response(),
+                    "/v1/table/my_table/add_columns/" => {
+                        assert_eq!(request.method(), "POST");
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(
+                            value["new_columns"],
+                            serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
+                        );
+                        assert_eq!(value["auto_refresh_enabled"], false);
+                        if let Some(interval) = interval {
+                            assert_eq!(value["auto_refresh_interval_seconds"], interval);
+                        } else {
+                            assert!(value.get("auto_refresh_interval_seconds").is_none());
+                        }
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 7}"#.to_string())
+                            .unwrap()
+                    }
+                    path => panic!("Unexpected path: {path}"),
+                });
 
-        let result = table
-            .add_columns()
-            .computed("doubled", "x * 2")
-            .computed_options(crate::table::computed_columns::ComputedColumnOptions {
-                auto_refresh_enabled: false,
-                auto_refresh_interval_seconds: 300,
-            })
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(result.version, 7);
+            let result = table
+                .add_columns()
+                .computed("doubled", "x * 2")
+                .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                    auto_refresh_enabled: false,
+                    auto_refresh_interval_seconds: interval,
+                })
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(result.version, 7);
+        }
     }
 
     #[tokio::test]
@@ -9323,7 +9335,6 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
-                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -9524,7 +9535,6 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
-                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -9572,7 +9582,6 @@ mod tests {
                 ))
                 .unwrap();
                 expected["auto_refresh_enabled"] = serde_json::json!(true);
-                expected["auto_refresh_interval_seconds"] = serde_json::json!(60);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)

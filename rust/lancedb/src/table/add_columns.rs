@@ -152,7 +152,7 @@ impl AddColumnsBuilder {
     /// table.add_columns().computed("doubled", "x * 2")
     ///     .computed_options(ComputedColumnOptions {
     ///         auto_refresh_enabled: true,
-    ///         auto_refresh_interval_seconds: 300,
+    ///         auto_refresh_interval_seconds: Some(300),
     ///     }).execute().await?;
     /// # Ok(())
     /// # }
@@ -236,6 +236,7 @@ mod tests {
     use std::sync::Arc;
 
     use super::ComputedColumnOptions;
+    use crate::table::computed_columns::AUTO_REFRESH_INTERVAL_META_KEY;
 
     use arrow_array::{Int32Array, RecordBatch, record_batch};
     use arrow_schema::{DataType, Field, Schema};
@@ -256,7 +257,7 @@ mod tests {
         let version = table.version().await.unwrap();
         let options = ComputedColumnOptions {
             auto_refresh_enabled: false,
-            auto_refresh_interval_seconds: 300,
+            auto_refresh_interval_seconds: Some(300),
         };
         let result = table
             .add_columns()
@@ -276,7 +277,7 @@ mod tests {
         );
         for interval in [0, u64::MAX] {
             let invalid = ComputedColumnOptions {
-                auto_refresh_interval_seconds: interval,
+                auto_refresh_interval_seconds: Some(interval),
                 ..options
             };
             assert!(
@@ -308,6 +309,32 @@ mod tests {
                 .unwrap()
                 .field_with_name("bad")
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn omitted_refresh_interval_stays_unset() {
+        let table = table_with_two_columns("server_interval").await;
+        let version = table.version().await.unwrap();
+        let result = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, version + 1);
+        let schema = table.schema().await.unwrap();
+        let metadata = schema.field_with_name("doubled").unwrap().metadata();
+        assert!(!metadata.contains_key(AUTO_REFRESH_INTERVAL_META_KEY));
+        assert_eq!(
+            ComputedColumnOptions::from_metadata(metadata).unwrap(),
+            ComputedColumnOptions::default()
+        );
+        assert!(
+            serde_json::to_value(ComputedColumnOptions::default())
+                .unwrap()
+                .get("auto_refresh_interval_seconds")
+                .is_none()
         );
     }
 
