@@ -1066,7 +1066,7 @@ class DBConnection(EnforceOverrides):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
-        """Return an integration's configuration, stable external ID and AWS policies."""
+        """Return configuration, the stable external ID, and AWS policies."""
         raise NotImplementedError(
             "Storage integrations require a supporting remote server"
         )
@@ -1080,7 +1080,8 @@ class DBConnection(EnforceOverrides):
     ) -> Listing[str]:
         """Lazily list names in one namespace. ``page_limit`` bounds each request.
 
-        ``page_token`` resumes a previous listing. See [Listing][lancedb.listing.Listing].
+        ``page_token`` resumes a previous listing.
+        See [Listing][lancedb.listing.Listing].
         """
         raise NotImplementedError(
             "Storage integrations require a supporting remote server"
@@ -1092,7 +1093,10 @@ class DBConnection(EnforceOverrides):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> None:
-        """Drop an integration. Repeated drops succeed; recreation gets a new external ID."""
+        """Drop an integration; repeated drops succeed.
+
+        Recreation generates a new external ID.
+        """
         raise NotImplementedError(
             "Storage integrations require a supporting remote server"
         )
@@ -3405,7 +3409,10 @@ class AsyncConnection(object):
         aws_region: Optional[str] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
-        """Register S3 configuration; see [create_storage_integration][lancedb.db.DBConnection.create_storage_integration]."""
+        """Register S3 configuration and return AWS setup instructions.
+
+        See [create_storage_integration][lancedb.db.DBConnection.create_storage_integration].
+        """
         value = await self._inner.create_storage_integration(
             validate_storage_integration_name(name),
             storage_prefix,
