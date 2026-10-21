@@ -448,6 +448,47 @@ async def test_create_ivfrq_index(some_table: AsyncTable, num_bits, layered):
     assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
 
 
+@pytest.mark.parametrize("num_bits,layered", [(5, False), (5, True), (9, True)])
+def test_create_ivfrq_append_and_optimize(tmp_path, num_bits, layered):
+    vectors = np.random.default_rng(4252).normal(size=(512, 32)).astype("float32")
+    data = pa.table(
+        {
+            "id": range(len(vectors)),
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.ravel()),
+                32,
+                mask=pa.array([row in (127, 383) for row in range(len(vectors))]),
+            ),
+        }
+    )
+    table = connect(tmp_path).create_table(
+        "test", data.slice(0, 128), on_bad_vectors="null"
+    )
+    table.add(data.slice(128, 128), on_bad_vectors="null")
+    table.create_index(
+        "vector",
+        config=IvfRq(num_partitions=2, num_bits=num_bits, layered=layered),
+    )
+    for start in (256, 384):
+        table.add(data.slice(start, 128), on_bad_vectors="null")
+        table.optimize()
+        stats = table.index_stats("vector_idx")
+        assert stats.num_unindexed_rows == 0
+        assert stats.num_indexed_rows == start + 128
+        expected = (
+            table.search(vectors[start]).bypass_vector_index().limit(10).to_arrow()
+        )
+        actual = (
+            table.search(vectors[start])
+            .nprobes(2)
+            .refine_factor(4)
+            .limit(10)
+            .to_arrow()
+        )
+        assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
+    assert table.to_arrow()["vector"].null_count == 2
+
+
 @pytest.mark.parametrize("num_bits", [1, 2, 5])
 @pytest.mark.parametrize("layered", [None, False, True])
 def test_create_ivfrq_accelerator_preserves_layout(tmp_path, num_bits, layered):
