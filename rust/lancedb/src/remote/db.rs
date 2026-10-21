@@ -677,14 +677,14 @@ fn build_function_identifier(name: &str, namespace: &[String]) -> Result<String>
     build_compound_identifier(name, namespace)
 }
 
-/// Build a full path to a secret. Note that we do not need to percent-encode
-/// this when using it in a URL because the validation functions ensure that
-/// only URL-safe characters are present.
 fn build_storage_integration_identifier(name: &str, namespace: &[String]) -> Result<String> {
     validate_storage_integration_name(name)?;
     build_compound_identifier(name, namespace)
 }
 
+/// Build a full path to a secret. Note that we do not need to percent-encode
+/// this when using it in a URL because the validation functions ensure that
+/// only URL-safe characters are present.
 fn build_secret_identifier(name: &str, namespace: &[String]) -> Result<String> {
     validate_secret_name(name)?;
     build_compound_identifier(name, namespace)
