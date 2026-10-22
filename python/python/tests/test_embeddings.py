@@ -23,6 +23,12 @@ from lancedb.embeddings.utils import retry
 from lancedb.pydantic import LanceModel, Vector
 
 
+@pytest.fixture(autouse=True)
+def isolated_embedding_registry(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+
+
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
 
