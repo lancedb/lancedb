@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: Apache-2.0
-// SPDX-FileCopyrightText: Copyright The Lance Authors
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use arrow_array::{RecordBatchIterator, record_batch};
 use lance::{Dataset, index::DatasetIndexExt};
