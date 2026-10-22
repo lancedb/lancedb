@@ -288,8 +288,7 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain",
-              "search/distributed-search"
+              "search/explain"
             ]
           },
           {
@@ -351,6 +350,7 @@
             "pages": [
               "enterprise/index",
               "enterprise/architecture",
+              "enterprise/distributed-search",
               "enterprise/deployment/index",
               "deployment/storage",
               "deployment/monitoring",
