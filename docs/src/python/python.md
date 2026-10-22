@@ -168,6 +168,11 @@ registered functions, for example,
 namespace. These objects identify resources for ACL operations; a secret object
 contains the credential's name, not its value.
 
+Storage integration objects identify catalog-level storage configuration, for
+example `Object.storage_integration(name="platform/raw")`. The full name follows
+database naming rules, including slashes, and has its own keyspace. It has no
+database or namespace path; its wire name is `storage_integration:platform/raw`.
+
 More object types may be added in the future.
 
 ### Access control lists
@@ -210,6 +215,27 @@ for privilege in [Privilege.CREATE_SECRET, Privilege.CREATE_FUNCTION]:
 
 Both privileges also accept their string names in synchronous and asynchronous
 ACL methods.
+
+Storage integration creation requires `CREATE_STORAGE_INTEGRATION` on the System
+object. It is a catalog privilege and cannot be granted on a database or namespace:
+
+```python
+catalog.authz.add_acl(
+    object=Object.system(),
+    subject=Subject.role("developer"),
+    privilege=Privilege.CREATE_STORAGE_INTEGRATION,
+)
+catalog.authz.add_acl(
+    object=Object.storage_integration(name="platform/raw"),
+    subject=Subject.role("reader"),
+    privilege=Privilege.USAGE,
+)
+```
+
+Creation grants ownership to the creator. Describing an integration requires
+`USAGE` on that integration; dropping it requires `OWNERSHIP`. Listing integrations
+requires `USAGE` on the System object. These grants are independent of database
+and namespace grants and are managed through `catalog.authz`.
 
 By default, the `list_acls` function lists all the access control entries in
 the system. By adding a function parameter, the output is filtered to just ACLs

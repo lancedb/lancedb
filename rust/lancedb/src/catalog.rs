@@ -302,6 +302,30 @@ impl CatalogConnection {
 
     /// Register an S3 prefix under a catalog-relative name such as `platform/raw`.
     /// Registration does not verify access or configure database storage operations.
+    ///
+    /// ```
+    /// use futures::TryStreamExt;
+    /// use lancedb::catalog::CatalogConnection;
+    /// use lancedb::listing::ListingOptions;
+    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
+    ///
+    /// # async fn example(catalog: &CatalogConnection) -> lancedb::Result<()> {
+    /// let integration = catalog.create_storage_integration(
+    ///     "platform/raw",
+    ///     CreateStorageIntegrationRequest::s3(
+    ///         "s3://customer-bucket/raw/",
+    ///         "arn:aws:iam::123456789012:role/lancedb-access",
+    ///     ),
+    /// ).await?;
+    /// println!("{}", integration.configuration_instructions);
+    ///
+    /// let mut names = catalog.list_storage_integrations(ListingOptions::default());
+    /// while let Some(name) = names.try_next().await? {
+    ///     println!("{name}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn create_storage_integration(
         &self,
         name: impl AsRef<str>,
@@ -323,6 +347,7 @@ impl CatalogConnection {
             .await
     }
     /// Lazily list storage integration names throughout this catalog.
+    /// See [`Self::create_storage_integration`] for a create/list example.
     pub fn list_storage_integrations(&self, options: ListingOptions) -> Listing<String> {
         let catalog = self.catalog.clone();
         Listing::new(options, move |options| {
