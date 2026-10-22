@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 import lancedb
 from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
@@ -48,3 +49,29 @@ def test_dataset_adapter(tmp_path):
     assert adapter.head(10).num_rows == 0
 
     assert adapter.scanner().projected_schema == pa.schema({"x": pa.int64()})
+
+
+def test_dataset_adapter_expression_filter(tmp_path):
+    # DuckDB (and other dataset consumers) push filters as
+    # pyarrow.compute.Expression, not SQL strings.
+    data = pa.table({"x": [1, 2, 3, 4], "y": [5, 6, 7, 8]})
+    conn = lancedb.connect(tmp_path)
+    tbl = conn.create_table("test", data)
+
+    adapter = PyarrowDatasetAdapter(tbl)
+    expr = pc.field("x") > 2
+
+    expected = data.filter(expr)
+    assert adapter.count_rows(expr) == 2
+    assert adapter.to_table(filter=expr) == expected
+    assert adapter.to_batches(filter=expr).read_all() == expected
+    assert adapter.head(2, filter=expr) == expected.slice(0, 2)
+    assert adapter.scanner(filter=expr).to_table() == expected
+    assert adapter.scanner(filter=expr).count_rows() == 2
+
+    # The expression may reference columns outside the projection.
+    projected = adapter.to_table(columns=["y"], filter=expr)
+    assert projected == expected.select(["y"])
+    assert adapter.scanner(columns=["y"], filter=expr).projected_schema == pa.schema(
+        [data.schema.field("y")]
+    )

@@ -22,3 +22,10 @@ def test_basic_query(tmp_path):
 
     results = duck_conn.sql("SELECT SUM(y) FROM adapter").fetchall()
     assert results[0][0] == 26
+
+    # DuckDB pushes the WHERE clause as a pyarrow Expression.
+    results = duck_conn.sql("SELECT SUM(y) FROM adapter WHERE x > 2").fetchall()
+    assert results[0][0] == 15
+
+    results = duck_conn.sql("SELECT x, y FROM adapter WHERE x > 2").fetchall()
+    assert results == [(3, 7), (4, 8)]

@@ -52,6 +52,11 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
             raise NotImplementedError("memory_pool not supported")
 
     def count_rows(self):
+        if isinstance(self.filter, pa.compute.Expression):
+            # Expression filters are applied to the scanned batches rather
+            # than pushed into the query, so the count is computed the
+            # same way.
+            return self.to_table().num_rows
         return self.table.count_rows(self.filter)
 
     def from_batches(self, **kwargs):
@@ -83,20 +88,59 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
         return self.to_reader().read_all()
 
     def to_reader(self, *, limit: Optional[int] = None):
+        expression = (
+            self.filter if isinstance(self.filter, pa.compute.Expression) else None
+        )
+        sql_filter = self.filter if isinstance(self.filter, str) else None
+
         query = self.table.search()
         # Disable the builtin limit
         if limit is None:
-            num_rows = self.count_rows()
+            num_rows = self.table.count_rows(sql_filter)
             query.limit(num_rows)
         elif limit <= 0:
             raise ValueError("limit must be positive")
-        else:
+        elif expression is None:
             query.limit(limit)
+        # With an expression filter the limit applies after filtering, so it
+        # cannot be pushed into the query.
+        if expression is None:
+            if self.columns is not None:
+                query = query.select(self.columns)
+            if sql_filter is not None:
+                query = query.where(sql_filter, prefilter=True)
+            return query.to_batches(batch_size=self.batch_size)
+        batches = query.to_batches(batch_size=self.batch_size)
+        return self._filter_batches(batches, expression, limit)
+
+    def _filter_batches(
+        self, batches, expression: pa.compute.Expression, limit: Optional[int]
+    ):
+        # The expression can reference columns outside the projection, so
+        # the scan keeps every column and the projection is applied to each
+        # batch after filtering.
         if self.columns is not None:
-            query = query.select(self.columns)
-        if self.filter is not None:
-            query = query.where(self.filter, prefilter=True)
-        return query.to_batches(batch_size=self.batch_size)
+            schema = pa.schema(
+                [self.table.schema.field(column) for column in self.columns]
+            )
+        else:
+            schema = self.table.schema
+
+        def gen():
+            emitted = 0
+            for batch in batches:
+                batch = batch.filter(expression)
+                if self.columns is not None:
+                    batch = batch.select(self.columns)
+                if limit is not None:
+                    remaining = limit - emitted
+                    if remaining <= 0:
+                        return
+                    emitted += batch.num_rows
+                    batch = batch.slice(0, remaining)
+                yield batch
+
+        return pa.RecordBatchReader.from_batches(schema, gen())
 
 
 class PyarrowDatasetAdapter(pa.dataset.Dataset):
@@ -104,6 +148,8 @@ class PyarrowDatasetAdapter(pa.dataset.Dataset):
         self.table = table
 
     def count_rows(self, filter: Optional[Filter] = None):
+        if isinstance(filter, pa.compute.Expression):
+            return self.scanner(filter=filter).count_rows()
         return self.table.count_rows(filter)
 
     def get_fragments(self, filter: Optional[Filter] = None):
