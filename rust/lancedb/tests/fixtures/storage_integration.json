@@ -5,7 +5,7 @@
   "aws_role_arn": "arn:aws:iam::123456789012:role/access",
   "aws_region": null,
   "aws_account_id": "001122334455",
-  "aws_iam_principal_arn": "arn:aws:iam::001122334455:root",
+  "aws_iam_principal_arn": "arn:aws:iam::001122334455:role/lancedb-storage-access",
   "aws_external_id": "55b54d68-4686-4d38-97da-9d77e54a643e",
   "created_at_millis": 1,
   "access_verified": false,
@@ -14,9 +14,12 @@
     "Statement": [
       {
         "Effect": "Allow",
-        "Action": "sts:AssumeRole",
+        "Action": [
+          "sts:AssumeRole",
+          "sts:TagSession"
+        ],
         "Principal": {
-          "AWS": "arn:aws:iam::001122334455:root"
+          "AWS": "arn:aws:iam::001122334455:role/lancedb-storage-access"
         },
         "Condition": {
           "StringEquals": {
@@ -27,5 +30,5 @@
     ]
   },
   "permissions_policy": {},
-  "configuration_instructions": "Update IAM role arn:aws:iam::123456789012:role/access to trust AWS account 001122334455 with external ID 55b54d68-4686-4d38-97da-9d77e54a643e, attach the S3 permissions policy for s3://customer-bucket/raw/, and ensure the LanceDB deployment's calling IAM role has permission to assume it."
+  "configuration_instructions": "Update IAM role arn:aws:iam::123456789012:role/access to trust arn:aws:iam::001122334455:role/lancedb-storage-access with external ID 55b54d68-4686-4d38-97da-9d77e54a643e and attach the S3 permissions policy for s3://customer-bucket/raw/."
 }
