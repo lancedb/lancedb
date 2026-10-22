@@ -27,5 +27,5 @@
     ]
   },
   "permissions_policy": {},
-  "configuration_instructions": "Configure role trust for account 001122334455 and the external ID. AWS access is unverified."
+  "configuration_instructions": "Update IAM role arn:aws:iam::123456789012:role/access to trust AWS account 001122334455 with external ID 55b54d68-4686-4d38-97da-9d77e54a643e, attach the S3 permissions policy for s3://customer-bucket/raw/, and ensure the LanceDB deployment's calling IAM role has permission to assume it."
 }
