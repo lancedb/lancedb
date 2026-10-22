@@ -3620,8 +3620,13 @@ class LanceTable(Table):
             # New API: metric is the column name
             column = metric
 
-            # Check if config has accelerator set and dispatch to pylance
-            if config is not None and hasattr(config, "accelerator"):
+            # IVF_RQ currently falls back to CPU in pylance. Keep its build here
+            # so the fallback preserves the native builder's layout options.
+            if (
+                config is not None
+                and not isinstance(config, IvfRq)
+                and hasattr(config, "accelerator")
+            ):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration

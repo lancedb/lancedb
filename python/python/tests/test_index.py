@@ -2,13 +2,15 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from datetime import timedelta
+import json
 import random
 from typing import get_args, get_type_hints
 
+import numpy as np
 import pyarrow as pa
 import pytest
 import pytest_asyncio
-from lancedb import AsyncConnection, AsyncTable, connect_async
+from lancedb import AsyncConnection, AsyncTable, connect, connect_async
 from lancedb.index import (
     BTree,
     IvfFlat,
@@ -421,13 +423,111 @@ async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
-async def test_create_ivfrq_index(some_table: AsyncTable):
-    await some_table.create_index("vector", config=IvfRq(num_bits=1))
+@pytest.mark.parametrize("num_bits", [1, 2, 5])
+@pytest.mark.parametrize("layered", [None, False, True])
+async def test_create_ivfrq_index(some_table: AsyncTable, num_bits, layered):
+    await some_table.create_index(
+        "vector", config=IvfRq(num_bits=num_bits, layered=layered)
+    )
     indices = await some_table.list_indices()
     assert len(indices) == 1
     assert indices[0].index_type == "IvfRq"
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
+    query = list(map(float, range(DIM)))
+    expected = (
+        await some_table.vector_search(query).bypass_vector_index().limit(10).to_arrow()
+    )
+    actual = (
+        await some_table.vector_search(query)
+        .nprobes(NROWS)
+        .refine_factor(26)
+        .limit(10)
+        .to_arrow()
+    )
+    assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
+
+
+@pytest.mark.parametrize("num_bits,layered", [(5, False), (5, True), (9, True)])
+def test_create_ivfrq_append_and_optimize(tmp_path, num_bits, layered):
+    vectors = np.random.default_rng(4252).normal(size=(512, 32)).astype("float32")
+    data = pa.table(
+        {
+            "id": range(len(vectors)),
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.ravel()),
+                32,
+                mask=pa.array([row in (127, 383) for row in range(len(vectors))]),
+            ),
+        }
+    )
+    table = connect(tmp_path).create_table(
+        "test", data.slice(0, 128), on_bad_vectors="null"
+    )
+    table.add(data.slice(128, 128), on_bad_vectors="null")
+    table.create_index(
+        "vector",
+        config=IvfRq(num_partitions=2, num_bits=num_bits, layered=layered),
+    )
+    for start in (256, 384):
+        table.add(data.slice(start, 128), on_bad_vectors="null")
+        table.optimize()
+        stats = table.index_stats("vector_idx")
+        assert stats.num_unindexed_rows == 0
+        assert stats.num_indexed_rows == start + 128
+        expected = (
+            table.search(vectors[start]).bypass_vector_index().limit(10).to_arrow()
+        )
+        actual = (
+            table.search(vectors[start])
+            .nprobes(2)
+            .refine_factor(4)
+            .limit(10)
+            .to_arrow()
+        )
+        assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
+    assert table.to_arrow()["vector"].null_count == 2
+
+
+@pytest.mark.parametrize("num_bits", [1, 2, 5])
+@pytest.mark.parametrize("layered", [None, False, True])
+def test_create_ivfrq_accelerator_preserves_layout(tmp_path, num_bits, layered):
+    from lance.file import LanceFileReader
+
+    vectors = np.random.default_rng(4252).normal(size=(256, 32)).astype("float32")
+    data = pa.table(
+        {
+            "id": range(len(vectors)),
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array(vectors.ravel()),
+                32,
+                mask=pa.array([row in (127, 255) for row in range(len(vectors))]),
+            ),
+        }
+    )
+    db = connect(tmp_path)
+    table = db.create_table("test", data.slice(0, 128), on_bad_vectors="null")
+    table.add(data.slice(128), on_bad_vectors="null")
+    assert table.count_rows() == 256
+    assert table.to_arrow()["vector"].null_count == 2
+    table.create_index(
+        "vector",
+        config=IvfRq(
+            num_partitions=2,
+            num_bits=num_bits,
+            layered=layered,
+            accelerator="cuda",
+        ),
+    )
+
+    path = next((tmp_path / "test.lance" / "_indices").glob("*/auxiliary.idx"))
+    schema = LanceFileReader(str(path)).metadata().schema
+    metadata = json.loads(json.loads(schema.metadata[b"storage_metadata"])[0])
+    assert metadata.get("layered", False) is (layered is True and num_bits > 2)
+
+    expected = table.search(vectors[0]).bypass_vector_index().limit(10).to_arrow()
+    actual = table.search(vectors[0]).nprobes(2).refine_factor(26).limit(10).to_arrow()
+    assert len(set(actual["id"].to_pylist()) & set(expected["id"].to_pylist())) >= 5
 
 
 @pytest.mark.asyncio
