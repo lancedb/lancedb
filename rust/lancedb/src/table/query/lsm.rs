@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! MemWAL read path.
+//! RTE read path.
 //!
-//! When a table has a MemWAL write spec installed (see [`enable_memwal`]),
+//! When a table has an RTE write spec installed (see [`enable_rte`]),
 //! reads are routed through Lance's [`LsmScanner`] instead of the plain
 //! base-table scan unless the query sets
-//! [`use_memwal(false)`](crate::query::QueryBase::use_memwal). This makes data
+//! [`use_rte(false)`](crate::query::QueryBase::use_rte). This makes data
 //! written via the LSM `merge_insert` path — which lives in the active/frozen
 //! in-memory memtables and the SSTables until an external
 //! compaction merges it into the base table — visible to queries, deduplicated by
@@ -17,10 +17,10 @@
 //! three run through a single [`LsmScanner`], so a `where` filter is honored as a
 //! prefilter uniformly — including for vector search, where `LsmScanner` threads
 //! it into the vector planner's prefilter. Shapes the LSM path cannot honor are
-//! rejected with [`Error::NotSupported`]; the caller must set `use_memwal(false)` to
+//! rejected with [`Error::NotSupported`]; the caller must set `use_rte(false)` to
 //! run those against the base table.
 //!
-//! [`enable_memwal`]: crate::Table::enable_memwal
+//! [`enable_rte`]: crate::Table::enable_rte
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -52,12 +52,12 @@ use crate::utils::default_vector_column;
 /// widen the per-source fetch to keep result pages filled.
 const LSM_OVERFETCH_FACTOR: f64 = 2.0;
 
-/// Build the LSM read plan for a MemWAL-routed query.
+/// Build the LSM read plan for an RTE-routed query.
 ///
-/// The caller guarantees `ds_ref` carries a MemWAL write spec (routing is decided
+/// The caller guarantees `ds_ref` carries an RTE write spec (routing is decided
 /// in [`create_plan`](super::create_plan)). Errors with [`Error::NotSupported`]
 /// for query shapes the LSM scanner cannot honor — the caller must set
-/// `use_memwal(false)` to run those against the base table.
+/// `use_rte(false)` to run those against the base table.
 pub(super) async fn create_lsm_plan(
     table: &NativeTable,
     ds_ref: Arc<Dataset>,
@@ -67,11 +67,11 @@ pub(super) async fn create_lsm_plan(
 
     // A time-traveled (checked-out) handle pins an older dataset version, but the
     // WAL manifests and cached writer expose current live state — mixing them would
-    // surface WAL rows written after the requested version. `use_memwal(false)` reads
+    // surface WAL rows written after the requested version. `use_rte(false)` reads
     // the base table at the pinned version.
     if table.dataset.time_travel_version().is_some() {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner cannot read from a time-traveled dataset version; set use_memwal(false) to read the base table at this version".to_string(),
+            message: "the MemWAL LSM scanner cannot read from a time-traveled dataset version; set use_rte(false) to read the base table at this version".to_string(),
         });
     }
 
@@ -80,7 +80,7 @@ pub(super) async fn create_lsm_plan(
         .mem_wal_index_details()
         .await?
         .ok_or_else(|| Error::Runtime {
-            message: "the MemWAL write spec disappeared during read planning".to_string(),
+            message: "the RTE write spec disappeared during read planning".to_string(),
         })?;
 
     let pk_columns = pk_columns(&ds_ref)?;
@@ -135,12 +135,12 @@ pub(super) async fn create_lsm_plan(
     restore_projection(plan, &query, &pk_columns)
 }
 
-/// Reject query shapes the MemWAL read path does not implement. On a MemWAL table
+/// Reject query shapes the RTE read path does not implement. On an RTE table
 /// reads route through the LSM scanner by default, so an unsupported shape is a
 /// hard error rather than a silent fallback to the base-only scan — which would
-/// exclude un-compacted MemWAL data. The caller must set `use_memwal(false)` to
+/// exclude un-compacted RTE data. The caller must set `use_rte(false)` to
 /// run these against the base table, accepting that the results omit un-compacted
-/// MemWAL data.
+/// RTE data.
 ///
 /// A `where` filter is intentionally *not* rejected: every arm routes through
 /// [`LsmScanner`], which applies it as a prefilter (see [`base_scanner`]).
@@ -148,7 +148,7 @@ fn reject_unsupported(query: &VectorQueryRequest) -> Result<()> {
     let unsupported = |what: &str| {
         Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner does not support {what}; set use_memwal(false) to read the base table only (results will exclude un-compacted MemWAL data)"
+                "the MemWAL LSM scanner does not support {what}; set use_rte(false) to read the base table only (results will exclude un-compacted RTE data)"
             ),
         })
     };
@@ -413,7 +413,7 @@ fn base_scanner(
             QueryFilter::Datafusion(expr) => scanner.filter_expr(expr.clone()),
             QueryFilter::Substrait(_) => {
                 return Err(Error::NotSupported {
-                    message: "the MemWAL LSM scanner does not support Substrait filters; set use_memwal(false) to read the base table only".to_string(),
+                    message: "the MemWAL LSM scanner does not support Substrait filters; set use_rte(false) to read the base table only".to_string(),
                 });
             }
         };
@@ -458,11 +458,11 @@ async fn fts_plan(
     offset: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     // Pre-check for a lancedb-flavored error; `LsmScanner` also validates the
-    // single-column requirement, but without the `use_memwal(false)` guidance.
+    // single-column requirement, but without the `use_rte(false)` guidance.
     let columns: Vec<String> = fts.columns().into_iter().collect();
     if columns.len() > 1 {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner full-text search supports a single column; set use_memwal(false) to read the base table only".to_string(),
+            message: "the MemWAL LSM scanner full-text search supports a single column; set use_rte(false) to read the base table only".to_string(),
         });
     }
     let column = columns.first().ok_or_else(|| Error::NotSupported {
@@ -482,7 +482,7 @@ async fn fts_plan(
     {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (MemWalWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise un-compacted documents are omitted. set use_memwal(false) to read the base table only"
+                "the MemWAL LSM scanner full-text search requires the FTS index on '{column}' to be maintained by the write spec (RTEWriteSpec::with_maintained_indexes) and carried by every resident MemTable; otherwise un-compacted documents are omitted. set use_rte(false) to read the base table only"
             ),
         });
     }
@@ -515,7 +515,7 @@ fn resident_memtables_carry(
         .all(|tables| carries(&tables.active) && tables.frozen.iter().all(&carries))
 }
 
-/// Whether an index of `type_url_suffix` covering `column` is in the MemWAL spec's
+/// Whether an index of `type_url_suffix` covering `column` is in the RTE spec's
 /// maintained set. Only a maintained index has its catch-up tracked (so exclusion is
 /// gated correctly) and its in-memory arm kept current; an unmaintained base index
 /// falls back to the compaction watermark and can drop rows it has not re-indexed.
@@ -633,7 +633,7 @@ fn resolve_single_index(
     if names.len() > 1 {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner cannot resolve the {arm} index catch-up watermark for '{column}': it has multiple {arm} indexes; set use_memwal(false) to read the base table only"
+                "the MemWAL LSM scanner cannot resolve the {arm} index catch-up watermark for '{column}': it has multiple {arm} indexes; set use_rte(false) to read the base table only"
             ),
         });
     }
@@ -682,7 +682,7 @@ fn restore_projection(
 ///
 /// Note: the base and SSTable arms use `fast_search` (indexed data only), so a
 /// base-table row not covered by a vector index is invisible here — it surfaces
-/// only via the memtable or `use_memwal(false)`.
+/// only via the memtable or `use_rte(false)`.
 #[allow(clippy::too_many_arguments)]
 async fn vector_plan(
     dataset: &Dataset,
@@ -717,7 +717,7 @@ async fn vector_plan(
     if !index_maintained(dataset, &column, details, "VectorIndexDetails").await? {
         return Err(Error::NotSupported {
             message: format!(
-                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (MemWalWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_memwal(false) to read the base table only"
+                "the MemWAL LSM scanner requires the vector index on '{column}' to be maintained by the write spec (RTEWriteSpec::with_maintained_indexes); otherwise compacted rows not yet re-indexed are omitted. set use_rte(false) to read the base table only"
             ),
         });
     }
@@ -726,7 +726,7 @@ async fn vector_plan(
     // clear error rather than failing deep in the planner.
     if is_binary_vector_column(&arrow_schema, &column) {
         return Err(Error::NotSupported {
-            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set use_memwal(false) to read the base table only".to_string(),
+            message: "the MemWAL LSM scanner does not support binary (uint8) vector search; set use_rte(false) to read the base table only".to_string(),
         });
     }
 
@@ -813,7 +813,7 @@ mod tests {
         };
         assert!(
             matches!(reject_unsupported(&query), Err(Error::NotSupported { message })
-            if message.contains("search_effort") && message.contains("un-compacted MemWAL"))
+            if message.contains("search_effort") && message.contains("un-compacted RTE"))
         );
     }
 

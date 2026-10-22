@@ -31,7 +31,7 @@ from lancedb._lancedb import (
     DropColumnsResult,
     FtsToken,
     IndexConfig,
-    MemWalWriteSpec,
+    RTEWriteSpec,
     MergeResult,
     UpdateResult,
 )
@@ -1001,8 +1001,17 @@ class RemoteTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms,
+                computed=computed,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
 
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))
@@ -1037,17 +1046,17 @@ class RemoteTable(Table):
         """Set the unenforced primary key for this table to a single column."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def enable_memwal(self, spec: "MemWalWriteSpec") -> None:
-        """Install an MemWalWriteSpec."""
-        return LOOP.run(self._table.enable_memwal(spec))
+    def enable_rte(self, spec: "RTEWriteSpec") -> None:
+        """Install an RTEWriteSpec."""
+        return LOOP.run(self._table.enable_rte(spec))
 
-    def disable_memwal(self) -> None:
-        """Remove the MemWalWriteSpec."""
-        return LOOP.run(self._table.disable_memwal())
+    def disable_rte(self) -> None:
+        """Remove the RTEWriteSpec."""
+        return LOOP.run(self._table.disable_rte())
 
-    def get_memwal_spec(self) -> Optional["MemWalWriteSpec"]:
-        """Read the installed MemWalWriteSpec, or ``None``."""
-        return LOOP.run(self._table.get_memwal_spec())
+    def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
+        """Read the installed RTEWriteSpec, or ``None``."""
+        return LOOP.run(self._table.get_rte_spec())
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
@@ -1057,31 +1066,31 @@ class RemoteTable(Table):
     def _note_hybrid_pk_fusion(self) -> None:
         self._table._note_hybrid_pk_fusion()
 
-    def checkpoint_memwal(self) -> None:
+    def checkpoint_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_memwal`][lancedb.AsyncTable.checkpoint_memwal]."""
-        return LOOP.run(self._table.checkpoint_memwal())
+        [`AsyncTable.checkpoint_rte`][lancedb.AsyncTable.checkpoint_rte]."""
+        return LOOP.run(self._table.checkpoint_rte())
 
-    def flush_memwal(self) -> None:
+    def flush_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_memwal`][lancedb.AsyncTable.flush_memwal]."""
-        return LOOP.run(self._table.flush_memwal())
+        [`AsyncTable.flush_rte`][lancedb.AsyncTable.flush_rte]."""
+        return LOOP.run(self._table.flush_rte())
 
-    def compact_memwal(self) -> None:
+    def compact_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_memwal`][lancedb.AsyncTable.compact_memwal]."""
-        return LOOP.run(self._table.compact_memwal())
+        [`AsyncTable.compact_rte`][lancedb.AsyncTable.compact_rte]."""
+        return LOOP.run(self._table.compact_rte())
 
-    def get_memwal_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
+    def get_rte_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_memwal_stats`][lancedb.AsyncTable.get_memwal_stats]."""
+        [`AsyncTable.get_rte_stats`][lancedb.AsyncTable.get_rte_stats]."""
         return LOOP.run(
-            self._table.get_memwal_stats(include_sstable_rows=include_sstable_rows)
+            self._table.get_rte_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_memwal_writers(self) -> None:
+    def close_rte_writers(self) -> None:
         """No-op for remote tables (no local shard writers)."""
-        return LOOP.run(self._table.close_memwal_writers())
+        return LOOP.run(self._table.close_rte_writers())
 
     def drop_index(self, index_name: str):
         return LOOP.run(self._table.drop_index(index_name))

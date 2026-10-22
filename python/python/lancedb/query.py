@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+_SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
 # Number of rows a hybrid query returns when no limit was set on it. This
 # mirrors the default the Rust query builder applies to its sub-queries.
@@ -887,10 +888,10 @@ class Query(pydantic.BaseModel):
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
-    # MemWAL LSM read routing: None auto-routes when the table carries a write
+    # RTE LSM read routing: None auto-routes when the table carries a write
     # spec, True forces the LSM scanner (errors without a spec), False reads the
     # base table only
-    use_memwal: Optional[bool] = None
+    use_rte: Optional[bool] = None
 
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
@@ -910,9 +911,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
-        # use_memwal is a genuine tri-state (None / True / False); preserve it as-is
+        # use_rte is a genuine tri-state (None / True / False); preserve it as-is
         # so a round-tripped query keeps an explicit False.
-        query.use_memwal = req.use_memwal
+        query.use_rte = req.use_rte
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -1024,10 +1025,12 @@ class LanceQueryBuilder(ABC):
                 fast_search=fast_search,
             )
 
-        if isinstance(query, list):
+        if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
         elif isinstance(query, np.ndarray):
             query = query.astype(np.float32)
+        elif isinstance(query, (pa.Array, pa.ChunkedArray)):
+            query = np.array(query.to_pylist(), dtype=np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
@@ -1049,7 +1052,7 @@ class LanceQueryBuilder(ABC):
             query = cls._query_to_vector(table, query, vector_column_name)
             return query, query_type
         elif query_type == "auto":
-            if isinstance(query, (list, np.ndarray)):
+            if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
                 return query, "vector"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
@@ -1065,7 +1068,7 @@ class LanceQueryBuilder(ABC):
 
     @classmethod
     def _query_to_vector(cls, table, query, vector_column_name):
-        if isinstance(query, (list, np.ndarray)):
+        if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
             return query
         conf = table.embedding_functions.get(vector_column_name)
         if conf is not None:
@@ -1085,7 +1088,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
-        self._use_memwal = None
+        self._use_rte = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -1520,10 +1523,10 @@ class LanceQueryBuilder(ABC):
         self._fragment_ids = fragment_ids
         return self
 
-    def use_memwal(self, enable: bool) -> Self:
-        """Control MemWAL LSM read routing for this query.
+    def use_rte(self, enable: bool) -> Self:
+        """Control RTE LSM read routing for this query.
 
-        By default (unset), a query against a table with a MemWAL write spec is
+        By default (unset), a query against a table with an RTE write spec is
         routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
         table (active/frozen memtables + SSTables); a table without a
@@ -1532,8 +1535,8 @@ class LanceQueryBuilder(ABC):
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no MemWAL
-            write spec. ``False`` bypasses the MemWAL and reads the base table
+            ``True`` forces the LSM scanner and errors if the table has no RTE
+            write spec. ``False`` bypasses the RTE and reads the base table
             only, even when a spec is present.
 
         Returns
@@ -1541,7 +1544,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._use_memwal = enable
+        self._use_rte = enable
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1878,7 +1881,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         probing may continue when too few candidates are found. Any explicit
         effort, including 0.5, overrides nprobes in either call order. Explicit
         minimum and maximum bounds still apply. This is not a recall guarantee
-        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        and does not change refinement or HNSW ef. RTE LSM queries do not
         yet support this option.
 
         Examples
@@ -2055,7 +2058,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_memwal=self._use_memwal,
+            use_rte=self._use_rte,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -2280,7 +2283,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_memwal=self._use_memwal,
+            use_rte=self._use_rte,
             full_text_query=FullTextSearchQuery(
                 query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
@@ -2362,7 +2365,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_memwal=self._use_memwal,
+            use_rte=self._use_rte,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2438,7 +2441,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if query is not None and (vector is not None or text is not None):
             raise ValueError(
                 "You can either provide a string query in search() method "
-                "or set `vector()` and `text()` explicitly for hybrid search."
+                "or set `vector()` and `text()` explicitly for hybrid search. "
                 "But not both."
             )
 
@@ -2458,7 +2461,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """Set whether to return row ids.
 
         Recorded separately from `_with_row_id`, which `rerank(return_score=
-        "all")` also sets for its own use — on a MemWAL table only a caller who
+        "all")` also sets for its own use — on an RTE table only a caller who
         asked is refused, and the reranker still falls back to the primary key.
         """
         self._caller_requested_row_id = with_row_id
@@ -2728,7 +2731,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if reranker.score == "all":
             # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
             # Not through `with_row_id`, which records caller intent: the
-            # reranker's need for row ids must not refuse a MemWAL table.
+            # reranker's need for row ids must not refuse an RTE table.
             self._with_row_id = True
 
         return self
@@ -2766,7 +2769,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         probing may continue when too few candidates are found. Any explicit
         effort, including 0.5, overrides nprobes in either call order. Explicit
         minimum and maximum bounds still apply. This is not a recall guarantee
-        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        and does not change refinement or HNSW ef. RTE LSM queries do not
         yet support this option.
 
         Examples
@@ -3040,7 +3043,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
         self._pk_fusion = None
         columns = self._columns
-        if _wal_hybrid.pk_fusion_learned(self._table, self._use_memwal):
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_rte):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 self._table.schema,
                 self._columns,
@@ -3057,9 +3060,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
-        if self._use_memwal is not None:
-            self._vector_query.use_memwal(self._use_memwal)
-            self._fts_query.use_memwal(self._use_memwal)
+        if self._use_rte is not None:
+            self._vector_query.use_rte(self._use_rte)
+            self._fts_query.use_rte(self._use_rte)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
         if self._distance_type:
@@ -3723,12 +3726,12 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.fast_search()
         return self
 
-    def use_memwal(self, enable: bool) -> Self:
+    def use_rte(self, enable: bool) -> Self:
         """
-        Control MemWAL LSM read routing for this query.
+        Control RTE LSM read routing for this query.
 
-        By default (unset), a query against a table with a MemWAL write spec (see
-        [AsyncTable.enable_memwal][lancedb.table.AsyncTable.enable_memwal])
+        By default (unset), a query against a table with an RTE write spec (see
+        [AsyncTable.enable_rte][lancedb.table.AsyncTable.enable_rte])
         is routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
         table (the active/frozen in-memory memtables and the SSTables),
@@ -3737,11 +3740,11 @@ class AsyncStandardQuery(AsyncQueryBase):
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no MemWAL
-            write spec. ``False`` bypasses the MemWAL and reads the base table
+            ``True`` forces the LSM scanner and errors if the table has no RTE
+            write spec. ``False`` bypasses the RTE and reads the base table
             only, even when a spec is present.
         """
-        self._inner.use_memwal(enable)
+        self._inner.use_rte(enable)
         return self
 
     def postfilter(self) -> Self:
@@ -4064,7 +4067,7 @@ class AsyncVectorQueryBase:
         minimum and maximum bounds remain effective. Zero starts at the caller
         minimum and one searches all partitions within the maximum. Later
         probing may continue to obtain enough candidates. This is not a recall
-        guarantee and does not change refinement or HNSW ef. MemWAL LSM queries
+        guarantee and does not change refinement or HNSW ef. RTE LSM queries
         do not yet support this option.
 
         Examples
@@ -4388,7 +4391,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
         # calls.
         self._pk_fusion = None
-        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_memwal):
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_rte):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 await self._table.schema(),
                 _query_request_projection(fts_req),
@@ -4577,13 +4580,13 @@ class AsyncTakeQuery(AsyncQueryBase):
     def __init__(self, inner: LanceTakeQuery, table: Optional["AsyncTable"] = None):
         super().__init__(inner, table)
 
-    def use_memwal(self, enable: bool) -> "AsyncTakeQuery":
-        """Control MemWAL LSM read routing for this take query.
+    def use_rte(self, enable: bool) -> "AsyncTakeQuery":
+        """Control RTE LSM read routing for this take query.
 
-        ``False`` bypasses the MemWAL and reads the base table only — the escape
+        ``False`` bypasses the RTE and reads the base table only — the escape
         hatch, since take-by-row-id/offset is not supported on the LSM scanner.
         """
-        self._inner.use_memwal(enable)
+        self._inner.use_rte(enable)
         return self
 
     async def _plain_scan_to_pandas(
@@ -4644,14 +4647,14 @@ class BaseQueryBuilder(object):
         self._inner.with_row_id()
         return self
 
-    def use_memwal(self, enable: bool) -> Self:
+    def use_rte(self, enable: bool) -> Self:
         """
-        Control MemWAL LSM read routing for this query.
+        Control RTE LSM read routing for this query.
 
-        ``False`` bypasses the MemWAL and reads the base table only, the escape
+        ``False`` bypasses the RTE and reads the base table only, the escape
         hatch for shapes the LSM scanner cannot honor (e.g. take-by-row-id).
         """
-        self._inner.use_memwal(enable)
+        self._inner.use_rte(enable)
         return self
 
     def with_row_address(self, with_row_address: bool = True) -> Self:

@@ -80,12 +80,12 @@ pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
 pub mod freshness;
-pub mod memwal_stats;
 pub mod merge;
 pub mod optimize;
 pub(crate) mod primary_key;
 pub mod query;
 pub mod refresh;
+pub mod rte_stats;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
@@ -107,9 +107,9 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
-pub use memwal_stats::{MemWalStats, MemtableStats, SsTableStats, TableShardStats};
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
 pub use refresh::RefreshColumnResult;
+pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -324,23 +324,23 @@ pub trait Tags: Send + Sync {
 
 pub use self::merge::MergeResult;
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `merge_insert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `merge_insert` through Lance's MemWAL LSM-style write path.
 ///
-/// Construct via [`MemWalWriteSpec::bucket`], [`MemWalWriteSpec::identity`], or
-/// [`MemWalWriteSpec::unsharded`], then optionally chain
-/// [`MemWalWriteSpec::with_maintained_indexes`] (indexes the MemWAL keeps up to
-/// date) and [`MemWalWriteSpec::with_writer_config_defaults`] (default
+/// Construct via [`RTEWriteSpec::bucket`], [`RTEWriteSpec::identity`], or
+/// [`RTEWriteSpec::unsharded`], then optionally chain
+/// [`RTEWriteSpec::with_maintained_indexes`] (indexes the RTE keeps up to
+/// date) and [`RTEWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
 /// A fresh spec maintains every index on the table, including ones created
 /// after it is installed.
 ///
-/// Install a spec with [`Table::enable_memwal`] and remove it with
-/// [`Table::disable_memwal`]. The actual `merge_insert` dispatch
-/// onto the MemWAL writer is a follow-up.
+/// Install a spec with [`Table::enable_rte`] and remove it with
+/// [`Table::disable_rte`]. The actual `merge_insert` dispatch
+/// onto the RTE writer is a follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MemWalWriteSpec {
+pub enum RTEWriteSpec {
     /// Hash-bucket sharding by a scalar column.
     ///
     /// `column` must be a non-nested column with a supported scalar type.
@@ -350,7 +350,7 @@ pub enum MemWalWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        /// Indexes the RTE maintains in-memory as rows are appended.
         ///
         /// `None` means every index the table has, including ones created
         /// later. `Some([])` maintains nothing.
@@ -364,7 +364,7 @@ pub enum MemWalWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        /// Indexes the RTE maintains in-memory as rows are appended.
         ///
         /// `None` means every index the table has, including ones created
         /// later. `Some([])` maintains nothing.
@@ -372,9 +372,9 @@ pub enum MemWalWriteSpec {
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
-    /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
+    /// No sharding — every `merge_insert` call writes to a single RTE shard.
     Unsharded {
-        /// Indexes the MemWAL maintains in-memory as rows are appended.
+        /// Indexes the RTE maintains in-memory as rows are appended.
         ///
         /// `None` means every index the table has, including ones created
         /// later. `Some([])` maintains nothing.
@@ -384,7 +384,7 @@ pub enum MemWalWriteSpec {
     },
 }
 
-impl MemWalWriteSpec {
+impl RTEWriteSpec {
     /// Construct a hash-bucket sharding spec maintaining every index on the table.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
@@ -400,7 +400,7 @@ impl MemWalWriteSpec {
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
-    /// `column` value. MemWAL dedups upserts by primary key but tracks
+    /// `column` value. RTE dedups upserts by primary key but tracks
     /// SSTables per shard, so if the same key is written with two
     /// different `column` values its versions land in different shards and a
     /// stale value can win. Typically `column` is the primary key itself, or
@@ -421,23 +421,23 @@ impl MemWalWriteSpec {
         }
     }
 
-    /// Set which indexes the MemWAL maintains.
+    /// Set which indexes the RTE maintains.
     ///
     /// `None` (the default) is every index on the table, re-read as the table
     /// changes, so an index created later is maintained too; one of a kind the
-    /// MemWAL cannot mirror is skipped rather than failing the table. A list is
+    /// RTE cannot mirror is skipped rather than failing the table. A list is
     /// verbatim: each name must already exist and be maintainable, and an empty
     /// list maintains nothing. The maintainable kinds are Lance's built-ins plus
     /// any added with [`NativeTable::set_mem_index_registry`].
     ///
     /// ```
-    /// # use lancedb::table::MemWalWriteSpec;
+    /// # use lancedb::table::RTEWriteSpec;
     /// // Every index the table has, now and later:
-    /// MemWalWriteSpec::unsharded().with_maintained_indexes(None);
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(None);
     /// // Exactly these:
-    /// MemWalWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
     /// // None at all:
-    /// MemWalWriteSpec::unsharded().with_maintained_indexes(Vec::new());
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new());
     /// ```
     pub fn with_maintained_indexes(mut self, indexes: impl Into<Option<Vec<String>>>) -> Self {
         let indexes = indexes.into();
@@ -455,7 +455,7 @@ impl MemWalWriteSpec {
         self
     }
 
-    /// Replace the default `ShardWriter` configuration recorded in the MemWAL
+    /// Replace the default `ShardWriter` configuration recorded in the RTE
     /// index, so every writer starts from the same defaults. Keys are
     /// `ShardWriter` config field names (`Duration` knobs use a `_ms` suffix);
     /// values are their string encodings.
@@ -486,7 +486,7 @@ impl MemWalWriteSpec {
         self
     }
 
-    /// Borrow the list of index names this spec asks MemWAL to maintain, or
+    /// Borrow the list of index names this spec asks RTE to maintain, or
     /// `None` when it asks for every index on the table.
     pub fn maintained_indexes(&self) -> Option<&[String]> {
         match self {
@@ -674,37 +674,37 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "set_unenforced_primary_key is not supported on this table type".into(),
         })
     }
-    /// Install an [`MemWalWriteSpec`] on this table.
+    /// Install an [`RTEWriteSpec`] on this table.
     ///
     /// The spec selects Lance's MemWAL LSM-style write path for future
     /// `merge_insert` calls.
     ///
     /// The default implementation returns `NotSupported`. Implementations
-    /// that support the MemWAL write path must override this.
-    async fn enable_memwal(&self, _spec: MemWalWriteSpec) -> Result<()> {
+    /// that support the RTE write path must override this.
+    async fn enable_rte(&self, _spec: RTEWriteSpec) -> Result<()> {
         Err(Error::NotSupported {
-            message: "enable_memwal is not supported on this table type".into(),
+            message: "enable_rte is not supported on this table type".into(),
         })
     }
-    /// Remove the [`MemWalWriteSpec`] from this table.
+    /// Remove the [`RTEWriteSpec`] from this table.
     ///
     /// This is a no-op if no spec is currently set.
     ///
     /// The default implementation returns `NotSupported`. Implementations
-    /// that support the MemWAL write path must override this.
-    async fn disable_memwal(&self) -> Result<()> {
+    /// that support the RTE write path must override this.
+    async fn disable_rte(&self) -> Result<()> {
         Err(Error::NotSupported {
-            message: "disable_memwal is not supported on this table type".into(),
+            message: "disable_rte is not supported on this table type".into(),
         })
     }
-    /// Read the [`MemWalWriteSpec`] currently installed on this table, returning
-    /// `None` when the MemWAL write path is not enabled.
+    /// Read the [`RTEWriteSpec`] currently installed on this table, returning
+    /// `None` when the RTE write path is not enabled.
     ///
     /// The default implementation returns `NotSupported`. Implementations that
-    /// support the MemWAL write path must override this.
-    async fn get_memwal_spec(&self) -> Result<Option<MemWalWriteSpec>> {
+    /// support the RTE write path must override this.
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         Err(Error::NotSupported {
-            message: "get_memwal_spec is not supported on this table type".into(),
+            message: "get_rte_spec is not supported on this table type".into(),
         })
     }
     /// Whether a hybrid query on this table has already been told it cannot
@@ -713,7 +713,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
     ///
     /// Learned, never probed: hybrid optimistically asks for `_rowid` and only
-    /// a MemWAL table refuses, so paying a round trip up front would tax every
+    /// an RTE table refuses, so paying a round trip up front would tax every
     /// table to discover something almost none of them need. Synchronous and
     /// free by construction — an implementation may only answer from what a
     /// previous query already learned.
@@ -735,33 +735,33 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Freeze every table shard's active memtable into an SSTable.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn flush_memwal(&self) -> Result<()> {
+    async fn flush_rte(&self) -> Result<()> {
         Err(Error::NotSupported {
-            message: "flush_memwal is not supported on this table type".into(),
+            message: "flush_rte is not supported on this table type".into(),
         })
     }
     /// Trigger a background SSTable compaction pass per table shard.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn compact_memwal(&self) -> Result<()> {
+    async fn compact_rte(&self) -> Result<()> {
         Err(Error::NotSupported {
-            message: "compact_memwal is not supported on this table type".into(),
+            message: "compact_rte is not supported on this table type".into(),
         })
     }
-    /// Read live MemWAL state, or `None` when the MemWAL write path is not
+    /// Read live RTE state, or `None` when the RTE write path is not
     /// enabled for this table.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn get_memwal_stats(&self, _include_sstable_rows: bool) -> Result<Option<MemWalStats>> {
+    async fn get_rte_stats(&self, _include_sstable_rows: bool) -> Result<Option<RTEStats>> {
         Err(Error::NotSupported {
-            message: "get_memwal_stats is not supported on this table type".into(),
+            message: "get_rte_stats is not supported on this table type".into(),
         })
     }
-    /// Drain and close any cached MemWAL shard writers for this table.
+    /// Drain and close any cached RTE shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
-    /// MemWAL shard writers override it.
-    async fn close_memwal_writers(&self) -> Result<()> {
+    /// RTE shard writers override it.
+    async fn close_rte_writers(&self) -> Result<()> {
         Ok(())
     }
     /// Names of the blob v2 columns in this table, in declaration order.
@@ -814,6 +814,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
+        _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "computed columns are not supported on this table type".into(),
@@ -824,6 +825,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         _application: &crate::function::FunctionApplication,
         _output_name: Option<&str>,
+        _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
@@ -2008,53 +2010,53 @@ impl Table {
         self.inner.set_unenforced_primary_key(&borrowed).await
     }
 
-    /// Install an [`MemWalWriteSpec`] on this table, selecting Lance's MemWAL
+    /// Install an [`RTEWriteSpec`] on this table, selecting Lance's MemWAL
     /// LSM-style write path for future `merge_insert` calls.
     ///
-    /// [`MemWalWriteSpec`] chooses one of three sharding strategies:
+    /// [`RTEWriteSpec`] chooses one of three sharding strategies:
     ///
-    /// - [`MemWalWriteSpec::bucket`] — hash-bucket writes by a scalar column.
-    /// - [`MemWalWriteSpec::identity`] — shard by the raw value of a scalar column.
-    /// - [`MemWalWriteSpec::unsharded`] — route every write to a single shard.
+    /// - [`RTEWriteSpec::bucket`] — hash-bucket writes by a scalar column.
+    /// - [`RTEWriteSpec::identity`] — shard by the raw value of a scalar column.
+    /// - [`RTEWriteSpec::unsharded`] — route every write to a single shard.
     ///
     /// Every spec requires the table to declare an unenforced primary key
     /// ([`Table::set_unenforced_primary_key`]); otherwise this fails.
     ///
     /// A table carries one spec: this fails while one is installed, since the
     /// SSTables already written were homed under it.
-    /// [`Table::disable_memwal`] removes one.
+    /// [`Table::disable_rte`] removes one.
     ///
     /// # Example
     ///
     /// ```
-    /// # use lancedb::table::{MemWalWriteSpec, Table};
+    /// # use lancedb::table::{RTEWriteSpec, Table};
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
-    ///     .enable_memwal(
-    ///         MemWalWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
+    ///     .enable_rte(
+    ///         RTEWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
     ///     )
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn enable_memwal(&self, spec: MemWalWriteSpec) -> Result<()> {
-        self.inner.enable_memwal(spec).await
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
+        self.inner.enable_rte(spec).await
     }
 
-    /// Remove the [`MemWalWriteSpec`] from this table, reverting to the standard
+    /// Remove the [`RTEWriteSpec`] from this table, reverting to the standard
     /// `merge_insert` write path.
     ///
     /// Errors if no spec is currently set.
-    pub async fn disable_memwal(&self) -> Result<()> {
-        self.inner.disable_memwal().await
+    pub async fn disable_rte(&self) -> Result<()> {
+        self.inner.disable_rte().await
     }
 
-    /// Read the [`MemWalWriteSpec`] currently installed on this table.
+    /// Read the [`RTEWriteSpec`] currently installed on this table.
     ///
-    /// `Ok(None)` means the MemWAL write path is not enabled at all — no spec has
-    /// been set, or one was removed with [`Table::disable_memwal`]. That
+    /// `Ok(None)` means the RTE write path is not enabled at all — no spec has
+    /// been set, or one was removed with [`Table::disable_rte`]. That
     /// is a different answer from a spec whose
-    /// [`MemWalWriteSpec::maintained_indexes`] is `None`, which is an installed
+    /// [`RTEWriteSpec::maintained_indexes`] is `None`, which is an installed
     /// spec selecting indexes automatically.
     ///
     /// The spec read back is the one that was installed, selection included:
@@ -2067,21 +2069,21 @@ impl Table {
     /// ```
     /// # use lancedb::table::Table;
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// if let Some(spec) = table.get_memwal_spec().await? {
-    ///     println!("MemWAL write path enabled: {:?}", spec);
+    /// if let Some(spec) = table.get_rte_spec().await? {
+    ///     println!("RTE write path enabled: {:?}", spec);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_memwal_spec(&self) -> Result<Option<MemWalWriteSpec>> {
-        self.inner.get_memwal_spec().await
+    pub async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
+        self.inner.get_rte_spec().await
     }
 
-    /// Converge this table's MemWAL write path into its base table.
+    /// Converge this table's RTE write path into its base table.
     ///
     /// One `flush` to freeze every memtable into an SSTable, then compaction triggers
     /// until every generation that existed at that moment has reached base.
-    /// The loop runs client-side, reading progress from `get_memwal_stats`, so
+    /// The loop runs client-side, reading progress from `get_rte_stats`, so
     /// there is no held socket and nothing to reconcile if you drop this
     /// future partway through.
     ///
@@ -2104,14 +2106,14 @@ impl Table {
     /// ```no_run
     /// # use lancedb::Table;
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// let before = table.get_memwal_stats(false).await?;
-    /// table.checkpoint_memwal().await?;
-    /// let after = table.get_memwal_stats(false).await?;
+    /// let before = table.get_rte_stats(false).await?;
+    /// table.checkpoint_rte().await?;
+    /// let after = table.get_rte_stats(false).await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn checkpoint_memwal(&self) -> Result<()> {
-        checkpoint::checkpoint_memwal(self).await
+    pub async fn checkpoint_rte(&self) -> Result<()> {
+        checkpoint::checkpoint_rte(self).await
     }
 
     /// Freeze every table shard's active memtable into an SSTable without touching the
@@ -2121,8 +2123,8 @@ impl Table {
     /// a lower per-query cost. On a node that has not claimed this table it
     /// claims it and replays the WAL log first — reporting "nothing to flush"
     /// without replaying would lie about durable data.
-    pub async fn flush_memwal(&self) -> Result<()> {
-        self.inner.flush_memwal().await
+    pub async fn flush_rte(&self) -> Result<()> {
+        self.inner.flush_rte().await
     }
 
     /// Run one bounded SSTable compaction pass per table shard, reporting what
@@ -2130,11 +2132,11 @@ impl Table {
     ///
     /// One pass, not convergence: that bounds each request's cost and gives a
     /// caller driving its own cadence a progress signal per round trip.
-    pub async fn compact_memwal(&self) -> Result<()> {
-        self.inner.compact_memwal().await
+    pub async fn compact_rte(&self) -> Result<()> {
+        self.inner.compact_rte().await
     }
 
-    /// Read live per-table-shard MemWAL state.
+    /// Read live per-table-shard RTE state.
     ///
     /// Answers "how far behind is my fresh tier", "which table shard is hot", and
     /// "why is my fresh-tier vector search brute-force". Mutates no table
@@ -2143,30 +2145,27 @@ impl Table {
     ///
     /// `include_sstable_rows` reports a row count per SSTable. Off by
     /// default: each count opens an uncached Lance dataset, and
-    /// `checkpoint_memwal` polls this needing only generation numbers.
+    /// `checkpoint_rte` polls this needing only generation numbers.
     ///
-    /// `Ok(None)` only when the MemWAL write path is not enabled, matching
-    /// [`Table::get_memwal_spec`]. Stats is fresh-tier only, so with the
+    /// `Ok(None)` only when the RTE write path is not enabled, matching
+    /// [`Table::get_rte_spec`]. Stats is fresh-tier only, so with the
     /// WAL off there is no manifest to report and a struct of zeros would
     /// read as measurements.
     ///
     /// Do not build a checkpoint's termination on this: the completion
     /// predicate lives in the `flush` and `compact` responses.
-    pub async fn get_memwal_stats(
-        &self,
-        include_sstable_rows: bool,
-    ) -> Result<Option<MemWalStats>> {
-        self.inner.get_memwal_stats(include_sstable_rows).await
+    pub async fn get_rte_stats(&self, include_sstable_rows: bool) -> Result<Option<RTEStats>> {
+        self.inner.get_rte_stats(include_sstable_rows).await
     }
 
-    /// Drain and close any cached MemWAL shard writers held for this table.
+    /// Drain and close any cached RTE shard writers held for this table.
     ///
-    /// When an [`MemWalWriteSpec`] is installed, `merge_insert` opens MemWAL shard
+    /// When an [`RTEWriteSpec`] is installed, `merge_insert` opens RTE shard
     /// writers and caches them for reuse across calls. This closes them,
     /// flushing pending data; writers reopen lazily on the next `merge_insert`.
     /// It is a no-op when no writers are cached.
-    pub async fn close_memwal_writers(&self) -> Result<()> {
-        self.inner.close_memwal_writers().await
+    pub async fn close_rte_writers(&self) -> Result<()> {
+        self.inner.close_rte_writers().await
     }
 
     /// Retrieve the version of the table
@@ -2784,8 +2783,8 @@ impl NativeTable {
     }
 
     /// Maintain the memtable index kinds in `registry` when this table writes
-    /// through its [`MemWalWriteSpec`], and accept them when
-    /// [`MemWalWriteSpec::with_maintained_indexes`] names one.
+    /// through its [`RTEWriteSpec`], and accept them when
+    /// [`RTEWriteSpec::with_maintained_indexes`] names one.
     ///
     /// The registry belongs to this handle, its clones and its branch handles,
     /// and is not stored with the table: a handle opened separately starts from
@@ -2796,7 +2795,7 @@ impl NativeTable {
     /// ```
     /// # use std::sync::Arc;
     /// # use lancedb::Table;
-    /// # use lancedb::table::{MemWalWriteSpec, MemIndexRegistry, mem_index::MemIndexPlugin};
+    /// # use lancedb::table::{RTEWriteSpec, MemIndexRegistry, mem_index::MemIndexPlugin};
     /// # async fn example(
     /// #     table: &Table,
     /// #     plugin: Arc<dyn MemIndexPlugin>,
@@ -2805,8 +2804,8 @@ impl NativeTable {
     /// if let Some(native) = table.as_native() {
     ///     native.set_mem_index_registry(registry);
     /// }
-    /// let spec = MemWalWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
-    /// table.enable_memwal(spec).await?;
+    /// let spec = RTEWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+    /// table.enable_rte(spec).await?;
     /// # Ok(())
     /// # }
     /// ```
@@ -3699,20 +3698,20 @@ impl BaseTable for NativeTable {
         primary_key::set_unenforced_primary_key(self, columns).await
     }
 
-    async fn enable_memwal(&self, spec: MemWalWriteSpec) -> Result<()> {
-        merge::lsm::enable_memwal(self, spec).await
+    async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
+        merge::lsm::enable_rte(self, spec).await
     }
 
-    async fn disable_memwal(&self) -> Result<()> {
-        merge::lsm::disable_memwal(self).await
+    async fn disable_rte(&self) -> Result<()> {
+        merge::lsm::disable_rte(self).await
     }
 
-    async fn get_memwal_spec(&self) -> Result<Option<MemWalWriteSpec>> {
-        merge::lsm::get_memwal_spec(self).await
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
+        merge::lsm::get_rte_spec(self).await
     }
 
-    async fn close_memwal_writers(&self) -> Result<()> {
-        merge::lsm::close_memwal_writers(self).await
+    async fn close_rte_writers(&self) -> Result<()> {
+        merge::lsm::close_rte_writers(self).await
     }
 
     async fn blob_columns(&self) -> Result<Vec<String>> {
@@ -3771,8 +3770,12 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
-        let result = schema_evolution::execute_declare(self, columns).await?;
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns, options).await?;
         self.bump_freshness();
         Ok(result)
     }
@@ -3818,10 +3821,7 @@ impl BaseTable for NativeTable {
         let mut indices: Vec<IndexConfig> = descriptions
             .iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = idx_desc
-                    .index_type()
-                    .parse()
-                    .unwrap_or(crate::index::IndexType::Unknown);
+                let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
                 if index_type == crate::index::IndexType::Unknown {
                     // Internal or future index types that this version doesn't recognize
                     // (e.g. Lance's internal FragReuseIndex) are silently excluded from
@@ -3957,10 +3957,7 @@ impl BaseTable for NativeTable {
             return Ok(None);
         };
 
-        let index_type: crate::index::IndexType = description
-            .index_type()
-            .parse()
-            .unwrap_or(crate::index::IndexType::Unknown);
+        let index_type = crate::index::IndexType::from_description(description.as_ref());
 
         let is_vector = matches!(
             index_type,
@@ -5518,7 +5515,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enable_memwal() {
+    async fn test_enable_rte() {
         use arrow_array::StringArray;
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
@@ -5551,15 +5548,15 @@ mod tests {
         // Reject num_buckets out of range.
         for bad in [0u32, 1025] {
             let err = table
-                .enable_memwal(MemWalWriteSpec::bucket("id", bad))
+                .enable_rte(RTEWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
             assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
         }
 
-        // Happy path: install spec; verify MemWAL details record it.
+        // Happy path: install spec; verify RTE details record it.
         table
-            .enable_memwal(MemWalWriteSpec::bucket("id", 4))
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
             .await
             .unwrap();
 
@@ -5585,7 +5582,7 @@ mod tests {
 
         // Mutation rejected.
         let err = table
-            .enable_memwal(MemWalWriteSpec::bucket("id", 8))
+            .enable_rte(RTEWriteSpec::bucket("id", 8))
             .await
             .expect_err("mutation should be rejected");
         assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
@@ -5594,7 +5591,7 @@ mod tests {
     /// A spec is refused on a table without an unenforced primary key, for every
     /// sharding mode, and a refused spec leaves nothing installed.
     #[tokio::test]
-    async fn test_enable_memwal_requires_primary_key() {
+    async fn test_enable_rte_requires_primary_key() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -5621,11 +5618,11 @@ mod tests {
         };
 
         for spec in [
-            MemWalWriteSpec::unsharded(),
-            MemWalWriteSpec::bucket("id", 4),
-            MemWalWriteSpec::identity("id"),
+            RTEWriteSpec::unsharded(),
+            RTEWriteSpec::bucket("id", 4),
+            RTEWriteSpec::identity("id"),
         ] {
-            let err = table.enable_memwal(spec).await.unwrap_err();
+            let err = table.enable_rte(spec).await.unwrap_err();
             assert!(
                 matches!(&err, Error::InvalidInput { message } if message.contains("primary key")),
                 "got {err:?}"
@@ -5634,15 +5631,12 @@ mod tests {
         }
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         assert!(installed(&table).await);
     }
 
     #[tokio::test]
-    async fn test_enable_memwal_unsharded() {
+    async fn test_enable_rte_unsharded() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -5664,10 +5658,7 @@ mod tests {
         let table = conn.create_table("t", reader).execute().await.unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
 
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
         let details = dataset
@@ -5683,7 +5674,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_enable_memwal_identity() {
+    async fn test_enable_rte_identity() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -5712,8 +5703,8 @@ mod tests {
         table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         table
-            .enable_memwal(
-                MemWalWriteSpec::identity("region")
+            .enable_rte(
+                RTEWriteSpec::identity("region")
                     .with_writer_config_defaults([("durable_write", "false")]),
             )
             .await
@@ -5741,7 +5732,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_disable_memwal() {
+    async fn test_disable_rte() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -5764,11 +5755,11 @@ mod tests {
         table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // unset errors when no spec is set.
-        table.disable_memwal().await.unwrap_err();
+        table.disable_rte().await.unwrap_err();
 
         // Install a spec, then unset it.
         table
-            .enable_memwal(MemWalWriteSpec::bucket("id", 4))
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
             .await
             .unwrap();
         {
@@ -5776,16 +5767,16 @@ mod tests {
             assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
         }
 
-        table.disable_memwal().await.unwrap();
+        table.disable_rte().await.unwrap();
         {
             let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
             assert!(dataset.mem_wal_index_details().await.unwrap().is_none());
         }
 
         // A second unset errors; a fresh spec can still be installed afterwards.
-        table.disable_memwal().await.unwrap_err();
+        table.disable_rte().await.unwrap_err();
         table
-            .enable_memwal(MemWalWriteSpec::bucket("id", 8))
+            .enable_rte(RTEWriteSpec::bucket("id", 8))
             .await
             .unwrap();
         {
@@ -5795,7 +5786,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_memwal_spec() {
+    async fn test_get_rte_spec() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
@@ -5822,7 +5813,7 @@ mod tests {
         table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // No spec installed yet.
-        assert_eq!(table.get_memwal_spec().await.unwrap(), None);
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
 
         // A real scalar index is needed to name it as a maintained index.
         table
@@ -5834,35 +5825,35 @@ mod tests {
 
         // Bucket spec round-trips exactly, including the routing column (recovered
         // from its field id), maintained indexes, and writer config defaults.
-        let spec = MemWalWriteSpec::bucket("id", 4)
+        let spec = RTEWriteSpec::bucket("id", 4)
             .with_maintained_indexes(vec![idx_name.clone()])
             .with_writer_config_defaults([("durable_write", "false")]);
-        table.enable_memwal(spec.clone()).await.unwrap();
-        assert_eq!(table.get_memwal_spec().await.unwrap(), Some(spec));
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
 
         // After unset, no spec is reported.
-        table.disable_memwal().await.unwrap();
-        assert_eq!(table.get_memwal_spec().await.unwrap(), None);
+        table.disable_rte().await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
         // A spec left at its default round-trips as the default: what is stored
         // is the intent to maintain everything, not the set it resolves to now.
-        let spec = MemWalWriteSpec::identity("region");
-        table.enable_memwal(spec.clone()).await.unwrap();
-        assert_eq!(table.get_memwal_spec().await.unwrap(), Some(spec));
-        table.disable_memwal().await.unwrap();
+        let spec = RTEWriteSpec::identity("region");
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
+        table.disable_rte().await.unwrap();
 
         // Unsharded round-trips (no routing column).
-        let spec = MemWalWriteSpec::unsharded();
-        table.enable_memwal(spec.clone()).await.unwrap();
-        assert_eq!(table.get_memwal_spec().await.unwrap(), Some(spec));
+        let spec = RTEWriteSpec::unsharded();
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
     }
 
     /// The maintained set defaults to every index on the table. A named index
     /// the memtable cannot build fails the install, because the caller asked
     /// for it; an unnamed one is skipped, because it arrived by existing.
     #[tokio::test]
-    async fn test_enable_memwal_infers_maintained_indexes() {
+    async fn test_enable_rte_infers_maintained_indexes() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
@@ -5903,9 +5894,8 @@ mod tests {
 
         // Explicitly naming the bitmap index fails before anything commits.
         let err = table
-            .enable_memwal(
-                MemWalWriteSpec::unsharded()
-                    .with_maintained_indexes(vec!["tag_bitmap".to_string()]),
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["tag_bitmap".to_string()]),
             )
             .await
             .unwrap_err();
@@ -5913,18 +5903,15 @@ mod tests {
             matches!(err, Error::InvalidInput { ref message } if message.contains("tag_bitmap")),
             "expected the bitmap index to be rejected, got {err:?}"
         );
-        assert_eq!(table.get_memwal_spec().await.unwrap(), None);
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
 
         // The default names nothing, so the bitmap is skipped rather than
         // refusing the table: it is maintained by existing, not by being asked
         // for. The intent is what is stored, not the set it resolves to today.
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         assert_eq!(
             table
-                .get_memwal_spec()
+                .get_rte_spec()
                 .await
                 .unwrap()
                 .unwrap()
@@ -5935,16 +5922,16 @@ mod tests {
 
         // Narrowing to a named subset: unset first, since an installed spec
         // cannot be set over.
-        table.disable_memwal().await.unwrap();
+        table.disable_rte().await.unwrap();
         table
-            .enable_memwal(
-                MemWalWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
             )
             .await
             .unwrap();
         assert_eq!(
             table
-                .get_memwal_spec()
+                .get_rte_spec()
                 .await
                 .unwrap()
                 .unwrap()
@@ -5953,14 +5940,14 @@ mod tests {
         );
 
         // Opting out entirely is distinct from the default.
-        table.disable_memwal().await.unwrap();
+        table.disable_rte().await.unwrap();
         table
-            .enable_memwal(MemWalWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
             .unwrap();
         assert_eq!(
             table
-                .get_memwal_spec()
+                .get_rte_spec()
                 .await
                 .unwrap()
                 .unwrap()
@@ -5971,7 +5958,7 @@ mod tests {
         // An installed spec is never set over, whatever the new one asks for,
         // and the refused call leaves it alone.
         let err = table
-            .enable_memwal(MemWalWriteSpec::bucket("id", 4))
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
             .await
             .unwrap_err();
         assert!(
@@ -5981,7 +5968,7 @@ mod tests {
         );
         assert_eq!(
             table
-                .get_memwal_spec()
+                .get_rte_spec()
                 .await
                 .unwrap()
                 .unwrap()

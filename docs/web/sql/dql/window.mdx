@@ -89,7 +89,7 @@ WITH ranked AS (
 SELECT * FROM ranked WHERE rn = 1
 ```
 
-The outer query is needed because a window function cannot appear in `WHERE` --
+The outer query is needed because a window function cannot appear in `WHERE`:
 windows are computed after filtering, so the predicate would have nothing to
 read.
 

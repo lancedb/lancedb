@@ -1851,10 +1851,10 @@ def lsm_test_table(lsm_handler):
     """A remote table whose LSM routes are served by ``lsm_handler``.
 
     ``lsm_handler(request, route)`` is called for ``/v1/table/test/<route>/``
-    where route is one of flush_memwal, compact_memwal, get_memwal_stats, and is
+    where route is one of flush_rte, compact_rte, get_rte_stats, and is
     responsible for writing the response.
     """
-    routes = ("flush_memwal", "compact_memwal", "get_memwal_stats")
+    routes = ("flush_rte", "compact_rte", "get_rte_stats")
 
     def handler(request):
         match = re.fullmatch(r"/v1/table/test/(\w+)/", request.path)
@@ -1886,7 +1886,7 @@ def send_json(request, payload, status=200):
     request.wfile.write(json.dumps(payload).encode())
 
 
-def test_get_memwal_stats_sync():
+def test_get_rte_stats_sync():
     """The sync wrapper round-trips the server payload into a dict."""
     table_shard = {
         "shard_id": "b0",
@@ -1911,29 +1911,29 @@ def test_get_memwal_stats_sync():
     seen_bodies = []
 
     def lsm_handler(request, route):
-        assert route == "get_memwal_stats"
+        assert route == "get_rte_stats"
         seen_bodies.append(read_json_body(request))
-        send_json(request, {"memwal_stats": {"table_shards": [table_shard]}})
+        send_json(request, {"rte_stats": {"table_shards": [table_shard]}})
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.get_memwal_stats() == {"table_shards": [table_shard]}
+        assert table.get_rte_stats() == {"table_shards": [table_shard]}
         # Off by default, and forwarded when asked for.
         assert seen_bodies == [{"include_sstable_rows": False}]
-        table.get_memwal_stats(include_sstable_rows=True)
+        table.get_rte_stats(include_sstable_rows=True)
         assert seen_bodies[-1] == {"include_sstable_rows": True}
 
 
-def test_get_memwal_stats_sync_returns_none_when_memwal_disabled():
-    """A null envelope means the MemWAL write path is not enabled, not an error."""
+def test_get_rte_stats_sync_returns_none_when_rte_disabled():
+    """A null envelope means the RTE write path is not enabled, not an error."""
 
     def lsm_handler(request, route):
-        send_json(request, {"memwal_stats": None})
+        send_json(request, {"rte_stats": None})
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.get_memwal_stats() is None
+        assert table.get_rte_stats() is None
 
 
-def test_flush_and_compact_memwal_sync():
+def test_flush_and_compact_rte_sync():
     """Both are one-shot POSTs answered 202 with no body."""
     called = []
 
@@ -1943,12 +1943,12 @@ def test_flush_and_compact_memwal_sync():
         request.end_headers()
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.flush_memwal() is None
-        assert table.compact_memwal() is None
-        assert called == ["flush_memwal", "compact_memwal"]
+        assert table.flush_rte() is None
+        assert table.compact_rte() is None
+        assert called == ["flush_rte", "compact_rte"]
 
 
-def test_checkpoint_memwal_sync():
+def test_checkpoint_rte_sync():
     """Freeze, read the watermark, and return once no SSTables remain.
 
     The convergence loop itself is covered in Rust; this pins the sync
@@ -1958,17 +1958,17 @@ def test_checkpoint_memwal_sync():
 
     def lsm_handler(request, route):
         called.append(route)
-        if route == "get_memwal_stats":
+        if route == "get_rte_stats":
             # An empty SSTable tier yields no target watermark, so the loop is done
             # after the freeze without ever polling compaction.
-            send_json(request, {"memwal_stats": {"table_shards": []}})
+            send_json(request, {"rte_stats": {"table_shards": []}})
         else:
             request.send_response(202)
             request.end_headers()
 
     with lsm_test_table(lsm_handler) as table:
-        assert table.checkpoint_memwal() is None
-        assert called == ["flush_memwal", "get_memwal_stats"]
+        assert table.checkpoint_rte() is None
+        assert called == ["flush_rte", "get_rte_stats"]
 
 
 @contextlib.contextmanager
@@ -3259,6 +3259,89 @@ BLOB_DESCRIBE_RESPONSE = {
         ]
     },
 }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("mode", ["merge", "overwrite"])
+@pytest.mark.parametrize("target_with_ranges", [False, True])
+async def test_remote_writes_normalize_blob_layouts(
+    use_async, mode, target_with_ranges
+):
+    description = json.loads(json.dumps(BLOB_DESCRIBE_RESPONSE))
+    if target_with_ranges:
+        description["schema"]["fields"][1]["type"]["fields"].extend(
+            {"name": name, "type": {"type": "uint64"}, "nullable": True}
+            for name in ("position", "size")
+        )
+    received = []
+
+    def handler(request):
+        if request.path == "/v1/table/test/describe/":
+            response = description
+        else:
+            expected = "merge_insert" if mode == "merge" else "insert"
+            assert urlparse(request.path).path == f"/v1/table/test/{expected}/"
+            if request.headers.get("Transfer-Encoding") == "chunked":
+                body = bytearray()
+                while size := int(request.rfile.readline().split(b";")[0], 16):
+                    body.extend(request.rfile.read(size))
+                    assert request.rfile.read(2) == b"\r\n"
+                assert request.rfile.read(2) == b"\r\n"
+            else:
+                body = request.rfile.read(int(request.headers["Content-Length"]))
+            received.append(pa.ipc.open_stream(body).read_all())
+            response = {
+                "version": 2,
+                "num_updated_rows": 0,
+                "num_inserted_rows": 2,
+                "num_deleted_rows": 0,
+            }
+        request.send_response(200)
+        request.send_header("Content-Type", "application/json")
+        request.send_header("phalanx-version", "0.5.0")
+        request.end_headers()
+        request.wfile.write(json.dumps(response).encode())
+
+    field = lancedb.blob("image")
+    storage_type = field.type.storage_type
+    if target_with_ranges:
+        storage_type = pa.struct(list(storage_type)[:2])
+        field = pa.field(
+            "image",
+            storage_type,
+            metadata={"ARROW:extension:name": "lance.blob.v2"},
+        )
+    images = pa.array([{"data": b"payload"}, None], type=storage_type)
+    if isinstance(field.type, pa.ExtensionType):
+        images = pa.ExtensionArray.from_storage(field.type, images)
+    data = pa.Table.from_arrays(
+        [pa.array([1, 2], type=pa.int64()), images],
+        schema=pa.schema([pa.field("id", pa.int64()), field]),
+    )
+
+    with mock_lancedb_connection(handler) as db:
+        remote_table = db.open_table("test")
+        table = remote_table._table if use_async else remote_table
+        if mode == "merge":
+            result = (
+                table.merge_insert("id").when_not_matched_insert_all().execute(data)
+            )
+        else:
+            result = table.add(data, mode="overwrite")
+        if use_async:
+            await result
+
+    assert len(received) == 1
+    images = received[0]["image"].combine_chunks()
+    if isinstance(images.type, pa.ExtensionType):
+        images = images.storage
+    with_ranges = target_with_ranges if mode == "merge" else not target_with_ranges
+    assert images.type.num_fields == (4 if with_ranges else 2)
+    expected = {"data": b"payload", "uri": None}
+    if with_ranges:
+        expected.update(position=None, size=None)
+    assert images.to_pylist() == [expected, None]
 
 
 def blob_query_response_table():
