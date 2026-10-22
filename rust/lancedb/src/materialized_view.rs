@@ -280,7 +280,7 @@ pub struct MaterializedViewInfo {
 
 /// The backend-independent request used to create a remote materialized view.
 #[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
     /// Name of the new view.
     pub name: String,
@@ -290,6 +290,10 @@ pub struct CreateMaterializedViewRequest {
     pub query: String,
     /// Whether to skip the initial population job.
     pub with_no_data: bool,
+    /// Whether the server should refresh the view automatically.
+    pub auto_refresh_enabled: Option<bool>,
+    /// Refresh interval in seconds. When absent, the server determines when to refresh.
+    pub auto_refresh_interval_seconds: Option<f64>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1570,6 +1574,8 @@ pub struct CreateMaterializedViewBuilder {
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    auto_refresh_enabled: Option<bool>,
+    auto_refresh_interval_seconds: Option<f64>,
 }
 
 fn source_sql_identifier(
@@ -1603,6 +1609,8 @@ impl CreateMaterializedViewBuilder {
             filter: None,
             limit: None,
             with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
         }
     }
 
@@ -1651,6 +1659,32 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
+    /// Enable or disable automatic refresh on Cloud and Enterprise.
+    /// When omitted, the server determines whether automatic refresh is enabled.
+    /// Embedded databases do not support automatic refresh.
+    pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
+        self.auto_refresh_enabled = Some(enabled);
+        self
+    }
+
+    /// Set a positive, finite refresh interval in seconds on Cloud and Enterprise.
+    /// When omitted, the server determines when to refresh.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("recent_orders", "orders")
+    ///     .auto_refresh_enabled(true)
+    ///     .auto_refresh_interval_seconds(300.0)
+    ///     .execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto_refresh_interval_seconds(mut self, seconds: f64) -> Self {
+        self.auto_refresh_interval_seconds = Some(seconds);
+        self
+    }
+
     fn query(&self) -> Result<String> {
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
@@ -1693,6 +1727,8 @@ impl CreateMaterializedViewBuilder {
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
                     with_no_data: self.with_no_data,
+                    auto_refresh_enabled: self.auto_refresh_enabled,
+                    auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
                 })
                 .await;
         }
@@ -1719,6 +1755,12 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+            return Err(Error::NotSupported {
+                message: "automatic materialized-view refresh requires Cloud or Enterprise"
+                    .to_string(),
+            });
+        }
         let source = self
             .connection
             .open_table(&self.source)

@@ -412,7 +412,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -421,10 +422,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -440,7 +449,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -449,10 +459,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }

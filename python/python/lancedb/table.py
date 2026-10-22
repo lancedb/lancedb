@@ -2561,6 +2561,8 @@ class Table(ABC):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2604,6 +2606,15 @@ class Table(ABC):
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
+
+        auto_refresh_enabled: bool, optional
+            Enable automatic refresh for each declared computed output. Defaults
+            to True. Local tables store this option; scheduling requires a server.
+        auto_refresh_interval_seconds: int, optional
+            Positive minimum interval after a successful refresh, in seconds.
+            When omitted, the server determines when to refresh. Applies to every
+            computed output in this call.
+            Scheduling options require computed or Function columns.
 
         Returns
         -------
@@ -4803,8 +4814,17 @@ class LanceTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms,
+                computed=computed,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
@@ -6852,6 +6872,8 @@ class AsyncTable:
         | None = None,
         *,
         computed: dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6891,12 +6913,46 @@ class AsyncTable:
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
+        auto_refresh_enabled: bool, optional
+            Enable automatic refresh for each computed output declared by this
+            call. Defaults to True. Local tables store the setting; automatic
+            scheduling requires Cloud or Enterprise.
+        auto_refresh_interval_seconds: int, optional
+            Positive minimum seconds after a successful refresh before another
+            automatic refresh is eligible. When omitted, the server determines when
+            to refresh. Unchanged inputs do
+            not force recomputation. Applies to every declared computed output.
+            These options cannot be used with one-time transforms or ordinary
+            all-null columns.
+
+        Examples
+        --------
+        >>> await table.add_columns(  # doctest: +SKIP
+        ...     computed={"total": "price * quantity"},
+        ...     auto_refresh_enabled=True,
+        ...     auto_refresh_interval_seconds=300,
+        ... )
+
         Returns
         -------
         AddColumnsResult
             version: the new version number of the table after adding columns.
 
         """
+        if auto_refresh_enabled is not None and type(auto_refresh_enabled) is not bool:
+            raise ValueError("auto_refresh_enabled must be a boolean")
+        if auto_refresh_interval_seconds is not None and (
+            type(auto_refresh_interval_seconds) is not int
+            or not 0 < auto_refresh_interval_seconds <= (2**64 - 1) // 1000
+        ):
+            raise ValueError(
+                "auto_refresh_interval_seconds must be a positive integer "
+                "no greater than u64::MAX / 1000"
+            )
+        options_supplied = (
+            auto_refresh_enabled is not None
+            or auto_refresh_interval_seconds is not None
+        )
         function_application = None
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
@@ -6920,7 +6976,10 @@ class AsyncTable:
                 )
             function_application._ensure_declarable()
             return await self._inner.add_function_columns(
-                function_application.to_canonical_json(), function_output_name
+                function_application.to_canonical_json(),
+                function_output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
             )
 
         if isinstance(transforms, pa.Field):
@@ -6934,7 +6993,15 @@ class AsyncTable:
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
-            return await self._inner.add_computed_columns(list(computed.items()))
+            return await self._inner.add_computed_columns(
+                list(computed.items()),
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        if options_supplied:
+            raise ValueError(
+                "automatic refresh options require computed or Function columns"
+            )
         if transforms is None:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
