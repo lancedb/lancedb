@@ -55,8 +55,9 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
         if isinstance(self.filter, pa.compute.Expression):
             # Expression filters are applied to the scanned batches rather
             # than pushed into the query, so the count is computed the
-            # same way.
-            return self.to_table().num_rows
+            # same way. Summing batch row counts avoids retaining the
+            # payloads just to return a scalar.
+            return sum(batch.num_rows for batch in self.to_reader())
         return self.table.count_rows(self.filter)
 
     def from_batches(self, **kwargs):
@@ -118,27 +119,44 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
     ):
         # The expression can reference columns outside the projection, so
         # the scan keeps every column and the projection is applied to each
-        # batch after filtering.
-        if self.columns is not None:
-            schema = pa.schema(
-                [self.table.schema.field(column) for column in self.columns]
-            )
-        else:
-            schema = self.table.schema
+        # batch after filtering. The emitted schema comes from the scanned
+        # batches rather than table.schema - storage layouts like blob-v2
+        # emit descriptor structs and a _rowid column instead of the table
+        # schema's extension types.
+        emitted_schema = batches.schema
+        schema = (
+            pa.schema([emitted_schema.field(column) for column in self.columns])
+            if self.columns is not None
+            else emitted_schema
+        )
 
         def gen():
             emitted = 0
             for batch in batches:
-                batch = batch.filter(expression)
-                if self.columns is not None:
-                    batch = batch.select(self.columns)
-                if limit is not None:
-                    remaining = limit - emitted
-                    if remaining <= 0:
-                        return
-                    emitted += batch.num_rows
-                    batch = batch.slice(0, remaining)
-                yield batch
+                # RecordBatch.filter only accepts an Expression on
+                # pyarrow>=17; on older versions evaluate the predicate
+                # through a dataset scanner so pyarrow>=16 works.
+                try:
+                    filtered = batch.filter(expression)
+                except TypeError:
+                    filtered_table = (
+                        pa.dataset.dataset([batch])
+                        .scanner(filter=expression)
+                        .to_table()
+                    )
+                    filtered_batches = filtered_table.to_batches()
+                else:
+                    filtered_batches = [filtered]
+                for filtered_batch in filtered_batches:
+                    if self.columns is not None:
+                        filtered_batch = filtered_batch.select(self.columns)
+                    if limit is not None:
+                        remaining = limit - emitted
+                        if remaining <= 0:
+                            return
+                        emitted += filtered_batch.num_rows
+                        filtered_batch = filtered_batch.slice(0, remaining)
+                    yield filtered_batch
 
         return pa.RecordBatchReader.from_batches(schema, gen())
 
