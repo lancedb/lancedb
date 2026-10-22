@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
+use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -407,12 +408,8 @@ impl IndexType {
         let Some(details) = metadata.index_details.as_ref() else {
             return Self::Unknown;
         };
-        let registry = lance_index::registry::IndexPluginRegistry::with_default_plugins();
-        if !registry.supports_details(details) {
-            return Self::Unknown;
-        }
-        registry
-            .get_plugin_by_details(details)
+        IndexDetails(details.clone())
+            .get_plugin()
             .map(|plugin| Self::Custom(plugin.name().to_string()))
             .unwrap_or(Self::Unknown)
     }
