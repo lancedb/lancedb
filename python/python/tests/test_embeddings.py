@@ -23,6 +23,12 @@ from lancedb.embeddings.utils import retry
 from lancedb.pydantic import LanceModel, Vector
 
 
+@pytest.fixture(autouse=True)
+def isolated_embedding_registry(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+
+
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
 
@@ -62,6 +68,37 @@ def test_embedding_function(tmp_path):
     expected = func.compute_query_embeddings("hello world")
 
     assert np.allclose(actual, expected)
+
+
+def test_embedding_function_registered_without_alias(tmp_path):
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    @registry.register()
+    class NoAliasEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [np.array([1.0, 2.0]) for _ in texts]
+
+    assert registry.get("NoAliasEmbeddingFunction") is NoAliasEmbeddingFunction
+
+    func = NoAliasEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(2) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", schema=Schema)
+
+    # The class name is written to the table metadata, so the function can be
+    # resolved again when the table is reopened.
+    table = lancedb.connect(tmp_path).open_table("test")
+    table.add([{"text": "hello"}])
+    conf = table.embedding_functions["vector"]
+    assert isinstance(conf.function, NoAliasEmbeddingFunction)
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0]]
 
 
 def test_instructor_ndims_uses_instruction():
@@ -596,6 +633,359 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_sleep.call_count == 0
 
 
+class _HttpStatusError(Exception):
+    """Stand-in for provider SDK errors (openai, cohere, ...) with a status code."""
+
+    def __init__(self, status_code, message="error"):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _ResponseStatusError(Exception):
+    """Stand-in for requests/httpx errors, which expose `response.status_code`."""
+
+    def __init__(self, status_code):
+        super().__init__(f"HTTP {status_code}")
+        self.response = MagicMock(status_code=status_code)
+
+
+def _run_with_retry(side_effect, **kwargs):
+    """Run a function through the retry helper with a mocked `time.sleep`.
+
+    Returns (mock_func, sleeps, error).
+    """
+    from lancedb.embeddings.utils import retry_with_exponential_backoff
+
+    mock_func = MagicMock(side_effect=side_effect)
+    sleeps = []
+    error = None
+    with patch("time.sleep", side_effect=sleeps.append):
+        try:
+            retry_with_exponential_backoff(mock_func, **kwargs)()
+        except Exception as e:
+            error = e
+    return mock_func, sleeps, error
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 404, 405, 410, 413, 422])
+@pytest.mark.parametrize("make_error", [_HttpStatusError, _ResponseStatusError])
+def test_retry_does_not_retry_permanent_http_errors(status, make_error):
+    err = make_error(status)
+    mock_func, sleeps, error = _run_with_retry(err, max_retries=7)
+
+    assert error is err
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
+@pytest.mark.parametrize("make_error", [_HttpStatusError, _ResponseStatusError])
+def test_retry_retries_transient_http_errors(status, make_error):
+    mock_func, sleeps, error = _run_with_retry(
+        [make_error(status), make_error(status), "result"], max_retries=7
+    )
+
+    assert error is None
+    assert mock_func.call_count == 3
+    assert len(sleeps) == 2
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        ConnectionError("connection reset"),
+        TimeoutError("timed out"),
+        OSError("network is unreachable"),
+        ValueError("custom embedding function failure"),
+        RuntimeError("boom"),
+        Exception("plain exception"),
+    ],
+)
+def test_retry_retries_errors_without_http_status(exc):
+    mock_func, sleeps, error = _run_with_retry([exc, exc, "result"], max_retries=7)
+
+    assert error is None
+    assert mock_func.call_count == 3
+    assert len(sleeps) == 2
+
+
+def test_retry_error_status_attributes_of_other_types_are_ignored():
+    # `code` is a string for openai errors ("model_not_found"), and arbitrary
+    # exceptions may carry unrelated numeric attributes. Neither is an HTTP status.
+    class WeirdError(Exception):
+        code = "model_not_found"
+        status_code = None
+
+    class ExitCodeError(Exception):
+        code = 2
+
+    for exc in (WeirdError("a"), ExitCodeError("b")):
+        mock_func, sleeps, error = _run_with_retry(exc, max_retries=2)
+        assert mock_func.call_count == 3
+        assert len(sleeps) == 2
+
+
+def test_retry_botocore_style_errors():
+    # botocore ClientError exposes `response["ResponseMetadata"]["HTTPStatusCode"]`.
+    # Bedrock reports throttling with a 400, which must stay retryable.
+    class ClientError(Exception):
+        def __init__(self, status, code):
+            super().__init__(code)
+            self.response = {
+                "ResponseMetadata": {"HTTPStatusCode": status},
+                "Error": {"Code": code},
+            }
+
+    throttled = ClientError(400, "ThrottlingException")
+    mock_func, sleeps, error = _run_with_retry([throttled, "result"], max_retries=3)
+    assert error is None
+    assert mock_func.call_count == 2
+
+    invalid = ClientError(400, "ValidationException")
+    mock_func, sleeps, error = _run_with_retry(invalid, max_retries=3)
+    assert error is invalid
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_authentication_error_by_name_not_retried():
+    class AuthenticationError(Exception):
+        pass
+
+    mock_func, sleeps, error = _run_with_retry(AuthenticationError("bad key"))
+    assert isinstance(error, AuthenticationError)
+    assert mock_func.call_count == 1
+    assert sleeps == []
+
+
+def test_retry_gives_up_after_max_retries_with_original_error_attached():
+    original = _HttpStatusError(503, "overloaded")
+    mock_func, sleeps, error = _run_with_retry(original, max_retries=3)
+
+    assert mock_func.call_count == 4
+    assert len(sleeps) == 3
+    assert "Maximum number of retries (3) exceeded" in str(error)
+    assert error.args[1] is original
+    assert error.__cause__ is original
+
+
+def test_retry_delay_is_capped_by_max_delay():
+    # Default settings (7 retries, 60s cap): the old implementation could sleep for
+    # up to ~47 minutes in a single retry and hours in total.
+    exc = _HttpStatusError(503)
+    for seed in range(50):
+        import random
+
+        random.seed(seed)
+        _, sleeps, _ = _run_with_retry(exc)
+        assert len(sleeps) == 7
+        assert max(sleeps) <= 60
+        assert sum(sleeps) <= 7 * 60
+
+    # Custom cap
+    _, sleeps, _ = _run_with_retry(exc, max_retries=10, max_delay=5)
+    assert len(sleeps) == 10
+    assert max(sleeps) <= 5
+
+
+def test_retry_delay_without_jitter_is_exact_exponential_then_capped():
+    _, sleeps, _ = _run_with_retry(
+        _HttpStatusError(500),
+        initial_delay=1,
+        exponential_base=2,
+        jitter=False,
+        max_retries=8,
+        max_delay=30,
+    )
+    assert sleeps == [2, 4, 8, 16, 30, 30, 30, 30]
+
+
+def test_retry_jitter_is_bounded():
+    # Each wait is within [delay / 2, delay], where delay grows by exponential_base
+    # per retry (no random factor is compounded across retries).
+    exc = _HttpStatusError(500)
+    for seed in range(50):
+        import random
+
+        random.seed(seed)
+        _, sleeps, _ = _run_with_retry(exc, max_retries=8, max_delay=100)
+        for i, slept in enumerate(sleeps):
+            delay = min(2 ** (i + 1), 100)
+            assert delay / 2 <= slept <= delay
+
+    # Extremes of the random source map to the ends of the range
+    with patch("random.random", return_value=0.0):
+        _, sleeps, _ = _run_with_retry(exc, max_retries=3)
+    assert sleeps == [1, 2, 4]
+    with patch("random.random", return_value=1.0):
+        _, sleeps, _ = _run_with_retry(exc, max_retries=3)
+    assert sleeps == [2, 4, 8]
+
+
+def test_retry_large_max_retries_does_not_overflow():
+    _, sleeps, _ = _run_with_retry(_HttpStatusError(503), max_retries=1500)
+    assert len(sleeps) == 1500
+    assert max(sleeps) <= 60
+
+
+def _register_failing_embedding(name, error):
+    """Register an embedding function that always raises `error`.
+
+    Returns the class and a list that records every call. The function is
+    re-created from table metadata, so the call count has to live outside of it.
+    """
+    calls = []
+
+    @register(name)
+    class FailingEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 4
+
+        def generate_embeddings(self, texts):
+            calls.append(len(texts))
+            raise error
+
+    return FailingEmbeddingFunction, calls
+
+
+@pytest.mark.parametrize("status", [400, 404, 422])
+def test_permanent_embedding_error_is_not_retried(tmp_path, status):
+    """A permanent provider error (e.g. a misspelled model name) must surface
+    immediately from both `table.add` and `table.search` instead of being retried
+    with minutes of backoff."""
+    error = _HttpStatusError(status, "The model `typo-embed` does not exist")
+    cls, calls = _register_failing_embedding(f"failing-embedding-{status}", error)
+    func = cls.create()  # default max_retries=7
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", schema=Schema)
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="The model `typo-embed` does not exist"):
+            table.add([{"text": "hello"}])
+        assert len(calls) == 1
+
+        with pytest.raises(_HttpStatusError, match="does not exist"):
+            table.search("hello").limit(1).to_list()
+        assert len(calls) == 2
+
+    mock_sleep.assert_not_called()
+
+
+def test_transient_embedding_error_is_retried_in_table_add(tmp_path):
+    cls, calls = _register_failing_embedding(
+        "failing-embedding-503", _HttpStatusError(503)
+    )
+    func = cls.create(max_retries=2)
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", schema=Schema)
+
+    with patch("time.sleep") as mock_sleep:
+        with pytest.raises(Exception, match="Maximum number of retries"):
+            table.add([{"text": "hello"}])
+
+    assert len(calls) == 3
+    assert mock_sleep.call_count == 2
+    assert all(call.args[0] <= 60 for call in mock_sleep.call_args_list)
+@patch("time.sleep")
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("missing_key", id="missing-api-key"),
+        pytest.param(ImportError("No module named 'voyageai'"), id="missing-package"),
+    ],
+)
+def test_no_retry_on_deterministic_errors(mock_sleep, error):
+    from lancedb.embeddings.utils import (
+        api_key_not_found_help,
+        retry_with_exponential_backoff,
+    )
+
+    def func():
+        if error == "missing_key":
+            api_key_not_found_help("voyageai")
+        raise error
+
+    mock_func = MagicMock(side_effect=func)
+    wrapped_func = retry_with_exponential_backoff(mock_func, max_retries=3)
+
+    with pytest.raises((ValueError, ImportError)):
+        wrapped_func()
+
+    assert mock_func.call_count == 1
+    assert mock_sleep.call_count == 0
+
+
+@patch("time.sleep")
+def test_retry_on_wrapped_provider_error(mock_sleep):
+    """Providers such as Bedrock wrap throttling in a plain ValueError."""
+    from lancedb.embeddings.utils import retry_with_exponential_backoff
+
+    mock_func = MagicMock(
+        side_effect=[
+            ValueError("Error raised by boto3 client: ThrottlingException"),
+            [0.1],
+        ]
+    )
+    wrapped_func = retry_with_exponential_backoff(mock_func, max_retries=3)
+
+    assert wrapped_func() == [0.1]
+    assert mock_func.call_count == 2
+    assert mock_sleep.call_count == 1
+def test_openai_bad_request_partial_batch_recovery():
+    # Regression test for issue #1677
+
+    # Fake exception types, avoids requiring the optional openai/httpx deps
+    class FakeBadRequestError(Exception):
+        pass
+
+    class FakeAuthenticationError(Exception):
+        pass
+
+    fake_openai_module = MagicMock()
+    fake_openai_module.BadRequestError = FakeBadRequestError
+    fake_openai_module.AuthenticationError = FakeAuthenticationError
+
+    registry = get_registry()
+    model = registry.get("openai").create(name="text-embedding-ada-002")
+
+    def fake_create(input, model=None, **kwargs):
+        # Full batch always rejected
+        if len(input) > 1:
+            raise FakeBadRequestError("bad request")
+        if input[0] == "bad text":
+            raise FakeBadRequestError("bad request")
+        embedding = MagicMock()
+        embedding.embedding = [0.1, 0.2, 0.3]
+        result = MagicMock()
+        result.data = [embedding]
+        return result
+
+    mock_client = MagicMock()
+    mock_client.embeddings.create.side_effect = fake_create
+
+    with (
+        patch(
+            "lancedb.embeddings.openai.attempt_import_or_raise",
+            return_value=fake_openai_module,
+        ),
+        patch.object(type(model), "_openai_client", new_callable=lambda: mock_client),
+    ):
+        embeddings = model.generate_embeddings(["good text", "bad text"])
+
+    assert embeddings[0] == [0.1, 0.2, 0.3]
+    assert embeddings[1] is None
+
+
 def test_ollama_embeddings_pickle():
     """OllamaEmbeddings must pickle even after the cached client is created."""
     registry = get_registry()
@@ -663,3 +1053,28 @@ def test_jina_generate_image_input_dict_local_path(tmp_path):
         image_dict = JinaEmbeddings._generate_image_input_dict(image)
         assert "image" in image_dict
         assert isinstance(image_dict["image"], str) and len(image_dict["image"]) > 0
+
+
+def test_jina_embeddings_use_their_own_api_key(monkeypatch):
+    """Each JinaEmbeddings instance must send its own API key."""
+    pytest.importorskip("requests")
+    monkeypatch.delenv("JINA_API_KEY", raising=False)
+    registry = get_registry()
+    registry.set_var("jina_key_a", "key-a")
+    registry.set_var("jina_key_b", "key-b")
+    func_a = registry.get("jina").create(api_key="$var:jina_key_a")
+    func_b = registry.get("jina").create(api_key="$var:jina_key_b")
+
+    sent = []
+
+    def fake_post(session, url, json=None, **kwargs):
+        sent.append(session.headers["Authorization"])
+        response = MagicMock()
+        response.json.return_value = {"data": [{"index": 0, "embedding": [0.0]}]}
+        return response
+
+    with patch("requests.Session.post", fake_post):
+        func_a.compute_source_embeddings(["hello"])
+        func_b.compute_source_embeddings(["hello"])
+
+    assert sent == ["Bearer key-a", "Bearer key-b"]

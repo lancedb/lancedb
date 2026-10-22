@@ -1793,6 +1793,79 @@ def test_table_wait_for_index_timeout():
             table.wait_for_index(["id_idx"], timedelta(seconds=1))
 
 
+def _jieba_fts_handler(request):
+    """Serve a table with a ``jieba/default`` FTS index and no other state."""
+    if request.path == "/v1/table/test/describe/":
+        body = {
+            "version": 1,
+            "schema": {
+                "fields": [
+                    {"name": "text", "type": {"type": "string"}, "nullable": True}
+                ]
+            },
+        }
+    elif request.path == "/v1/table/test/index/list/":
+        index_details = {
+            "base_tokenizer": "jieba/default",
+            "language": "English",
+            "with_position": False,
+            "max_token_length": 40,
+            "lower_case": True,
+            "stem": False,
+            "remove_stop_words": False,
+            "ascii_folding": False,
+        }
+        body = {
+            "indexes": [
+                {
+                    "index_name": "text_idx",
+                    "columns": ["text"],
+                    "index_type": "FTS",
+                    "index_details": json.dumps(index_details),
+                }
+            ]
+        }
+    else:
+        request.send_response(404)
+        request.end_headers()
+        return
+    request.send_response(200)
+    request.send_header("Content-Type", "application/json")
+    request.end_headers()
+    request.wfile.write(json.dumps(body).encode())
+
+
+_MODEL_FILES_ERROR = (
+    r"(?s)Invalid directory path.*"
+    r"full text search index 'text_idx'.*"
+    r"tokenize\(\) runs on the client.*'jieba/default'.*"
+    r"LANCE_LANGUAGE_MODEL_HOME.*match the files the server uses"
+)
+
+
+def test_remote_tokenize_model_backed_without_model_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(tmp_path))
+    with mock_lancedb_connection(_jieba_fts_handler) as db:
+        table = db.open_table("test")
+        with pytest.raises(ValueError, match=_MODEL_FILES_ERROR):
+            table.tokenize("我们是中国人", index_name="text_idx")
+        with pytest.raises(ValueError, match=_MODEL_FILES_ERROR):
+            table.tokenize("我们是中国人", column="text")
+
+
+@pytest.mark.asyncio
+async def test_remote_tokenize_model_backed_without_model_files_async(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("LANCE_LANGUAGE_MODEL_HOME", str(tmp_path))
+    async with mock_lancedb_connection_async(_jieba_fts_handler) as db:
+        table = await db.open_table("test")
+        with pytest.raises(ValueError, match=_MODEL_FILES_ERROR):
+            await table.tokenize("我们是中国人", index_name="text_idx")
+        with pytest.raises(ValueError, match=_MODEL_FILES_ERROR):
+            await table.tokenize("我们是中国人", column="text")
+
+
 def test_stats():
     stats = {
         "total_bytes": 38,

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+use lancedb::table::computed_columns::ComputedColumnOptions;
 use std::{
     collections::HashMap,
     sync::{
@@ -1133,7 +1134,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1164,7 +1167,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1427,8 +1432,8 @@ impl Table {
         })
     }
 
-    pub fn query(&self) -> Query {
-        Query::new(self.inner_ref().unwrap().query())
+    pub fn query(&self) -> PyResult<Query> {
+        Ok(Query::new(self.inner_ref()?.query()))
     }
 
     #[getter]
@@ -1803,35 +1808,59 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
         columns: Vec<(String, String)>,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let options = ComputedColumnOptions {
+            auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
+            auto_refresh_interval_seconds,
+        };
+        options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
             for (name, expression) in columns {
                 builder = builder.computed(name, expression);
             }
-            let result = builder.execute().await.infer_error()?;
+            let result = builder
+                .computed_options(options)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }
 
+    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn add_function_columns(
         self_: PyRef<'_, Self>,
         application_json: String,
         output_name: Option<String>,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let application =
             lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
         let inner = self_.inner_ref()?.clone();
+        let options = ComputedColumnOptions {
+            auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
+            auto_refresh_interval_seconds,
+        };
+        options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
             let builder = match output_name {
                 Some(name) => inner.add_columns().function_as(name, application),
                 None => inner.add_columns().function(application),
             };
-            let result = builder.execute().await.infer_error()?;
+            let result = builder
+                .computed_options(options)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }

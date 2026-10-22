@@ -377,6 +377,22 @@ listing a storage directory.
 
 ## Materialized Views (Synchronous)
 
+On Cloud and Enterprise, creation accepts `auto_refresh_enabled` and
+`auto_refresh_interval_seconds`:
+
+```python
+view = db.create_materialized_view(
+    "recent_orders",
+    "orders",
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+Omit `auto_refresh_interval_seconds` to let the server determine when to refresh.
+These options also apply to asynchronous creation and creation jobs. Embedded
+connections support manual refresh and reject automatic scheduling requests.
+
 ::: lancedb.materialized_view.MaterializedView
 
 ::: lancedb.materialized_view.MaterializedViewDefinition

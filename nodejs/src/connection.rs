@@ -673,7 +673,7 @@ impl Connection {
         let req = ListNamespacesRequest {
             id: namespace_path,
             page_token,
-            limit: limit.map(|l| l as i32),
+            limit: checked_limit(limit)?,
             ..Default::default()
         };
         let resp = self
@@ -785,5 +785,35 @@ impl Connection {
             .rename_table(&current_name, &new_name, &cur_ns, &new_ns)
             .await
             .default_error()
+    }
+}
+
+fn checked_limit(limit: Option<u32>) -> napi::Result<Option<i32>> {
+    limit
+        .map(i32::try_from)
+        .transpose()
+        .map_err(|_| napi::Error::from_reason("limit must not exceed 2147483647"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checked_limit;
+
+    #[test]
+    fn checked_limit_rejects_values_above_i32_max() {
+        // u32 values above i32::MAX wrapped negative through `as i32`,
+        // sending a negative page size to the server.
+        assert!(checked_limit(Some(3_000_000_000)).is_err());
+        assert!(checked_limit(Some(u32::MAX)).is_err());
+    }
+
+    #[test]
+    fn checked_limit_passes_boundary_and_missing_values() {
+        assert_eq!(
+            checked_limit(Some(i32::MAX as u32)).unwrap(),
+            Some(i32::MAX)
+        );
+        assert_eq!(checked_limit(Some(0)).unwrap(), Some(0));
+        assert_eq!(checked_limit(None).unwrap(), None);
     }
 }

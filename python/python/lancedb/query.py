@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+_SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
 # Number of rows a hybrid query returns when no limit was set on it. This
 # mirrors the default the Rust query builder applies to its sub-queries.
@@ -1024,10 +1025,12 @@ class LanceQueryBuilder(ABC):
                 fast_search=fast_search,
             )
 
-        if isinstance(query, list):
+        if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
         elif isinstance(query, np.ndarray):
             query = query.astype(np.float32)
+        elif isinstance(query, (pa.Array, pa.ChunkedArray)):
+            query = np.array(query.to_pylist(), dtype=np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
@@ -1049,7 +1052,7 @@ class LanceQueryBuilder(ABC):
             query = cls._query_to_vector(table, query, vector_column_name)
             return query, query_type
         elif query_type == "auto":
-            if isinstance(query, (list, np.ndarray)):
+            if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
                 return query, "vector"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
@@ -1065,7 +1068,7 @@ class LanceQueryBuilder(ABC):
 
     @classmethod
     def _query_to_vector(cls, table, query, vector_column_name):
-        if isinstance(query, (list, np.ndarray)):
+        if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
             return query
         conf = table.embedding_functions.get(vector_column_name)
         if conf is not None:
@@ -2438,7 +2441,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if query is not None and (vector is not None or text is not None):
             raise ValueError(
                 "You can either provide a string query in search() method "
-                "or set `vector()` and `text()` explicitly for hybrid search."
+                "or set `vector()` and `text()` explicitly for hybrid search. "
                 "But not both."
             )
 
@@ -2572,10 +2575,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         with_row_ids: bool,
         offset: Optional[int] = None,
     ) -> pa.Table:
-        if norm == "rank":
-            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
-            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
-
         # If both result sets are empty (e.g. after hard filtering),
         # return early to avoid errors in reranking or score restoration.
         if vector_results.num_rows == 0 and fts_results.num_rows == 0:
@@ -2602,15 +2601,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         original_score_row_ids = None
         # normalize the scores to be between 0 and 1, 0 being most relevant
         # We check whether the results (vector and FTS) are empty, because when
-        # they are, they often are missing the _rowid column, which causes an error
+        # they are, they often are missing the _rowid column, which causes an error.
+        # The original values are captured before any rank conversion so that
+        # they can be restored after reranking.
         if vector_results.num_rows > 0:
             distance_i = vector_results.column_names.index("_distance")
             original_distances = vector_results.column(distance_i)
             original_distance_row_ids = vector_results.column("_rowid")
+            if norm == "rank":
+                vector_results = LanceHybridQueryBuilder._rank(
+                    vector_results, "_distance"
+                )
             vector_results = vector_results.set_column(
                 distance_i,
                 vector_results.field(distance_i),
-                LanceHybridQueryBuilder._normalize_scores(original_distances),
+                LanceHybridQueryBuilder._normalize_scores(
+                    vector_results.column(distance_i)
+                ),
             )
 
         # In fts higher scores represent relevance. Not inverting them here as
@@ -2619,10 +2626,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = fts_results.column_names.index("_score")
             original_scores = fts_results.column(score_i)
             original_score_row_ids = fts_results.column("_rowid")
+            if norm == "rank":
+                fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
             fts_results = fts_results.set_column(
                 score_i,
                 fts_results.field(score_i),
-                LanceHybridQueryBuilder._normalize_scores(original_scores),
+                LanceHybridQueryBuilder._normalize_scores(fts_results.column(score_i)),
             )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
