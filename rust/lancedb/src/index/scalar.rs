@@ -65,6 +65,14 @@ pub struct FmIndexBuilder {}
 /// A ZoneMap index stores min/max summaries for ranges of rows and can
 /// accelerate range predicates by pruning zones that cannot match.
 ///
+/// ZoneMap indexes use per-fragment write seeds by default for strings, binary
+/// data, and supported types wider than eight bytes. Writing version 1 seeds
+/// activates a table capability that older clients cannot read or write.
+/// Upgrade all readers and writers before enabling these seeds. The capability
+/// remains set in subsequent snapshots, including after dropping the index or
+/// restoring an older version; dropping the index does not restore access for
+/// older clients. Opening a table alone does not activate the capability.
+///
 /// ```
 /// use lancedb::{
 ///     index::{scalar::ZoneMapIndexBuilder, Index},
