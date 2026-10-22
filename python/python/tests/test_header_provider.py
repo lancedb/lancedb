@@ -128,8 +128,14 @@ class TestOAuthProvider:
 
         provider = OAuthProvider(fetcher, refresh_buffer_seconds=0)
 
-        assert provider.get_headers() == {"Authorization": "Bearer token1"}
-        assert provider.get_headers() == {"Authorization": "Bearer token2"}
+        assert provider.get_headers() == {
+            "Authorization": "Bearer token1",
+            "x-lancedb-credential-type": "oidc",
+        }
+        assert provider.get_headers() == {
+            "Authorization": "Bearer token2",
+            "x-lancedb-credential-type": "oidc",
+        }
         assert call_count == 2
 
     def test_missing_access_token(self):
