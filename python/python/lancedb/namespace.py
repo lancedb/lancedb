@@ -486,10 +486,18 @@ class LanceNamespaceDBConnection(DBConnection):
             Default is None (no pushdown, all operations run locally).
         namespace_client_impl : Optional[str]
             The namespace implementation name used to create this connection.
-            Stored for serialization purposes.
+            Required together with namespace_client_properties for serialization
+            and reopening tables in forked worker processes.
         namespace_client_properties : Optional[Dict[str, str]]
             The namespace properties used to create this connection.
-            Stored for serialization purposes.
+            Required together with namespace_client_impl for serialization and
+            reopening tables in forked worker processes.
+
+        Notes
+        -----
+        If either reconstruction parameter is omitted, the namespace client is
+        opaque. Serializing the connection raises ValueError, and reopening an
+        inherited table in a forked worker raises RuntimeError explicitly.
         """
         self._namespace_client = namespace_client
         self.read_consistency_interval = read_consistency_interval
