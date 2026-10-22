@@ -129,8 +129,21 @@ def test_sync_remote_create_uses_public_async_connection():
             where=None,
             limit=None,
             with_no_data=False,
+            auto_refresh_enabled=None,
+            auto_refresh_interval_seconds=None,
         ):
-            calls.append((name, source, select, where, limit, with_no_data))
+            calls.append(
+                (
+                    name,
+                    source,
+                    select,
+                    where,
+                    limit,
+                    with_no_data,
+                    auto_refresh_enabled,
+                    auto_refresh_interval_seconds,
+                )
+            )
             return StubAsyncMaterializedView()
 
         async def drop_materialized_view(self, name, *, namespace_path=None):
@@ -148,9 +161,11 @@ def test_sync_remote_create_uses_public_async_connection():
         where="age >= 18",
         limit=10,
         with_no_data=True,
+        auto_refresh_enabled=True,
+        auto_refresh_interval_seconds=0.5,
     )
     assert view.name == "adults"
-    assert calls == [("adults", "people", ["name"], "age >= 18", 10, True)]
+    assert calls == [("adults", "people", ["name"], "age >= 18", 10, True, True, 0.5)]
 
     db.drop_materialized_view("adults", namespace_path=["analytics"])
     assert calls[-1] == ("drop", "adults", ["analytics"])
@@ -550,3 +565,89 @@ def test_local_materialized_view_listing_pages_and_resume(tmp_path):
     assert sorted([first, *resumed]) == ["a_view", "z_view"]
     assert resumed.page_token() is None
     assert list(resumed) == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {},
+        {"auto_refresh_enabled": True},
+        {"auto_refresh_enabled": False, "auto_refresh_interval_seconds": 0.5},
+    ],
+)
+def test_remote_create_forwards_refresh_options_without_interval_default(options):
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = lancedb.connect("db://dev", api_key="fake", host_override=host)
+        job = db.create_materialized_view_async("adults", "people", **options)
+        assert job.id == "mv-create-123"
+    assert requests == [
+        (
+            "/v1/materialized_view/adults/create",
+            {
+                "query": 'SELECT * FROM "people"',
+                **options,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_create_keeps_interval_unspecified():
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = await lancedb.connect_async("db://dev", api_key="fake", host_override=host)
+        job = await db.create_materialized_view_async(
+            "adults",
+            "people",
+            auto_refresh_enabled=True,
+        )
+        assert job.id == "mv-create-123"
+    assert requests[0][1] == {
+        "query": 'SELECT * FROM "people"',
+        "auto_refresh_enabled": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"auto_refresh_enabled": True},
+        {"auto_refresh_interval_seconds": 300},
+    ],
+)
+def test_embedded_create_refuses_automatic_refresh_before_creating_view(
+    tmp_path, options
+):
+    db = make_db(tmp_path)
+    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+        db.create_materialized_view("adults", "people", **options)
+    assert "adults" not in db.table_names()
+
+
+@pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
+def test_remote_create_rejects_invalid_interval_without_request(seconds):
+    with mock_remote_materialized_view_create() as (host, requests):
+        db = lancedb.connect("db://dev", api_key="fake", host_override=host)
+        with pytest.raises(ValueError, match="positive, finite"):
+            db.create_materialized_view_async(
+                "adults", "people", auto_refresh_interval_seconds=seconds
+            )
+    assert requests == []
+
+
+def test_namespace_forwards_automatic_refresh_request(tmp_path):
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+        db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
+        await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
+
+
+def test_embedded_explicitly_disabled_refresh_is_supported(tmp_path):
+    db = make_db(tmp_path)
+    view = db.create_materialized_view("mv", "people", auto_refresh_enabled=False)
+    assert view.table.count_rows() == 3
