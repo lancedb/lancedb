@@ -422,10 +422,13 @@ class DBConnection(EnforceOverrides):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -2521,10 +2524,13 @@ class AsyncConnection(object):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
