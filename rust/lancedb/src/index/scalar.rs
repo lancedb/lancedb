@@ -66,9 +66,12 @@ pub struct FmIndexBuilder {}
 /// accelerate range predicates by pruning zones that cannot match.
 ///
 /// ZoneMap indexes use per-fragment write seeds by default for strings, binary
-/// data, and supported types wider than eight bytes. Writing version 1 seeds
-/// activates a table capability that older clients cannot read or write.
-/// Upgrade all readers and writers before enabling these seeds. The capability
+/// data, and supported types wider than eight bytes. Creating a seed-enabled
+/// index activates a table capability immediately, before any version 1 seed
+/// is written. A mutation retaining a legacy seed-enabled index also activates
+/// it. Older clients cannot read or write the resulting snapshots, so upgrade
+/// all readers and writers before creating such an index or mutating a table
+/// that already has one. The capability
 /// remains set in subsequent snapshots, including after dropping the index or
 /// restoring an older version; dropping the index does not restore access for
 /// older clients. Opening a table alone does not activate the capability.
