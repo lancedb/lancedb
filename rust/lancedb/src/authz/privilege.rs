@@ -121,7 +121,11 @@ impl Privilege {
     pub fn valid_for_system(&self) -> bool {
         matches!(
             self,
-            Self::Operate | Self::CreateDatabase | Self::Usage | Self::Unknown(_)
+            Self::Operate
+                | Self::CreateDatabase
+                | Self::CreateStorageIntegration
+                | Self::Usage
+                | Self::Unknown(_)
         )
     }
 
@@ -143,7 +147,6 @@ impl Privilege {
                 | Self::CreateView
                 | Self::CreateSecret
                 | Self::CreateFunction
-                | Self::CreateStorageIntegration
                 | Self::Unknown(_)
         )
     }
@@ -299,6 +302,16 @@ impl<'de> Deserialize<'de> for Privilege {
 #[cfg(test)]
 mod tests {
     use super::Privilege;
+
+    #[test]
+    fn storage_integration_creation_is_catalog_scoped() {
+        let privilege = Privilege::CreateStorageIntegration;
+        assert!(privilege.valid_for_system());
+        assert!(!privilege.valid_for_namespace());
+        assert!(!privilege.valid_for_database());
+        assert!(!privilege.valid_for_storage_integration());
+        assert!(privilege.is_write());
+    }
 
     #[test]
     fn display_matches_serde() {
