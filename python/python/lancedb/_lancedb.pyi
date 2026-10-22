@@ -270,6 +270,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -279,6 +281,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -501,10 +505,17 @@ class Table:
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_computed_columns(
-        self, columns: list[tuple[str, str]]
+        self,
+        columns: list[tuple[str, str]],
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
-        self, application_json: str, output_name: Optional[str]
+        self,
+        application_json: str,
+        output_name: Optional[str],
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(self, column: str) -> RefreshColumnResult: ...
     async def refresh_column_async(self, column: str) -> Job: ...
@@ -851,9 +862,9 @@ class RTEWriteSpec:
     @staticmethod
     def unsharded() -> "RTEWriteSpec": ...
     def with_maintained_indexes(self, indexes: Optional[List[str]]) -> "RTEWriteSpec":
-        """Set which indexes the RTE keeps up to date. None resolves every
-        index on the table at install, failing if one cannot be maintained;
-        a list is verbatim, empty means none."""
+        """Set which indexes the RTE keeps up to date. None is every index on
+        the table, now and later, skipping any it cannot maintain; a list is
+        verbatim, empty means none."""
         ...
     def with_writer_config_defaults(self, defaults: Dict[str, str]) -> "RTEWriteSpec":
         """Return a copy of this spec recording the given default
@@ -940,6 +951,15 @@ class AsyncPermutationBuilder:
         ratios: Optional[List[float]] = None,
         counts: Optional[List[int]] = None,
         fixed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
     ) -> "AsyncPermutationBuilder": ...
     def split_calculated(self, calculation: str) -> "AsyncPermutationBuilder": ...
     def shuffle(

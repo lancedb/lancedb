@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 import sys
@@ -607,6 +608,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -631,6 +634,13 @@ class DBConnection(EnforceOverrides):
             Cap the view at this many rows, in materialization order.
         with_no_data: bool, default False
             Skip the initial refresh and leave the backing table empty.
+        auto_refresh_enabled: bool, optional
+            Enable or disable automatic refresh on Cloud and Enterprise.
+            When omitted, the server determines whether automatic refresh is enabled.
+            Embedded databases do not support automatic refresh.
+        auto_refresh_interval_seconds: float, optional
+            Positive, finite refresh interval in seconds on Cloud and Enterprise.
+            When omitted, the server determines when to refresh.
 
         Returns
         -------
@@ -649,6 +659,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
@@ -1706,6 +1718,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1734,6 +1748,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -1748,6 +1764,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -1757,6 +1775,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)
@@ -2633,8 +2653,16 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
+        # Input preparation may advance a user-provided iterator.  Keep that work
+        # off the background event loop so an iterator can use the synchronous
+        # LanceDB API without blocking the loop that API needs to make progress.
+        data, schema = await asyncio.to_thread(
+            sanitize_create_table,
+            data,
+            schema,
+            metadata,
+            on_bad_vectors,
+            fill_value,
         )
         validate_schema(schema)
 
@@ -2767,6 +2795,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -2782,6 +2812,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncMaterializedView(AsyncTable(inner))
@@ -2795,6 +2827,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
@@ -2810,6 +2844,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncJob(inner)

@@ -816,6 +816,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
+        _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "computed columns are not supported on this table type".into(),
@@ -826,6 +827,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         &self,
         _application: &crate::function::FunctionApplication,
         _output_name: Option<&str>,
+        _options: computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         Err(Error::NotSupported {
             message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
@@ -3770,8 +3772,12 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
-        let result = schema_evolution::execute_declare(self, columns).await?;
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns, options).await?;
         self.bump_freshness();
         Ok(result)
     }
@@ -3817,10 +3823,7 @@ impl BaseTable for NativeTable {
         let mut indices: Vec<IndexConfig> = descriptions
             .iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = idx_desc
-                    .index_type()
-                    .parse()
-                    .unwrap_or(crate::index::IndexType::Unknown);
+                let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
                 if index_type == crate::index::IndexType::Unknown {
                     // Internal or future index types that this version doesn't recognize
                     // (e.g. Lance's internal FragReuseIndex) are silently excluded from
@@ -3956,10 +3959,7 @@ impl BaseTable for NativeTable {
             return Ok(None);
         };
 
-        let index_type: crate::index::IndexType = description
-            .index_type()
-            .parse()
-            .unwrap_or(crate::index::IndexType::Unknown);
+        let index_type = crate::index::IndexType::from_description(description.as_ref());
 
         let is_vector = matches!(
             index_type,

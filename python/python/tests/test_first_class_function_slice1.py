@@ -398,8 +398,21 @@ class _FunctionDeclarationInner:
     def __init__(self):
         self.calls = []
 
-    async def add_function_columns(self, application_json, output_name):
-        self.calls.append((json.loads(application_json), output_name))
+    async def add_function_columns(
+        self,
+        application_json,
+        output_name,
+        auto_refresh_enabled,
+        auto_refresh_interval_seconds,
+    ):
+        self.calls.append(
+            (
+                json.loads(application_json),
+                output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        )
         return "declared"
 
 
@@ -420,14 +433,18 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
+    assert inner.calls[-1][2:] == (None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
-    result = await table.add_columns(bare)
+    result = await table.add_columns(
+        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+    )
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
+    assert inner.calls[-1][2:] == (False, 300)
 
 
 @pytest.mark.asyncio

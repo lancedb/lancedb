@@ -723,6 +723,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         from .table import RemoteTable
 
@@ -734,6 +736,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(
@@ -755,6 +759,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -764,6 +770,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)
