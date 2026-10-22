@@ -12,6 +12,7 @@ import {
   OAuthConfig,
   OAuthFlowType,
   TlsConfig,
+  blob,
   connect,
 } from "../lancedb";
 import {
@@ -19,7 +20,10 @@ import {
   Field,
   Int64,
   RecordBatch,
+  RecordBatchReader,
   Schema,
+  Struct,
+  makeArrowTable,
   tableToIPC,
 } from "../lancedb/arrow";
 import {
@@ -28,6 +32,7 @@ import {
   StaticHeaderProvider,
 } from "../lancedb/header";
 import { Index } from "../lancedb/indices";
+import { LocalTable } from "../lancedb/table";
 
 // Test-only header providers
 class CustomProvider extends HeaderProvider {
@@ -93,6 +98,185 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it.each([false, true])(
+    "normalizes remote blob writes (range target: %s)",
+    async (wide) => {
+      const field = (full: boolean) => {
+        const f = blob("image");
+        return full
+          ? f
+          : new Field(
+              f.name,
+              new Struct((f.type as Struct).children.slice(0, 2)),
+              f.nullable,
+              f.metadata,
+            );
+      };
+      const schema = (full: boolean) =>
+        new Schema([new Field("id", new Int64(), true), field(full)]);
+      const writes: { path: string; schema: Schema }[] = [];
+      let storedWide = wide;
+      const describe = () => ({
+        version: writes.length + 1,
+        schema: {
+          fields: [
+            { name: "id", type: { type: "int64" }, nullable: true },
+            {
+              name: "image",
+              nullable: true,
+              metadata: { "ARROW:extension:name": "lance.blob.v2" },
+              type: {
+                type: "struct",
+                fields: [
+                  {
+                    name: "data",
+                    nullable: true,
+                    type: { type: "large_binary" },
+                  },
+                  { name: "uri", nullable: true, type: { type: "string" } },
+                  ...(storedWide
+                    ? ["position", "size"].map((name) => ({
+                        name,
+                        nullable: true,
+                        type: { type: "uint64" },
+                      }))
+                    : []),
+                ],
+              },
+            },
+          ],
+        },
+      });
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200, { "content-type": "application/json" })
+              .end(JSON.stringify(describe()));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          // Failed streaming input aborts before end; only complete bodies commit.
+          req.on("error", () => {
+            /* Aborted inputs must not commit. */
+          });
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            const reader = RecordBatchReader.from(Buffer.concat(chunks)).open();
+            // Only read the schema: Rust separately checks compressed wire values.
+            writes.push({ path: req.url ?? "", schema: reader.schema });
+            storedWide =
+              (reader.schema.fields[1].type as Struct).children.length === 4;
+            res.writeHead(200, { "content-type": "application/json" }).end(
+              JSON.stringify({
+                version: writes.length + 1,
+                // biome-ignore lint/style/useNamingConvention: server wire format
+                num_inserted_rows: 1,
+              }),
+            );
+          });
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          const input = makeArrowTable(
+            [{ id: 1n, image: Buffer.from("payload") }],
+            { schema: schema(!wide) },
+          );
+          await table.add(input);
+          await table
+            .mergeInsert("id")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute(input);
+          expect(writes).toHaveLength(2);
+          for (const write of writes)
+            expect(write.schema).toEqual(schema(wide));
+          expect(writes[0].path).toContain("/insert/");
+          expect(writes[1].path).toContain("/merge_insert/");
+          if (!wide) {
+            const invalid = makeArrowTable(
+              [
+                {
+                  id: 1n,
+                  image: {
+                    uri: "s3://registered/payload",
+                    position: 4,
+                    size: 6,
+                  },
+                },
+              ],
+              { schema: schema(true) },
+            );
+            await expect(table.add(invalid)).rejects.toThrow(
+              /cannot store byte ranges/,
+            );
+            await expect(
+              table
+                .mergeInsert("id")
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute(invalid),
+            ).rejects.toThrow(/cannot store byte ranges/);
+            expect(writes).toHaveLength(2);
+          }
+          await table.add(input, { mode: "overwrite" });
+          expect(writes).toHaveLength(3);
+          expect(writes[2].path).toContain("mode=overwrite");
+          expect(writes[2].schema).toEqual(schema(!wide));
+          expect(await table.schema()).toEqual(schema(!wide));
+        },
+      );
+    },
+  );
+
+  it("reports unsupported operations with backend-neutral errors", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/table/test/describe/");
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            version: 1,
+            schema: {
+              fields: [
+                { name: "id", type: { type: "int64" }, nullable: false },
+                {
+                  name: "vector",
+                  type: {
+                    type: "fixed_size_list",
+                    fields: [
+                      { name: "item", type: { type: "float" }, nullable: true },
+                    ],
+                    length: 2,
+                  },
+                  nullable: false,
+                },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const table = (await db.openTable("test")) as LocalTable;
+        const cases: [() => Promise<unknown>, string][] = [
+          [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
+          [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
+          [() => table.optimize(), "optimize"],
+          [
+            () => table.createIndex("vector", { config: Index.hnswPq() }),
+            "IVF_HNSW_PQ",
+          ],
+        ];
+        for (const [run, operation] of cases) {
+          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          if (operation === "IVF_HNSW_PQ") {
+            message += " Please use IVF_HNSW_SQ instead.";
+          }
+          await expect(run()).rejects.toThrow(new Error(message));
+        }
+      },
+    );
+  });
+
   it("rejects nprobes(0) before sending a query", async () => {
     const requests: string[] = [];
     await withMockDatabase(
@@ -425,6 +609,15 @@ describe("remote connection", () => {
         },
       },
     );
+  });
+
+  it("rejects a zero blob request concurrency limit", async () => {
+    await expect(
+      connect("db://dev", {
+        apiKey: "fake",
+        clientConfig: { blobRequestConcurrency: 0 },
+      }),
+    ).rejects.toThrow("blob_request_concurrency");
   });
 
   it("shows the full error messages on retry errors", async () => {

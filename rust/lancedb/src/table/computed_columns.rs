@@ -55,6 +55,106 @@ pub const EXPRESSION_META_KEY: &str = "computed_column.expression";
 /// Field metadata key holding the column's inputs, as a JSON array of names.
 pub const INPUTS_META_KEY: &str = "computed_column.inputs";
 
+/// Whether the server may automatically refresh this output.
+pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_enabled";
+/// Minimum interval between successful automatic refreshes, in seconds.
+pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
+
+/// Scheduling settings persisted on each computed output. Local tables store
+/// these settings; automatic scheduling requires a Cloud or Enterprise server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ComputedColumnOptions {
+    /// Permit automatic refresh. Manual refresh is always available.
+    pub auto_refresh_enabled: bool,
+    /// Minimum seconds after a successful refresh before another is eligible.
+    /// When omitted, the server determines when to refresh.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto_refresh_interval_seconds: Option<u64>,
+}
+
+impl Default for ComputedColumnOptions {
+    fn default() -> Self {
+        Self {
+            auto_refresh_enabled: true,
+            auto_refresh_interval_seconds: None,
+        }
+    }
+}
+
+impl ComputedColumnOptions {
+    /// Reject intervals that cannot be represented by the server scheduler.
+    pub fn validate(&self) -> Result<()> {
+        if self
+            .auto_refresh_interval_seconds
+            .is_some_and(|interval| interval == 0 || interval.checked_mul(1000).is_none())
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be a positive integer no greater than u64::MAX / 1000".into(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read scheduling settings, using defaults for omitted properties.
+    pub fn from_metadata(metadata: &HashMap<String, String>) -> Result<Self> {
+        let mut options = Self::default();
+        if let Some(value) = metadata.get(AUTO_REFRESH_ENABLED_META_KEY) {
+            options.auto_refresh_enabled = value.parse().map_err(|_| Error::InvalidInput {
+                message: "auto_refresh_enabled must be true or false".into(),
+            })?;
+        }
+        if let Some(value) = metadata.get(AUTO_REFRESH_INTERVAL_META_KEY) {
+            options.auto_refresh_interval_seconds =
+                Some(value.parse().map_err(|_| Error::InvalidInput {
+                    message: "auto_refresh_interval_seconds must be a positive integer".into(),
+                })?);
+        }
+        options.validate()?;
+        Ok(options)
+    }
+
+    /// Attach validated settings to newly declared computed output fields.
+    pub fn apply_to_schema(&self, schema: &ArrowSchema) -> Result<ArrowSchema> {
+        self.validate()?;
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| {
+                if computed_column_from_field(field).is_none()
+                    || field
+                        .metadata()
+                        .get(FUNCTION_OUTPUT_ORDINAL_META_KEY)
+                        .is_some_and(|ordinal| {
+                            ordinal == &FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL.to_string()
+                        })
+                {
+                    return field.clone();
+                }
+                let mut metadata = field.metadata().clone();
+                metadata.extend(self.metadata());
+                Arc::new(field.as_ref().clone().with_metadata(metadata))
+            })
+            .collect::<Vec<_>>();
+        Ok(ArrowSchema::new_with_metadata(
+            fields,
+            schema.metadata().clone(),
+        ))
+    }
+
+    /// Field metadata values shared by native and server declaration paths.
+    pub fn metadata(&self) -> HashMap<String, String> {
+        let mut metadata = HashMap::from([(
+            AUTO_REFRESH_ENABLED_META_KEY.into(),
+            self.auto_refresh_enabled.to_string(),
+        )]);
+        if let Some(interval) = self.auto_refresh_interval_seconds {
+            metadata.insert(AUTO_REFRESH_INTERVAL_META_KEY.into(), interval.to_string());
+        }
+        metadata
+    }
+}
+
 /// Field metadata key holding the Function binding identity.
 pub const FUNCTION_BINDING_ID_META_KEY: &str = "computed_column.function.binding_id";
 
@@ -2197,7 +2297,7 @@ pub(crate) fn plan(schema: SchemaRef, columns: &[(String, String)]) -> Result<Ve
 /// every declaration. For callers that stage declarations behind other work
 /// and need those rejections before any of it lands.
 ///
-/// Only the schema is consulted. Declaring also refuses a table with an LSM
+/// Only the schema is consulted. Declaring also refuses a table with an RTE
 /// write spec or retained SSTables; that is table state, checked at commit.
 ///
 /// ```
@@ -3025,7 +3125,7 @@ mod tests {
     /// The gate's reproducer: the reciprocal of the declare-under-spec check.
     #[tokio::test]
     async fn test_installing_an_lsm_spec_over_computed_columns_is_refused() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -3053,14 +3153,14 @@ mod tests {
             .unwrap();
 
         let err = table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(
             matches!(&err, Error::NotSupported { message } if message.contains("computed")),
             "{err:?}"
         );
-        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+        assert!(table.get_rte_spec().await.unwrap().is_none());
     }
 
     /// The gate's reproducer: declaration metadata is admitted only through
@@ -3233,10 +3333,10 @@ mod tests {
         );
     }
 
-    /// Stale handles must not commit the computed/LSM state in either order.
+    /// Stale handles must not commit the computed/RTE state in either order.
     #[tokio::test]
     async fn test_stale_handles_cannot_mix_computed_and_lsm() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
@@ -3260,7 +3360,7 @@ mod tests {
             .await
             .unwrap();
         let err = stale
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
+            .enable_rte(RTEWriteSpec::unsharded())
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NotSupported { .. }), "install won");
@@ -3274,10 +3374,7 @@ mod tests {
         let table = conn.create_table("mix2", batch).execute().await.unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
         let stale = conn.open_table("mix2").execute().await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let err = add_computed(&stale, &[("doubled".into(), "x * 2".into())])
             .await
             .unwrap_err();
@@ -3289,7 +3386,7 @@ mod tests {
     /// flag is the durable marker; declaration refuses on it.
     #[tokio::test]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
-        use crate::table::LsmWriteSpec;
+        use crate::table::RTEWriteSpec;
         use arrow_array::{Int64Array, RecordBatchIterator};
 
         let tmp_dir = tempfile::tempdir().unwrap();
@@ -3315,21 +3412,18 @@ mod tests {
             .await
             .unwrap();
         table.set_unenforced_primary_key(["id"]).await.unwrap();
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let mut merge = table.merge_insert(&["id"]);
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_lsm(true);
+            .use_rte(true);
         merge
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_rte().await.unwrap();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await

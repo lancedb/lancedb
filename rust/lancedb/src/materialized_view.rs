@@ -42,6 +42,9 @@ pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 /// Schema metadata key holding the view definition; see [`DEFINITION_FORMAT`].
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
+/// How many views may stand between a view and a plain table.
+const MAX_SOURCE_DEPTH: usize = 32;
+
 /// Field metadata namespace for declarations about schema structure, such as
 /// an unenforced primary key.
 const SCHEMA_DECLARATION_META_PREFIX: &str = "lance-schema:";
@@ -277,7 +280,7 @@ pub struct MaterializedViewInfo {
 
 /// The backend-independent request used to create a remote materialized view.
 #[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CreateMaterializedViewRequest {
     /// Name of the new view.
     pub name: String,
@@ -287,6 +290,10 @@ pub struct CreateMaterializedViewRequest {
     pub query: String,
     /// Whether to skip the initial population job.
     pub with_no_data: bool,
+    /// Whether the server should refresh the view automatically.
+    pub auto_refresh_enabled: Option<bool>,
+    /// Refresh interval in seconds. When absent, the server determines when to refresh.
+    pub auto_refresh_interval_seconds: Option<f64>,
 }
 
 /// Prefix of the internal columns holding source columns a computed column
@@ -1238,6 +1245,7 @@ impl PreparedDeclaration {
         namespace_path: &[String],
         name: &str,
     ) -> Result<MaterializedView> {
+        ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
         let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
@@ -1252,6 +1260,65 @@ impl PreparedDeclaration {
             parsed_definition: Some(self.definition),
         })
     }
+}
+
+/// Refuse to create `name` when following its source through each view's
+/// stored definition leads back to `name`: with no plain table beneath it,
+/// such a view would only ever refresh from itself. The walk follows the
+/// coordinates the views already record, so it opens one table per level.
+async fn ensure_no_source_cycle(
+    database: &Arc<dyn Database>,
+    namespace_path: &[String],
+    name: &str,
+    definition: &MaterializedViewDefinition,
+) -> Result<()> {
+    let mut path = vec![name.to_string()];
+    let mut next = (
+        definition.source_namespace.clone(),
+        definition.source_table.clone(),
+    );
+    for _ in 0..MAX_SOURCE_DEPTH {
+        let (namespace, source) = next;
+        path.push(source.clone());
+        if namespace == namespace_path && source == name {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "materialized view '{name}' would read itself: {}",
+                    path.join(" -> ")
+                ),
+            });
+        }
+        let table = match database
+            .open_table(OpenTableRequest {
+                name: source,
+                namespace_path: namespace,
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+        {
+            Ok(table) => table,
+            // A missing source ends the chain, so it cannot lead back here.
+            Err(Error::TableNotFound { .. }) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let schema = table.schema().await?;
+        // Only a definition this version reads can be followed.
+        match read_definition(schema.metadata()) {
+            Ok(Some(StoredDefinition::Query(upstream))) => {
+                next = (upstream.source_namespace, upstream.source_table);
+            }
+            _ => return Ok(()),
+        }
+    }
+    Err(Error::InvalidInput {
+        message: format!(
+            "materialized view '{name}' would nest deeper than {MAX_SOURCE_DEPTH} views"
+        ),
+    })
 }
 
 /// Column definitions are positional over the view schema: carry each
@@ -1507,6 +1574,8 @@ pub struct CreateMaterializedViewBuilder {
     filter: Option<String>,
     limit: Option<u64>,
     with_no_data: bool,
+    auto_refresh_enabled: Option<bool>,
+    auto_refresh_interval_seconds: Option<f64>,
 }
 
 fn source_sql_identifier(
@@ -1540,6 +1609,8 @@ impl CreateMaterializedViewBuilder {
             filter: None,
             limit: None,
             with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
         }
     }
 
@@ -1588,6 +1659,32 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
+    /// Enable or disable automatic refresh on Cloud and Enterprise.
+    /// When omitted, the server determines whether automatic refresh is enabled.
+    /// Embedded databases do not support automatic refresh.
+    pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
+        self.auto_refresh_enabled = Some(enabled);
+        self
+    }
+
+    /// Set a positive, finite refresh interval in seconds on Cloud and Enterprise.
+    /// When omitted, the server determines when to refresh.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("recent_orders", "orders")
+    ///     .auto_refresh_enabled(true)
+    ///     .auto_refresh_interval_seconds(300.0)
+    ///     .execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto_refresh_interval_seconds(mut self, seconds: f64) -> Self {
+        self.auto_refresh_interval_seconds = Some(seconds);
+        self
+    }
+
     fn query(&self) -> Result<String> {
         fn quote(name: &str) -> String {
             format!("\"{}\"", name.replace('"', "\"\""))
@@ -1630,6 +1727,8 @@ impl CreateMaterializedViewBuilder {
                     namespace_path: self.namespace.clone(),
                     query: self.query()?,
                     with_no_data: self.with_no_data,
+                    auto_refresh_enabled: self.auto_refresh_enabled,
+                    auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
                 })
                 .await;
         }
@@ -1656,6 +1755,12 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+            return Err(Error::NotSupported {
+                message: "automatic materialized-view refresh requires Cloud or Enterprise"
+                    .to_string(),
+            });
+        }
         let source = self
             .connection
             .open_table(&self.source)
@@ -2015,6 +2120,41 @@ mod tests {
             ),
             other => panic!("{operation} on a view was not refused: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_view_cannot_lead_back_to_itself() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        conn.create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_table("src", &[]).await.unwrap();
+
+        let err = conn
+            .create_materialized_view("src", "m2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("materialized view 'src' would read itself: src -> m2 -> m -> src"),
+            "{err}"
+        );
+        assert!(conn.open_table("src").execute().await.is_err());
+
+        // Back under a plain table, the same chain is fine to extend.
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m3", "m2")
+            .execute()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

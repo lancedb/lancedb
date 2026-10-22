@@ -15,7 +15,7 @@ from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
-from ._lancedb import LsmWriteSpec
+from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -321,8 +321,8 @@ def tokenize(
     language: str = "English",
     max_token_length: Optional[int] = 40,
     lower_case: bool = True,
-    stem: bool = True,
-    remove_stop_words: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
     custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
@@ -333,6 +333,8 @@ def tokenize(
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
+    When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
+    applies: False for ``code`` and ``ngram``, True otherwise.
     """
 
     return _tokenize(
@@ -608,7 +610,7 @@ __all__ = [
     "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
-    "LsmWriteSpec",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

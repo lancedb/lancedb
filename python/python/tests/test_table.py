@@ -12,10 +12,10 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from time import sleep
 from typing import List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lancedb
 from lancedb import table as table_module
@@ -280,6 +280,30 @@ def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     assert vector_column.to_pylist() == [[0.0, 300.0]]
 
 
+def test_create_table_all_null_vector_column(mem_db: DBConnection):
+    # A vector column can legitimately arrive with every value null, e.g. when
+    # the embeddings have not been computed yet. The dimension is unknowable in
+    # that case, so schema inference must not crash and should leave the column
+    # as a variable-length list rather than a fixed-size one.
+    data = pa.table(
+        {
+            "id": pa.array([1, 2]),
+            "vector": pa.array([None, None], type=pa.list_(pa.float32())),
+        }
+    )
+
+    table = mem_db.create_table("all_null_vector", data=data)
+
+    vector_field = table.schema.field("vector")
+    assert pa.types.is_list(vector_field.type)
+    assert vector_field.type.value_type == pa.float32()
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("vector").to_pylist() == [None, None]
+    assert table.count_rows() == 2
+
+
 @pytest.mark.asyncio
 async def test_create_table_async_infers_large_int_vectors(
     mem_db_async: AsyncConnection,
@@ -516,6 +540,30 @@ def test_add(mem_db: DBConnection):
         ],
     )
     _add(table, schema)
+
+
+def test_add_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+    target = mem_db.create_table("target", schema=source.schema)
+
+    def batches():
+        for _ in range(5):
+            yield source.search().limit(10).to_arrow()
+
+    target.add(batches())
+
+    assert target.count_rows() == 50
+
+
+def test_create_table_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+
+    def batches():
+        yield source.search().limit(10).to_arrow()
+
+    target = mem_db.create_table("target", data=batches())
+
+    assert target.count_rows() == 10
 
 
 def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
@@ -1725,6 +1773,51 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
 
 
+@pytest.mark.parametrize("api", ["legacy", "unified"])
+@pytest.mark.parametrize("cuda_failure", ["unavailable", "init_error"])
+def test_create_index_cuda_failure_suggests_cpu(
+    api, cuda_failure, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        f"test_cuda_unavailable_{api}",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = cuda_failure == "init_error"
+    if cuda_failure == "init_error":
+        torch.cuda.init.side_effect = RuntimeError("CUDA driver initialization failed")
+
+    with (
+        patch.dict(sys.modules, {"torch": torch}),
+        patch.object(table, "to_lance") as to_lance,
+    ):
+        if api == "legacy":
+            with (
+                pytest.warns(DeprecationWarning, match="create_index"),
+                pytest.raises(RuntimeError, match="accelerator=None.*CPU"),
+            ):
+                table.create_index(
+                    metric="dot",
+                    num_partitions=1,
+                    num_sub_vectors=1,
+                    vector_column_name="vector",
+                    accelerator="cuda",
+                )
+        else:
+            with pytest.raises(RuntimeError, match="accelerator=None.*CPU"):
+                table.create_index(
+                    "vector",
+                    config=IvfPq(
+                        distance_type="dot",
+                        num_partitions=1,
+                        num_sub_vectors=1,
+                        accelerator="cuda",
+                    ),
+                )
+
+    to_lance.return_value.create_index.assert_not_called()
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_name_and_train_parameters(
     mock_create_index, mem_db: DBConnection
@@ -2610,6 +2703,51 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
 
     assert result.rows_updated == 1
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.parametrize("use_arrow_scalar", [False, True])
+@pytest.mark.parametrize(
+    "decimal_type, value",
+    [
+        (pa.decimal128(10, 2), "9.99"),
+        (pa.decimal128(10, 2), "-9.99"),
+        (pa.decimal128(10, 2), "0.00"),
+        (pa.decimal128(10, 2), "1.23E+5"),
+        (pa.decimal128(38, 18), "1E-18"),
+        (pa.decimal128(38, 18), "12345678901234567.123456789012345678"),
+        (pa.decimal128(38, 18), "12345678901234567890.123456789012345678"),
+        (pa.decimal128(38, 18), "-12345678901234567890.123456789012345678"),
+        (
+            pa.decimal256(76, 38),
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+        (
+            pa.decimal256(76, 38),
+            "-12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+    ],
+)
+def test_update_decimal(mem_db: DBConnection, decimal_type, value, use_arrow_scalar):
+    expected = Decimal(value)
+    table = mem_db.create_table(
+        "my_table",
+        pa.table(
+            {
+                "id": [1, 2],
+                "price": pa.array([Decimal("1"), expected], type=decimal_type),
+            }
+        ),
+    )
+    update = table.to_arrow()["price"][1] if use_arrow_scalar else expected
+    with localcontext() as context:
+        context.prec = 6
+        result = table.update(where="id = 1", values={"price": update})
+    assert result.rows_updated == 1
+    actual = table.to_arrow()
+    assert actual.schema.field("price").type == decimal_type
+    assert actual["price"].to_pylist() == [expected, expected]
 
 
 def test_update_types(mem_db: DBConnection):
@@ -3628,6 +3766,42 @@ def test_multiple_vector_columns(mem_db: DBConnection):
     assert result1["text"][0] != result2["text"][0]
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        (0.0, 0.0),
+        pa.array([0.0, 0.0]),
+        pa.chunked_array([[0.0], [0.0]]),
+    ],
+)
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_sync_search_accepts_supported_vector_containers(
+    mem_db: DBConnection, query, query_type
+):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("small", pa.list_(pa.float32(), 2)),
+            pa.field("large", pa.list_(pa.float32(), 3)),
+        ]
+    )
+    table = mem_db.create_table(
+        "supported_vector_containers",
+        data=pa.table(
+            {
+                "id": [1, 2],
+                "small": [[0.0, 0.0], [1.0, 1.0]],
+                "large": [[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]],
+            },
+            schema=schema,
+        ),
+    )
+
+    result = table.search(query, query_type=query_type).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+
+
 def test_create_scalar_index(mem_db: DBConnection):
     vec_array = pa.array(
         [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2)
@@ -3969,6 +4143,26 @@ def test_search_nested_vector_no_candidates(mem_db: DBConnection):
 
     with pytest.raises(ValueError, match="no vector column"):
         table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_single_vector_column_wrong_query_dim(mem_db: DBConnection):
+    """A query vector whose dimension doesn't match the (only) vector column
+    must still resolve that column, surfacing a dimension-mismatch error from
+    query execution rather than a misleading "no vector column" error."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+        ]
+    )
+    table = mem_db.create_table(
+        "wrong_query_dim",
+        data=[{"id": 1, "vector_col": [0.1] * 32}],
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="dim"):
+        table.search([0.01] * 120).limit(1).to_arrow()
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
@@ -4804,3 +4998,53 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert result.published_version == 4
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.parametrize("interval", [None, 300])
+def test_computed_auto_refresh_options(tmp_path, interval):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("refresh_options", [{"x": 1}])
+    before = table.version
+    table.add_columns(
+        computed={"doubled": "x * 2", "tripled": "x * 3"},
+        auto_refresh_enabled=False,
+        auto_refresh_interval_seconds=interval,
+    )
+    assert table.version == before + 1
+    for column in ("doubled", "tripled"):
+        metadata = table.schema.field(column).metadata
+        assert metadata[b"computed_column.auto_refresh_enabled"] == b"false"
+        if interval is None:
+            assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+        else:
+            assert metadata[b"computed_column.auto_refresh_interval_seconds"] == b"300"
+    table.refresh_column("doubled")
+    assert table.to_arrow()["doubled"].to_pylist() == [2]
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "300", 2**64])
+def test_computed_auto_refresh_rejects_invalid_interval(tmp_path, value):
+    table = lancedb.connect(tmp_path).create_table("invalid_options", [{"x": 1}])
+    with pytest.raises(ValueError, match="auto_refresh_interval_seconds"):
+        table.add_columns(
+            computed={"doubled": "x * 2"}, auto_refresh_interval_seconds=value
+        )
+    assert table.schema.names == ["x"]
+
+
+def test_auto_refresh_options_require_computed_columns(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_kind", [{"x": 1}])
+    with pytest.raises(ValueError, match="require computed"):
+        table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("server_interval", [{"x": 1}])
+    before = await table.version()
+    await table.add_columns(computed={"doubled": "x * 2"})
+    assert await table.version() == before + 1
+    metadata = (await table.schema()).field("doubled").metadata
+    assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
+    assert b"computed_column.auto_refresh_interval_seconds" not in metadata

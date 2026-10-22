@@ -622,7 +622,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -1280,6 +1279,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     }
 
 
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
+        ],
+    }
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [
@@ -1555,7 +1576,7 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202

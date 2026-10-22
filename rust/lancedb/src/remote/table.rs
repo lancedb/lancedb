@@ -30,14 +30,15 @@ use crate::table::BranchDiff;
 use crate::table::CherryPickResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
-use crate::table::LsmStats;
-use crate::table::LsmWriteSpec;
 use crate::table::MergeResult;
+use crate::table::RTEStats;
+use crate::table::RTEWriteSpec;
 use crate::table::Tags;
 use crate::table::UpdateResult;
-use crate::table::lsm_stats::GetLsmStatsResponse;
 use crate::table::merge::MergeFilter;
+use crate::table::primary_key;
 use crate::table::query::create_multi_vector_plan;
+use crate::table::rte_stats::GetRTEStatsResponse;
 use crate::table::write_progress::FinishOnDrop;
 use crate::table::{
     AlterColumnsResult, FieldMetadataUpdate, RefreshColumnResult, UpdateFieldMetadataResult,
@@ -47,6 +48,7 @@ use crate::utils::background_cache::BackgroundCache;
 use crate::utils::{
     MaxBatchLengthStream, TimeoutStream, public_fts_field_path_by_id, resolve_arrow_field_path,
     resolve_arrow_fts_field_path, supported_btree_data_type, supported_vector_data_type,
+    validate_fts_field,
 };
 use crate::{DistanceType, Error};
 use crate::{
@@ -73,10 +75,10 @@ use lance::arrow::json::{JsonDataType, JsonSchema};
 use lance::dataset::refs::TagContents;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::{ColumnAlteration, NewColumnTransform, Version};
+use lance_core::datatypes::Schema as LanceSchema;
 use lance_datafusion::exec::{OneShotExec, execute_plan};
 use reqwest::{RequestBuilder, Response};
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::pin::Pin;
@@ -597,6 +599,7 @@ impl<S: HttpSend> RemoteTable<S> {
             Index::BloomFilter(p) => ("BLOOM_FILTER", Some(to_json(p)?)),
             Index::RTree(p) => ("RTREE", Some(to_json(p)?)),
             Index::FTS(p) => {
+                validate_fts_field(&field)?;
                 let mut params = to_json(p)?;
                 if p.get_document_granularity().is_list_element() {
                     params["document_granularity"] = "list_element".into();
@@ -620,9 +623,9 @@ impl<S: HttpSend> RemoteTable<S> {
                     });
                 }
             }
-            _ => {
+            Index::IvfHnswPq(_) => {
                 return Err(Error::NotSupported {
-                    message: "Index type not supported".into(),
+                    message: "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.".into(),
                 });
             }
         };
@@ -1017,10 +1020,10 @@ impl<S: HttpSend> RemoteTable<S> {
     ) -> Result<()> {
         params.check_filter()?;
         body["prefilter"] = params.prefilter.into();
-        // Only forward use_lsm when explicitly set; a server that predates it
+        // Only forward use_rte when explicitly set; a server that predates it
         // ignores the field and routes as it would by default.
-        if let Some(use_lsm) = params.use_lsm {
-            body["use_lsm"] = serde_json::Value::Bool(use_lsm);
+        if let Some(use_rte) = params.use_rte {
+            body["use_rte"] = serde_json::Value::Bool(use_rte);
         }
         if let Some(offset) = params.offset {
             body["offset"] = serde_json::Value::Number(serde_json::Number::from(offset));
@@ -1056,6 +1059,8 @@ impl<S: HttpSend> RemoteTable<S> {
                 );
             }
             Select::Dynamic(pairs) => {
+                // Keep the caller's alias order in the JSON object sent to the server.
+                // serde_json's preserve_order feature is required here.
                 let alias_map =
                     serde_json::Map::from_iter(pairs.iter().map(|(name, expr)| {
                         (name.clone(), serde_json::Value::String(expr.clone()))
@@ -1085,7 +1090,7 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
-                    message: "Wand factor is not yet supported in LanceDB Cloud".into(),
+                    message: "Wand factor is not supported for remote tables.".into(),
                 });
             }
 
@@ -1136,6 +1141,7 @@ impl<S: HttpSend> RemoteTable<S> {
         mut body: serde_json::Value,
         query: &VectorQueryRequest,
     ) -> Result<Vec<serde_json::Value>> {
+        query.validate_search_effort()?;
         self.apply_query_params(&mut body, &query.base)?;
 
         // Apply general parameters, before we dispatch based on number of query vectors.
@@ -1145,17 +1151,17 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(approx_mode) = query.approx_mode {
             body["approx_mode"] = serde_json::json!(approx_mode);
         }
-        // In 0.23.1 we migrated from `nprobes` to `minimum_nprobes` and `maximum_nprobes`.
-        // Old client / new server: since minimum_nprobes is missing, fallback to nprobes
-        // New client / old server: old server will only see nprobes, make sure to set both
-        //                          nprobes and minimum_nprobes
-        // New client / new server: since minimum_nprobes is present, server can ignore nprobes
-        body["nprobes"] = query.minimum_nprobes.into();
-        body["minimum_nprobes"] = query.minimum_nprobes.into();
+        if let Some(nprobes) = query.nprobes {
+            body["nprobes"] = nprobes.into();
+        }
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            body["minimum_nprobes"] = minimum_nprobes.into();
+        }
         if let Some(maximum_nprobes) = query.maximum_nprobes {
             body["maximum_nprobes"] = maximum_nprobes.into();
-        } else {
-            body["maximum_nprobes"] = serde_json::Value::Number(Number::from_u128(0).unwrap())
+        }
+        if let Some(search_effort) = query.search_effort {
+            body["search_effort"] = search_effort.into();
         }
         body["lower_bound"] = query.lower_bound.into();
         body["upper_bound"] = query.upper_bound.into();
@@ -1400,24 +1406,29 @@ impl<S: HttpSend> RemoteTable<S> {
         });
         let streams = futures::future::try_join_all(futures);
 
-        if let Some(timeout) = options.timeout {
+        let streams = if let Some(timeout) = options.timeout {
             let timeout_future = tokio::time::sleep(timeout);
             tokio::pin!(timeout_future);
             tokio::pin!(streams);
             tokio::select! {
                 _ = &mut timeout_future => {
-                    Err(Error::Other {
+                    return Err(Error::Other {
                         message: format!("Query timeout after {} ms", timeout.as_millis()),
                         source: None,
                     })
                 }
                 result = &mut streams => {
-                    Ok(result?)
+                    result?
                 }
             }
         } else {
-            Ok(streams.await?)
-        }
+            streams.await?
+        };
+
+        Ok(streams
+            .into_iter()
+            .map(|stream| restore_projection_order(stream, &query.base().select))
+            .collect())
     }
 
     fn prepare_query_bodies(
@@ -1457,6 +1468,52 @@ impl<S: HttpSend> RemoteTable<S> {
             self.invalidate_schema_cache();
         }
     }
+}
+
+fn restore_projection_order(
+    stream: Pin<Box<dyn RecordBatchStream + Send>>,
+    select: &Select,
+) -> Pin<Box<dyn RecordBatchStream + Send>> {
+    let pairs = match select {
+        Select::Dynamic(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        Select::Expr(pairs) => pairs.iter().map(|(name, _)| name).collect::<Vec<_>>(),
+        _ => return stream,
+    };
+
+    let schema = stream.schema();
+    let mut remaining = (0..schema.fields().len()).collect::<Vec<_>>();
+    let mut indices = Vec::with_capacity(remaining.len());
+    for name in pairs {
+        if let Some(position) = remaining
+            .iter()
+            .position(|&index| schema.field(index).name() == name)
+        {
+            indices.push(remaining.remove(position));
+        }
+    }
+    indices.extend(remaining);
+    if indices
+        .iter()
+        .enumerate()
+        .all(|(index, &field)| index == field)
+    {
+        return stream;
+    }
+
+    // Older servers may sort alias maps even when the request preserves their
+    // order. Reorder the schema and every batch while keeping server-added fields.
+    let fields = indices
+        .iter()
+        .map(|&index| schema.field(index).clone())
+        .collect::<Vec<_>>();
+    let schema = Arc::new(arrow_schema::Schema::new_with_metadata(
+        fields,
+        schema.metadata().clone(),
+    ));
+    let batches = stream.map(move |batch| {
+        batch.and_then(|batch| batch.project(&indices).map_err(DataFusionError::from))
+    });
+    Box::pin(RecordBatchStreamAdapter::new(schema, batches))
 }
 
 #[derive(Deserialize)]
@@ -2825,6 +2882,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.fetch_blobs_impl(column, row_ids).await
     }
 
+    async fn fetch_blob_ranges(
+        &self,
+        column: &str,
+        requests: &[crate::blob::BlobRangeRequest],
+    ) -> Result<LargeBinaryArray> {
+        self.fetch_blob_ranges_impl(column, requests).await
+    }
+
     async fn fetch_blob_files(
         &self,
         column: &str,
@@ -3089,6 +3154,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let rescannable = source.rescannable();
         let input: Arc<dyn ExecutionPlan> =
             Arc::new(crate::table::datafusion::scannable_exec::ScannableExec::new(source, None));
+        let table_schema = self.schema().await?;
+        let input = if crate::blob::has_blob_columns(&table_schema) {
+            crate::table::merge::validate_merge_source_fields(
+                input.schema().fields(),
+                table_schema.fields(),
+                "",
+            )?;
+            crate::table::datafusion::cast::cast_to_table_schema(input, &table_schema)?
+        } else {
+            input
+        };
         let freshness_request = self.snapshot_freshness_headers();
 
         let mut merge: Arc<dyn ExecutionPlan> = Arc::new(
@@ -3137,48 +3213,65 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
     }
 
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported on LanceDB cloud.".into(),
-        })
+    /// The unenforced primary key is Lance schema field metadata, so this
+    /// installs it through the `update_field_metadata` endpoint. The commit
+    /// layer behind that endpoint is what actually installs and validates the
+    /// key, exactly as on a native table; the checks here only fail fast with
+    /// the same messages a native table gives.
+    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
+        self.check_mutable().await?;
+
+        let arrow_schema = self.schema().await?;
+        let schema = LanceSchema::try_from(arrow_schema.as_ref()).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+        primary_key::validate(&schema, columns)?;
+
+        self.update_field_metadata(&[FieldMetadataUpdate {
+            path: columns[0].to_string(),
+            metadata: primary_key::install_edit(),
+            replace: false,
+        }])
+        .await?;
+        Ok(())
     }
 
-    async fn flush_lsm(&self) -> Result<()> {
+    async fn flush_rte(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/flush_lsm/", self.identifier));
+            .post(&format!("/v1/table/{}/flush_rte/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn compact_lsm(&self) -> Result<()> {
+    async fn compact_rte(&self) -> Result<()> {
         let request = self
             .client
-            .post(&format!("/v1/table/{}/compact_lsm/", self.identifier));
+            .post(&format!("/v1/table/{}/compact_rte/", self.identifier));
         self.send_lsm_route(request).await?;
         Ok(())
     }
 
-    async fn get_lsm_stats(&self, include_generation_rows: bool) -> Result<Option<LsmStats>> {
-        // Read-semantics POST, like `get_lsm_write_spec`.
+    async fn get_rte_stats(&self, include_sstable_rows: bool) -> Result<Option<RTEStats>> {
+        // Read-semantics POST, like `get_rte_spec`.
         let request = self
             .client
-            .post(&format!("/v1/table/{}/get_lsm_stats/", self.identifier))
+            .post(&format!("/v1/table/{}/get_rte_stats/", self.identifier))
             .json(&serde_json::json!({
-                "include_generation_rows": include_generation_rows,
+                "include_sstable_rows": include_sstable_rows,
             }));
         let (request_id, response) = self.send_lsm_route(request).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
-        let parsed: GetLsmStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
-            source: format!("Failed to parse get_lsm_stats response: {e}").into(),
+        let parsed: GetRTEStatsResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_rte_stats response: {e}").into(),
             request_id,
             status_code: None,
         })?;
-        // `null` — and only — when the table has no LSM write path.
-        Ok(parsed.lsm_stats)
+        // `null` — and only — when the table has no RTE write path.
+        Ok(parsed.rte_stats)
     }
 
-    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
+    async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
         self.check_mutable().await?;
 
         // Map the spec onto the server's request DTO. `sharding` is internally
@@ -3186,7 +3279,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         // `maintained_indexes` asks the server to resolve every maintainable
         // index at HEAD; a list is verbatim, an empty one meaning none.
         let sharding = match &spec {
-            LsmWriteSpec::Bucket {
+            RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 ..
@@ -3195,11 +3288,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "column": column,
                 "num_buckets": num_buckets,
             }),
-            LsmWriteSpec::Identity { column, .. } => serde_json::json!({
+            RTEWriteSpec::Identity { column, .. } => serde_json::json!({
                 "mode": "identity",
                 "column": column,
             }),
-            LsmWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
+            RTEWriteSpec::Unsharded { .. } => serde_json::json!({ "mode": "unsharded" }),
         };
         let body = serde_json::json!({
             "sharding": sharding,
@@ -3209,45 +3302,40 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         let request = self
             .client
-            .post(&format!(
-                "/v1/table/{}/set_lsm_write_spec/",
-                self.identifier
-            ))
+            .post(&format!("/v1/table/{}/enable_rte/", self.identifier))
             .json(&body);
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         Ok(())
     }
 
-    async fn unset_lsm_write_spec(&self) -> Result<()> {
+    async fn disable_rte(&self) -> Result<()> {
         self.check_mutable().await?;
-        let request = self.client.post(&format!(
-            "/v1/table/{}/unset_lsm_write_spec/",
-            self.identifier
-        ));
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/disable_rte/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         self.check_table_response(&request_id, response).await?;
         self.wal_pk_fusion.forget(); // WAL-PK-FUSION: delete.
         Ok(())
     }
 
-    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         // Read counterpart to set/unset, resolved server-side against HEAD. The
         // server reads the spec from the `__lance_mem_wal` system index (shard
         // column mapped from its Lance field id against the current schema) and
         // re-encodes it into the same sophon-owned shape the set endpoint
-        // accepts — no lance/lancedb types cross the wire. `lsm_write_spec` is
-        // null when the LSM write path is not enabled for the table.
-        let request = self.client.post(&format!(
-            "/v1/table/{}/get_lsm_write_spec/",
-            self.identifier
-        ));
+        // accepts — no lance/lancedb types cross the wire. `rte_spec` is
+        // null when the RTE write path is not enabled for the table.
+        let request = self
+            .client
+            .post(&format!("/v1/table/{}/get_rte_spec/", self.identifier));
         let (request_id, response) = self.send(request, true).await?;
         let response = self.check_table_response(&request_id, response).await?;
         let body = response.text().await.err_to_http(request_id.clone())?;
 
         // Mirror of sophon's `Sharding` (internally tagged on `mode`) and
-        // `LsmWriteSpecBody` / `GetLsmWriteSpecResponse`.
+        // `RTEWriteSpecBody` / `GetRTESpecResponse`.
         #[derive(Deserialize)]
         #[serde(tag = "mode", rename_all = "snake_case")]
         enum Sharding {
@@ -3256,7 +3344,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Identity { column: String },
         }
         #[derive(Deserialize)]
-        struct LsmWriteSpecBody {
+        struct RTEWriteSpecBody {
             sharding: Sharding,
             /// `null` selects every index the table has; `[]` selects none.
             #[serde(default)]
@@ -3265,19 +3353,18 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             writer_config_defaults: std::collections::HashMap<String, String>,
         }
         #[derive(Deserialize)]
-        struct GetLsmWriteSpecResponse {
-            lsm_write_spec: Option<LsmWriteSpecBody>,
+        struct GetRTESpecResponse {
+            rte_spec: Option<RTEWriteSpecBody>,
         }
 
-        let parsed: GetLsmWriteSpecResponse =
-            serde_json::from_str(&body).map_err(|e| Error::Http {
-                source: format!("Failed to parse get_lsm_write_spec response: {}", e).into(),
-                request_id,
-                status_code: None,
-            })?;
+        let parsed: GetRTESpecResponse = serde_json::from_str(&body).map_err(|e| Error::Http {
+            source: format!("Failed to parse get_rte_spec response: {}", e).into(),
+            request_id,
+            status_code: None,
+        })?;
 
-        let Some(body) = parsed.lsm_write_spec else {
-            // The LSM write path is not enabled for this table.
+        let Some(body) = parsed.rte_spec else {
+            // The RTE write path is not enabled for this table.
             return Ok(None);
         };
 
@@ -3285,9 +3372,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             Sharding::Bucket {
                 column,
                 num_buckets,
-            } => LsmWriteSpec::bucket(column, num_buckets),
-            Sharding::Identity { column } => LsmWriteSpec::identity(column),
-            Sharding::Unsharded => LsmWriteSpec::unsharded(),
+            } => RTEWriteSpec::bucket(column, num_buckets),
+            Sharding::Identity { column } => RTEWriteSpec::identity(column),
+            Sharding::Unsharded => RTEWriteSpec::unsharded(),
         }
         .with_maintained_indexes(body.maintained_indexes)
         .with_writer_config_defaults(body.writer_config_defaults);
@@ -3331,7 +3418,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {
-            message: "optimize is not supported on LanceDB cloud.".into(),
+            message: "optimize is not supported for remote tables.".into(),
         })
     }
     async fn add_columns(
@@ -3410,7 +3497,11 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         Ok(result)
     }
 
-    async fn add_computed_columns(&self, columns: &[(String, String)]) -> Result<AddColumnsResult> {
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        options: crate::table::computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         crate::table::computed_columns::ensure_not_function_bound(
             self.schema().await?.as_ref(),
@@ -3429,7 +3520,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 },
             )
             .collect::<Vec<_>>();
-        let mut body = serde_json::json!({ "new_columns": entries });
+        let mut body = serde_json::json!({ "new_columns": entries, "auto_refresh_enabled": options.auto_refresh_enabled });
+        if let Some(interval) = options.auto_refresh_interval_seconds {
+            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -3463,6 +3557,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         application: &crate::function::FunctionApplication,
         output_name: Option<&str>,
+        options: crate::table::computed_columns::ComputedColumnOptions,
     ) -> Result<AddColumnsResult> {
         self.check_mutable().await?;
         let schema = self.schema().await?;
@@ -3483,6 +3578,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             .collect::<Vec<_>>();
         let mut body = serde_json::json!({
             "new_columns": new_columns,
+            "auto_refresh_enabled": options.auto_refresh_enabled,
             "function": {
                 "application": plan.application,
                 "binding_metadata_version": plan.binding_metadata_version,
@@ -3492,6 +3588,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 "outputs": plan.outputs,
             },
         });
+        if let Some(interval) = options.auto_refresh_interval_seconds {
+            body["auto_refresh_interval_seconds"] = serde_json::json!(interval);
+        }
         self.apply_branch_body(&mut body);
         let request = self
             .client
@@ -3890,10 +3989,10 @@ pub struct MergeInsertRequest {
     // (the default is true)
     #[serde(skip_serializing_if = "is_true")]
     use_index: bool,
-    // Only serialize use_lsm when explicitly set (Some); a server that predates
+    // Only serialize use_rte when explicitly set (Some); a server that predates
     // it ignores the field and routes as it would by default.
     #[serde(skip_serializing_if = "Option::is_none")]
-    use_lsm: Option<bool>,
+    use_rte: Option<bool>,
 }
 
 impl MergeInsertRequest {
@@ -3931,22 +4030,14 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
 
         let when_matched_update_all_filt = match value.when_matched_update_all_filt {
             Some(MergeFilter::Sql(sql)) => Some(sql),
-            Some(MergeFilter::Expr(_)) => {
-                return Err(Error::NotSupported {
-                    message: "DataFusion expressions are not supported on remote tables".into(),
-                });
-            }
+            Some(MergeFilter::Expr(expr)) => Some(expr_to_sql_string(&expr)?),
             None => None,
         };
 
         let when_not_matched_by_source_delete_filt =
             match value.when_not_matched_by_source_delete_filt {
                 Some(MergeFilter::Sql(sql)) => Some(sql),
-                Some(MergeFilter::Expr(_)) => {
-                    return Err(Error::NotSupported {
-                        message: "DataFusion expressions are not supported on remote tables".into(),
-                    });
-                }
+                Some(MergeFilter::Expr(expr)) => Some(expr_to_sql_string(&expr)?),
                 None => None,
             };
 
@@ -3959,7 +4050,7 @@ impl TryFrom<MergeInsertBuilder> for MergeInsertRequest {
             when_not_matched_by_source_delete_filt,
             // Only serialize use_index when it's false for backwards compatibility
             use_index: value.use_index,
-            use_lsm: value.use_lsm,
+            use_rte: value.use_rte,
         })
     }
 }
@@ -4429,6 +4520,253 @@ mod tests {
         assert!(image.column_by_name("data").unwrap().is_null(0));
     }
 
+    #[tokio::test]
+    async fn add_external_blob_ranges_preserves_remote_wire_values() {
+        let field = crate::blob("image", true);
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!();
+        };
+        let schema = Arc::new(Schema::new(vec![field]));
+        // Registered external bases are enforced by the server, so remote
+        // clients send the URI and range without the local-only opt-in.
+        let uri = "s3://registered/payload.bin";
+        let image = StructArray::new(
+            children,
+            vec![
+                arrow_array::new_null_array(&DataType::LargeBinary, 2),
+                Arc::new(StringArray::from(vec![uri, uri])),
+                Arc::new(arrow_array::UInt64Array::from(vec![0, 4])),
+                Arc::new(arrow_array::UInt64Array::from(vec![6, 6])),
+            ],
+            None,
+        );
+        let input = RecordBatch::try_new(schema.clone(), vec![Arc::new(image)]).unwrap();
+        let describe_body = describe_response(&schema).into_bytes();
+        let payload = b"0123456789abcdef";
+        let fetched = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "image",
+                DataType::LargeBinary,
+                true,
+            )])),
+            vec![Arc::new(LargeBinaryArray::from(vec![
+                &payload[..6],
+                &payload[4..10],
+            ]))],
+        )
+        .unwrap();
+        let fetched_body = write_ipc_stream_uncompressed(&fetched);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => http::Response::builder()
+                    .status(200)
+                    .body(describe_body.clone())
+                    .unwrap(),
+                "/v1/table/my_table/insert/" => {
+                    sender.send(request.body_mut().take().unwrap()).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(br#"{"version": 2}"#.to_vec())
+                        .unwrap()
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["column"], "image");
+                    assert_eq!(body["row_ids"], json!([0, 1]));
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                        .body(fetched_body.clone())
+                        .unwrap()
+                }
+                path => panic!("unexpected path: {path}"),
+            },
+        );
+        table.add(input).execute().await.unwrap();
+        let body = collect_body(receiver.recv().unwrap()).await;
+        let batch = arrow_ipc::reader::StreamReader::try_new(std::io::Cursor::new(body), None)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert_eq!(batch.schema(), schema);
+        let image = batch.column(0).as_struct();
+        let positions = image
+            .column(2)
+            .as_primitive::<arrow::datatypes::UInt64Type>();
+        let sizes = image
+            .column(3)
+            .as_primitive::<arrow::datatypes::UInt64Type>();
+        assert_eq!(positions.values().as_ref(), &[0, 4]);
+        assert_eq!(sizes.values().as_ref(), &[6, 6]);
+        assert_eq!(image.column(1).as_string::<i32>().value(0), uri);
+        assert_eq!(image.column(1).as_string::<i32>().value(1), uri);
+        let bytes = table.fetch_blobs("image", &[0, 1]).await.unwrap();
+        assert_eq!(bytes.value(0), &payload[..6]);
+        assert_eq!(bytes.value(1), &payload[4..10]);
+    }
+
+    #[tokio::test]
+    async fn remote_blob_layout_normalization_and_overwrite() {
+        use arrow_array::{ArrayRef, UInt64Array};
+        for wide_target in [false, true] {
+            let field = |wide| {
+                if wide {
+                    crate::blob("image", true)
+                } else {
+                    lance::blob::blob_field("image", true)
+                }
+            };
+            let target = Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                field(wide_target),
+            ]);
+            for operation in ["add", "merge", "overwrite"] {
+                for range in [
+                    None,
+                    Some((Some(4), None)),
+                    Some((None, Some(6))),
+                    Some((Some(4), Some(6))),
+                ] {
+                    if range.is_some() && (wide_target || operation == "overwrite") {
+                        continue;
+                    }
+                    // Range input always uses the full layout. Otherwise use the
+                    // opposite layout to exercise both normalization directions.
+                    let wide_input = range.is_some() || !wide_target;
+                    let schema = Arc::new(Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        field(wide_input),
+                    ]));
+                    let DataType::Struct(children) = schema.field(1).data_type().clone() else {
+                        unreachable!()
+                    };
+                    let mut arrays: Vec<ArrayRef> = vec![
+                        Arc::new(LargeBinaryArray::from(vec![Some(b"inline".as_slice())])),
+                        Arc::new(StringArray::from(vec![None::<&str>])),
+                    ];
+                    if wide_input {
+                        arrays.push(Arc::new(UInt64Array::from(vec![range.and_then(|r| r.0)])));
+                        arrays.push(Arc::new(UInt64Array::from(vec![range.and_then(|r| r.1)])));
+                    }
+                    let image = Arc::new(StructArray::new(children, arrays, None));
+                    let batch = RecordBatch::try_new(
+                        schema.clone(),
+                        vec![Arc::new(Int64Array::from(vec![1])), image],
+                    )
+                    .unwrap();
+                    let describe = describe_response(&target);
+                    let (sender, receiver) = std::sync::mpsc::channel();
+                    let table = Table::new_with_handler("my_table", move |mut request| {
+                        if request.url().path().ends_with("/describe/") {
+                            return http::Response::builder()
+                                .status(200)
+                                .body(describe.clone())
+                                .unwrap();
+                        }
+                        assert!(
+                            request.url().path().ends_with("/insert/")
+                                || request.url().path().ends_with("/merge_insert/")
+                        );
+                        if operation == "overwrite" {
+                            assert!(
+                                request
+                                    .url()
+                                    .query_pairs()
+                                    .any(|(k, v)| k == "mode" && v == "overwrite")
+                            );
+                        }
+                        sender.send(request.body_mut().take().unwrap()).unwrap();
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 2, "num_inserted_rows": 1}"#.to_string())
+                            .unwrap()
+                    });
+                    // A bad later batch must abort the request, including after
+                    // an earlier valid batch was encoded. No write handler runs.
+                    let mut batches = Vec::new();
+                    if range.is_some() {
+                        let empty_range_arrays: Vec<ArrayRef> = vec![
+                            Arc::new(LargeBinaryArray::from(vec![Some(b"first".as_slice())])),
+                            Arc::new(StringArray::from(vec![None::<&str>])),
+                            Arc::new(UInt64Array::new_null(1)),
+                            Arc::new(UInt64Array::new_null(1)),
+                        ];
+                        let DataType::Struct(children) = schema.field(1).data_type().clone() else {
+                            unreachable!()
+                        };
+                        batches.push(Ok(RecordBatch::try_new(
+                            schema.clone(),
+                            vec![
+                                Arc::new(Int64Array::from(vec![0])),
+                                Arc::new(StructArray::new(children, empty_range_arrays, None)),
+                            ],
+                        )
+                        .unwrap()));
+                    }
+                    batches.push(Ok(batch));
+                    let reader: Box<dyn RecordBatchReader + Send> =
+                        Box::new(RecordBatchIterator::new(batches, schema.clone()));
+                    let result = match operation {
+                        "merge" => {
+                            let mut merge = table.merge_insert(&["id"]);
+                            merge
+                                .when_matched_update_all(None)
+                                .when_not_matched_insert_all();
+                            merge.execute(reader).await.map(|_| ())
+                        }
+                        "overwrite" => table
+                            .add(reader)
+                            .mode(AddDataMode::Overwrite)
+                            .execute()
+                            .await
+                            .map(|_| ()),
+                        _ => table.add(reader).execute().await.map(|_| ()),
+                    };
+                    if !wide_target && range.is_some() && operation != "overwrite" {
+                        assert!(
+                            result
+                                .unwrap_err()
+                                .to_string()
+                                .contains("cannot store byte ranges")
+                        );
+                        assert!(
+                            receiver.try_recv().is_err(),
+                            "invalid stream must not reach a committed write"
+                        );
+                        continue;
+                    }
+                    result.unwrap();
+                    let body = collect_body(receiver.recv().unwrap()).await;
+                    let reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+                    let expected = if operation == "overwrite" {
+                        schema.as_ref()
+                    } else {
+                        &target
+                    };
+                    assert_eq!(reader.schema().as_ref(), expected);
+                    for batch in reader {
+                        let batch = batch.unwrap();
+                        let image = batch.column(1).as_struct();
+                        assert!(
+                            image.column(0).as_binary::<i64>().value(0) == b"inline"
+                                || image.column(0).as_binary::<i64>().value(0) == b"first"
+                        );
+                        if image.num_columns() == 4 && range.is_none() {
+                            assert!(image.column(2).is_null(0));
+                            assert!(image.column(3).is_null(0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     #[rstest]
     #[case(true)]
     #[case(false)]
@@ -4782,6 +5120,12 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             if request.url().path() == "/v1/table/my_table/merge_insert/" {
                 assert_eq!(request.method(), "POST");
 
@@ -4817,6 +5161,75 @@ mod tests {
             assert_eq!(result.num_inserted_rows, 3);
             assert_eq!(result.num_updated_rows, 0);
         }
+    }
+
+    #[rstest]
+    #[case::sql(false, false)]
+    #[case::expr_update(true, false)]
+    #[case::expr_delete(false, true)]
+    #[case::expr_both(true, true)]
+    #[tokio::test]
+    async fn test_merge_insert_filter_expressions(
+        #[case] update_expr: bool,
+        #[case] delete_expr: bool,
+    ) {
+        use datafusion_expr::{col, lit};
+
+        let batch = record_batch!(("id", Int32, [0, 1]), ("v", Int32, [100, 110])).unwrap();
+        let data: Box<dyn RecordBatchReader + Send> = Box::new(RecordBatchIterator::new(
+            [Ok(batch.clone())],
+            batch.schema(),
+        ));
+
+        let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
+            assert_eq!(request.method(), "POST");
+            assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
+            let params = request.url().query_pairs().collect::<HashMap<_, _>>();
+            assert_eq!(params["on"], "id");
+            assert_eq!(params["when_matched_update_all"], "true");
+            assert_eq!(params["when_not_matched_insert_all"], "false");
+            assert_eq!(params["when_not_matched_by_source_delete"], "true");
+            assert_eq!(
+                params["when_matched_update_all_filt"],
+                if update_expr {
+                    "(`target`.v < `source`.v)"
+                } else {
+                    "target.v < source.v"
+                }
+            );
+            assert_eq!(
+                params["when_not_matched_by_source_delete_filt"],
+                if delete_expr { "(id > 3)" } else { "id > 3" }
+            );
+            http::Response::builder()
+                .status(200)
+                .body(r#"{"version": 2, "num_updated_rows": 2, "num_inserted_rows": 0, "num_deleted_rows": 2}"#)
+                .unwrap()
+        });
+
+        let mut merge = table.merge_insert(&["id"]);
+        if update_expr {
+            merge.when_matched_update_all_expr(col("target.v").lt(col("source.v")));
+        } else {
+            merge.when_matched_update_all(Some("target.v < source.v".into()));
+        }
+        if delete_expr {
+            merge.when_not_matched_by_source_delete_expr(col("id").gt(lit(3)));
+        } else {
+            merge.when_not_matched_by_source_delete(Some("id > 3".into()));
+        }
+
+        let result = merge.execute(data).await.unwrap();
+        assert_eq!(result.version, 2);
+        assert_eq!(result.num_updated_rows, 2);
+        assert_eq!(result.num_inserted_rows, 0);
+        assert_eq!(result.num_deleted_rows, 2);
     }
 
     #[rstest]
@@ -4860,6 +5273,12 @@ mod tests {
         let num_deleted_rows = if delete_unmatched { 3 } else { 0 };
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&Schema::empty()))
+                    .unwrap();
+            }
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
             assert_eq!(request.headers()[CONTENT_TYPE], ARROW_STREAM_CONTENT_TYPE);
@@ -4930,6 +5349,12 @@ mod tests {
         ));
 
         let table = Table::new_with_handler("my_table", move |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
             // One repeated `on` per column, in the order the caller gave them.
@@ -5001,6 +5426,12 @@ mod tests {
 
         // Default parameters
         let table = Table::new_with_handler("my_table", |request| {
+            if request.url().path().ends_with("/describe/") {
+                return http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1, "schema": {"fields": []}}"#)
+                    .unwrap();
+            }
             assert_eq!(request.method(), "POST");
             assert_eq!(request.url().path(), "/v1/table/my_table/merge_insert/");
 
@@ -5184,6 +5615,14 @@ mod tests {
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
     }
 
+    fn schema_describe_response(schema: &Schema) -> http::Response<String> {
+        let json_schema = JsonSchema::try_from(schema).unwrap();
+        http::Response::builder()
+            .status(200)
+            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
+            .unwrap()
+    }
+
     fn blob_describe_response() -> http::Response<String> {
         let schema = Schema::new(vec![
             Field::new("id", DataType::Int64, false),
@@ -5191,11 +5630,7 @@ mod tests {
             Field::new("caption", DataType::Utf8, true),
             crate::blob("thumbnail", true),
         ]);
-        let json_schema = JsonSchema::try_from(&schema).unwrap();
-        http::Response::builder()
-            .status(200)
-            .body(serde_json::json!({ "version": 1, "schema": json_schema }).to_string())
-            .unwrap()
+        schema_describe_response(&schema)
     }
 
     #[rstest]
@@ -5212,6 +5647,103 @@ mod tests {
 
         let columns = table.blob_columns().await.unwrap();
         assert_eq!(columns, vec!["image".to_string(), "thumbnail".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_blob_paths_are_not_advertised_or_fetchable() {
+        let schema = Schema::new(vec![
+            crate::blob("thumbnail", true),
+            Field::new(
+                "imgs",
+                DataType::List(Arc::new(crate::blob("item", true))),
+                true,
+            ),
+        ]);
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&schema),
+                "/v1/table/my_table/fetch_blobs/" | "/v1/table/my_table/query/" => {
+                    http::Response::builder()
+                        .status(400)
+                        .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                        .unwrap()
+                }
+                path if path.starts_with("/v1/table/my_table/blob/") => http::Response::builder()
+                    .status(400)
+                    .body("Invalid input, column 'imgs' is not a blob column".to_string())
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        assert_eq!(table.blob_columns().await.unwrap(), vec!["thumbnail"]);
+        for column in ["imgs", "imgs.item"] {
+            let err = table.fetch_blobs(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table.fetch_blob_files(column, &[10]).await.unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+            let err = table
+                .fetch_blob_ranges(column, [crate::blob::BlobRangeRequest::new(10, 0, 1)])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_fetch_blob_files_explains_uncached_list_descriptors() {
+        let list_field = Field::new(
+            "imgs",
+            DataType::List(Arc::new(crate::blob("item", true))),
+            true,
+        );
+        let schema = Schema::new(vec![list_field.clone()]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                list_field.clone(),
+                Field::new(lance::dataset::ROW_ID, DataType::UInt64, false),
+            ])),
+            vec![
+                arrow_array::new_null_array(list_field.data_type(), 1),
+                Arc::new(arrow_array::UInt64Array::from(vec![10])),
+            ],
+        )
+        .unwrap();
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&schema).map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/query/" => http::Response::builder()
+                    .status(200)
+                    .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE)
+                    .header(VERSION_HEADER, "1")
+                    .body(write_ipc_stream_uncompressed(&batch))
+                    .unwrap(),
+                path => panic!("unexpected request: {path}"),
+            },
+        );
+
+        let error = table.fetch_blob_files("imgs", &[10]).await.unwrap_err();
+        assert!(matches!(error, Error::InvalidInput { .. }));
+        assert!(
+            error
+                .to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
     }
 
     #[tokio::test]
@@ -5447,7 +5979,7 @@ mod tests {
                         .header(VERSION_HEADER, "42")
                         .body(b"0".to_vec())
                         .unwrap(),
-                    "bytes=0-" => http::Response::builder()
+                    "bytes=0-9" => http::Response::builder()
                         .status(206)
                         .header(reqwest::header::CONTENT_RANGE, "bytes 0-9/10")
                         .body(b"0123456789".to_vec())
@@ -5469,21 +6001,35 @@ mod tests {
         assert_eq!(blobs.value(4), b"bbb");
         let requests = requests.lock().unwrap();
         assert!(requests.contains(&"GET bytes=0-0".to_string()));
-        assert!(requests.contains(&"GET bytes=0-".to_string()));
+        assert!(requests.contains(&"GET bytes=0-9".to_string()));
     }
 
     #[tokio::test]
     async fn test_fetch_blobs_does_not_split_unrelated_bad_requests() {
         let requests = Arc::new(AtomicUsize::new(0));
         let seen = requests.clone();
-        let table =
-            Table::new_with_handler_version("my_table", semver::Version::new(0, 5, 0), move |_| {
-                seen.fetch_add(1, Ordering::SeqCst);
-                http::Response::builder()
-                    .status(400)
-                    .body(b"unknown blob column".to_vec())
-                    .unwrap()
-            });
+        let table = Table::new_with_handler_version(
+            "my_table",
+            semver::Version::new(0, 5, 0),
+            move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&Schema::new(vec![Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    )]))
+                    .map(|body| body.into_bytes())
+                }
+                "/v1/table/my_table/fetch_blobs/" => {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    http::Response::builder()
+                        .status(400)
+                        .body(b"unknown blob column".to_vec())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            },
+        );
 
         assert_fetch_blobs_http_error(
             table.fetch_blobs("missing", &[10, 20]).await.unwrap_err(),
@@ -5646,10 +6192,18 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_blobs_sends_a_nested_column_as_a_dotted_path() {
         let ipc = one_row_blob_ipc_stream("info.blob");
+        let schema = Schema::new(vec![Field::new(
+            "info",
+            DataType::Struct(vec![crate::blob("blob", true)].into()),
+            true,
+        )]);
         let table = Table::new_with_handler_version(
             "my_table",
             semver::Version::new(0, 5, 0),
             move |request| {
+                if request.url().path() == "/v1/table/my_table/describe/" {
+                    return schema_describe_response(&schema).map(|body| body.into_bytes());
+                }
                 let body = request_body_json(&request);
                 assert_eq!(body["column"], "info.blob");
                 http::Response::builder()
@@ -5691,6 +6245,64 @@ mod tests {
             Error::NotSupported { message } => assert!(message.contains(expected)),
             error => panic!("expected not-supported error, got {error}"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_remote_unsupported_operations() {
+        let table = Table::new_with_handler("my_table", |_| -> http::Response<String> {
+            panic!("unsupported operations must not send requests to the server");
+        });
+        let mut fts = FullTextSearchQuery::new("test".into());
+        fts.wand_factor = Some(1.0);
+        let results = [
+            (
+                "optimize",
+                table.optimize(OptimizeAction::All).await.map(|_| ()),
+            ),
+            (
+                "Wand factor",
+                table
+                    .query()
+                    .full_text_search(fts)
+                    .execute()
+                    .await
+                    .map(|_| ()),
+            ),
+        ];
+        for (operation, result) in results {
+            match result.unwrap_err() {
+                Error::NotSupported { message } => assert_eq!(
+                    message,
+                    format!("{operation} is not supported for remote tables.")
+                ),
+                error => panic!("expected not-supported error, got {error}"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remote_unsupported_hnsw_pq() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            let schema = Schema::new(vec![Field::new(
+                "vector",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 2),
+                false,
+            )]);
+            http::Response::builder()
+                .status(200)
+                .body(describe_response(&schema))
+                .unwrap()
+        });
+        let error = table
+            .create_index(&["vector"], Index::IvfHnswPq(Default::default()))
+            .execute()
+            .await
+            .unwrap_err();
+        assert_not_supported_error(
+            error,
+            "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.",
+        );
     }
 
     #[tokio::test]
@@ -5806,12 +6418,12 @@ mod tests {
 
         assert_not_supported_error(
             table.fetch_blobs("image", &[1]).await.unwrap_err(),
-            "fetch_blobs",
+            "fetch_blobs is not supported by this LanceDB server.",
         );
 
         assert_not_supported_error(
             table.fetch_blob_files("image", &[1]).await.unwrap_err(),
-            "requires LanceDB Cloud server 0.5.0 or newer",
+            "requires LanceDB server 0.5.0 or newer",
         );
     }
 
@@ -5957,9 +6569,6 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "k": 10,
@@ -5991,7 +6600,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_query_vector_approx_mode_sent_when_set() {
+    async fn test_query_vector_minimum_only_and_approx_mode() {
         let expected_data = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
             vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -6011,9 +6620,7 @@ mod tests {
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             let mut expected_body = serde_json::json!({
                 "prefilter": true,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
+                "minimum_nprobes": 5,
                 "approx_mode": "accurate",
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
@@ -6037,12 +6644,47 @@ mod tests {
             .query()
             .nearest_to(vec![0.1, 0.2, 0.3])
             .unwrap()
+            .minimum_nprobes(5)
+            .unwrap()
             .approx_mode(crate::ApproxMode::Accurate)
             .execute()
             .await;
         let data = data.unwrap().collect::<Vec<_>>().await;
         assert_eq!(data.len(), 1);
         assert_eq!(data[0].as_ref().unwrap(), &expected_data);
+    }
+
+    #[tokio::test]
+    async fn test_query_vector_explicitly_unbounded_maximum() {
+        let table = Table::new_with_handler("my_table", |request| {
+            let body = request.body().unwrap().as_bytes().unwrap();
+            let body: serde_json::Value = serde_json::from_slice(body).unwrap();
+            assert_eq!(body["nprobes"], 5);
+            assert_eq!(body["maximum_nprobes"], 0);
+
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        table
+            .query()
+            .nearest_to(vec![0.1, 0.2, 0.3])
+            .unwrap()
+            .nprobes(5)
+            .unwrap()
+            .maximum_nprobes(None)
+            .unwrap()
+            .execute()
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6110,6 +6752,77 @@ mod tests {
         ));
     }
 
+    #[rstest]
+    #[case::unset(None)]
+    #[case::minimum(Some(0.0))]
+    #[case::low(Some(0.25))]
+    #[case::auto(Some(0.5))]
+    #[case::high(Some(0.75))]
+    #[case::maximum(Some(1.0))]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_wire(#[case] effort: Option<f64>) {
+        let table = Table::new_with_handler("my_table", move |request| {
+            let body = request_body_json(&request);
+            assert_eq!(body["nprobes"], 7);
+            assert_eq!(body["minimum_nprobes"], 2);
+            assert_eq!(body["maximum_nprobes"], 8);
+            if let Some(effort) = effort {
+                assert_eq!(body["search_effort"], effort);
+            } else {
+                assert!(body.get("search_effort").is_none());
+            }
+            let batch = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+                vec![Arc::new(Int32Array::from(vec![1]))],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&batch))
+                .unwrap()
+        });
+        let batches = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort)
+            .unwrap()
+            .nprobes(7)
+            .unwrap()
+            .minimum_nprobes(2)
+            .unwrap()
+            .maximum_nprobes(Some(8))
+            .unwrap()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_rows(), 1);
+    }
+
+    #[rstest]
+    #[case::negative(-0.1)]
+    #[case::too_large(1.1)]
+    #[case::nan(f64::NAN)]
+    #[case::infinity(f64::INFINITY)]
+    #[case::negative_infinity(f64::NEG_INFINITY)]
+    #[tokio::test]
+    async fn test_query_vector_search_effort_invalid(#[case] effort: f64) {
+        let table = Table::new_with_handler::<&str>("my_table", |_| {
+            panic!("invalid search_effort must not send a request")
+        });
+        let result = table
+            .query()
+            .nearest_to(vec![0.1, 0.2])
+            .unwrap()
+            .search_effort(effort);
+        assert!(matches!(result, Err(Error::InvalidInput { message })
+            if message.contains("search_effort must be finite and in [0, 1]")));
+    }
+
     #[tokio::test]
     async fn test_query_vector_all_params() {
         let table = Table::new_with_handler("my_table", |request| {
@@ -6143,8 +6856,8 @@ mod tests {
                     }
                 ],
                 "nprobes": 12,
-                "minimum_nprobes": 12,
-                "maximum_nprobes": 12,
+                "minimum_nprobes": 3,
+                "maximum_nprobes": 10,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
@@ -6184,11 +6897,81 @@ mod tests {
             .distance_type(crate::DistanceType::Cosine)
             .nprobes(12)
             .unwrap()
+            .minimum_nprobes(3)
+            .unwrap()
+            .maximum_nprobes(Some(10))
+            .unwrap()
             .refine_factor(2)
             .bypass_vector_index()
             .execute()
             .await
             .unwrap();
+    }
+
+    #[rstest]
+    #[case::sql(Select::dynamic(&[("p", "x"), ("id", "id")]))]
+    #[case::typed(Select::expr_projection(&[
+        ("p", crate::expr::col("x")),
+        ("id", crate::expr::col("id")),
+    ]))]
+    #[tokio::test]
+    async fn test_query_dynamic_projection_order(#[case] select: Select) {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.url().path(), "/v1/table/my_table/query/");
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            let aliases = body["columns"]
+                .as_object()
+                .unwrap()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            assert_eq!(aliases, ["p", "id"]);
+
+            // Simulate a server that returns aliases in alphabetical order.
+            let data = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int32, false),
+                    Field::new("p", DataType::Int32, false),
+                ])),
+                vec![
+                    Arc::new(Int32Array::from(vec![7])),
+                    Arc::new(Int32Array::from(vec![42])),
+                ],
+            )
+            .unwrap();
+            http::Response::builder()
+                .status(200)
+                .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                .body(write_ipc_file(&data))
+                .unwrap()
+        });
+
+        let batches = table
+            .query()
+            .select(select)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.len(), 1);
+        let schema = batches[0].schema();
+        assert_eq!(
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["p", "id"]
+        );
+        let projected = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(projected.value(0), 42);
     }
 
     #[tokio::test]
@@ -6214,9 +6997,6 @@ mod tests {
                 "vector_column": "image.embedding",
                 "prefilter": true,
                 "k": 10,
-                "nprobes": 20,
-                "minimum_nprobes": 20,
-                "maximum_nprobes": 20,
                 "lower_bound": Option::<f32>::None,
                 "upper_bound": Option::<f32>::None,
                 "ef": Option::<usize>::None,
@@ -6952,19 +7732,24 @@ mod tests {
         ];
 
         for (index_type, expected_body, index) in cases {
+            let data_type = match &index {
+                Index::FTS(params) if params.get_document_granularity().is_list_element() => {
+                    DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
+                }
+                Index::FTS(_) => DataType::Utf8,
+                _ => DataType::Int32,
+            };
+            let schema = Schema::new(vec![Field::new("a", data_type, false)]);
             let table = Table::new_with_handler_version(
                 "my_table",
                 semver::Version::new(0, 6, 0),
                 move |request| {
                     assert_eq!(request.method(), "POST");
                     match request.url().path() {
-                        "/v1/table/my_table/describe/" => {
-                            let schema = Schema::new(vec![Field::new("a", DataType::Int32, false)]);
-                            http::Response::builder()
-                                .status(200)
-                                .body(describe_response(&schema))
-                                .unwrap()
-                        }
+                        "/v1/table/my_table/describe/" => http::Response::builder()
+                            .status(200)
+                            .body(describe_response(&schema))
+                            .unwrap(),
                         "/v1/table/my_table/create_index/" => {
                             assert_eq!(
                                 request.headers().get("Content-Type").unwrap(),
@@ -8490,31 +9275,44 @@ mod tests {
     /// client never types the expression itself.
     #[tokio::test]
     async fn test_add_computed_columns_sends_the_expression() {
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/table/my_table/describe/" => simple_describe_response(),
-            "/v1/table/my_table/add_columns/" => {
-                assert_eq!(request.method(), "POST");
-                let body = request.body().unwrap().as_bytes().unwrap();
-                let value: serde_json::Value = serde_json::from_slice(body).unwrap();
-                assert_eq!(
-                    value["new_columns"],
-                    serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
-                );
-                http::Response::builder()
-                    .status(200)
-                    .body(r#"{"version": 7}"#.to_string())
-                    .unwrap()
-            }
-            path => panic!("Unexpected path: {path}"),
-        });
+        for interval in [None, Some(300)] {
+            let table =
+                Table::new_with_handler("my_table", move |request| match request.url().path() {
+                    "/v1/table/my_table/describe/" => simple_describe_response(),
+                    "/v1/table/my_table/add_columns/" => {
+                        assert_eq!(request.method(), "POST");
+                        let body = request.body().unwrap().as_bytes().unwrap();
+                        let value: serde_json::Value = serde_json::from_slice(body).unwrap();
+                        assert_eq!(
+                            value["new_columns"],
+                            serde_json::json!([{"name": "doubled", "computed": "x * 2"}])
+                        );
+                        assert_eq!(value["auto_refresh_enabled"], false);
+                        if let Some(interval) = interval {
+                            assert_eq!(value["auto_refresh_interval_seconds"], interval);
+                        } else {
+                            assert!(value.get("auto_refresh_interval_seconds").is_none());
+                        }
+                        http::Response::builder()
+                            .status(200)
+                            .body(r#"{"version": 7}"#.to_string())
+                            .unwrap()
+                    }
+                    path => panic!("Unexpected path: {path}"),
+                });
 
-        let result = table
-            .add_columns()
-            .computed("doubled", "x * 2")
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(result.version, 7);
+            let result = table
+                .add_columns()
+                .computed("doubled", "x * 2")
+                .computed_options(crate::table::computed_columns::ComputedColumnOptions {
+                    auto_refresh_enabled: false,
+                    auto_refresh_interval_seconds: interval,
+                })
+                .execute()
+                .await
+                .unwrap();
+            assert_eq!(result.version, 7);
+        }
     }
 
     #[tokio::test]
@@ -8532,10 +9330,11 @@ mod tests {
                     request.body().unwrap().as_bytes().unwrap(),
                 )
                 .unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_scalar_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -8731,10 +9530,11 @@ mod tests {
                     request.body().unwrap().as_bytes().unwrap(),
                 )
                 .unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_fixed_size_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -8777,10 +9577,11 @@ mod tests {
             "/v1/table/my_table/add_columns/" => {
                 let actual: serde_json::Value =
                     serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                let expected: serde_json::Value = serde_json::from_str(include_str!(
+                let mut expected: serde_json::Value = serde_json::from_str(include_str!(
                     "../../tests/fixtures/first_class_functions/v1/remote_multi_output_declaration_request.json"
                 ))
                 .unwrap();
+                expected["auto_refresh_enabled"] = serde_json::json!(true);
                 assert_eq!(actual, expected);
                 http::Response::builder()
                     .status(200)
@@ -9521,13 +10322,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_unsharded() {
+    async fn test_enable_rte_unsharded() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(body["sharding"], serde_json::json!({ "mode": "unsharded" }));
@@ -9541,20 +10339,17 @@ mod tests {
                 .body(r#"{"maintained_indexes":["id_idx"]}"#)
                 .unwrap()
         });
-        let spec = crate::table::LsmWriteSpec::unsharded()
+        let spec = crate::table::RTEWriteSpec::unsharded()
             .with_maintained_indexes(vec!["id_idx".to_string()])
             .with_writer_config_defaults([("max_memtable_rows", "1000")]);
-        table.set_lsm_write_spec(spec).await.unwrap();
+        table.enable_rte(spec).await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_bucket() {
+    async fn test_enable_rte_bucket() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -9566,14 +10361,14 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::bucket("id", 16))
+            .enable_rte(crate::table::RTEWriteSpec::bucket("id", 16))
             .await
             .unwrap();
     }
 
     /// `[]` (none) must stay distinguishable on the wire from null (all).
     #[tokio::test]
-    async fn test_set_lsm_write_spec_no_maintained_indexes() {
+    async fn test_enable_rte_no_maintained_indexes() {
         let table = Table::new_with_handler("my_table", |request| {
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
@@ -9581,21 +10376,18 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(
-                crate::table::LsmWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
+            .enable_rte(
+                crate::table::RTEWriteSpec::bucket("id", 16).with_maintained_indexes(Vec::new()),
             )
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_identity() {
+    async fn test_enable_rte_identity() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/set_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/enable_rte/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
@@ -9605,38 +10397,32 @@ mod tests {
             http::Response::builder().status(200).body("{}").unwrap()
         });
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::identity("tenant"))
+            .enable_rte(crate::table::RTEWriteSpec::identity("tenant"))
             .await
             .unwrap();
     }
 
     #[tokio::test]
-    async fn test_unset_lsm_write_spec() {
+    async fn test_disable_rte() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/unset_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/disable_rte/");
             http::Response::builder().status(200).body("{}").unwrap()
         });
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_rte().await.unwrap();
     }
 
     #[tokio::test]
-    async fn test_get_lsm_write_spec() {
+    async fn test_get_rte_spec() {
         let table = Table::new_with_handler("my_table", |request| {
             assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/get_lsm_write_spec/"
-            );
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_spec/");
 
             // The server resolves the spec and re-encodes it into the same
             // sophon-owned shape the set endpoint accepts (`Sharding` internally
-            // tagged on `mode`, wrapped in `lsm_write_spec`).
+            // tagged on `mode`, wrapped in `rte_spec`).
             let response = serde_json::json!({
-                "lsm_write_spec": {
+                "rte_spec": {
                     "sharding": { "mode": "bucket", "column": "id", "num_buckets": 4 },
                     "maintained_indexes": ["id_idx"],
                     "writer_config_defaults": { "durable_write": "false" },
@@ -9649,12 +10435,12 @@ mod tests {
         });
 
         let spec = table
-            .get_lsm_write_spec()
+            .get_rte_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
         match spec {
-            crate::table::LsmWriteSpec::Bucket {
+            crate::table::RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
@@ -9681,13 +10467,13 @@ mod tests {
     #[case::no_index(serde_json::json!([]), Some(vec![]))]
     #[case::named(serde_json::json!(["id_idx"]), Some(vec!["id_idx".to_string()]))]
     #[tokio::test]
-    async fn test_get_lsm_write_spec_round_trips_the_selection(
+    async fn test_get_rte_spec_round_trips_the_selection(
         #[case] reported: serde_json::Value,
         #[case] expected: Option<Vec<String>>,
     ) {
         let table = Table::new_with_handler("my_table", move |_| {
             let response = serde_json::json!({
-                "lsm_write_spec": {
+                "rte_spec": {
                     "sharding": { "mode": "unsharded" },
                     "maintained_indexes": reported,
                     "writer_config_defaults": {},
@@ -9700,7 +10486,7 @@ mod tests {
         });
 
         let spec = table
-            .get_lsm_write_spec()
+            .get_rte_spec()
             .await
             .unwrap()
             .expect("a spec should be reported");
@@ -9712,35 +10498,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_lsm_write_spec_absent() {
+    async fn test_get_rte_spec_absent() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/table/my_table/get_lsm_write_spec/"
-            );
-            // Null spec → the LSM write path is not enabled.
-            let response = serde_json::json!({ "lsm_write_spec": null });
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_spec/");
+            // Null spec → the RTE write path is not enabled.
+            let response = serde_json::json!({ "rte_spec": null });
             http::Response::builder()
                 .status(200)
                 .body(response.to_string())
                 .unwrap()
         });
-        assert!(table.get_lsm_write_spec().await.unwrap().is_none());
+        assert!(table.get_rte_spec().await.unwrap().is_none());
     }
 
-    /// Build a `get_lsm_stats` body for one bucket holding `generations`.
-    fn stats_body(generations: &[u64], compacting: bool) -> String {
+    /// Build a `get_rte_stats` body for one table shard holding `sstables`.
+    fn stats_body(sstables: &[u64], compacting: bool) -> String {
         serde_json::json!({
-            "lsm_stats": {
-                "buckets": [{
+            "rte_stats": {
+                "table_shards": [{
                     "shard_id": "b0",
                     "status": "Active",
                     "writer_epoch": 1,
                     "manifest_version": 1,
-                    "current_generation": generations.iter().max().copied().unwrap_or(0) + 1,
+                    "current_generation": sstables.iter().max().copied().unwrap_or(0) + 1,
                     "replay_after_wal_entry_position": 0,
                     "wal_entry_position_last_seen": 0,
-                    "generations": generations.iter()
+                    "sstables": sstables.iter()
                         .map(|g| serde_json::json!({ "generation": g, "bytes": 1 }))
                         .collect::<Vec<_>>(),
                     "compacting": compacting,
@@ -9751,7 +10534,7 @@ mod tests {
         .to_string()
     }
 
-    /// `flush_lsm` / `compact_lsm` answer 202 with no body at all.
+    /// `flush_rte` / `compact_rte` answer 202 with no body at all.
     fn accepted() -> http::Response<String> {
         http::Response::builder()
             .status(202)
@@ -9763,7 +10546,7 @@ mod tests {
         http::Response::builder().status(200).body(body).unwrap()
     }
 
-    /// A flush landing in an empty L0 finishes on the opening stats read
+    /// A flush landing in an empty SSTable tier finishes on the opening stats read
     /// alone. Asserting zero compacts is the point: "it returned Ok" is also
     /// true of a loop that ran a pointless pass.
     #[tokio::test(start_paused = true)]
@@ -9772,18 +10555,18 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 panic!("an already-converged table must issue no compact calls");
             }
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            assert_eq!(path, "/v1/table/my_table/get_lsm_stats/");
+            assert_eq!(path, "/v1/table/my_table/get_rte_stats/");
             ok_json(stats_body(&[], false))
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(compacts.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 
@@ -9795,10 +10578,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -9808,7 +10591,7 @@ mod tests {
             ok_json(stats_body(&left, false))
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             3,
@@ -9817,7 +10600,7 @@ mod tests {
     }
 
     /// Generations created *during* the checkpoint are not waited on, which
-    /// is what lets the loop terminate on a table taking writes where "L0 is
+    /// is what lets the loop terminate on a table taking writes where "the SSTable tier is
     /// empty" never becomes true.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_ignores_generations_created_while_it_runs() {
@@ -9825,10 +10608,10 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -9842,11 +10625,11 @@ mod tests {
             ok_json(body)
         });
 
-        table.checkpoint_lsm().await.unwrap();
+        table.checkpoint_rte().await.unwrap();
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             1,
-            "the loop must not chase generations written after it started"
+            "the loop must not chase SSTables written after it started"
         );
     }
 
@@ -9859,11 +10642,11 @@ mod tests {
         let seen = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
-                // First two triggers: every bucket already latched.
+            if path.contains("compact_rte") {
+                // First two triggers: every table shard already latched.
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
                     return http::Response::builder()
                         .status(429)
@@ -9884,7 +10667,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("contention must not abort the checkpoint");
         assert_eq!(
@@ -9904,7 +10687,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+            if path.contains("flush_rte") || path.contains("compact_rte") {
                 return accepted();
             }
             // The opening read lands; the next two polls are latched out.
@@ -9919,7 +10702,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("a contended poll must be retried, not surfaced");
         assert_eq!(
@@ -9939,7 +10722,7 @@ mod tests {
         let seen = flushes.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 if seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 5 {
                     return http::Response::builder()
                         .status(429)
@@ -9948,20 +10731,20 @@ mod tests {
                 }
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 return accepted();
             }
             ok_json(stats_body(&[], false))
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("contention must not be reported as a lost claim");
         assert_eq!(
             flushes.load(std::sync::atomic::Ordering::SeqCst),
             6,
-            "five retries against one seal, then it lands"
+            "five retries against one freeze, then it lands"
         );
     }
 
@@ -9980,7 +10763,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 429),
             "the fault that spent the budget must be the one reported: {err:?}"
@@ -10010,7 +10793,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         let message = err.to_string();
         assert!(
             matches!(&err, Error::Http { status_code: Some(s), .. } if s.as_u16() == 503),
@@ -10030,7 +10813,7 @@ mod tests {
     /// A long stall with nothing compacting must keep waiting, not fail. The
     /// client cannot judge this: a checkpoint queued behind unrelated tables
     /// on the pod-wide compactor pool reports exactly these numbers — flat
-    /// generations, an idle latch — as one whose merges are failing. The
+    /// SSTable counts, an idle latch — as one whose merges are failing. The
     /// deadline is the caller's.
     #[tokio::test(start_paused = true)]
     async fn test_checkpoint_waits_out_a_long_stall_rather_than_failing() {
@@ -10038,7 +10821,7 @@ mod tests {
         let seen = polls.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") || path.contains("compact_lsm") {
+            if path.contains("flush_rte") || path.contains("compact_rte") {
                 return accepted();
             }
             // Flat for far longer than any bound this loop ever had, with
@@ -10048,7 +10831,7 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("a stall is the server being slow, not the client's call to make");
         assert!(
@@ -10057,7 +10840,7 @@ mod tests {
         );
     }
 
-    /// A pass already owns the latch on every outstanding bucket, so the loop
+    /// A pass already owns the latch on every outstanding table shard, so the loop
     /// waits rather than piling on triggers it would only refuse. This is the
     /// sole thing `compacting` is read for.
     #[tokio::test(start_paused = true)]
@@ -10068,10 +10851,10 @@ mod tests {
         let seen_compacts = compacts.clone();
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 seen_compacts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 return accepted();
             }
@@ -10085,32 +10868,32 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("a running pass is progress, not a stall");
         assert_eq!(
             compacts.load(std::sync::atomic::Ordering::SeqCst),
             0,
-            "never trigger against a bucket already compacting"
+            "never trigger against a table shard already compacting"
         );
     }
 
     /// WAL off ⇒ `None`; WAL on ⇒ a fully populated `Some` with no field
-    /// defaulting to a zero it did not measure. `include_generation_rows`
+    /// defaulting to a zero it did not measure. `include_sstable_rows`
     /// rides in the body and is off unless asked for.
     #[tokio::test]
-    async fn test_get_lsm_stats_round_trip() {
+    async fn test_get_rte_stats_round_trip() {
         let table = Table::new_with_handler("my_table", |request| {
-            assert_eq!(request.url().path(), "/v1/table/my_table/get_lsm_stats/");
+            assert_eq!(request.url().path(), "/v1/table/my_table/get_rte_stats/");
             let body = request.body().unwrap().as_bytes().unwrap();
             let body: serde_json::Value = serde_json::from_slice(body).unwrap();
             assert_eq!(
-                body["include_generation_rows"], true,
+                body["include_sstable_rows"], true,
                 "the flag must reach the server, not be silently dropped"
             );
             let response = serde_json::json!({
-                "lsm_stats": {
-                    "buckets": [{
+                "rte_stats": {
+                    "table_shards": [{
                         "shard_id": "b0",
                         "status": "Active",
                         "writer_epoch": 3,
@@ -10118,7 +10901,7 @@ mod tests {
                         "current_generation": 9,
                         "replay_after_wal_entry_position": 100,
                         "wal_entry_position_last_seen": 140,
-                        "generations": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
+                        "sstables": [{ "generation": 8, "bytes": 4096, "rows": 30 }],
                         "compacting": false,
                         "memtables": [
                             { "generation": 9, "rows": 12, "bytes": 900, "batches": 2,
@@ -10134,19 +10917,19 @@ mod tests {
         });
 
         let stats = table
-            .get_lsm_stats(true)
+            .get_rte_stats(true)
             .await
             .unwrap()
             .expect("a WAL-backed table reports Some");
-        let bucket = &stats.buckets[0];
-        assert_eq!(bucket.replay_after_wal_entry_position, 100);
-        assert_eq!(bucket.wal_entry_position_last_seen, 140);
-        assert!(!bucket.compacting);
-        assert_eq!(bucket.generations[0].generation, 8);
-        assert_eq!(bucket.generations[0].rows, Some(30));
+        let table_shard = &stats.table_shards[0];
+        assert_eq!(table_shard.replay_after_wal_entry_position, 100);
+        assert_eq!(table_shard.wal_entry_position_last_seen, 140);
+        assert!(!table_shard.compacting);
+        assert_eq!(table_shard.sstables[0].generation, 8);
+        assert_eq!(table_shard.sstables[0].rows, Some(30));
         // The line that answers "why is my fresh-tier vector search
         // brute-force" — an absent index name is the whole explanation.
-        let memtables = bucket.memtables.as_ref().unwrap();
+        let memtables = table_shard.memtables.as_ref().unwrap();
         assert_eq!(memtables[0].indexes, vec!["vec_idx".to_string()]);
     }
 
@@ -10166,7 +10949,7 @@ mod tests {
                 .unwrap()
         });
 
-        let err = table.checkpoint_lsm().await.unwrap_err();
+        let err = table.checkpoint_rte().await.unwrap_err();
         assert!(
             matches!(err, Error::TableNotFound { .. }),
             "a missing table must say so: {err:?}"
@@ -10187,12 +10970,12 @@ mod tests {
         let table = Table::new_with_handler("my_table", move |request| {
             let path = request.url().path().to_string();
             let n = seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            if path.contains("flush_lsm") {
+            if path.contains("flush_rte") {
                 // First flush lands; the claim is then lost, and the
                 // re-issued flush succeeds.
                 return accepted();
             }
-            if path.contains("compact_lsm") {
+            if path.contains("compact_rte") {
                 if n < 4 {
                     return http::Response::builder()
                         .status(421)
@@ -10205,20 +10988,20 @@ mod tests {
         });
 
         table
-            .checkpoint_lsm()
+            .checkpoint_rte()
             .await
             .expect("a lost claim must be recovered by re-flushing, not surfaced");
     }
 
     #[tokio::test]
-    async fn test_get_lsm_stats_absent_when_wal_off() {
+    async fn test_get_rte_stats_absent_when_wal_off() {
         let table = Table::new_with_handler("my_table", |_request| {
             http::Response::builder()
                 .status(200)
-                .body(serde_json::json!({ "lsm_stats": null }).to_string())
+                .body(serde_json::json!({ "rte_stats": null }).to_string())
                 .unwrap()
         });
-        assert!(table.get_lsm_stats(false).await.unwrap().is_none());
+        assert!(table.get_rte_stats(false).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -12891,6 +13674,120 @@ mod tests {
         assert_eq!(result.version, 7);
     }
 
+    /// The unenforced primary key is field metadata, so the remote table
+    /// installs it through the `update_field_metadata` endpoint.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key() {
+        let table = Table::new_with_handler("my_table", |request| {
+            assert_eq!(request.method(), "POST");
+            match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let schema = Schema::new(vec![
+                        Field::new("id", DataType::Int64, false),
+                        Field::new("name", DataType::Utf8, true),
+                    ]);
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&schema))
+                        .unwrap()
+                }
+                "/v1/table/my_table/update_field_metadata/" => {
+                    let body = request_body_json(&request);
+                    assert_eq!(body["updates"].as_array().unwrap().len(), 1);
+                    let update = &body["updates"][0];
+                    assert_eq!(update["path"], "id");
+                    assert_eq!(update["replace"], json!(false));
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key:position"],
+                        "1"
+                    );
+                    assert_eq!(
+                        update["metadata"]["lance-schema:unenforced-primary-key"],
+                        json!(null)
+                    );
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 3, "fields": {}}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("Unexpected path: {}", path),
+            }
+        });
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+    }
+
+    /// Requests the native table rejects are rejected here too, before any
+    /// write reaches the server.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_rejects_invalid_requests() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("score", DataType::Float32, true),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for columns in [
+            vec![],
+            vec!["id", "score"],
+            vec!["nonexistent"],
+            vec!["score"],
+        ] {
+            let err = table
+                .set_unenforced_primary_key(columns.clone())
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidInput { .. }),
+                "unexpected error for {:?}: {:?}",
+                columns,
+                err
+            );
+        }
+    }
+
+    /// The key is immutable once set, and the schema the server already
+    /// reports is enough to say so.
+    #[tokio::test]
+    async fn test_set_unenforced_primary_key_already_set() {
+        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
+            "/v1/table/my_table/describe/" => {
+                let schema = Schema::new(vec![
+                    Field::new("id", DataType::Int64, false).with_metadata(HashMap::from([(
+                        "lance-schema:unenforced-primary-key:position".to_string(),
+                        "1".to_string(),
+                    )])),
+                    Field::new("name", DataType::Utf8, false),
+                ]);
+                http::Response::builder()
+                    .status(200)
+                    .body(describe_response(&schema))
+                    .unwrap()
+            }
+            path => panic!("Unexpected path: {}", path),
+        });
+
+        for column in ["name", "id"] {
+            let err = table
+                .set_unenforced_primary_key([column])
+                .await
+                .unwrap_err();
+            assert!(
+                err.to_string().contains("already set"),
+                "unexpected error: {:?}",
+                err
+            );
+        }
+    }
+
     // ----- Branch support -----
 
     /// Parse a request's in-memory JSON body. Only valid for JSON-body ops
@@ -13822,6 +14719,20 @@ mod tests {
         ));
         let table = Table::new_with_handler("my_table", move |request| {
             match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body["branch"], "exp");
+                    http::Response::builder()
+                        .status(200)
+                        .body(describe_response(&Schema::new(vec![Field::new(
+                            "id",
+                            DataType::Int32,
+                            false,
+                        )])))
+                        .unwrap()
+                }
                 "/v1/table/my_table/branches/create/" => http::Response::builder()
                     .status(200)
                     .body("{}".to_string())
@@ -14121,9 +15032,10 @@ mod tests {
 
     // WAL-PK-FUSION: delete everything from here to the end of `mod tests`.
 
-    /// Verbatim from sophon's `LSM_WITH_ROW_ID_UNSUPPORTED`; the fallback keys
-    /// off this sentence, so a test that paraphrased it would prove nothing.
-    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: the MemWAL LSM scanner does not support with_row_id (the LSM scanner exposes _rowaddr, not a stable _rowid); set use_lsm(false) to read the base table only (results will exclude un-compacted MemWAL data)"}"#;
+    /// Verbatim from sophon's `wal_unsupported(WITH_ROW_ID_UNSUPPORTED)`; the
+    /// fallback keys off this sentence, so a test that paraphrased it would prove
+    /// nothing.
+    const WAL_ROW_ID_REFUSAL_BODY: &str = r#"{"code":13,"error":"Bad request: WAL unsupported: the MemWAL fresh tier does not support with_row_id: it has no stable _rowid; set use_rte(false) to read the base table only (results will exclude un-compacted RTE data)"}"#;
 
     use lance::dataset::ROW_ID;
 
@@ -14167,7 +15079,7 @@ mod tests {
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
-    /// A server that refuses `_rowid` the way a MemWAL table does, recording
+    /// A server that refuses `_rowid` the way an RTE table does, recording
     /// every query body so a test can see which key each attempt asked for.
     fn wal_refusing_table(bodies: Arc<std::sync::Mutex<Vec<serde_json::Value>>>) -> Table {
         Table::new_with_handler("my_table", move |request| match request.url().path() {
@@ -14208,7 +15120,7 @@ mod tests {
             .unwrap()
     }
 
-    /// The optimistic path: ask for `_rowid`, and when a MemWAL table refuses,
+    /// The optimistic path: ask for `_rowid`, and when an RTE table refuses,
     /// fall back to the primary key rather than failing.
     #[tokio::test]
     async fn test_hybrid_falls_back_to_the_primary_key_when_row_id_is_refused() {
@@ -14382,7 +15294,7 @@ mod tests {
         // Translated, not passed through: the caller gets the reason and the
         // way out, which a bare 400 does not carry.
         assert!(matches!(err, Error::NotSupported { .. }), "{err:?}");
-        assert!(err.to_string().contains("use_lsm(false)"), "{err}");
+        assert!(err.to_string().contains("use_rte(false)"), "{err}");
         assert!(
             bodies
                 .lock()

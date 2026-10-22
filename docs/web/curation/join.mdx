@@ -1,91 +1,133 @@
 ---
 title: "Joining datasets"
 sidebarTitle: "Join"
-description: "Bringing labels, metadata and scores together with the rows they describe."
+description: "Combine records with labels or metadata, and check for missing or duplicate matches."
 icon: link
 keywords: ["join", "labels", "metadata", "enrichment", "namespace"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL joins.
 ---
 
-<Badge color="red">Enterprise</Badge> Joins are SQL, and
-[SQL needs a deployment](/basics/sql#sql-is-remote).
+A SQL join combines records from two tables using a shared key. Use joins to
+attach labels, metadata or model scores to your documents. Choose an inner join
+to keep matching records, or a left join to retain records without a match.
 
-Curation usually means combining things that were produced separately — images
-in one table, human labels in another, model scores in a third. A join is how
-they become one dataset.
+## Example data {#example-data}
 
-## Attaching labels {#labels}
+Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
+document table and a separate label table. Expand the setup below to create them.
 
-```sql
-SELECT i.id, i.embedding, l.label
-FROM images AS i
-JOIN labels AS l ON l.image_id = i.id
-```
+<Accordion title="Create the example tables">
 
-An inner join keeps only rows that matched, which for curation is often exactly
-what you want: unlabelled rows are not training data.
+`curation_documents` has six records describing four documents.
+`curation_labels` has one label for each of three documents. `row_id` identifies
+a record; `doc_id` identifies the document it describes.
 
-When you need to *see* what did not match, use a left join and filter:
+Run each statement separately in a scratch database or namespace. Create these
+tables once for the whole section, using fresh names if they already exist.
 
 ```sql
-SELECT i.id
-FROM images AS i
-LEFT JOIN labels AS l ON l.image_id = i.id
-WHERE l.image_id IS NULL
+CREATE TABLE curation_documents (
+    row_id BIGINT, doc_id BIGINT, version BIGINT,
+    source VARCHAR, caption VARCHAR, score DOUBLE
+);
+INSERT INTO curation_documents VALUES
+    (1, 10, 1, 'web', NULL, 0.80),
+    (2, 10, 2, 'web', 'A cat on a chair', 0.95),
+    (3, 20, 1, 'books', 'A dog in a field', 0.90),
+    (4, 30, 1, 'web', NULL, 0.70),
+    (5, 30, 1, 'web', 'A cat by a window', 0.85),
+    (6, 40, 1, 'books', 'A bird in a tree', 0.60);
+
+CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
+INSERT INTO curation_labels VALUES
+    (10, 'cat'), (20, 'dog'), (30, 'cat');
 ```
 
-That is your unlabelled backlog, which is the thing worth counting before you
-plan an annotation round.
+`score` is a sample quality score, not a search result score. Document 10 has
+two versions. Document 30 has two records at the same version. Document 40
+has no label. These cases let you check the effect of each operation.
 
-## Across namespaces {#namespaces}
+</Accordion>
 
-Tables in different [namespaces](/management/namespace) join by their dotted
-paths — the catalog is one catalog, so there is nothing to federate:
+## Basic join {#join-type}
+
+An inner join keeps matching records:
 
 ```sql
-SELECT i.id, u.team
-FROM prod.media.images AS i
-JOIN prod.reference.uploaders AS u ON u.id = i.uploader_id
+SELECT d.row_id, d.doc_id, l.label
+FROM curation_documents AS d
+JOIN curation_labels AS l ON l.doc_id = d.doc_id
+ORDER BY d.row_id;
 ```
 
-## Joining a search result {#search}
+This returns **5 rows**: both records for document 10, one for document 20,
+and both records for document 30. To produce one row per document,
+[deduplicate the source records](/curation/windowing#dedup).
 
-Full-text search is a table function, so its result is a relation and joins like
-any other. This is how you ask which categories a query matches, rather than
-just which rows:
+### Find records without a match
+
+A left join keeps every record from the left table and fills missing right-side
+values with `NULL`. Add `WHERE l.doc_id IS NULL` to return only unlabeled documents:
 
 ```sql
-SELECT c.name, count(*) AS hits
-FROM fts('documents', 'puppy') AS m
-JOIN categories AS c ON c.id = m.category_id
-GROUP BY c.name
-ORDER BY hits DESC
+SELECT DISTINCT d.doc_id
+FROM curation_documents AS d
+LEFT JOIN curation_labels AS l ON l.doc_id = d.doc_id
+WHERE l.doc_id IS NULL
+ORDER BY d.doc_id;
 ```
 
-<Note>
-Vector search has no SQL form, so a similarity result cannot be joined this way.
-Run the search in an SDK, then join over its output — or write the result to a
-table first.
-</Note>
+The result is **document 40**. You might send it for annotation, retain it for
+an unlabeled-data workflow, or exclude it from a task that requires labels.
 
-## Making it fast {#performance}
+## Handle duplicate keys {#labels}
 
-Two things dominate join cost on a lakehouse table.
-
-**Index the join key.** A [scalar index](/indexing/scalar-index) on the key lets
-the planner look rows up instead of scanning for them. Check with
-[`EXPLAIN`](/sql/dql/explain): an indexed key shows a `ScalarIndexQuery`, an
-unindexed one shows a `LanceScan` feeding the join.
-
-**Do not carry wide columns through.** Select the columns you need before
-joining, not after. Embeddings and blobs are the expensive part of a multimodal
-table, and a join can materialize them many more times than the result has rows.
+This example joins `curation_documents.doc_id` to `curation_labels.doc_id`.
+First check whether the label table contains more than one row per document:
 
 ```sql
-SELECT i.id, l.label
-FROM (SELECT id, uploader_id FROM images) AS i
-JOIN labels AS l ON l.image_id = i.id
+SELECT doc_id, count(*) AS labels
+FROM curation_labels
+GROUP BY doc_id
+HAVING count(*) > 1;
 ```
 
-## Reference {#reference}
+The example returns no rows. If your data returns duplicates, decide whether
+they represent valid multiple labels or records that need consolidation.
+A join does not enforce one-to-one matching.
 
-The join types and their semantics are in [Joins](/sql/dql/join).
+## Join tables across namespaces {#namespaces}
+
+Use a table's qualified path to address it in another
+[namespace](/management/namespace). For example, a table named `images` in
+`prod.media` is addressed as `prod.media.images`. The same matching-key and
+join-type rules apply; your identity needs access to the source objects.
+
+## Combine search results with metadata {#search}
+
+A [SQL full-text search](/sql/dql/fts) returns rows that can be joined to other
+tables. Join using an identifier retained in the search result, then check
+whether the metadata has one or several matches per result.
+
+For an SDK search, retain the matching IDs and combine them with metadata in
+your application or save the selected records to a table for further SQL work.
+See [SQL search interfaces](/basics/sql#no-vector-sql) for supported query forms.
+
+## Join performance {#performance}
+
+Check the row count, unmatched keys and duplicate matches before using a
+joined dataset. Select only the columns needed for the next step, especially
+when source records include large media or embedding columns.
+
+Use [Explain a query plan](/search/explain) to see how the query reads and
+combines data. Check the plan to see whether the query uses indexes and how it performs the
+join. An index on a key does not guarantee that the join will use it.
+
+## Save the result or continue curating {#reference}
+
+Keep the query for reuse or [save the selected data](/curation#next).
+See [Joins](/sql/dql/join) for join types and exact SQL behavior.

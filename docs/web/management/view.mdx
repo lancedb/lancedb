@@ -4,29 +4,31 @@ sidebarTitle: "View"
 description: "A saved query, evaluated when read. The non-materialized counterpart to a materialized view."
 icon: eye
 keywords: ["view", "create view", "sql", "catalog"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports views when enabled for your Enterprise cluster; the embedded library cannot create them.
 ---
 
-<Badge color="red">Enterprise</Badge>
-
-This page describes a LanceDB Enterprise capability. The embedded form
-of LanceDB has no server to provide it -- see
-[Architecture](/architecture) for what differs between the two.
-
-A view stores a **query**, not rows. Reading it runs the query against current
-data, so a view is never stale -- and never faster than the query it wraps.
+A view saves a query that you can refer to by name. Reading the view executes
+that query against the source tables, using their read-consistency behavior.
+Views do not store a separate copy of the result.
 
 It is the counterpart to a
 [materialized view](/management/materialized-view), which stores rows and is
 brought up to date by a refresh. Both are [catalog objects](/basics/catalog)
-defined by a query; the difference is entirely when that query runs.
+defined by a query; choose a materialized view when you need to store and reuse the result.
 
 | | View | Materialized view |
 | --- | --- | --- |
 | Stores | the query | the rows |
-| Freshness | always current | as of the last refresh |
-| Read cost | the full query, every read | a table scan |
+| Freshness | follows source-table reads | as of the last refresh |
+| Read cost | executes the saved query | queries the stored result |
 | Write cost | none | a refresh |
 
-Views are created in SQL, over the [Flight SQL endpoint](/sql#connecting) --
-there is no SDK method, because the thing a view stores *is* a SQL statement.
-See [View](/sql/ddl/view) for `CREATE VIEW`, `DROP VIEW`, and listing.
+Views are created in LanceDB Enterprise, either in SQL over the
+[Flight SQL endpoint](/sql#connecting) or with the SDKs' `create_view` /
+`createView`, which send the query to the deployment. Either way, the deployment
+must have views enabled. See [View](/sql/ddl/view) for `CREATE VIEW`,
+`DROP VIEW`, and listing.

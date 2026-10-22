@@ -3,7 +3,12 @@
 
 
 # ruff: noqa: F401
-from .base import EmbeddingFunction, EmbeddingFunctionConfig, TextEmbeddingFunction
+from .base import (
+    EmbeddingFunction,
+    EmbeddingFunctionConfig,
+    TextEmbeddingFunction,
+    UntrustedEmbeddingConfigError,
+)
 from .bedrock import BedRockText
 from .cohere import CohereEmbeddingFunction
 from .gemini_text import GeminiText
@@ -29,6 +34,7 @@ __all__ = [
     "EmbeddingFunction",
     "EmbeddingFunctionConfig",
     "TextEmbeddingFunction",
+    "UntrustedEmbeddingConfigError",
     "EmbeddingFunctionRegistry",
     "get_registry",
     "register",
