@@ -23,8 +23,8 @@ How to return blob v2 columns. Applies to `toArrow()` and `toArray()`.
 - `"bytes"`: each blob column holds the blob bytes as `LargeBinary`,
   including blobs nested in structs. The query also reads `_rowid` to
   fetch the bytes, and leaves it out of the result unless
-  [QueryBase.withRowId](../classes/QueryBase.md#withrowid) was called.
-  All the bytes are held in memory.
+  [QueryBase.withRowId](../classes/QueryBase.md#withrowid) was called. All the bytes are held in
+  memory.
 
 Blobs nested in a list keep their descriptors.
 
