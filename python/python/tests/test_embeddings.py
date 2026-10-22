@@ -633,6 +633,51 @@ def test_openai_no_retry_on_401(mock_sleep):
     assert mock_sleep.call_count == 0
 
 
+@patch("time.sleep")
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param("missing_key", id="missing-api-key"),
+        pytest.param(ImportError("No module named 'voyageai'"), id="missing-package"),
+    ],
+)
+def test_no_retry_on_deterministic_errors(mock_sleep, error):
+    from lancedb.embeddings.utils import (
+        api_key_not_found_help,
+        retry_with_exponential_backoff,
+    )
+
+    def func():
+        if error == "missing_key":
+            api_key_not_found_help("voyageai")
+        raise error
+
+    mock_func = MagicMock(side_effect=func)
+    wrapped_func = retry_with_exponential_backoff(mock_func, max_retries=3)
+
+    with pytest.raises((ValueError, ImportError)):
+        wrapped_func()
+
+    assert mock_func.call_count == 1
+    assert mock_sleep.call_count == 0
+
+
+@patch("time.sleep")
+def test_retry_on_wrapped_provider_error(mock_sleep):
+    """Providers such as Bedrock wrap throttling in a plain ValueError."""
+    from lancedb.embeddings.utils import retry_with_exponential_backoff
+
+    mock_func = MagicMock(
+        side_effect=[
+            ValueError("Error raised by boto3 client: ThrottlingException"),
+            [0.1],
+        ]
+    )
+    wrapped_func = retry_with_exponential_backoff(mock_func, max_retries=3)
+
+    assert wrapped_func() == [0.1]
+    assert mock_func.call_count == 2
+    assert mock_sleep.call_count == 1
 def test_openai_bad_request_partial_batch_recovery():
     # Regression test for issue #1677
 
