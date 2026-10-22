@@ -1,125 +1,159 @@
 ---
 title: "SQL"
 sidebarTitle: "SQL"
-description: "The same tables, reached with SQL — the universal access path, and where every operation is formally documented."
+description: "Query LanceDB Enterprise with SQL from Python or an Arrow Flight SQL client."
 icon: table-list
 keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL through Arrow Flight SQL. Use the SDK table APIs for embedded OSS tables. See [Connection settings](#sql-is-remote) to connect.
 ---
 
-<Badge color="red">Enterprise</Badge> SQL runs on a deployment. A local
-database has no engine to plan a statement, so `execute_query` raises there.
+Use SQL in LanceDB Enterprise to filter records, join tables, calculate
+aggregates, and prepare datasets. SQL queries work with the same Lance tables
+you create and update through the SDKs, without exporting the data to another
+system.
 
-SQL is a second way to reach the same tables the [SDKs](/basics/sdk) do --
-not a different product, a different interface onto one engine. A table
-written from Python is queried from SQL without an export step, and a table
-created from SQL is visible to every SDK immediately.
+You can run SQL through the Python SDK or an Arrow Flight SQL client. This
+guide covers connection settings, a first query, and how SQL fits alongside
+the SDK table APIs.
 
-## Any language, via Flight SQL {#flight-sql}
+## Connect a SQL client {#flight-sql}
 
-SQL is served over an
+Enterprise exposes an
 [Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
-endpoint, so any Flight SQL client reaches it -- which makes SQL the way in
-for a language LanceDB has no SDK for. You don't need a LanceDB-specific
-client at all, just a Flight SQL driver for your language.
+endpoint. A compatible client sends SQL statements to this endpoint and
+receives results as Arrow record batches.
 
-The TypeScript SDK itself has no SQL method, for the same reason a Go or C#
-application would reach for SQL first: connect a Flight SQL client instead of
-waiting on a native binding. See [SDKs](/basics/sdk) for the officially
-supported and community clients, and reach for Flight SQL whenever yours
-isn't among them.
+- **Python:** use `execute_query()` on an Enterprise connection, as shown below.
+- **TypeScript:** use a separate Flight SQL client. The LanceDB TypeScript SDK
+  does not expose a SQL execution method.
+- **Other languages and tools:** use a Flight SQL client or a tool with Flight
+  SQL integration. A LanceDB-specific SDK is not required to submit SQL.
 
-## Every SDK operation, in SQL {#sdk-parity}
+The [SQL reference](/sql#connecting) shows a query from Python. See
+[SDKs](/basics/sdk) for the LanceDB language clients.
 
-Broadly, a public SDK method has a corresponding SQL statement -- creating a
-table is `CREATE TABLE`, inserting rows is `INSERT INTO`, building an index is
-`CREATE INDEX`. The two describe the same operations, so whichever one your
-code speaks, the other is available too.
+### Connection settings {#sql-is-remote}
 
-| | SDK | SQL |
-| --- | :---: | :---: |
-| Create and manage catalog objects | yes | partly |
-| Insert, merge, update, delete | yes | yes |
-| Filter, project, aggregate, join | yes | yes |
-| Vector search | yes | version-dependent |
-| Full-text search | yes | yes |
-| Feature engineering, jobs | yes | yes |
-| Runs against a local database | yes | **no** |
+Get the following values from your Enterprise administrator:
 
-## Vector search depends on the deployment {#no-vector-sql}
+- Database URI, such as `db://your-database`.
+- API key and region.
+- API endpoint for `host_override`.
+- Flight SQL endpoint for `sql_host_override`, including its scheme and port.
 
-The SDK query builder provides vector search across embedded and deployed
-databases. SQL support depends on the deployment version and supported query
-shape. Some versions recognize `ORDER BY distance(vector, query_vector) LIMIT k`
-over a table scan and plan vector search, including indexed and flat search.
-Confirm support on your deployment and use SQL
-[`EXPLAIN`](/sql/dql/explain) to check the chosen plan; this is not a guarantee
-that every deployed release supports that form.
+The Flight SQL endpoint must be enabled and reachable from your client. Pass
+it explicitly as `sql_host_override` in Python, as in the example below. The
+API and SQL endpoints may use different hosts or ports.
 
-Full-text search is available through the [`fts()`](/sql/functions#fts) table
-function and the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
-predicate.
+See [Connect to Enterprise](/basics/connect#enterprise) for other connection options.
 
-The reverse gap also exists: a [view](/management/view) is a saved SQL query,
-so SQL is the only way to create one -- there's nothing for an SDK method to
-call.
+SQL runs in Enterprise. Connections to a local directory or an object-storage
+bucket use the embedded OSS library and cannot execute SQL statements. Use
+SDK table operations to query those tables.
 
-## SQL needs a deployment {#sql-is-remote}
+## Run a query in Python {#sql-from-python}
 
-A connection to a directory or a bucket has no server to plan and execute a
-statement, and asking it to raises `NotImplementedError`. This is the largest
-behavioral difference between the embedded and deployed forms, and the reason
-the SDKs are the portable choice: SDK code moves between the two by changing
-the URI, SQL does not.
+Install the SDK with `pip install lancedb`. Replace the connection placeholders
+with your Enterprise settings, including the region and both endpoint URLs.
+This example reads an existing table named `my_docs` with `id` and `text`
+columns. Change the query to match your table.
 
 ```python
-db = lancedb.connect("./.lancedb")        # no SQL
-db = lancedb.connect("db://my-database")  # SQL
-```
+import lancedb
 
-## Running SQL from Python {#sql-from-python}
+db = lancedb.connect(
+    "db://your-database",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-api-endpoint",
+    sql_host_override="https://your-sql-endpoint:443",
+)
 
-```python
 reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
 table = reader.read_all()
+print(table.to_pylist())
 ```
 
-`execute_query` returns a blocking Arrow reader once results start arriving; it
-does not wait for the whole query. `execute_query_async` returns a handle
-instead -- see [Queries](/basics/query).
+In application code, load credentials from environment variables or a secrets
+manager. The [connection guide](/basics/connect#enterprise) shows that setup.
 
-## Choosing between them {#choosing}
+`execute_query()` returns a blocking Arrow reader when results start arriving.
+The example uses `read_all()` to collect the small result in memory. For larger
+results, consume the reader in batches. To submit a query and check its status
+separately, use `execute_query_async()`. See [Queries](/basics/query) for query
+handles, streaming, and cancellation.
 
-Reach for **the SDKs** when you are writing data, managing the catalog, running
-vector search, or building an application that should work the same embedded and
-deployed.
+## Choose SQL or SDK table operations {#choosing}
 
-Reach for **SQL** when the question is analytical -- joins across tables,
-aggregates, window functions -- when the thing asking is a BI tool, a
-notebook, or a person who already thinks in SQL, or when it's the only client
-available for your language.
+Use **SQL** for joins, aggregations, window functions, and analytical queries
+written in SQL. Use **SDK table operations** to build applications around table
+management, ingestion, filtering, and search, including applications that run
+with the embedded OSS library.
 
-The two compose. A common shape is SDK code to build and maintain tables, and
-SQL for the analysis on top.
+You can combine them. For example, create and populate a table with an SDK,
+then query it with SQL to prepare a training dataset. In Python, both workflows
+can use the same Enterprise connection.
 
-## The complete reference {#reference}
+### Common SQL operations {#sdk-parity}
 
-This page is the concept; [SQL Reference](/sql) is the specification. It has
-one page per statement, syntax first -- and since every SDK operation has a
-SQL form, those pages end up defining the precise behavior of the SDK
-operations too, not just the SQL dialect.
+Several tasks are available through both interfaces, but the methods and SQL
+statements do not have identical coverage. SDK support also differs by
+language. These SQL reference pages describe the supported statements:
+
+| Task | SQL reference |
+| --- | --- |
+| Create a table | [CREATE TABLE](/sql/ddl/table) |
+| Insert or change rows | [INSERT](/sql/dml/insert), [UPDATE](/sql/dml/update), [DELETE](/sql/dml/delete) |
+| Build an index | [CREATE INDEX](/sql/ddl/index) |
+| Join and aggregate data | [SELECT](/sql/dql/select) |
+| Save a query as a view | [CREATE VIEW](/sql/ddl/view) |
+
+[Computed columns](/feature-engineering/add-computed-column) store SQL
+expressions whose values are populated by a refresh. {/* Draft for the Functions release:
+They are separate from registered Python Functions. */}
+See the computed-column and
+[materialized-view](/management/materialized-view) guides for their SDK and SQL
+operations and Enterprise setup requirements.
+
+## Vector and full-text search {#no-vector-sql}
+
+SQL vector search support depends on the Enterprise server version and query
+form. Versions that support `ORDER BY distance(vector, query_vector) LIMIT k`
+over a table scan can plan indexed or flat vector search. Check that your
+server version supports this form, then use
+[`EXPLAIN`](/sql/dql/explain) to inspect the query plan.
+
+The [SDK vector search API](/search/vector-search) is also available in
+Enterprise and OSS. Use it when you prefer the SDK query builder or need to
+search embedded tables.
+
+For full-text search in SQL, use the [`fts()`](/sql/functions#fts) table
+function or the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+predicate.
+
+## SQL syntax and API references {#reference}
+
+The [SQL reference](/sql) documents statement syntax, supported expressions,
+and data types. For SDK methods and their arguments, use the
+[Python](https://lancedb.github.io/lancedb/python/python/),
+[TypeScript](https://lancedb.github.io/lancedb/js/), or
+[Rust](https://docs.rs/lancedb/latest/lancedb/index.html) API reference.
 
 <Card title="SQL Reference" icon="table-list" href="/sql">
-  DDL by object, then DML, then DQL -- the detailed technical documentation
-  that defines the behavior of every operation and SDK API.
+  Statement syntax, expressions, and data types for LanceDB SQL.
 </Card>
 
-## What to read next {#next}
+## Next steps {#next}
 
 <CardGroup cols={2}>
-  <Card title="SDKs" icon="code-compare" href="/basics/sdk">
-    The language clients, and what stays true across all of them.
+  <Card title="Queries" icon="magnifying-glass" href="/basics/query">
+    Read results, track long-running queries, and cancel work.
   </Card>
-  <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
-    Give a coding agent a current reference to this same API surface.
+  <Card title="SDKs" icon="code-compare" href="/basics/sdk">
+    Compare language clients and find their API references.
   </Card>
 </CardGroup>

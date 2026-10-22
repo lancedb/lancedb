@@ -53,8 +53,11 @@ export interface CreateTableOptions {
    * happen.  Any provided data will be ignored.
    *
    * If this is set to "overwrite" then any existing table will be replaced.
+   *
+   * If this is set to "exist_ok" then an existing table is opened and any
+   * provided data is ignored.
    */
-  mode: "create" | "overwrite";
+  mode: "create" | "overwrite" | "exist_ok";
   /**
    * If this is true and the table already exists and the mode is "create"
    * then no error will be raised.
@@ -717,13 +720,13 @@ export class LocalConnection extends Connection {
     } else {
       // First argument is options object (backwards compatibility)
       namespacePath = undefined;
-      tableNamesOptions = namespacePathOrOptions;
+      tableNamesOptions = namespacePathOrOptions ?? options;
     }
 
     return this.inner.tableNames(
       namespacePath ?? [],
       tableNamesOptions?.startAfter,
-      tableNamesOptions?.limit,
+      normalizeTableListingLimit(tableNamesOptions?.limit),
     );
   }
 
@@ -828,12 +831,12 @@ export class LocalConnection extends Connection {
       : undefined;
     const listTablesOptions = Array.isArray(namespacePathOrOptions)
       ? options
-      : namespacePathOrOptions;
+      : (namespacePathOrOptions ?? options);
 
     return this.inner.listTables(
       namespacePath ?? [],
       listTablesOptions?.pageToken,
-      listTablesOptions?.limit,
+      normalizeTableListingLimit(listTablesOptions?.limit),
     );
   }
 
@@ -890,23 +893,24 @@ export class LocalConnection extends Connection {
   private getStorageOptions(
     options?: Partial<CreateTableOptions>,
   ): Record<string, string> | undefined {
+    let storageOptions = options?.storageOptions;
     if (options?.dataStorageVersion !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableDataStorageVersion"] =
-        options.dataStorageVersion;
+      storageOptions = {
+        ...storageOptions,
+        newTableDataStorageVersion: options.dataStorageVersion,
+      };
     }
 
     if (options?.enableV2ManifestPaths !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableEnableV2ManifestPaths"] =
-        options.enableV2ManifestPaths ? "true" : "false";
+      storageOptions = {
+        ...storageOptions,
+        newTableEnableV2ManifestPaths: options.enableV2ManifestPaths
+          ? "true"
+          : "false",
+      };
     }
 
-    return cleanseStorageOptions(options?.storageOptions);
+    return cleanseStorageOptions(storageOptions);
   }
 
   async createTable(
@@ -939,7 +943,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     return this._createTableImpl(name, data, namespacePath, createOptions);
@@ -986,7 +990,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     let mode: string = createOptions?.mode ?? "create";
@@ -1101,6 +1105,13 @@ export class LocalConnection extends Connection {
   async resumeJob(jobId: string): Promise<string> {
     return this.inner.resumeJob(jobId);
   }
+}
+
+function normalizeTableListingLimit(limit?: number): number | undefined {
+  validateNonNegativeInteger(limit, "limit");
+  // The native binding takes u32: larger JS numbers otherwise wrap to zero or
+  // a smaller page size. A listing limit is an upper bound, so saturate it.
+  return limit === undefined ? undefined : Math.min(limit, 0xffffffff);
 }
 
 /**

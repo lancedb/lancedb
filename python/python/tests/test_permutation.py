@@ -115,6 +115,35 @@ def test_split_random_fixed(mem_db):
         assert split_ids.count(split_id) == 25
 
 
+def test_permutation_over_table_with_schema_metadata(tmp_path):
+    """Schema-level metadata on the base table must not break the build.
+
+    Hugging Face datasets carry keys like `huggingface` or `source-column-name-map`.
+    """
+    schema = pa.schema(
+        [pa.field("x", pa.int64())],
+        # `split_names` collides with a permutation config key; the config must win.
+        metadata={b"huggingface": b"{}", b"split_names": b'["base"]'},
+    )
+    tbl = connect(tmp_path).create_table(
+        "t", pa.table({"x": list(range(100))}, schema=schema)
+    )
+    permutation_tbl = (
+        permutation_builder(tbl)
+        .split_random(fixed=2, seed=1, split_names=["train", "test"])
+        .execute()
+    )
+
+    permutations = Permutations(tbl, permutation_tbl)
+    assert permutations.split_names == ["train", "test"]
+    train = Permutation.from_tables(tbl, permutation_tbl, "train")
+    test = Permutation.from_tables(tbl, permutation_tbl, "test")
+    assert train.num_rows + test.num_rows == 100
+    train_x = [row["x"] for batch in train.iter(16) for row in batch]
+    test_x = [row["x"] for batch in test.iter(16) for row in batch]
+    assert sorted(train_x + test_x) == list(range(100))
+
+
 def test_split_random_with_seed(mem_db):
     """Test that seeded random splits are reproducible."""
     tbl = mem_db.create_table("test_table", pa.table({"x": range(50), "y": range(50)}))
@@ -130,6 +159,76 @@ def test_split_random_with_seed(mem_db):
 
     assert data1["row_id"] == data2["row_id"]
     assert data1["split_id"] == data2["split_id"]
+
+
+def test_bootstrap_sample_fixed(mem_db):
+    """Output row count is num_samples, not the input row count, and splits divide
+    it evenly."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(20)}))
+    permutation_tbl = (
+        permutation_builder(tbl).bootstrap_sample(1000, fixed=4, seed=42).execute()
+    )
+
+    assert permutation_tbl.count_rows() == 1000
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    split_ids = data["split_id"]
+    assert set(split_ids) == {0, 1, 2, 3}
+    for split_id in range(4):
+        assert split_ids.count(split_id) == 250
+
+    # Every sampled row_id must still be one of the 20 real rows.
+    assert set(data["row_id"]).issubset(set(range(20)))
+
+
+def test_bootstrap_sample_draws_with_replacement(mem_db):
+    """Sampling more rows than exist must produce repeats."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(5)}))
+    permutation_tbl = (
+        permutation_builder(tbl).bootstrap_sample(500, fixed=1, seed=1).execute()
+    )
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    assert len(data["row_id"]) == 500
+    # Only 5 distinct rows exist, so with 500 draws every one of them must repeat.
+    for row_id in range(5):
+        assert data["row_id"].count(row_id) > 1
+
+
+def test_bootstrap_sample_with_seed_is_reproducible(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(50)}))
+
+    perm1 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
+    perm2 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
+
+    data1 = perm1.search(None).to_arrow().to_pydict()
+    data2 = perm2.search(None).to_arrow().to_pydict()
+    assert data1["row_id"] == data2["row_id"]
+    assert data1["split_id"] == data2["split_id"]
+
+
+def test_bootstrap_sample_respects_filter(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(20)}))
+    permutation_tbl = (
+        permutation_builder(tbl)
+        .filter("x >= 15")
+        .bootstrap_sample(100, fixed=1, seed=7)
+        .execute()
+    )
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    assert len(data["row_id"]) == 100
+    assert set(data["row_id"]).issubset(set(range(15, 20)))
+
+
+def test_bootstrap_sample_requires_exactly_one_size_arg(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(10)}))
+    with pytest.raises(ValueError):
+        permutation_builder(tbl).bootstrap_sample(10).execute()
+    with pytest.raises(ValueError):
+        permutation_builder(tbl).bootstrap_sample(
+            10, ratios=[0.5, 0.5], fixed=2
+        ).execute()
 
 
 def test_split_hash(mem_db):

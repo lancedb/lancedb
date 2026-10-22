@@ -1,15 +1,15 @@
 ---
 title: "View"
 sidebarTitle: "View"
-description: "CREATE VIEW and DROP VIEW — a saved query, evaluated when read."
+description: "CREATE VIEW and DROP VIEW: a saved query, evaluated when read."
 icon: eye
 keywords: ["create view", "drop view", "sql", "catalog"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A view stores a **query**, not rows. Reading it runs the query against current
-data, so a view is never stale -- and never faster than the query it wraps. It
+data, so a view is never stale, and never faster than the query it wraps. It
 is the counterpart to a [materialized view](/sql/ddl/materialized-view), which
 stores rows and is brought up to date by a refresh; both are
 [catalog objects](/basics/catalog) defined by a query, differing only in when
@@ -27,8 +27,8 @@ FROM "documents" AS t1
 INNER JOIN "categories" AS t2 ON t1.ints = t2.ints
 ```
 
-The statement returns the view's schema -- column name, data type, nullability
--- resolved from the query at creation time. Anything the
+The statement returns the view's schema (column name, data type, nullability),
+resolved from the query at creation time. Anything the
 [dialect](/sql/functions) supports can define one: joins, predicates,
 aggregates, window functions.
 
@@ -50,7 +50,7 @@ the view would have produced and then discarded.
 DROP VIEW "recent_matches"
 ```
 
-Removes the saved query. Unlike dropping a table, no data is removed -- there
+Removes the saved query. Unlike dropping a table, no data is removed: there
 was none to begin with.
 
 ## Listing {#listing}
@@ -62,10 +62,10 @@ catalog distinguishes them:
 | --- | --- |
 | view names | the views in the database |
 | table names | the tables |
-| relation names | everything queryable -- both |
+| relation names | everything queryable (both) |
 
 Use the relation listing when the question is "what can I select from," and the
-separate listings when the distinction matters -- before dropping, for
+separate listings when the distinction matters: before dropping, for
 instance, since dropping a view removes only the saved query while dropping a
 table removes data.
 
