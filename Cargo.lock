@@ -5795,6 +5795,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lancedb-blob-v2-docs"
+version = "0.0.0"
+dependencies = [
+ "arrow-array",
+ "arrow-schema",
+ "futures-util",
+ "lancedb",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "lancedb-nodejs"
 version = "0.41.0-beta.10"
 dependencies = [

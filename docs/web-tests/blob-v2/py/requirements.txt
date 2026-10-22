@@ -1,0 +1,8 @@
+--extra-index-url https://pypi.fury.io/lancedb/
+
+lancedb==0.41.0b10
+numpy==2.2.6
+pandas==2.3.3
+pillow==12.1.1
+pytest==8.4.2
+pytest-asyncio==1.2.0

@@ -3,7 +3,7 @@ title: "SQL data types"
 sidebarTitle: "Data Types"
 description: "How Lance columns appear to SQL, including the types SQL has no name for."
 icon: shapes
-keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "blob", "json"]
+keywords: ["sql types", "arrow", "cast", "pseudo-columns", "vector", "json"]
 ---
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
@@ -61,7 +61,7 @@ describes the full mapping.
 
 ## Types SQL has no name for {#no-name}
 
-Three column kinds you will meet that no SQL type name covers.
+Some column kinds have no SQL type name.
 
 ### Vectors {#vectors}
 
@@ -93,57 +93,6 @@ WHERE json_get_int(data, 'status') = 200
 
 `json_get`, its typed variants, and `json_extract` are **index-accelerated** by a
 JSON scalar index. See [Functions](/sql/scalar-functions#json).
-
-### Blobs {#blobs}
-
-A blob column with the `lance.blob.v2` extension stores binary payloads.
-SQL queries return a blob column as a descriptor struct
-rather than raw bytes, so scanning or filtering a table doesn't open the
-underlying blob files.
-
-#### Descriptor fields {#blob-descriptor-fields}
-
-| Field | SQL type | Arrow type | Description |
-| --- | --- | --- | --- |
-| `kind` | `UTINYINT` | `UInt8` | `0` inline, `1` packed sidecar, `2` dedicated sidecar, `3` an external object referenced by URI. |
-| `position` | `UBIGINT` | `UInt64` | Byte offset of the payload. For blobs stored in the table, the offset can change across flush or compaction. For an external object, this is the start of the referenced range, or `0` when the range starts at the beginning of the object. |
-| `size` | `UBIGINT` | `UInt64` | Payload length in bytes. For inline, packed, and dedicated blobs, `0` is an empty payload. For an external object with no byte range, `0` means the length is resolved when the object is read. |
-| `blob_id` | `UINT` | `UInt32` | Sidecar file identifier for packed and dedicated blobs. For an external blob, `0` means `blob_uri` is an absolute URI. A non-zero value selects a registered base path. |
-| `blob_uri` | `VARCHAR` | `Utf8` | Empty for blobs stored in the table. For an external blob, the object URI, or a path relative to the base selected by `blob_id`. |
-
-Select the whole column to read its descriptor:
-
-```sql
-SELECT id, payload
-FROM documents
-WHERE payload IS NOT NULL
-```
-
-For example, a 2 MiB video stored in a packed sidecar returns:
-
-```text
-{
-  kind:     1,
-  position: 4194304,
-  size:     2097152,
-  blob_id:  3,
-  blob_uri: ""
-}
-```
-
-#### Notes and limits {#blob-sql-limits}
-
-- SQL doesn't return blob bytes. Read bytes through the SDKs with
-  `fetch_blobs`, `fetch_blob_files`, or `fetch_blob_ranges`.
-- Referencing a single descriptor field, such as `payload.size` or
-  `payload.kind`, isn't supported. Depending on how the table was created,
-  it fails during planning or reads the wrong value. Select the whole
-  `payload` column instead.
-- Use `payload IS NULL` or `payload IS NOT NULL` to find NULL blobs.
-- `data` is a write input, not a descriptor field, and can't be queried.
-
-See [Multimodal data](/management/table#multimodal-blob-v2) for
-defining blob columns and fetching byte ranges through the SDKs.
 
 ### bfloat16 {#bfloat16}
 

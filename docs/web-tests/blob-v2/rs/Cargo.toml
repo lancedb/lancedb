@@ -1,0 +1,21 @@
+[package]
+name = "lancedb-blob-v2-docs"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+license.workspace = true
+
+[features]
+remote = ["lancedb/remote"]
+
+[dependencies]
+arrow-array = { workspace = true }
+arrow-schema = { workspace = true }
+futures-util = "0.3"
+lancedb = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[[example]]
+name = "multimodal"
+path = "multimodal.rs"

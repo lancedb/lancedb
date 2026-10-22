@@ -112,13 +112,18 @@ import {
     RsProcessResults as RsProcessResults,
     PyBlobApiSetup as BlobApiSetup,
     TsBlobApiSetup as TsBlobApiSetup,
+    RsBlobApiImports as RsBlobApiImports,
     RsBlobApiSetup as RsBlobApiSetup,
     PyBlobApiSchema as BlobApiSchema,
     TsBlobApiSchema as TsBlobApiSchema,
     RsBlobApiSchema as RsBlobApiSchema,
     PyBlobApiIngest as BlobApiIngest,
+    PyBlobApiBytes as BlobApiBytes,
     TsBlobApiIngest as TsBlobApiIngest,
     RsBlobApiIngest as RsBlobApiIngest,
+    PyBlobApiFiles as BlobApiFiles,
+    TsBlobApiFiles as TsBlobApiFiles,
+    RsBlobApiFiles as RsBlobApiFiles,
     PyBlobApiFetch as BlobApiFetch,
     TsBlobApiFetch as TsBlobApiFetch,
     RsBlobApiFetch as RsBlobApiFetch,
@@ -126,8 +131,6 @@ import {
     TsBlobApiRanges as TsBlobApiRanges,
     RsBlobApiRanges as RsBlobApiRanges,
     TsBlobApiBytesMode as TsBlobApiBytesMode,
-    PyBlobApiToPandas as BlobApiToPandas,
-    PyQueryToPandasKwargs as QueryToPandasKwargs,
     PyLegacyBlobApiSchema as LegacyBlobApiSchema,
     TsLegacyBlobApiSchema as TsLegacyBlobApiSchema,
     RsLegacyBlobApiSchema as RsLegacyBlobApiSchema,
@@ -137,6 +140,10 @@ import {
     PyLegacyBlobApiToPandas as LegacyBlobApiToPandas,
     PyLegacyQueryToPandasKwargs as LegacyQueryToPandasKwargs,
 } from '/snippets/multimodal.mdx';
+import {
+    PyBlobApiToPandas as BlobApiToPandas,
+    PyQueryToPandasKwargs as QueryToPandasKwargs,
+} from '/snippets/blob_pylance.mdx';
 
 A table stores data in rows and columns and keeps a history of committed
 versions. Queries read table data, writes update it, and indexes accelerate
@@ -334,12 +341,20 @@ based on size.
 
 ### Blob columns {#multimodal-blob-v2}
 
-A `blob` column separates metadata from payload bytes. Queries return a
-lightweight descriptor struct by default, so filtering and scanning rows do not
-read the underlying files. You fetch the bytes or open a seekable file handle
-only for the rows you need.
+<Warning>
+Blob V2 is in early access.
+</Warning>
 
-When you write raw bytes, Lance chooses a storage layout from the payload size:
+A `blob` column keeps metadata separate from the payload bytes, so queries can
+filter rows without loading the blobs.
+
+Most queries return descriptors. With pylance installed, Python's
+`to_pandas()` returns `BlobFile` handles on plain scans. You can
+[read bytes in query results](#multimodal-blob-query-results) or
+[fetch blobs by row ID](#multimodal-read-blobs).
+
+When you write raw bytes, Lance chooses a storage layout from the payload size.
+A descriptor's `kind` reports which one:
 
 | Storage mode | `kind` | Default threshold | Storage behavior |
 | --- | --- | --- | --- |
@@ -347,10 +362,11 @@ When you write raw bytes, Lance chooses a storage layout from the payload size:
 | `Packed` | `1` | Above 64 KiB, up to 4 MiB | Packed with other blobs into a shared sidecar file, up to 1 GiB per file by default. |
 | `Dedicated` | `2` | Above 4 MiB | Stored in its own raw sidecar file. |
 
-Blob columns can also reference external objects by URI, including byte ranges,
-without copying their bytes into the table. Local writes referencing objects
-outside registered bases require explicit opt-in, and the objects must remain
-readable. See the Lance [blob guide](https://lance.org/guide/blob/) for details.
+You can change the thresholds when creating the table. Python uses
+`inline_size_threshold` and `dedicated_size_threshold`, TypeScript uses
+`inlineSizeThreshold` and `dedicatedSizeThreshold`, and Rust uses
+`blob_with_options()`. In Python, custom thresholds require `pylance`.
+Appending data doesn't change the table's thresholds.
 
 #### Setup {#multimodal-blob-v2-setup}
 
@@ -366,19 +382,14 @@ Import the SDK and open a local database. The examples in this section use `db`.
     </CodeBlock>
 
     <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsMultimodalImports}{"\n"}{RsBlobApiSetup}
+    {RsBlobApiImports}{"\n"}{RsBlobApiSetup}
     </CodeBlock>
 </CodeGroup>
 
-#### 1\. Define a blob schema {#multimodal-blob-v2-schema}
+#### Define a blob schema {#multimodal-blob-v2-schema}
 
 Declare a blob column with `lancedb.blob()` in Python and TypeScript, or
-`lancedb::blob` and `lancedb::blob::blob_with_options` in Rust. Python and
-TypeScript support per-column inline, dedicated, and pack-file size thresholds.
-Rust supports inline and dedicated thresholds through `blob_with_options()`.
-Passing a threshold in Python requires the `pylance` package. Install it with
-`pip install "lancedb[pylance]"`. Without it, `lancedb.blob()` raises
-`Setting blob tier thresholds requires pylance to be installed`:
+`blob()` in Rust:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -394,14 +405,11 @@ Passing a threshold in Python requires the `pylance` package. Install it with
     </CodeBlock>
 </CodeGroup>
 
-Thresholds are set when the table is created. If you append data with different
-blob thresholds, LanceDB uses the thresholds from the existing table.
-
-#### 2\. Ingest blobs {#multimodal-blob-v2-ingest}
+#### Ingest blobs {#multimodal-blob-v2-ingest}
 
 Pass raw bytes for each blob value. In Python, a blob column accepts `bytes`.
-In TypeScript, it accepts a `Buffer`. Lance stores each payload with the
-layout that matches its size:
+In TypeScript, it accepts a `Buffer`. The Python example creates two JPEGs
+with EXIF metadata, which we'll read using a blob handle below.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -417,77 +425,22 @@ layout that matches its size:
     </CodeBlock>
 </CodeGroup>
 
-#### 3\. Read blob bytes {#multimodal-read-blobs}
+#### Read bytes in query results {#multimodal-blob-query-results}
 
-Selecting a blob column in a query returns a descriptor struct rather than the
-payload bytes. Field definitions are in [SQL data types](/sql/data-types#blob-descriptor-fields).
-
-To read bytes, query with row IDs and pass the `_rowid` values to a fetch
-method. Choose the method by how much of each blob you need:
-
-| Need | Python | TypeScript | Rust |
-| --- | --- | --- | --- |
-| Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
-| Seekable handles that read on demand | `fetch_blob_files` | `fetchBlobFiles` | `fetch_blob_files` |
-| Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
-| Bytes in query results | `blob_mode="bytes"` | `blobMode: "bytes"` | Not available. Use `fetch_blobs`. |
-
-- `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
-  produce null entries, and empty blobs produce empty byte strings.
-- `fetch_blob_files` opens seekable `BlobFile` handles that load bytes only when
-  you call `read`, `read_range`, or `read_ranges`. Range reads don't move the
-  file cursor. Null blobs produce null handles.
-- `fetch_blob_ranges` takes `(row_id, offset, length)` requests and returns one
-  slice per request, in order. A request list can repeat a row to read more
-  than one slice of that blob.
-
-Fetch whole payloads, or open a handle and read part of one:
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {BlobApiFetch}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsBlobApiFetch}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsBlobApiFetch}
-    </CodeBlock>
-</CodeGroup>
-
-Read headers, frames, or other slices without loading whole blobs. Python and
-Rust read slices across rows with `fetch_blob_ranges`. On a handle,
-`read_ranges` reads more than one slice of one blob. Python takes
-`(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
-exclusive `end`, and Rust takes `start..end` ranges:
-
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {BlobApiRanges}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsBlobApiRanges}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsBlobApiRanges}
-    </CodeBlock>
-</CodeGroup>
-
-<Card>
-For more details on the blob format, see the Lance [blob guide](https://lance.org/guide/blob/). For SQL queries over blob columns, see [SQL data types](/sql/data-types#blobs).
-</Card>
-
-#### 4\. Return bytes in query results {#multimodal-blob-query-results}
-
-A query returns blob descriptors by default. Python and TypeScript can return
-the bytes instead. Rust queries return descriptors only, so read bytes with
-`fetch_blobs`.
+Python and TypeScript can return blob bytes in query results without
+collecting `_rowid`. Rust uses [`fetch_blobs`](#multimodal-read-blobs) with
+row IDs instead.
 
 ##### Python {#multimodal-blob-python}
+
+`to_list(blob_mode="bytes")` returns the `image` bytes from the `photos` table
+above:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiBytes}
+    </CodeBlock>
+</CodeGroup>
 
 In the Python SDK, `Table.to_pandas()`, `Table.to_arrow()`, and the query builder
 methods `to_pandas()`, `to_arrow()`, and `to_list()` accept a `blob_mode`
@@ -495,9 +448,14 @@ argument:
 
 | `blob_mode` | `to_pandas()` | `to_arrow()` and `to_list()` |
 | --- | --- | --- |
-| `"lazy"` | Default. Plain scans return seekable `BlobFile` handles. Vector, full-text, hybrid, and ordered queries return descriptor dicts. | Default. Returns descriptor structs carrying `_lance_row_id` so the result table can be passed to `fetch_blobs` or `fetch_blob_files`. |
-| `"descriptions"` | Returns descriptor dicts with `kind`, `position`, `size`, `blob_id`, and `blob_uri`. | Returns the 5-field descriptor struct without `_lance_row_id`. |
+| `"lazy"` | Default. Plain scans return seekable `BlobFile` handles. Vector, full-text, hybrid, and ordered queries return descriptor dicts. | Default. Returns descriptors carrying `_lance_row_id` so the result table can be passed to `fetch_blobs` or `fetch_blob_files`. |
+| `"descriptions"` | Returns descriptor dicts with `kind`, `position`, `size`, `blob_id`, and `blob_uri`. | Returns the 5-field descriptor without `_lance_row_id`. |
 | `"bytes"` | Materializes each blob as `bytes` in the DataFrame. | Materializes each blob as `large_binary` in Arrow or `bytes` in Python dicts. |
+
+`to_pandas(blob_mode="lazy")` and `to_pandas(blob_mode="bytes")` require
+pylance. Without it they raise `ImportError`. `to_arrow()`,
+`to_list(blob_mode="bytes")`, `to_pandas(blob_mode="descriptions")`, and the
+fetch methods do not.
 
 `blob_mode="bytes"` requires a local table snapshot, so remote and in-memory
 tables raise `NotImplementedError`. On a remote table, `Table.to_pandas()` and
@@ -511,7 +469,12 @@ raises `ValueError` when the selected columns include blobs
 inside a list. Select those columns with `blob_mode="descriptions"`, or leave
 them out of the projection. Extra keyword arguments on
 `to_pandas()`, such as `split_blocks` and `self_destruct`, are forwarded to
-PyArrow:
+PyArrow.
+
+###### Optional pandas examples {#multimodal-blob-pandas}
+
+These examples require pylance. The query example expects `tbl_async`,
+`query_vector`, and a `video` column, which the `photos` table does not define.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -533,7 +496,7 @@ In TypeScript, `toArray()` and `toArrow()` accept a `blobMode` option:
 
 | `blobMode` | Result |
 | --- | --- |
-| `"descriptions"` | Default. Returns descriptor structs. |
+| `"descriptions"` | Default. Returns descriptors. |
 | `"bytes"` | Returns each top-level blob as bytes, or `null` for a null blob. Blobs nested in a struct or list keep their descriptors. |
 
 With `"bytes"`, the rows and the bytes come from the same table version. If the
@@ -542,6 +505,76 @@ table changes while the query runs, the query runs again, up to three times:
 <CodeGroup>
     <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
     {TsBlobApiBytesMode}
+    </CodeBlock>
+</CodeGroup>
+
+#### Read blobs on demand {#multimodal-read-blobs}
+
+Query the rows you want and pass their `_rowid` values to a fetch method.
+`fetch_blob_files` opens a seekable handle and loads bytes only when you read.
+The Python example opens the JPEG from the ingest step and reads its EXIF
+Make tag with Pillow. TypeScript and Rust read the first bytes from the handle.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiFiles}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiFiles}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiFiles}
+    </CodeBlock>
+</CodeGroup>
+
+The other fetch methods load bytes directly:
+
+| Need | Python | TypeScript | Rust |
+| --- | --- | --- | --- |
+| Whole payloads for a set of rows | `fetch_blobs` | `fetchBlobs` | `fetch_blobs` |
+| Byte slices across many rows in one call | `fetch_blob_ranges` | Not available. Use `fetchBlobFiles` and `readRanges`. | `fetch_blob_ranges` |
+
+- `fetch_blobs` returns the full bytes for each row ID in order. Null blobs
+  produce null entries, and empty blobs produce empty byte strings.
+- `fetch_blob_files` loads bytes when you call `read`, `read_range`, or
+  `read_ranges`. Range reads don't move the file cursor. Null blobs produce
+  null handles.
+- `fetch_blob_ranges` takes `(row_id, offset, length)` requests and returns one
+  slice per request, in order. A request list can repeat a row to read more
+  than one slice of that blob.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiFetch}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiFetch}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiFetch}
+    </CodeBlock>
+</CodeGroup>
+
+Python and Rust read slices across rows with `fetch_blob_ranges`. On a handle,
+`read_ranges` reads more than one slice of one blob. Python takes
+`(offset, length)` pairs, TypeScript takes `{ start, end }` ranges with an
+exclusive `end`, and Rust takes `start..end` ranges:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {BlobApiRanges}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsBlobApiRanges}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsBlobApiRanges}
     </CodeBlock>
 </CodeGroup>
 
@@ -555,6 +588,8 @@ Struct-nested blob columns use dotted paths such as `clip.video` in the fetch
 APIs. Blobs inside lists can be written and queried as descriptors. A table
 row ID does not address one list element, so `blob_columns()`, `fetch_blobs`,
 `fetch_blob_files`, and `blob_mode="bytes"` can't return those bytes.
+
+See the Lance [blob guide](https://lance.org/guide/blob/) for the storage format.
 
 ### Managed blobs (Blob v2) {#managed-blobs}
 
@@ -615,7 +650,7 @@ assert len(by_id[2]) == 102400
 `fetch_blobs` materializes the selected payloads in memory, so fetch bounded
 batches when blobs are large. Row IDs belong to their table and snapshot. Keep
 descriptors opaque in application code, because their representation can differ
-between inline values, Managed objects, and externally referenced blobs.
+between inline values and Managed objects.
 
 #### Derived blobs and maintenance {#managed-blobs-lifecycle}
 
