@@ -53,7 +53,8 @@ class PyarrowScannerAdapter(pa.dataset.Scanner):
 
     def count_rows(self):
         if isinstance(self.filter, pa.compute.Expression):
-            return self.to_table().num_rows
+            # stream the batches so memory does not grow with the matching rows
+            return sum(batch.num_rows for batch in self.to_reader())
         return self.table.count_rows(self.filter)
 
     def from_batches(self, **kwargs):
