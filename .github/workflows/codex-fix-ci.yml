@@ -136,6 +136,14 @@ jobs:
           git config user.name "lancedb automation"
           git config user.email "robot@lancedb.com"
 
+      # Ubuntu 24.04 blocks unprivileged user namespaces via AppArmor, which
+      # Codex's bwrap sandbox needs. Without this every agent command fails
+      # and the job still passes, so check the sandbox works before starting.
+      - name: Enable and check Codex sandbox
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          codex sandbox -c 'sandbox_mode="workspace-write"' -- true
+
       - name: Run Codex to fix CI failure
         env:
           WORKFLOW_RUN_URL: ${{ inputs.workflow_run_url }}
