@@ -415,6 +415,67 @@ def test_nullable_vector():
     assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
 
 
+@pytest.mark.parametrize("vector_type", [Vector, MultiVector])
+@pytest.mark.parametrize(
+    "value_type, values",
+    [
+        (pa.int64(), [-(2**53 + 1), 2**53 + 3]),
+        (pa.uint64(), [2**53 + 1, 2**64 - 1]),
+        (pa.int8(), [-128, 127]),
+        (pa.uint8(), [0, 255]),
+        (pa.float32(), [1.25, 2.5]),
+        (pa.float64(), [1.25, 2.5]),
+    ],
+)
+def test_typed_vector_round_trip(tmp_path, vector_type, value_type, values):
+    import lancedb
+
+    annotation = vector_type(2, value_type=value_type)
+    expected = [values, values] if vector_type is MultiVector else values
+
+    class Row(LanceModel):
+        id: int
+        payload: annotation
+
+    row = Row(id=1, payload=expected)
+    table = lancedb.connect(tmp_path).create_table("typed_vectors", [row], schema=Row)
+    table.add([Row(id=2, payload=expected)])
+    assert table.schema == Row.to_arrow_schema()
+    assert table.search().to_arrow().to_pylist() == [
+        {"id": 1, "payload": expected},
+        {"id": 2, "payload": expected},
+    ]
+    assert json.loads(row.model_dump_json())["payload"] == expected
+
+
+@pytest.mark.parametrize("vector_type", [Vector, MultiVector])
+@pytest.mark.parametrize("nullable", [False, True])
+def test_integer_vector_validation(vector_type, nullable):
+    annotation = vector_type(2, value_type=pa.int64(), nullable=nullable)
+
+    class Row(LanceModel):
+        payload: annotation
+
+    def shape(values):
+        return [values] if vector_type is MultiVector else values
+
+    assert Row.to_arrow_schema().field("payload").nullable is nullable
+    assert Row(payload=shape([1.0, -2.0])).model_dump()["payload"] == shape([1, -2])
+    with pytest.raises(pydantic.ValidationError, match="valid integer"):
+        Row(payload=shape([1.5, 2]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=shape([1]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=shape([1, 2, 3]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=None)
+
+    class OptionalRow(LanceModel):
+        payload: Optional[annotation] = None
+
+    assert OptionalRow(payload=None).payload is None
+
+
 def test_bare_vector_raises_clear_error():
     namespace = {
         "__name__": "test_model_without_pyarrow",
