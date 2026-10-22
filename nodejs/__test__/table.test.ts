@@ -3742,6 +3742,21 @@ describe("when optimizing a dataset", () => {
     expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
 
+  it("retains tagged versions older than the cleanup cutoff", async () => {
+    await (await table.tags()).create("keep", 1);
+    await table.add([{ id: 3 }]);
+
+    const cutoff = await nextMillisecond();
+    const stats = await table.optimize({ cleanupOlderThan: cutoff });
+    // Versions 2 and 3 are pruned, tagged version 1 is retained
+    expect(stats.prune.oldVersionsRemoved).toBe(2);
+
+    await table.checkout("keep");
+    expect(await table.countRows()).toBe(1);
+    await table.checkoutLatest();
+    expect(await table.countRows()).toBe(3);
+  });
+
   it("delete unverified", async () => {
     const version = await table.version();
     const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${String(
