@@ -57,7 +57,12 @@ Usage Example:
 
 ### Multimodal Example {#multimodal-example}
 
-The `voyage-multimodal-3.5` model can embed text alongside images. You can use image URLs, file paths, or PIL Image objects:
+The `voyage-multimodal-3.5` model can embed text alongside images. You can use image URLs, local `pathlib.Path` objects, raw image bytes, or PIL Image objects.
+
+For source embeddings, PIL images and images loaded from bytes or local paths are
+converted to RGB and encoded as JPEG. This supports RGBA, grayscale with alpha,
+and palette images; transparency is discarded. Composite transparent images onto
+your chosen background before embedding if the background color matters.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">
