@@ -57,7 +57,7 @@ async def test_upsert_async(mem_db_async):
     await table.count_rows()  # 3
     res
     # MergeResult(version=2, num_updated_rows=1,
-    # num_inserted_rows=1, num_deleted_rows=0)
+    # num_inserted_rows=1, num_deleted_rows=0, num_rows=2)
     # --8<-- [end:upsert_basic_async]
     assert await table.count_rows() == 3
     assert res.version == 2
@@ -86,7 +86,7 @@ def test_insert_if_not_exists(mem_db):
     table.count_rows()  # 3
     res
     # MergeResult(version=2, num_updated_rows=0,
-    # num_inserted_rows=1, num_deleted_rows=0)
+    # num_inserted_rows=1, num_deleted_rows=0, num_rows=1)
     # --8<-- [end:insert_if_not_exists]
     assert table.count_rows() == 3
     assert res.version == 2
@@ -116,7 +116,7 @@ async def test_insert_if_not_exists_async(mem_db_async):
     await table.count_rows()  # 3
     res
     # MergeResult(version=2, num_updated_rows=0,
-    # num_inserted_rows=1, num_deleted_rows=0)
+    # num_inserted_rows=1, num_deleted_rows=0, num_rows=1)
     # --8<-- [end:insert_if_not_exists]
     assert await table.count_rows() == 3
     assert res.version == 2
@@ -150,7 +150,7 @@ def test_replace_range(mem_db):
     table.count_rows("doc_id = 1")  # 1
     res
     # MergeResult(version=2, num_updated_rows=1,
-    # num_inserted_rows=0, num_deleted_rows=1)
+    # num_inserted_rows=0, num_deleted_rows=1, num_rows=1)
     # --8<-- [end:insert_if_not_exists]
     assert table.count_rows("doc_id = 1") == 1
     assert res.version == 2
@@ -185,7 +185,7 @@ async def test_replace_range_async(mem_db_async):
     await table.count_rows("doc_id = 1")  # 1
     res
     # MergeResult(version=2, num_updated_rows=1,
-    # num_inserted_rows=0, num_deleted_rows=1)
+    # num_inserted_rows=0, num_deleted_rows=1, num_rows=1)
     # --8<-- [end:insert_if_not_exists]
     assert await table.count_rows("doc_id = 1") == 1
     assert res.version == 2

@@ -8,6 +8,14 @@
 
 ## Properties
 
+### numAttempts
+
+```ts
+numAttempts: number;
+```
+
+***
+
 ### numDeletedRows
 
 ```ts
@@ -20,6 +28,14 @@ numDeletedRows: number;
 
 ```ts
 numInsertedRows: number;
+```
+
+***
+
+### numRows
+
+```ts
+numRows: number;
 ```
 
 ***

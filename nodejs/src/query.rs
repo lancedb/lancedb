@@ -3,26 +3,99 @@
 
 use std::sync::Arc;
 
+use crate::error::NapiErrorExt;
+use crate::error::convert_error;
+use crate::iterator::RecordBatchIterator;
+use crate::rerankers::RerankHybridCallbackArgs;
+use crate::rerankers::Reranker;
+use crate::util::{parse_distance_type, schema_to_buffer};
+use arrow_array::{
+    Array, Float16Array as ArrowFloat16Array, Float32Array as ArrowFloat32Array,
+    Float64Array as ArrowFloat64Array, UInt8Array as ArrowUInt8Array,
+};
+use arrow_buffer::ScalarBuffer;
+use half::f16;
 use lancedb::index::scalar::{
     BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
     Operator, PhraseQuery,
 };
+use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::ExecutableQuery;
 use lancedb::query::Query as LanceDbQuery;
 use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::Select;
 use lancedb::query::TakeQuery as LanceDbTakeQuery;
-use lancedb::query::VectorQuery as LanceDbVectorQuery;
+use lancedb::query::{ColumnOrdering as LanceDbColumnOrdering, VectorQuery as LanceDbVectorQuery};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::error::convert_error;
-use crate::error::NapiErrorExt;
-use crate::iterator::RecordBatchIterator;
-use crate::rerankers::Reranker;
-use crate::rerankers::RerankerCallbacks;
-use crate::util::parse_distance_type;
+#[napi(object)]
+pub struct ColumnOrdering {
+    pub ascending: bool,
+    pub nulls_first: bool,
+    pub column_name: String,
+}
+
+impl From<ColumnOrdering> for LanceDbColumnOrdering {
+    fn from(value: ColumnOrdering) -> Self {
+        match (value.ascending, value.nulls_first) {
+            (true, true) => Self::asc_nulls_first(value.column_name),
+            (true, false) => Self::asc_nulls_last(value.column_name),
+            (false, true) => Self::desc_nulls_first(value.column_name),
+            (false, false) => Self::desc_nulls_last(value.column_name),
+        }
+    }
+}
+
+fn analyze_plan_options(
+    distributed_metrics: Option<String>,
+) -> napi::Result<QueryExecutionOptions> {
+    let analyze_plan_distributed_metrics =
+        match distributed_metrics.as_deref().unwrap_or("aggregate") {
+            "aggregate" => AnalyzePlanDistributedMetrics::Aggregate,
+            "per_worker" => AnalyzePlanDistributedMetrics::PerWorker,
+            "full" => AnalyzePlanDistributedMetrics::Full,
+            mode => {
+                return Err(napi::Error::from_reason(format!(
+                    "Invalid distributedMetrics value '{}'. Expected one of: \
+                 'aggregate', 'per_worker', 'full'",
+                    mode
+                )));
+            }
+        };
+
+    let mut options = QueryExecutionOptions::default();
+    options.analyze_plan_distributed_metrics = analyze_plan_distributed_metrics;
+    Ok(options)
+}
+
+fn bytes_to_arrow_array(data: Uint8Array, dtype: String) -> napi::Result<Arc<dyn Array>> {
+    let buf = arrow_buffer::Buffer::from(data.to_vec());
+    let num_bytes = buf.len();
+    match dtype.as_str() {
+        "float16" => {
+            let scalar_buf = ScalarBuffer::<f16>::new(buf, 0, num_bytes / 2);
+            Ok(Arc::new(ArrowFloat16Array::new(scalar_buf, None)))
+        }
+        "float32" => {
+            let scalar_buf = ScalarBuffer::<f32>::new(buf, 0, num_bytes / 4);
+            Ok(Arc::new(ArrowFloat32Array::new(scalar_buf, None)))
+        }
+        "float64" => {
+            let scalar_buf = ScalarBuffer::<f64>::new(buf, 0, num_bytes / 8);
+            Ok(Arc::new(ArrowFloat64Array::new(scalar_buf, None)))
+        }
+        "uint8" => {
+            let scalar_buf = ScalarBuffer::<u8>::new(buf, 0, num_bytes);
+            Ok(Arc::new(ArrowUInt8Array::new(scalar_buf, None)))
+        }
+        _ => Err(napi::Error::from_reason(format!(
+            "Unsupported vector dtype: {}. Expected one of: float16, float32, float64, uint8",
+            dtype
+        ))),
+    }
+}
 
 #[napi]
 pub struct Query {
@@ -42,7 +115,7 @@ impl Query {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -79,6 +152,13 @@ impl Query {
     }
 
     #[napi]
+    pub fn nearest_to_raw(&mut self, data: Uint8Array, dtype: String) -> Result<VectorQuery> {
+        let array = bytes_to_arrow_array(data, dtype)?;
+        let inner = self.inner.clone().nearest_to(array).default_error()?;
+        Ok(VectorQuery { inner })
+    }
+
+    #[napi]
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
     }
@@ -93,11 +173,35 @@ impl Query {
         self.inner = self.inner.clone().disable_scoring_autoprojection();
     }
 
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
+    }
+
+    #[napi]
+    pub fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> napi::Result<()> {
+        let ordering = ordering.map(|ordering| {
+            ordering
+                .into_iter()
+                .map(LanceDbColumnOrdering::from)
+                .collect()
+        });
+        self.inner = self.inner.clone().order_by(ordering);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -106,8 +210,12 @@ impl Query {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
@@ -130,13 +238,17 @@ impl Query {
     }
 
     #[napi(catch_unwind)]
-    pub async fn analyze_plan(&self) -> napi::Result<String> {
-        self.inner.analyze_plan().await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to execute analyze plan: {}",
-                convert_error(&e)
-            ))
-        })
+    pub async fn analyze_plan(&self, distributed_metrics: Option<String>) -> napi::Result<String> {
+        let options = analyze_plan_options(distributed_metrics)?;
+        self.inner
+            .analyze_plan_with_options(options)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to execute analyze plan: {}",
+                    convert_error(&e)
+                ))
+            })
     }
 }
 
@@ -163,6 +275,13 @@ impl VectorQuery {
     }
 
     #[napi]
+    pub fn add_query_vector_raw(&mut self, data: Uint8Array, dtype: String) -> Result<()> {
+        let array = bytes_to_arrow_array(data, dtype)?;
+        self.inner = self.inner.clone().add_query_vector(array).default_error()?;
+        Ok(())
+    }
+
+    #[napi]
     pub fn distance_type(&mut self, distance_type: String) -> napi::Result<()> {
         let distance_type = parse_distance_type(distance_type)?;
         self.inner = self.inner.clone().distance_type(distance_type);
@@ -180,8 +299,23 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .nprobes(nprobe as usize)
+            .default_error()?;
+        Ok(())
+    }
+
+    #[napi]
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> napi::Result<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .default_error()?;
+        Ok(())
     }
 
     #[napi]
@@ -234,7 +368,7 @@ impl VectorQuery {
     }
 
     #[napi]
-    pub fn full_text_search(&mut self, query: napi::JsObject) -> napi::Result<()> {
+    pub fn full_text_search(&mut self, query: Object) -> napi::Result<()> {
         let query = parse_fts_query(query)?;
         self.inner = self.inner.clone().full_text_search(query);
         Ok(())
@@ -270,17 +404,42 @@ impl VectorQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
+    }
+
     #[napi]
     pub fn disable_scoring_autoprojection(&mut self) {
         self.inner = self.inner.clone().disable_scoring_autoprojection();
     }
 
     #[napi]
-    pub fn rerank(&mut self, callbacks: RerankerCallbacks) {
-        self.inner = self
-            .inner
-            .clone()
-            .rerank(Arc::new(Reranker::new(callbacks)));
+    pub fn rerank(
+        &mut self,
+        rerank_hybrid: Function<RerankHybridCallbackArgs, Promise<Buffer>>,
+    ) -> napi::Result<()> {
+        let reranker = Reranker::new(rerank_hybrid)?;
+        self.inner = self.inner.clone().rerank(Arc::new(reranker));
+        Ok(())
+    }
+
+    #[napi]
+    pub fn order_by(&mut self, ordering: Option<Vec<ColumnOrdering>>) -> napi::Result<()> {
+        let ordering = ordering.map(|ordering| {
+            ordering
+                .into_iter()
+                .map(LanceDbColumnOrdering::from)
+                .collect()
+        });
+        self.inner = self.inner.clone().order_by(ordering);
+        Ok(())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
     }
 
     #[napi(catch_unwind)]
@@ -288,6 +447,7 @@ impl VectorQuery {
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -296,8 +456,12 @@ impl VectorQuery {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
@@ -320,13 +484,17 @@ impl VectorQuery {
     }
 
     #[napi(catch_unwind)]
-    pub async fn analyze_plan(&self) -> napi::Result<String> {
-        self.inner.analyze_plan().await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to execute analyze plan: {}",
-                convert_error(&e)
-            ))
-        })
+    pub async fn analyze_plan(&self, distributed_metrics: Option<String>) -> napi::Result<String> {
+        let options = analyze_plan_options(distributed_metrics)?;
+        self.inner
+            .analyze_plan_with_options(options)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to execute analyze plan: {}",
+                    convert_error(&e)
+                ))
+            })
     }
 }
 
@@ -356,11 +524,23 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn output_schema(&self) -> napi::Result<Buffer> {
+        let schema = self.inner.output_schema().await.default_error()?;
+        schema_to_buffer(&schema)
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(
         &self,
         max_batch_length: Option<u32>,
         timeout_ms: Option<u32>,
+        with_row_id: Option<bool>,
     ) -> napi::Result<RecordBatchIterator> {
         let mut execution_opts = QueryExecutionOptions::default();
         if let Some(max_batch_length) = max_batch_length {
@@ -369,8 +549,12 @@ impl TakeQuery {
         if let Some(timeout_ms) = timeout_ms {
             execution_opts.timeout = Some(std::time::Duration::from_millis(timeout_ms as u64))
         }
-        let inner_stream = self
-            .inner
+        let query = if with_row_id == Some(true) {
+            self.inner.clone().with_row_id()
+        } else {
+            self.inner.clone()
+        };
+        let inner_stream = query
             .execute_with_options(execution_opts)
             .await
             .map_err(|e| {
@@ -393,13 +577,17 @@ impl TakeQuery {
     }
 
     #[napi(catch_unwind)]
-    pub async fn analyze_plan(&self) -> napi::Result<String> {
-        self.inner.analyze_plan().await.map_err(|e| {
-            napi::Error::from_reason(format!(
-                "Failed to execute analyze plan: {}",
-                convert_error(&e)
-            ))
-        })
+    pub async fn analyze_plan(&self, distributed_metrics: Option<String>) -> napi::Result<String> {
+        let options = analyze_plan_options(distributed_metrics)?;
+        self.inner
+            .analyze_plan_with_options(options)
+            .await
+            .map_err(|e| {
+                napi::Error::from_reason(format!(
+                    "Failed to execute analyze plan: {}",
+                    convert_error(&e)
+                ))
+            })
     }
 }
 
@@ -490,6 +678,7 @@ impl JsFullTextQuery {
     }
 
     #[napi(factory)]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn boolean_query(queries: Vec<(String, &JsFullTextQuery)>) -> napi::Result<Self> {
         let mut sub_queries = Vec::with_capacity(queries.len());
         for (occur, q) in queries {
@@ -509,17 +698,22 @@ impl JsFullTextQuery {
             FtsQuery::Phrase(_) => "phrase".to_string(),
             FtsQuery::Boost(_) => "boost".to_string(),
             FtsQuery::MultiMatch(_) => "multi_match".to_string(),
+            FtsQuery::CombinedFields(_) => "combined_fields".to_string(),
             FtsQuery::Boolean(_) => "boolean".to_string(),
         }
     }
 }
 
-fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
-    if let Ok(Some(query)) = query.get::<_, &JsFullTextQuery>("query") {
+fn parse_fts_query(query: Object) -> napi::Result<FullTextSearchQuery> {
+    // `&JsFullTextQuery` recovers a native class reference through napi's borrow-tracked
+    // path, which is only usable from generated `#[napi]` argument conversion. This is a
+    // manual lookup on a nested `Object` property instead, so use `ClassInstance`, which
+    // unwraps the class without requiring a borrow scope.
+    if let Ok(Some(query)) = query.get::<ClassInstance<JsFullTextQuery>>("query") {
         Ok(FullTextSearchQuery::new_query(query.inner.clone()))
-    } else if let Ok(Some(query_text)) = query.get::<_, String>("query") {
+    } else if let Ok(Some(query_text)) = query.get::<String>("query") {
         let mut query_text = query_text;
-        let columns = query.get::<_, Option<Vec<String>>>("columns")?.flatten();
+        let columns = query.get::<Option<Vec<String>>>("columns")?.flatten();
 
         let is_phrase =
             query_text.len() >= 2 && query_text.starts_with('"') && query_text.ends_with('"');
@@ -540,15 +734,12 @@ fn parse_fts_query(query: napi::JsObject) -> napi::Result<FullTextSearchQuery> {
             }
         };
         let mut query = FullTextSearchQuery::new_query(query);
-        if let Some(cols) = columns {
-            if !cols.is_empty() {
-                query = query.with_columns(&cols).map_err(|e| {
-                    napi::Error::from_reason(format!(
-                        "Failed to set full text search columns: {}",
-                        e
-                    ))
-                })?;
-            }
+        if let Some(cols) = columns
+            && !cols.is_empty()
+        {
+            query = query.with_columns(&cols).map_err(|e| {
+                napi::Error::from_reason(format!("Failed to set full text search columns: {}", e))
+            })?;
         }
         Ok(query)
     } else {

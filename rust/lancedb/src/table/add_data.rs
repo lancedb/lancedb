@@ -1,0 +1,1435 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+use std::collections::HashSet;
+use std::sync::Arc;
+
+use arrow_schema::{DataType, Field, Fields, Schema};
+use lance::dataset::WriteMode;
+use lance_arrow::FieldExt;
+use serde::{Deserialize, Serialize};
+
+use crate::data::scannable::Scannable;
+use crate::data::scannable::scannable_with_embeddings;
+use crate::embeddings::EmbeddingRegistry;
+use crate::table::datafusion::cast::cast_to_table_schema;
+use crate::table::datafusion::reject_nan::reject_nan_vectors;
+use crate::table::datafusion::scannable_exec::ScannableExec;
+use crate::table::write_progress::ProgressCallback;
+use crate::table::write_progress::WriteProgress;
+use crate::table::write_progress::WriteProgressTracker;
+use crate::{Error, Result};
+
+use super::{BaseTable, TableDefinition, WriteOptions};
+
+#[derive(Debug, Clone, Default)]
+pub enum AddDataMode {
+    /// Rows will be appended to the table (the default)
+    #[default]
+    Append,
+    /// The existing table will be overwritten with the new data
+    ///
+    /// On overwrite, raw binary is not coerced into a blob struct. The input
+    /// must declare blob v2 for the column to stay a blob column.
+    Overwrite,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct AddResult {
+    // The commit version associated with the operation.
+    // A version of `0` indicates compatibility with legacy servers that do not return
+    /// a commit version.
+    #[serde(default)]
+    pub version: u64,
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+pub enum NaNVectorBehavior {
+    /// Reject any vectors containing NaN values (the default)
+    #[default]
+    Error,
+    /// Allow NaN values to be added, but they will not be indexed for search
+    Keep,
+}
+
+/// A builder for configuring a [`crate::table::Table::add`] operation
+pub struct AddDataBuilder {
+    pub(crate) parent: Arc<dyn BaseTable>,
+    pub(crate) data: Box<dyn Scannable>,
+    pub(crate) mode: AddDataMode,
+    pub(crate) write_options: WriteOptions,
+    pub(crate) on_nan_vectors: NaNVectorBehavior,
+    pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    pub(crate) progress_callback: Option<ProgressCallback>,
+    pub(crate) write_parallelism: Option<usize>,
+    pub(crate) allow_external_blob_outside_bases: bool,
+}
+
+impl std::fmt::Debug for AddDataBuilder {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddDataBuilder")
+            .field("parent", &self.parent)
+            .field("mode", &self.mode)
+            .field("write_options", &self.write_options)
+            .finish()
+    }
+}
+
+impl AddDataBuilder {
+    pub(crate) fn new(
+        parent: Arc<dyn BaseTable>,
+        data: Box<dyn Scannable>,
+        embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
+    ) -> Self {
+        Self {
+            parent,
+            data,
+            mode: AddDataMode::Append,
+            write_options: WriteOptions::default(),
+            on_nan_vectors: NaNVectorBehavior::default(),
+            embedding_registry,
+            progress_callback: None,
+            write_parallelism: None,
+            allow_external_blob_outside_bases: false,
+        }
+    }
+
+    pub fn mode(mut self, mode: AddDataMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn write_options(mut self, options: WriteOptions) -> Self {
+        self.write_options = options;
+        self
+    }
+
+    /// Configure how to handle NaN values in vector columns.
+    ///
+    /// By default, any vectors containing NaN values will be rejected with an
+    /// error, since NaNs cannot be indexed for search. Setting this to `Keep`
+    /// will allow NaN values to be added to the table, but they will not be
+    /// indexed and will not be searchable.
+    pub fn on_nan_vectors(mut self, behavior: NaNVectorBehavior) -> Self {
+        self.on_nan_vectors = behavior;
+        self
+    }
+
+    /// Set a callback to receive progress updates during the add operation.
+    ///
+    /// The callback is invoked once per batch written, and once more with
+    /// [`WriteProgress::done`] set to `true` when the write completes.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let batch = arrow_array::record_batch!(("id", Int32, [1, 2, 3])).unwrap();
+    /// table.add(batch)
+    ///     .progress(|p| println!("{}/{:?} rows", p.output_rows(), p.total_rows()))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn progress(mut self, callback: impl FnMut(&WriteProgress) + Send + 'static) -> Self {
+        self.progress_callback = Some(Arc::new(std::sync::Mutex::new(callback)));
+        self
+    }
+
+    /// Set the number of parallel write streams.
+    ///
+    /// By default, the number of streams is estimated from the data size.
+    /// Setting this to `1` disables parallel writes.
+    pub fn write_parallelism(mut self, parallelism: usize) -> Self {
+        self.write_parallelism = Some(parallelism);
+        self
+    }
+
+    /// Store blob URIs that sit outside registered blob bases.
+    ///
+    /// The row keeps a reference, so the object has to stay readable.
+    /// [`crate::table::Table::fetch_blobs`] reads from that location.
+    /// Defaults to `false`. Local tables only.
+    pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
+        self.allow_external_blob_outside_bases = allow;
+        self
+    }
+
+    pub async fn execute(self) -> Result<AddResult> {
+        if self.write_parallelism.map(|p| p == 0).unwrap_or(false) {
+            return Err(Error::InvalidInput {
+                message: "write_parallelism must be greater than 0".to_string(),
+            });
+        }
+
+        self.parent.clone().add(self).await
+    }
+
+    /// Build a DataFusion execution plan that applies embeddings, casts data to
+    /// the table schema, and optionally rejects NaN vectors.
+    ///
+    /// Returns the plan along with whether the input is rescannable (for retry
+    /// decisions) and whether this is an overwrite operation.
+    pub(crate) fn into_plan(
+        mut self,
+        table_schema: &Schema,
+        table_def: &TableDefinition,
+    ) -> Result<PreprocessingOutput> {
+        let overwrite = self
+            .write_options
+            .lance_write_params
+            .as_ref()
+            .is_some_and(|p| matches!(p.mode, WriteMode::Overwrite))
+            || matches!(self.mode, AddDataMode::Overwrite);
+
+        if !overwrite {
+            validate_schema(&self.data.schema(), table_schema)?;
+        }
+
+        self.data =
+            scannable_with_embeddings(self.data, table_def, self.embedding_registry.as_ref())?;
+
+        let rescannable = self.data.rescannable();
+        let tracker = self
+            .progress_callback
+            .map(|cb| Arc::new(WriteProgressTracker::new(cb, self.data.num_rows())));
+        let plan: Arc<dyn datafusion_physical_plan::ExecutionPlan> =
+            Arc::new(ScannableExec::new(self.data, tracker.clone()));
+        // Skip casting when overwriting — the input schema replaces the table schema.
+        let plan = if overwrite {
+            plan
+        } else {
+            cast_to_table_schema(plan, table_schema)?
+        };
+        let plan = match self.on_nan_vectors {
+            NaNVectorBehavior::Error => reject_nan_vectors(plan)?,
+            NaNVectorBehavior::Keep => plan,
+        };
+
+        Ok(PreprocessingOutput {
+            plan,
+            overwrite,
+            rescannable,
+            write_options: self.write_options,
+            mode: self.mode,
+            tracker,
+            allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
+        })
+    }
+}
+
+pub struct PreprocessingOutput {
+    pub plan: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    pub overwrite: bool,
+    #[cfg_attr(not(feature = "remote"), allow(dead_code))]
+    pub rescannable: bool,
+    pub write_options: WriteOptions,
+    pub mode: AddDataMode,
+    pub tracker: Option<Arc<WriteProgressTracker>>,
+    pub allow_external_blob_outside_bases: bool,
+}
+
+/// Check that the input schema is valid for insert.
+///
+/// Fields can be in different orders, so match by name.
+///
+/// If a column exists in input but not in table, error (no extra columns allowed).
+/// Input field names must be unique within each struct.
+///
+/// If a column exists in table but not in input, that is okay - it may be filled with nulls.
+///
+/// If the types are not exactly the same, we will attempt to cast later - so that is also okay at this stage.
+///
+/// If the nullability is different, that is also okay - we can relax nullability when casting.
+fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
+    validate_fields(input.fields(), table.fields())
+}
+
+fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
+    for field in input {
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("field '{}' is specified more than once", field.name()),
+            });
+        }
+        match table.iter().find(|f| f.name() == field.name()) {
+            None => {
+                return Err(Error::InvalidInput {
+                    message: format!("field '{}' does not exist in table schema", field.name()),
+                });
+            }
+            Some(table_field) => {
+                validate_field(field, table_field)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_field(input: &Field, table: &Field) -> Result<()> {
+    // Blob coercion validates its children and permits dropping only
+    // all-null range fields when targeting a legacy two-field layout.
+    if table.is_blob_v2() {
+        return Ok(());
+    }
+    match (input.data_type(), table.data_type()) {
+        (DataType::Struct(input), DataType::Struct(table)) => validate_fields(input, table),
+        (
+            DataType::List(input) | DataType::LargeList(input) | DataType::FixedSizeList(input, _),
+            DataType::List(table) | DataType::LargeList(table) | DataType::FixedSizeList(table, _),
+        ) => {
+            // Preserve the item's extension metadata, and match nested struct
+            // children by name rather than comparing collection item names.
+            validate_field(input, table)
+        }
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::Float64Type;
+    use arrow_array::{
+        FixedSizeListArray, Float32Array, Int32Array, LargeStringArray, ListArray, RecordBatch,
+        RecordBatchIterator, record_batch,
+    };
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
+    use futures::TryStreamExt;
+    use lance::dataset::{WriteMode, WriteParams};
+
+    use crate::Error;
+    use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+    use crate::connect;
+    use crate::data::scannable::Scannable;
+    use crate::embeddings::{
+        EmbeddingDefinition, EmbeddingFunction, EmbeddingRegistry, MemoryRegistry,
+    };
+    use crate::query::{ExecutableQuery, QueryBase, Select};
+    use crate::table::add_data::NaNVectorBehavior;
+    use crate::table::{
+        ColumnDefinition, ColumnKind, NewColumnTransform, Table, TableDefinition, WriteOptions,
+    };
+    use crate::test_utils::TestCustomError;
+    use crate::test_utils::embeddings::MockEmbed;
+
+    use super::AddDataMode;
+
+    async fn create_test_table() -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+        conn.create_table("test", batch).execute().await.unwrap()
+    }
+
+    #[rstest::rstest]
+    fn test_validate_append_collection_fields(
+        #[values("list", "large_list", "fixed_size_list")] source_kind: &str,
+        #[values("list", "large_list", "fixed_size_list")] target_kind: &str,
+    ) {
+        fn schema(kind: &str, item: Field) -> Schema {
+            let item = Arc::new(item);
+            let data_type = match kind {
+                "list" => DataType::List(item),
+                "large_list" => DataType::LargeList(item),
+                "fixed_size_list" => DataType::FixedSizeList(item, 1),
+                _ => unreachable!(),
+            };
+            Schema::new(vec![Field::new("items", data_type, true)])
+        }
+        let image = crate::blob("image", true);
+        let legacy_image = lance::blob::blob_field("image", true);
+        let caption = Field::new("caption", DataType::Utf8, true);
+        let input = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone()].into()),
+                true,
+            ),
+        );
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&input, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("does not exist"),
+            "{error}"
+        );
+
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![caption.clone(), legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        // Declared siblings can be reordered, but must not occur more than once.
+        super::validate_schema(&input, &target).unwrap();
+        let duplicate = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone(), caption].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&duplicate, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("specified more than once"),
+            "{error}"
+        );
+        // Item names need not match, and blob children still reach range coercion.
+        super::validate_schema(
+            &schema(source_kind, image.with_name("source_item")),
+            &schema(target_kind, legacy_image.with_name("target_item")),
+        )
+        .unwrap();
+    }
+
+    async fn test_add_with_data<T>(data: T)
+    where
+        T: Scannable + 'static,
+    {
+        let table = create_test_table().await;
+        let schema = data.schema();
+        table.add(data).execute().await.unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 5); // 3 initial + 2 added
+        assert_eq!(table.schema().await.unwrap(), schema);
+    }
+
+    #[tokio::test]
+    async fn test_add_with_batch() {
+        let batch = record_batch!(("id", Int64, [4, 5])).unwrap();
+        test_add_with_data(batch).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_vec_batch() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        test_add_with_data(data).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_record_batch_reader() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        let schema = data[0].schema();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(data.into_iter().map(Ok), schema.clone()),
+        );
+        test_add_with_data(reader).await;
+    }
+
+    #[tokio::test]
+    async fn test_add_with_stream() {
+        let data = vec![
+            record_batch!(("id", Int64, [4])).unwrap(),
+            record_batch!(("id", Int64, [5])).unwrap(),
+        ];
+        let schema = data[0].schema();
+        let inner = futures::stream::iter(data.into_iter().map(Ok));
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema,
+            stream: inner,
+        });
+        test_add_with_data(stream).await;
+    }
+
+    fn assert_preserves_external_error(err: &Error) {
+        assert!(
+            matches!(err, Error::External { source } if source.downcast_ref::<TestCustomError>().is_some()),
+            "Expected Error::External, got: {err:?}"
+        );
+        // The original TestCustomError message should be preserved through the
+        // error chain, even if the error gets wrapped multiple times by
+        // lance's insert pipeline.
+        assert!(
+            err.to_string().contains("TestCustomError occurred"),
+            "Expected original error message to be preserved, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_preserves_reader_error() {
+        let table = create_test_table().await;
+        let first_batch = record_batch!(("id", Int64, [4])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(ArrowError::ExternalError(Box::new(TestCustomError))),
+        ];
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+            RecordBatchIterator::new(iterator.into_iter(), schema.clone()),
+        );
+
+        let result = table.add(reader).execute().await;
+
+        assert_preserves_external_error(&result.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn test_add_preserves_stream_error() {
+        let table = create_test_table().await;
+        let first_batch = record_batch!(("id", Int64, [4])).unwrap();
+        let schema = first_batch.schema();
+        let iterator = vec![
+            Ok(first_batch),
+            Err(Error::External {
+                source: Box::new(TestCustomError),
+            }),
+        ];
+        let stream = futures::stream::iter(iterator);
+        let stream: SendableRecordBatchStream = Box::pin(SimpleRecordBatchStream {
+            schema: schema.clone(),
+            stream,
+        });
+
+        let result = table.add(stream).execute().await;
+
+        assert_preserves_external_error(&result.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn test_add() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let batch = record_batch!(("i", Int32, [0, 1, 2])).unwrap();
+        let table = conn
+            .create_table("test", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let new_batch = record_batch!(("i", Int32, [3])).unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(table.schema().await.unwrap(), batch.schema());
+    }
+
+    #[tokio::test]
+    async fn test_add_overwrite() {
+        let conn = connect("memory://").execute().await.unwrap();
+
+        let batch = record_batch!(("i", Int32, [0, 1, 2])).unwrap();
+        let table = conn
+            .create_table("test", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), batch.num_rows());
+
+        let new_batch = record_batch!(("x", Float32, [0.0, 1.0])).unwrap();
+        let res = table
+            .add(new_batch.clone())
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(res.version, table.version().await.unwrap());
+        assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
+        assert_eq!(table.schema().await.unwrap(), new_batch.schema());
+
+        // Can overwrite using underlying WriteParams (which
+        // take precedence over AddDataMode)
+        let param: WriteParams = WriteParams {
+            mode: WriteMode::Overwrite,
+            ..Default::default()
+        };
+
+        table
+            .add(new_batch.clone())
+            .write_options(WriteOptions {
+                lance_write_params: Some(param),
+            })
+            .mode(AddDataMode::Append)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), new_batch.num_rows());
+    }
+
+    #[tokio::test]
+    async fn test_add_with_embeddings() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        // Add embedding metadata to the schema
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_embedding"));
+        let table_def = TableDefinition::new(
+            schema.clone(),
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Now add new data WITHOUT the embedding column - it should be computed automatically
+        let new_batch = record_batch!(("text", Utf8, ["hello", "world"])).unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+
+        // Query to verify the embeddings were computed for the new rows
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_embedding"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2);
+
+        // Check that all rows have embedding values (not null)
+        for batch in &results {
+            let embedding_col = batch.column(1);
+            assert_eq!(embedding_col.null_count(), 0);
+        }
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/3136.
+    ///
+    /// When a column is added via `add_columns` AFTER an embedding column,
+    /// the table schema becomes `[..., embedding, extra]`. Subsequent
+    /// `table.add()` calls used to fail with a CastError because columns
+    /// were matched positionally rather than by name.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema.clone(),
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_evol_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Seed a row so add_columns has data to compute against.
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a new physical column AFTER the embedding column.
+        table
+            .add_columns()
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "score".into(),
+                "42.0".into(),
+            )]))
+            .execute()
+            .await
+            .unwrap();
+
+        // Now add data including the new column but WITHOUT the embedding.
+        // The input batch column order is [text, score]; after computing the
+        // embedding it becomes [text, score, text_vec], but the table schema
+        // is [text, text_vec, score]. Columns must be matched by name.
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("score", DataType::Float64, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0])),
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "score"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
+        }
+    }
+
+    /// Like `test_add_with_embeddings_after_add_columns`, but the column
+    /// added after the embedding is a nested struct rather than a scalar.
+    /// Verifies that name-based column matching also works when the
+    /// post-embedding column has a complex Arrow type.
+    #[tokio::test]
+    async fn test_add_with_embeddings_after_add_nested_columns() {
+        let registry = Arc::new(MemoryRegistry::new());
+        let mock_embedding: Arc<dyn EmbeddingFunction> = Arc::new(MockEmbed::new("mock", 4));
+        registry.register("mock", mock_embedding).unwrap();
+
+        let conn = connect("memory://")
+            .embedding_registry(registry)
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "text_vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let embedding_def = EmbeddingDefinition::new("text", "mock", Some("text_vec"));
+        let table_def = TableDefinition::new(
+            schema,
+            vec![
+                ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                },
+                ColumnDefinition {
+                    kind: ColumnKind::Embedding(embedding_def),
+                },
+            ],
+        );
+        let rich_schema = table_def.into_rich_schema();
+
+        let table = conn
+            .create_empty_table("embed_nested_test", rich_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let seed_batch = record_batch!(("text", Utf8, ["hello"])).unwrap();
+        table.add(seed_batch).execute().await.unwrap();
+
+        // Add a STRUCT column after the embedding column.
+        let meta_struct = DataType::Struct(
+            vec![
+                Field::new("source", DataType::Utf8, true),
+                Field::new("score", DataType::Float64, true),
+            ]
+            .into(),
+        );
+        let nested_schema = Arc::new(Schema::new(vec![Field::new(
+            "meta",
+            meta_struct.clone(),
+            true,
+        )]));
+        table
+            .add_columns()
+            .transform(NewColumnTransform::AllNulls(nested_schema))
+            .execute()
+            .await
+            .unwrap();
+
+        // Insert with the nested struct present but the embedding column
+        // absent. The computed batch is [text, meta, text_vec], but the
+        // table schema is [text, text_vec, meta] — only name-based matching
+        // can put `meta` (a struct) in the right slot.
+        let source = Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"]));
+        let score = Arc::new(arrow_array::Float64Array::from(vec![1.0, 2.0]));
+        let meta = Arc::new(arrow_array::StructArray::from(vec![
+            (
+                Arc::new(Field::new("source", DataType::Utf8, true)),
+                source as Arc<dyn arrow_array::Array>,
+            ),
+            (
+                Arc::new(Field::new("score", DataType::Float64, true)),
+                score as Arc<dyn arrow_array::Array>,
+            ),
+        ]));
+        let new_schema = Arc::new(Schema::new(vec![
+            Field::new("text", DataType::Utf8, false),
+            Field::new("meta", meta_struct, true),
+        ]));
+        let new_batch = RecordBatch::try_new(
+            new_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec!["foo", "bar"])),
+                meta,
+            ],
+        )
+        .unwrap();
+        table.add(new_batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["text", "text_vec", "meta"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        let total_rows: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 3);
+        for batch in &results {
+            assert_eq!(batch.schema().field(2).name(), "meta");
+            assert!(matches!(
+                batch.schema().field(2).data_type(),
+                DataType::Struct(_)
+            ));
+            // text_vec must be populated for the newly added rows too.
+            assert_eq!(batch.column(1).null_count(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_add_casts_to_table_schema() {
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("text", DataType::Utf8, false),
+            Field::new(
+                "embedding",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+                false,
+            ),
+        ]));
+
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false), // Upcast integer
+            Field::new("text", DataType::LargeUtf8, false), // Re-encode string
+            // Cast list of float64 to fixed-size list of float32
+            // (This will only work if list size is correct. See next test.
+            Field::new(
+                "embedding",
+                DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+                false,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("cast_test", table_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(LargeStringArray::from(vec!["hello", "world"])),
+                Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![0.1, 0.2, 0.3, 0.4].into_iter().map(Some)),
+                    Some(vec![0.5, 0.6, 0.7, 0.8].into_iter().map(Some)),
+                ])),
+            ],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let row_count = table.count_rows(None).await.unwrap();
+        assert_eq!(row_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_bad_vector_dimensions() {
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            false,
+        )]));
+
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
+            false,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("cast_test", table_schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(
+                ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                    Some(vec![0.1, 0.2, 0.3, 0.4].into_iter().map(Some)),
+                    Some(vec![0.5, 0.6, 0.8].into_iter().map(Some)),
+                ]),
+            )],
+        )
+        .unwrap();
+        let res = table.add(batch).execute().await;
+
+        // TODO: to recover the error, we will need fix upstream in Lance.
+        // assert!(
+        //     matches!(res, Err(Error::Arrow { source: ArrowError::CastError(_) })),
+        //     "Expected schema mismatch error due to wrong vector dimensions, but got: {res:?}"
+        // );
+        assert!(
+            res.is_err(),
+            "Expected error due to wrong vector dimensions, but got success"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_add_rejects_nan_vectors() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "embedding",
+            DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 4),
+            false,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("nan_test", schema.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                FixedSizeListArray::try_new(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    4,
+                    Arc::new(Float32Array::from(vec![0.1, 0.2, f32::NAN, 0.4])),
+                    None,
+                )
+                .unwrap(),
+            )],
+        )
+        .unwrap();
+        let res = table.add(batch.clone()).execute().await;
+        let err = res.unwrap_err();
+        assert!(
+            err.to_string().contains("NaN"),
+            "Expected error mentioning NaN values, but got: {err:?}"
+        );
+
+        table
+            .add(batch)
+            .on_nan_vectors(NaNVectorBehavior::Keep)
+            .execute()
+            .await
+            .unwrap();
+
+        let row_count = table.count_rows(None).await.unwrap();
+        assert_eq!(row_count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_add_subschema() {
+        let data = record_batch!(("id", Int64, [4, 5]), ("text", Utf8, ["foo", "bar"])).unwrap();
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_table("test", data.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let new_data = record_batch!(("id", Int64, [6, 7])).unwrap();
+        table.add(new_data).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 4);
+        assert_eq!(
+            table
+                .count_rows(Some("id IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            table
+                .count_rows(Some("text IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            2
+        );
+
+        // We can still cast
+        let new_data = record_batch!(("text", LargeUtf8, ["baz", "qux"])).unwrap();
+        table.add(new_data).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 6);
+        assert_eq!(
+            table
+                .count_rows(Some("id IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+        assert_eq!(
+            table
+                .count_rows(Some("text IS NOT NULL".to_string()))
+                .await
+                .unwrap(),
+            4
+        );
+
+        // Extra columns mean an error
+        let new_data =
+            record_batch!(("id", Int64, [8, 9]), ("extra", Utf8, ["extra1", "extra2"])).unwrap();
+        let res = table.add(new_data).execute().await;
+        assert!(
+            res.is_err(),
+            "Expected error due to extra column, but got: {res:?}"
+        );
+
+        // Insert with a subset of struct sub-fields
+        let struct_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(
+                    vec![
+                        Field::new("a", DataType::Int64, true),
+                        Field::new("b", DataType::Utf8, true),
+                    ]
+                    .into(),
+                ),
+                true,
+            ),
+        ]));
+        let db2 = connect("memory://").execute().await.unwrap();
+        let table2 = db2
+            .create_empty_table("struct_test", struct_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Insert with only the "a" sub-field of the struct
+        let sub_struct_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "metadata",
+                DataType::Struct(vec![Field::new("a", DataType::Int64, true)].into()),
+                true,
+            ),
+        ]));
+        let struct_batch = RecordBatch::try_new(
+            sub_struct_schema,
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2])),
+                Arc::new(arrow_array::StructArray::from(vec![(
+                    Arc::new(Field::new("a", DataType::Int64, true)),
+                    Arc::new(arrow_array::Int64Array::from(vec![10, 20]))
+                        as Arc<dyn arrow_array::Array>,
+                )])),
+            ],
+        )
+        .unwrap();
+        table2.add(struct_batch).execute().await.unwrap();
+        assert_eq!(table2.count_rows(None).await.unwrap(), 2);
+    }
+
+    /// Regression test: appending `arrow.json` (PyArrow `pa.json_()`) data into a table
+    /// whose schema was created with `pa.json_()` (internally stored as `lance.json`, backed
+    /// by `LargeBinary`) must succeed without a schema-mismatch error.
+    ///
+    /// Previously `build_field_exprs` would attempt a `Utf8 → LargeBinary` DataFusion cast,
+    /// which produced a field whose Arrow extension metadata still read `arrow.json` instead
+    /// of `lance.json`.  Lance-core then rejected the append with
+    /// `"json vs large_binary" schema mismatch`.
+    ///
+    /// PyArrow's `pa.json_()` may be backed by either `Utf8` or `LargeUtf8` depending on the
+    /// constructor used, so the test is parameterized over the input backing type.
+    #[rstest::rstest]
+    #[case::utf8(DataType::Utf8)]
+    #[case::large_utf8(DataType::LargeUtf8)]
+    #[tokio::test]
+    async fn test_add_arrow_json_into_lance_json_table(
+        #[case] input_type: DataType,
+        #[values(false, true)] table_has_serialized_metadata: bool,
+        #[values(false, true)] input_has_serialized_metadata: bool,
+    ) {
+        use arrow_array::{Array, cast::AsArray};
+        use lance_arrow::ARROW_EXT_NAME_KEY;
+        use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
+
+        // Build a table whose "data" column is lance.json (LargeBinary +
+        // ARROW:extension:name = "lance.json").
+        let mut lance_json_field = lance_arrow::json::json_field("data", true);
+        if table_has_serialized_metadata {
+            let mut metadata = lance_json_field.metadata().clone();
+            metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+            lance_json_field = lance_json_field.with_metadata(metadata);
+        }
+        let table_schema = Arc::new(Schema::new(vec![lance_json_field]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_test", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Sanity-check the stored schema.
+        let stored_field = table.schema().await.unwrap();
+        let data_field = stored_field.field_with_name("data").unwrap();
+        assert_eq!(data_field.data_type(), &DataType::LargeBinary);
+        assert_eq!(
+            data_field
+                .metadata()
+                .get(ARROW_EXT_NAME_KEY)
+                .map(|s| s.as_str()),
+            Some(JSON_EXT_NAME),
+        );
+
+        // Build an arrow.json input field (Utf8/LargeUtf8 + arrow.json extension).
+        // This is what PyArrow produces for pa.json_() arrays.
+        let mut arrow_json_metadata = std::collections::HashMap::from([(
+            ARROW_EXT_NAME_KEY.to_string(),
+            ARROW_JSON_EXT_NAME.to_string(),
+        )]);
+        if input_has_serialized_metadata {
+            arrow_json_metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+        }
+        let arrow_json_field =
+            Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
+        let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
+
+        let rows: Vec<Option<&str>> = vec![None, Some(r#"{"a": 1}"#), Some(r#"{"b": 2}"#)];
+        let string_array: Arc<dyn arrow_array::Array> = match input_type {
+            DataType::Utf8 => Arc::new(arrow_array::StringArray::from(rows.clone())),
+            DataType::LargeUtf8 => Arc::new(arrow_array::LargeStringArray::from(rows.clone())),
+            other => panic!("unsupported arrow.json backing type for this test: {other:?}"),
+        };
+        let batch = RecordBatch::try_new(arrow_json_schema, vec![string_array]).unwrap();
+
+        // This must not fail with a schema-mismatch error.
+        table.add(batch).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), rows.len());
+
+        // A lance.json column is read back as Utf8 carrying arrow.json extension metadata.
+        let results: Vec<RecordBatch> = table
+            .query()
+            .select(Select::columns(&["data"]))
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(results.len(), 1);
+        let batch = &results[0];
+        assert_eq!(batch.num_rows(), rows.len());
+
+        let json_col = batch.column(0);
+        assert_eq!(json_col.data_type(), &DataType::Utf8);
+        let json_strs = json_col.as_string::<i32>();
+
+        for (i, expected) in rows.iter().enumerate() {
+            match expected {
+                None => assert!(json_strs.is_null(i), "row {i} expected null"),
+                Some(raw) => {
+                    assert!(!json_strs.is_null(i), "row {i} expected non-null");
+                    let actual: serde_json::Value = serde_json::from_str(json_strs.value(i))
+                        .expect("read-back JSON should be valid");
+                    let expected: serde_json::Value =
+                        serde_json::from_str(raw).expect("expected JSON should be valid");
+                    assert_eq!(actual, expected, "row {i} JSON mismatch");
+                }
+            }
+        }
+    }
+
+    /// A batch whose json values are all null infers as `DataType::Null` (this is what
+    /// pyarrow produces for a one-row insert with no value). The column's lance.json
+    /// identity lives in the field metadata, so dropping it while casting used to make
+    /// lance-core reject the batch as a schema mismatch.
+    #[tokio::test]
+    async fn test_add_all_null_json_column() {
+        use arrow_array::{Array, cast::AsArray, new_null_array};
+
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            lance_arrow::json::json_field("data", true),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_nulls", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let null_batch = |ids: Vec<i64>| {
+            let len = ids.len();
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("data", DataType::Null, true),
+                ])),
+                vec![
+                    Arc::new(arrow_array::Int64Array::from(ids)),
+                    new_null_array(&DataType::Null, len),
+                ],
+            )
+            .unwrap()
+        };
+
+        // A single all-null row as the very first write, then again after real JSON has
+        // been written - both scenarios from the bug report.
+        table.add(null_batch(vec![1])).execute().await.unwrap();
+
+        let arrow_json_field = Field::new("data", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([(
+                lance_arrow::ARROW_EXT_NAME_KEY.to_string(),
+                lance_arrow::json::ARROW_JSON_EXT_NAME.to_string(),
+            )]),
+        );
+        let populated = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                arrow_json_field,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![2])),
+                Arc::new(arrow_array::StringArray::from(vec![Some(r#"{"a": 1}"#)])),
+            ],
+        )
+        .unwrap();
+        table.add(populated).execute().await.unwrap();
+        table.add(null_batch(vec![3])).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<arrow::datatypes::Int64Type>();
+        let json_strs = batch.column_by_name("data").unwrap().as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            match ids.value(row) {
+                2 => assert_eq!(json_strs.value(row), r#"{"a":1}"#),
+                _ => assert!(json_strs.is_null(row), "row {row} expected null"),
+            }
+        }
+    }
+
+    /// JSON text with no arrow.json label - what pyarrow infers for a column of `str` - is
+    /// encoded as JSONB rather than stored verbatim, at the top level and inside a struct.
+    #[tokio::test]
+    async fn test_add_unlabelled_json_strings() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![
+            lance_arrow::json::json_field("data", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![lance_arrow::json::json_field("value", true)].into()),
+                true,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_strings", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let nested_children: Fields = vec![Field::new("value", DataType::Utf8, true)].into();
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("data", DataType::Utf8, true),
+            Field::new("info", DataType::Struct(nested_children.clone()), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec![
+                    Some(r#"{"a": 1}"#),
+                    None,
+                ])),
+                Arc::new(arrow_array::StructArray::new(
+                    nested_children,
+                    vec![Arc::new(arrow_array::StringArray::from(vec![
+                        Some(r#"{"b": 2}"#),
+                        None,
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let data = batch.column_by_name("data").unwrap().as_string::<i32>();
+        assert_eq!(data.value(0), r#"{"a":1}"#);
+        assert!(data.is_null(1));
+
+        let nested = batch
+            .column_by_name("info")
+            .unwrap()
+            .as_struct()
+            .column_by_name("value")
+            .unwrap()
+            .as_string::<i32>();
+        assert_eq!(nested.value(0), r#"{"b":2}"#);
+        assert!(nested.is_null(1));
+    }
+
+    /// A null struct row survives a cast of one of its children, even when that child is
+    /// non-nullable. Lance checks a non-nullable child for nulls without applying the
+    /// parent's validity, so rebuilding the struct must leave the children untouched.
+    #[tokio::test]
+    async fn test_add_null_struct_with_non_nullable_child() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, false)].into()),
+            true,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("null_struct", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Int32 rather than the table's Int64, so the struct goes through reconstruction.
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, false)].into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(arrow_array::StructArray::new(
+                input_children,
+                vec![Arc::new(arrow_array::Int32Array::from(vec![0, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let s = batch.column_by_name("s").unwrap().as_struct();
+        assert!(s.is_null(0));
+        assert_eq!(
+            s.column_by_name("x")
+                .unwrap()
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .value(1),
+            6
+        );
+    }
+}

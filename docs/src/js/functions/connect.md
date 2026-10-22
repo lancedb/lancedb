@@ -6,13 +6,14 @@
 
 # Function: connect()
 
-## connect(uri, options, session)
+## connect(uri, options, session, headerProvider)
 
 ```ts
 function connect(
    uri,
    options?,
-   session?): Promise<Connection>
+   session?,
+   headerProvider?): Promise<Connection>
 ```
 
 Connect to a LanceDB instance at the given URI.
@@ -34,6 +35,8 @@ Accepted formats:
 
 * **session?**: [`Session`](../classes/Session.md)
 
+* **headerProvider?**: [`HeaderProvider`](../classes/HeaderProvider.md) \| () => `Record`&lt;`string`, `string`&gt; \| () => `Promise`&lt;`Record`&lt;`string`, `string`&gt;&gt;
+
 ### Returns
 
 `Promise`&lt;[`Connection`](../classes/Connection.md)&gt;
@@ -53,6 +56,18 @@ const conn = await connect(
   "s3://bucket/path/to/database",
   {storageOptions: {timeout: "60s"}
 });
+```
+
+Using with a header provider for per-request authentication:
+```ts
+const provider = new StaticHeaderProvider({
+  "X-API-Key": "my-key"
+});
+const conn = await connectWithHeaderProvider(
+  "db://host:port",
+  options,
+  provider
+);
 ```
 
 ## connect(options)

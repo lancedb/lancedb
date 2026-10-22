@@ -29,13 +29,19 @@ protected inner: TakeQuery | Promise<TakeQuery>;
 ### analyzePlan()
 
 ```ts
-analyzePlan(): Promise<string>
+analyzePlan(distributedMetrics?): Promise<string>
 ```
 
 Executes the query and returns the physical query plan annotated with runtime metrics.
 
 This is useful for debugging and performance analysis, as it shows how the query was executed
 and includes metrics such as elapsed time, rows processed, and I/O statistics.
+
+#### Parameters
+
+* **distributedMetrics?**: [`AnalyzePlanDistributedMetrics`](../type-aliases/AnalyzePlanDistributedMetrics.md)
+    How distributed worker metrics are displayed for remote query plans.
+    Defaults to `"aggregate"`.
 
 #### Returns
 
@@ -76,7 +82,7 @@ AnalyzeExec verbose=true, metrics=[]
 ### execute()
 
 ```ts
-protected execute(options?): RecordBatchIterator
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
 ```
 
 Execute the query and return the results as an
@@ -87,7 +93,7 @@ Execute the query and return the results as an
 
 #### Returns
 
-[`RecordBatchIterator`](RecordBatchIterator.md)
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
 
 #### See
 
@@ -143,6 +149,29 @@ const plan = await table.query().nearestTo([0.5, 0.2]).explainPlan();
 
 ***
 
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+[`QueryBase`](QueryBase.md).[`outputSchema`](QueryBase.md#outputschema)
+
+***
+
 ### select()
 
 ```ts
@@ -171,7 +200,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -238,9 +267,34 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
+
+***
+
+### useRTE()
+
+```ts
+useRTE(enable): this
+```
+
+Control RTE read routing for this take query.
+
+`false` bypasses the RTE and reads the base table only — the escape hatch,
+since take-by-row-id/offset is not supported on the LSM scanner and, on a
+RTE table, auto-routes to it and errors otherwise.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `false` reads the base table only.
+
+#### Returns
+
+`this`
 
 ***
 

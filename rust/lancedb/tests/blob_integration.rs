@@ -1,0 +1,2031 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+use std::sync::Arc;
+
+use arrow_array::{
+    Array, ArrayRef, BinaryArray, Int64Array, LargeBinaryArray, RecordBatch, StringArray,
+    StructArray, UInt64Array, new_null_array,
+};
+use arrow_schema::{DataType, Field, Fields, Schema};
+use futures::TryStreamExt;
+use lance::Dataset;
+use lance::blob::blob_field as blob;
+use lance::dataset::WriteParams;
+use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
+use lance_table::format::BasePath;
+use lancedb::{
+    Connection, Error, Result, Table,
+    blob::BlobRangeRequest,
+    connect, connect_namespace,
+    database::listing::{
+        ListingDatabaseOptions, NewTableConfig, OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+        OPT_NEW_TABLE_STORAGE_VERSION,
+    },
+    query::{ExecutableQuery, QueryBase},
+    table::{AddDataMode, CompactionOptions, OptimizeAction, OptimizeStats, WriteOptions},
+};
+use tempfile::tempdir;
+
+fn blob_table_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("image", true),
+    ]))
+}
+
+fn binary_input_batch(ids: &[i64], payloads: &[Option<&[u8]>]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::LargeBinary, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            Arc::new(LargeBinaryArray::from_iter(payloads.iter().copied())),
+        ],
+    )
+    .unwrap()
+}
+
+/// What pyarrow infers for a batch of dicts whose blob values are all `None`.
+fn null_typed_input_batch(ids: &[i64]) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Null, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(ids.to_vec())),
+            new_null_array(&DataType::Null, ids.len()),
+        ],
+    )
+    .unwrap()
+}
+
+async fn create_inline_blob_table(
+    db: &Connection,
+    name: &str,
+    ids: &[i64],
+    payloads: &[Option<&[u8]>],
+) -> Result<Table> {
+    let table = db
+        .create_empty_table(name, blob_table_schema())
+        .execute()
+        .await?;
+    table
+        .add(binary_input_batch(ids, payloads))
+        .execute()
+        .await?;
+    Ok(table)
+}
+
+async fn storage_format_version(table: &Table) -> ConcreteFileVersion {
+    table
+        .as_native()
+        .unwrap()
+        .manifest()
+        .await
+        .unwrap()
+        .data_storage_format
+        .lance_file_format()
+}
+
+fn supports_blob_v2(version: ConcreteFileVersion) -> bool {
+    matches!(
+        version,
+        ConcreteFileVersion::V2_2 | ConcreteFileVersion::V2_3
+    )
+}
+
+async fn uses_stable_row_ids(table: &Table) -> bool {
+    table
+        .as_native()
+        .unwrap()
+        .manifest()
+        .await
+        .unwrap()
+        .uses_stable_row_ids()
+}
+
+async fn query_image_struct(table: &Table) -> StructArray {
+    let batches = table
+        .query()
+        .execute()
+        .await
+        .unwrap()
+        .try_collect::<Vec<_>>()
+        .await
+        .unwrap();
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    batch
+        .column_by_name("image")
+        .expect("image column present")
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .expect("image column is a descriptor struct")
+        .clone()
+}
+
+#[tokio::test]
+async fn declaring_blob_column_uses_v2_2_and_default_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_create_honors_disabled_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn non_blob_table_keeps_default_format_and_row_id_setting() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+
+    assert_eq!(
+        storage_format_version(&table).await,
+        LanceFileVersion::Stable.resolve()
+    );
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn creating_with_blob_data_bumps_format() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+
+    let blob_field = blob("image", true);
+    let DataType::Struct(children) = blob_field.data_type().clone() else {
+        unreachable!("blob field is a struct")
+    };
+    let image = StructArray::new(
+        children,
+        vec![
+            Arc::new(LargeBinaryArray::from_iter_values([b"payload".as_slice()])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+        ],
+        None,
+    );
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            blob_field,
+        ])),
+        vec![Arc::new(Int64Array::from(vec![1])), Arc::new(image)],
+    )
+    .unwrap();
+    let table = db.create_table("t", batch).execute().await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    assert_eq!(table.count_rows(None).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_coerces_large_binary_into_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"cat".as_slice()), Some(b"dog")])
+            .await?;
+
+    assert_eq!(table.count_rows(None).await?, 2);
+    let image = query_image_struct(&table).await;
+    assert_eq!(image.len(), 2);
+    let schema = table.schema().await?;
+    let field = schema.field_with_name("image").unwrap();
+    assert_eq!(
+        field
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str),
+        Some("lance.blob.v2")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_coerces_binary_into_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Binary, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(BinaryArray::from_iter_values([b"small".as_slice()])),
+        ],
+    )
+    .unwrap();
+    table.add(batch).execute().await?;
+
+    assert_eq!(table.count_rows(None).await?, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_accepts_null_blob_rows() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(
+        &db,
+        "t",
+        &[1, 2, 3],
+        &[Some(b"first".as_slice()), None, Some(b"third")],
+    )
+    .await?;
+
+    assert_eq!(table.count_rows(None).await?, 3);
+    let image = query_image_struct(&table).await;
+    assert_eq!(image.len(), 3);
+    Ok(())
+}
+
+/// A batch whose blob values are all null carries no type information — pyarrow infers
+/// `DataType::Null` for it, which is what a row-at-a-time insert of an optional blob column
+/// looks like. Such a batch must be accepted, both as the first write and after bytes have
+/// already been written.
+#[tokio::test]
+async fn add_accepts_all_null_typed_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table.add(null_typed_input_batch(&[1])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 1);
+    assert!(query_image_struct(&table).await.is_null(0));
+
+    table
+        .add(binary_input_batch(&[2], &[Some(b"bytes".as_slice())]))
+        .execute()
+        .await?;
+    table.add(null_typed_input_batch(&[3])).execute().await?;
+    assert_eq!(table.count_rows(None).await?, 3);
+
+    let row_ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert!(bytes.is_null(0));
+    assert_eq!(bytes.value(1), b"bytes");
+    assert!(bytes.is_null(2));
+    Ok(())
+}
+
+#[tokio::test]
+async fn add_rejects_uncoercible_blob_input() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Int64, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(Int64Array::from(vec![42])),
+        ],
+    )
+    .unwrap();
+    let err = table.add(batch).execute().await.unwrap_err();
+    assert!(err.to_string().contains("image"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn connection_disables_stable_row_ids_on_blob_create() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "false")
+        .execute()
+        .await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn namespace_blob_create_uses_v2_2_and_default_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let mut properties = std::collections::HashMap::new();
+    properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+    let db = connect_namespace("dir", properties).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+#[tokio::test]
+async fn namespace_create_honors_enabled_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let mut properties = std::collections::HashMap::new();
+    properties.insert("root".to_string(), tmp.path().to_str().unwrap().to_string());
+    let db = connect_namespace("dir", properties).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(uses_stable_row_ids(&table).await);
+    Ok(())
+}
+
+// Overwrite takes the input schema as-is. A raw-binary overwrite drops the blob
+// marker; re-declaring blob v2 in the input restores it.
+#[tokio::test]
+async fn overwrite_replaces_blob_schema_with_input_schema() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"blob".as_slice())]).await?;
+
+    let raw_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("image", DataType::LargeBinary, true),
+    ]));
+    let raw_batch = RecordBatch::try_new(
+        raw_schema.clone(),
+        vec![
+            Arc::new(Int64Array::from(vec![2])),
+            Arc::new(LargeBinaryArray::from_iter_values([b"plain".as_slice()])),
+        ],
+    )
+    .unwrap();
+    table
+        .add(raw_batch)
+        .mode(AddDataMode::Overwrite)
+        .execute()
+        .await?;
+    let schema = table.schema().await?;
+    assert_eq!(schema, raw_schema);
+    assert!(
+        !schema
+            .field_with_name("image")
+            .unwrap()
+            .metadata()
+            .contains_key("ARROW:extension:name")
+    );
+
+    let blob_field = blob("image", true);
+    let DataType::Struct(children) = blob_field.data_type().clone() else {
+        unreachable!("blob field is a struct")
+    };
+    let image = StructArray::new(
+        children,
+        vec![
+            Arc::new(LargeBinaryArray::from_iter_values([b"declared".as_slice()])),
+            Arc::new(StringArray::from(vec![None::<&str>])),
+        ],
+        None,
+    );
+    let declared_batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            blob_field,
+        ])),
+        vec![Arc::new(Int64Array::from(vec![3])), Arc::new(image)],
+    )
+    .unwrap();
+    table
+        .add(declared_batch)
+        .mode(AddDataMode::Overwrite)
+        .execute()
+        .await?;
+    let schema = table.schema().await?;
+    assert_eq!(
+        schema
+            .field_with_name("image")
+            .unwrap()
+            .metadata()
+            .get("ARROW:extension:name")
+            .map(String::as_str),
+        Some("lance.blob.v2")
+    );
+    Ok(())
+}
+
+async fn collect_row_ids(table: &Table) -> Result<Vec<u64>> {
+    let batches = table
+        .query()
+        .with_row_id()
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    Ok(batch
+        .column_by_name("_rowid")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap()
+        .values()
+        .to_vec())
+}
+
+async fn collect_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
+    let batches = table
+        .query()
+        .with_row_id()
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let row_ids = batch
+        .column_by_name("_rowid")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    Ok(ids
+        .values()
+        .iter()
+        .copied()
+        .zip(row_ids.values().iter().copied())
+        .collect())
+}
+
+fn assert_missing_blob_row_ids(err: &Error) {
+    assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+    let message = err.to_string();
+    assert!(
+        message.contains("row ids but some do not exist in the table"),
+        "{message}"
+    );
+    assert!(!message.contains("rowaddr"), "{message}");
+    assert!(!message.contains("fragment"), "{message}");
+}
+
+async fn assert_fetch_apis_reject_missing_row_ids(table: &Table, row_ids: &[u64]) -> Result<()> {
+    let expected = format!("first missing row ids: [{}]", row_ids[0]);
+    let err = table.fetch_blobs("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
+
+    let err = table.fetch_blob_files("image", row_ids).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
+
+    let err = table
+        .fetch_blob_ranges(
+            "image",
+            row_ids
+                .iter()
+                .copied()
+                .map(|row_id| BlobRangeRequest::new(row_id, 0, 1)),
+        )
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains(&expected), "{err}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_round_trips_bytes() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let payload: &[u8] = b"blob-round-trip-payload";
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(payload)]).await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.len(), 1);
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_round_trips_nested_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+
+    let blob_field = blob("blob", true);
+    let DataType::Struct(blob_children) = blob_field.data_type().clone() else {
+        unreachable!("blob field is a struct")
+    };
+    let blob_array = StructArray::new(
+        blob_children,
+        vec![
+            Arc::new(LargeBinaryArray::from_iter_values([
+                b"hello".as_slice(),
+                b"world".as_slice(),
+            ])) as ArrayRef,
+            Arc::new(StringArray::from(vec![None::<&str>, None::<&str>])) as ArrayRef,
+        ],
+        None,
+    );
+    let info_fields: Fields = vec![Field::new("name", DataType::Utf8, false), blob_field].into();
+    let info_array = StructArray::new(
+        info_fields.clone(),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            Arc::new(blob_array) as ArrayRef,
+        ],
+        None,
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "info",
+        DataType::Struct(info_fields),
+        true,
+    )]));
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(info_array) as ArrayRef]).unwrap();
+    let table = db.create_table("t", batch).execute().await?;
+
+    assert!(supports_blob_v2(storage_format_version(&table).await));
+    assert!(!uses_stable_row_ids(&table).await);
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("info.blob", &ids).await?;
+    assert_eq!(bytes.len(), 2);
+    let values: std::collections::HashSet<&[u8]> =
+        (0..bytes.len()).map(|i| bytes.value(i)).collect();
+    assert!(values.contains(b"hello".as_slice()));
+    assert!(values.contains(b"world".as_slice()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_columns_lists_nested_dotted_paths() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let blob_field = blob("blob", true);
+    let info = Field::new(
+        "info",
+        DataType::Struct(vec![Field::new("name", DataType::Utf8, false), blob_field].into()),
+        true,
+    );
+    let schema = Arc::new(Schema::new(vec![
+        blob("thumbnail", true),
+        Field::new("id", DataType::Int64, false),
+        info,
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail", "info.blob"]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_columns_excludes_list_elements_and_fetches_explain_limitation() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("thumbnail", true),
+        Field::new("imgs", DataType::List(Arc::new(blob("item", true))), true),
+    ]));
+    let table = db
+        .create_empty_table("list_blobs", schema)
+        .execute()
+        .await?;
+
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail"]);
+    for column in ["imgs", "imgs.item"] {
+        let err = table.fetch_blobs(column, &[0]).await.unwrap_err();
+        assert!(matches!(err, Error::InvalidInput { .. }));
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table.fetch_blob_files(column, &[0]).await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+
+        let err = table
+            .fetch_blob_ranges(column, [BlobRangeRequest::new(0, 0, 1)])
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("blobs inside lists cannot be fetched")
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_columns_lists_blob_fields_in_order() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![
+        blob("thumbnail", true),
+        Field::new("id", DataType::Int64, false),
+        blob("image", true),
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    assert_eq!(table.blob_columns().await?, vec!["thumbnail", "image"]);
+
+    let plain = db
+        .create_empty_table(
+            "plain",
+            Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        )
+        .execute()
+        .await?;
+    assert!(plain.blob_columns().await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_preserves_null_alignment() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(
+        &db,
+        "t",
+        &[1, 2, 3, 4],
+        &[Some(b"a".as_slice()), None, Some(b"c"), None],
+    )
+    .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.len(), ids.len());
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), b"a"),
+            2 | 4 => assert!(bytes.is_null(i)),
+            3 => assert_eq!(bytes.value(i), b"c"),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_all_null_column_returns_all_nulls() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[None, None]).await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.len(), 2);
+    assert_eq!(bytes.null_count(), 2);
+
+    let files = table.fetch_blob_files("image", &ids).await?;
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().all(Option::is_none));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_aligns_with_reordered_and_duplicate_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(
+        &db,
+        "t",
+        &[1, 2, 3],
+        &[Some(b"one".as_slice()), Some(b"two"), Some(b"three")],
+    )
+    .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let by_id = |want: i64| pairs.iter().find(|(id, _)| *id == want).unwrap().1;
+    let request = vec![by_id(3), by_id(1), by_id(3), by_id(2)];
+    let bytes = table.fetch_blobs("image", &request).await?;
+    assert_eq!(bytes.len(), 4);
+    assert_eq!(bytes.value(0), b"three");
+    assert_eq!(bytes.value(1), b"one");
+    assert_eq!(bytes.value(2), b"three");
+    assert_eq!(bytes.value(3), b"two");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_aligns_repeated_ranges_and_nulls() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"abcdefghij".as_slice()), None])
+            .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let by_id = |want: i64| pairs.iter().find(|(id, _)| *id == want).unwrap().1;
+    let requests = [
+        BlobRangeRequest::new(by_id(1), 2, 3),
+        BlobRangeRequest::new(by_id(2), 0, 0),
+        BlobRangeRequest::new(by_id(1), 0, 2),
+        BlobRangeRequest::new(by_id(1), 2, 3),
+        BlobRangeRequest::new(by_id(1), 10, 0),
+    ];
+    let bytes = table.fetch_blob_ranges("image", requests).await?;
+
+    assert_eq!(bytes.len(), requests.len());
+    assert_eq!(bytes.value(0), b"cde");
+    assert!(bytes.is_null(1));
+    assert_eq!(bytes.value(2), b"ab");
+    assert_eq!(bytes.value(3), b"cde");
+    assert_eq!(bytes.value(4), b"");
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_validates_requests() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"abc".as_slice())]).await?;
+    let row_id = collect_row_ids(&table).await?[0];
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, 2, 2)])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("exceeds blob size"));
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(row_id, u64::MAX, 1)])
+        .await
+        .unwrap_err();
+    assert!(err.to_string().contains("offset + length overflowed"));
+
+    let err = table
+        .fetch_blob_ranges("image", [BlobRangeRequest::new(u64::MAX, 0, 1)])
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_empty_requests_returns_empty_array() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let bytes = table.fetch_blob_ranges("image", std::iter::empty()).await?;
+    assert!(bytes.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_empty_ids_returns_empty() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    assert_eq!(table.fetch_blobs("image", &[]).await?.len(), 0);
+    assert!(table.fetch_blob_files("image", &[]).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_out_of_range_id_errors_without_panic() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table.fetch_blobs("image", &[u64::MAX]).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_row_past_fragment_end() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2, 3], &[Some(b"a"), Some(b"b"), Some(b"c")])
+            .await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3]).await?;
+    assert_fetch_apis_reject_missing_row_ids(&table, &[3, 0]).await
+}
+
+#[tokio::test]
+async fn fetch_blobs_identifies_multiple_missing_ids_without_partial_results() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"a"), Some(b"b")]).await?;
+
+    let err = table.fetch_blobs("image", &[0, 2, 3]).await.unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    assert!(err.to_string().contains("first missing row ids: [2, 3]"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_rejects_missing_fragment_row_addr() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table
+        .fetch_blob_files("image", &[1u64 << 32])
+        .await
+        .unwrap_err();
+    assert_missing_blob_row_ids(&err);
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_mixed_valid_and_missing_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+    let row_id = collect_row_ids(&table).await?[0];
+    let missing_row_addr = 1u64 << 32;
+    let row_ids = [missing_row_addr, row_id];
+    assert_fetch_apis_reject_missing_row_ids(&table, &row_ids).await
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one".as_slice()), Some(b"two")])
+            .await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_addr = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_addr = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
+
+    table.delete("id = 2").await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_addr, live_row_addr]).await
+}
+
+#[tokio::test]
+async fn fetch_blob_apis_reject_deleted_stable_row_ids() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+    let table = create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"one"), Some(b"two")]).await?;
+    let pairs = collect_id_rowid(&table).await?;
+    let deleted_row_id = pairs.iter().find(|(id, _)| *id == 2).unwrap().1;
+    let live_row_id = pairs.iter().find(|(id, _)| *id == 1).unwrap().1;
+
+    table.delete("id = 2").await?;
+
+    assert_fetch_apis_reject_missing_row_ids(&table, &[deleted_row_id, live_row_id]).await
+}
+
+#[tokio::test]
+async fn fetch_blobs_rejects_non_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table.fetch_blobs("id", &[0]).await.unwrap_err();
+    assert!(matches!(err, Error::InvalidInput { .. }));
+    assert!(err.to_string().contains("'id' is not a blob column"));
+
+    let err = table.fetch_blob_files("id", &[0]).await.unwrap_err();
+    assert!(err.to_string().contains("'id' is not a blob column"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_rejects_unknown_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"x".as_slice())]).await?;
+
+    let err = table.fetch_blobs("missing", &[0]).await.unwrap_err();
+    assert!(err.to_string().contains("no column named 'missing'"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_rejects_legacy_v1_blob_column() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    // Legacy v1 blob columns are only writable at file version <= 2.1.
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, "2.1")])
+        .execute()
+        .await?;
+    let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
+        std::collections::HashMap::from([("lance-encoding:blob".to_string(), "true".to_string())]),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        legacy,
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+
+    let err = table.fetch_blobs("image", &[0]).await.unwrap_err();
+    assert!(err.to_string().contains("legacy blob column"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_reads_lazily_and_aligns_nulls() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table =
+        create_inline_blob_table(&db, "t", &[1, 2], &[Some(b"lazy-bytes".as_slice()), None])
+            .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let files = table.fetch_blob_files("image", &ids).await?;
+    assert_eq!(files.len(), 2);
+    for ((id, _), file) in pairs.iter().zip(&files) {
+        match id {
+            1 => {
+                let handle = file.as_ref().unwrap();
+                assert_eq!(handle.read().await.unwrap().as_ref(), b"lazy-bytes");
+            }
+            2 => assert!(file.is_none()),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_reads_multiple_blob_columns_independently() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("image", true),
+        blob("thumbnail", true),
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    let batch = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::LargeBinary, true),
+            Field::new("thumbnail", DataType::LargeBinary, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])),
+            Arc::new(LargeBinaryArray::from_iter(vec![
+                Some(b"image-1".as_slice()),
+                None,
+            ])),
+            Arc::new(LargeBinaryArray::from_iter(vec![
+                None,
+                Some(b"thumb-2".as_slice()),
+            ])),
+        ],
+    )
+    .unwrap();
+    table.add(batch).execute().await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let images = table.fetch_blobs("image", &ids).await?;
+    let thumbs = table.fetch_blobs("thumbnail", &ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => {
+                assert_eq!(images.value(i), b"image-1");
+                assert!(thumbs.is_null(i));
+            }
+            2 => {
+                assert!(images.is_null(i));
+                assert_eq!(thumbs.value(i), b"thumb-2");
+            }
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_spans_fragments() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
+    table
+        .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))
+        .execute()
+        .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), b"frag-one"),
+            2 => assert_eq!(bytes.value(i), b"frag-two"),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_packed_payload_round_trip() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let big = vec![0xAB_u8; 100 * 1024];
+    let small = b"small".to_vec();
+    let table = create_inline_blob_table(
+        &db,
+        "t",
+        &[1, 2],
+        &[Some(big.as_slice()), Some(small.as_slice())],
+    )
+    .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), big.as_slice()),
+            2 => assert_eq!(bytes.value(i), small.as_slice()),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_after_delete() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(
+        &db,
+        "t",
+        &[1, 2, 3],
+        &[Some(b"one".as_slice()), Some(b"two"), Some(b"three")],
+    )
+    .await?;
+
+    table.delete("id = 2").await?;
+    let pairs = collect_id_rowid(&table).await?;
+    assert_eq!(pairs.len(), 2);
+    let ids: Vec<u64> = pairs.iter().map(|(_, rowid)| *rowid).collect();
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), b"one"),
+            3 => assert_eq!(bytes.value(i), b"three"),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blobs_with_precompaction_row_ids_survives_compaction() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+        .execute()
+        .await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"frag-one".as_slice())]).await?;
+    table
+        .add(binary_input_batch(&[2], &[Some(b"frag-two".as_slice())]))
+        .execute()
+        .await?;
+
+    let pairs_before = collect_id_rowid(&table).await?;
+    let ids_before: Vec<u64> = pairs_before.iter().map(|(_, rowid)| *rowid).collect();
+
+    table
+        .optimize(OptimizeAction::Compact {
+            options: CompactionOptions::default(),
+            remap_options: None,
+        })
+        .await?;
+
+    let bytes_after = table.fetch_blobs("image", &ids_before).await?;
+    assert_eq!(bytes_after.len(), 2);
+    for (i, (id, _)) in pairs_before.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes_after.value(i), b"frag-one"),
+            2 => assert_eq!(bytes_after.value(i), b"frag-two"),
+            _ => unreachable!(),
+        }
+    }
+
+    let ranges = ids_before
+        .iter()
+        .map(|row_id| BlobRangeRequest::new(*row_id, 5, 3));
+    let ranges_after = table.fetch_blob_ranges("image", ranges).await?;
+    assert_eq!(ranges_after.len(), 2);
+    for (i, (id, _)) in pairs_before.iter().enumerate() {
+        match id {
+            1 => assert_eq!(ranges_after.value(i), b"one"),
+            2 => assert_eq!(ranges_after.value(i), b"two"),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn empty_blob_reads_back_as_empty_bytes() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = create_inline_blob_table(&db, "t", &[1], &[Some(b"".as_slice())]).await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.len(), 1);
+    assert!(!bytes.is_null(0));
+    assert!(bytes.value(0).is_empty());
+    Ok(())
+}
+
+const DEDICATED_BLOB_LEN: usize = 64 * 1024;
+const SCRAMBLED_LOGICAL_IDS: [i64; 7] = [6, 3, 1, 4, 6, 2, 5];
+
+fn dedicated_blob_bytes(tag: u8) -> Vec<u8> {
+    vec![tag; DEDICATED_BLOB_LEN]
+}
+
+async fn multi_fragment_dedicated_blob_table(db: &Connection) -> Result<Table> {
+    let rows: [(i64, Option<u8>); 6] = [
+        (1, Some(1)),
+        (2, Some(2)),
+        (3, None),
+        (4, Some(4)),
+        (5, None),
+        (6, Some(6)),
+    ];
+    let mut table: Option<Table> = None;
+    for (logical_id, blob_tag) in rows {
+        let bytes = blob_tag.map(dedicated_blob_bytes);
+        let image = [bytes.as_deref()];
+        table = Some(match table {
+            None => create_inline_blob_table(db, "t", &[logical_id], &image).await?,
+            Some(t) => {
+                t.add(binary_input_batch(&[logical_id], &image))
+                    .execute()
+                    .await?;
+                t
+            }
+        });
+    }
+    Ok(table.unwrap())
+}
+
+async fn row_ids_for_logical(table: &Table, logical_ids: &[i64]) -> Result<Vec<u64>> {
+    let id_rowid = collect_id_rowid(table).await?;
+    Ok(logical_ids
+        .iter()
+        .map(|logical_id| {
+            id_rowid
+                .iter()
+                .find(|(id, _)| id == logical_id)
+                .map(|(_, row_id)| *row_id)
+                .unwrap()
+        })
+        .collect())
+}
+
+#[tokio::test]
+async fn fetch_blobs_aligns_across_fragments_with_nulls_and_dups() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = multi_fragment_dedicated_blob_table(&db).await?;
+    let row_ids = row_ids_for_logical(&table, &SCRAMBLED_LOGICAL_IDS).await?;
+
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert_eq!(bytes.len(), SCRAMBLED_LOGICAL_IDS.len());
+    for (slot, logical_id) in SCRAMBLED_LOGICAL_IDS.iter().enumerate() {
+        match logical_id {
+            3 | 5 => assert!(bytes.is_null(slot)),
+            id => assert_eq!(
+                bytes.value(slot),
+                dedicated_blob_bytes(*id as u8).as_slice()
+            ),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_ranges_aligns_across_fragments_with_nulls_and_dups() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = multi_fragment_dedicated_blob_table(&db).await?;
+    let row_ids = row_ids_for_logical(&table, &SCRAMBLED_LOGICAL_IDS).await?;
+    let requests = row_ids
+        .iter()
+        .map(|row_id| BlobRangeRequest::new(*row_id, 123, 8));
+
+    let bytes = table.fetch_blob_ranges("image", requests).await?;
+    assert_eq!(bytes.len(), SCRAMBLED_LOGICAL_IDS.len());
+    for (slot, logical_id) in SCRAMBLED_LOGICAL_IDS.iter().enumerate() {
+        match logical_id {
+            3 | 5 => assert!(bytes.is_null(slot)),
+            id => assert_eq!(bytes.value(slot), [*id as u8; 8]),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fetch_blob_files_aligns_across_fragments_with_nulls_and_dups() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = multi_fragment_dedicated_blob_table(&db).await?;
+    let row_ids = row_ids_for_logical(&table, &SCRAMBLED_LOGICAL_IDS).await?;
+
+    let files = table.fetch_blob_files("image", &row_ids).await?;
+    assert_eq!(files.len(), SCRAMBLED_LOGICAL_IDS.len());
+    for (slot, logical_id) in SCRAMBLED_LOGICAL_IDS.iter().enumerate() {
+        match logical_id {
+            3 | 5 => assert!(files[slot].is_none()),
+            id => {
+                let payload = files[slot].as_ref().unwrap().read().await?;
+                assert_eq!(payload.as_ref(), dedicated_blob_bytes(*id as u8).as_slice());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Rows exercising the null/empty interleavings from
+/// <https://github.com/lancedb/lancedb/issues/3744>: a payload, a null, a valid
+/// empty value, then payloads whose descriptors a fragment rewrite used to zero.
+fn null_empty_input_batch() -> RecordBatch {
+    let owned = [
+        Some(dedicated_blob_bytes(1)),
+        None,
+        Some(Vec::new()),
+        Some(dedicated_blob_bytes(4)),
+        Some(dedicated_blob_bytes(5)),
+        Some(dedicated_blob_bytes(6)),
+    ];
+    let payloads: Vec<Option<&[u8]>> = owned.iter().map(|payload| payload.as_deref()).collect();
+    binary_input_batch(&[1, 2, 3, 4, 5, 6], &payloads)
+}
+
+/// One `(id, Some((payload length, first byte)))` per live row, or `(id, None)`
+/// for a null blob.  Comparing lengths and first bytes keeps failure output
+/// readable where comparing whole payloads would not.
+type BlobSummary = Vec<(i64, Option<(usize, Option<u8>)>)>;
+
+/// The rows [`null_empty_input_batch`] leaves behind after `id IN (1, 4)` is
+/// deleted: a null, a valid empty value, and the two payloads that follow them.
+fn expected_null_empty_survivors() -> BlobSummary {
+    vec![
+        (2, None),
+        (3, Some((0, None))),
+        (5, Some((DEDICATED_BLOB_LEN, Some(5)))),
+        (6, Some((DEDICATED_BLOB_LEN, Some(6)))),
+    ]
+}
+
+/// `optimize()` only rewrites a fragment when lance's compaction planner selects
+/// it — here because the delete pushes the fragment past
+/// `materialize_deletions_threshold` (0.1 by default; these tests delete 2 of 6
+/// rows). Without this check, a planner or threshold change upstream would leave
+/// both regression tests green while no rewrite happened at all.
+fn assert_compacted(stats: &OptimizeStats) {
+    let metrics = stats
+        .compaction
+        .as_ref()
+        .expect("OptimizeAction::All runs compaction");
+    assert!(
+        metrics.fragments_removed >= 1,
+        "optimize() rewrote no fragment, so this test proves nothing: {metrics:?}"
+    );
+}
+
+fn summarize(rows: &[(i64, Option<Vec<u8>>)]) -> BlobSummary {
+    rows.iter()
+        .map(|(id, payload)| {
+            (
+                *id,
+                payload
+                    .as_ref()
+                    .map(|bytes| (bytes.len(), bytes.first().copied())),
+            )
+        })
+        .collect()
+}
+
+async fn sorted_id_rowid(table: &Table) -> Result<Vec<(i64, u64)>> {
+    let mut pairs = collect_id_rowid(table).await?;
+    pairs.sort_by_key(|(id, _)| *id);
+    Ok(pairs)
+}
+
+/// `{position, size}` descriptors of a legacy v1 blob column, keyed by `id`.
+async fn v1_blob_descriptors(table: &Table) -> Result<Vec<(i64, Option<(u64, u64)>)>> {
+    let batches = table
+        .query()
+        .execute()
+        .await?
+        .try_collect::<Vec<_>>()
+        .await?;
+    let batch = arrow_select::concat::concat_batches(&batches[0].schema(), &batches).unwrap();
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let descriptors = batch
+        .column_by_name("image")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .expect("v1 blob column reads back as a descriptor struct");
+    let position = descriptors
+        .column_by_name("position")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    let size = descriptors
+        .column_by_name("size")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    let mut rows: Vec<(i64, Option<(u64, u64)>)> = (0..batch.num_rows())
+        .map(|row| {
+            let descriptor =
+                (!descriptors.is_null(row)).then(|| (position.value(row), size.value(row)));
+            (ids.value(row), descriptor)
+        })
+        .collect();
+    rows.sort_by_key(|(id, _)| *id);
+    Ok(rows)
+}
+
+/// Payload bytes of every live row of a legacy v1 blob column, keyed by `id`.
+/// [`Table::fetch_blobs`] rejects v1 columns, so read them through lance.
+async fn v1_blob_payloads(dataset_uri: &str, table: &Table) -> Result<Vec<(i64, Option<Vec<u8>>)>> {
+    let pairs = sorted_id_rowid(table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();
+    let dataset = Arc::new(Dataset::open(dataset_uri).await?);
+    let files = dataset.take_blobs(&row_ids, "image").await?;
+    assert_eq!(
+        files.len(),
+        pairs.len(),
+        "take_blobs returned {} handles for {} live rows",
+        files.len(),
+        pairs.len()
+    );
+    let mut rows = Vec::with_capacity(pairs.len());
+    for ((id, _), file) in pairs.iter().zip(files) {
+        let payload = match file {
+            Some(file) => Some(file.read().await?.to_vec()),
+            None => None,
+        };
+        rows.push((*id, payload));
+    }
+    Ok(rows)
+}
+
+/// Length and first byte of every live blob v2 value, keyed by `id`.
+async fn blob_v2_values(table: &Table) -> Result<BlobSummary> {
+    let pairs = sorted_id_rowid(table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    Ok(pairs
+        .iter()
+        .enumerate()
+        .map(|(slot, (id, _))| {
+            let value = (!bytes.is_null(slot))
+                .then(|| (bytes.value(slot).len(), bytes.value(slot).first().copied()));
+            (*id, value)
+        })
+        .collect())
+}
+
+/// Regression test for [#3744]: on storage 2.0 (legacy v1 descriptors),
+/// compaction rewrote every payload following a null or empty value in the same
+/// fragment as `{position: 0, size: 0}`, so the payload bytes read back as `b""`
+/// and the new fragment no longer referenced them at all.
+///
+/// [#3744]: https://github.com/lancedb/lancedb/issues/3744
+#[tokio::test]
+async fn optimize_preserves_v1_blob_payloads_with_null_and_empty() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db_uri = tmp.path().to_str().unwrap().to_string();
+    let db = connect(&db_uri)
+        .database_options(&ListingDatabaseOptions {
+            new_table_config: NewTableConfig {
+                data_storage_version: Some(LanceFileVersion::V2_0),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+        .execute()
+        .await?;
+    let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
+        std::collections::HashMap::from([("lance-encoding:blob".to_string(), "true".to_string())]),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        legacy,
+    ]));
+    let table = db.create_empty_table("t", schema).execute().await?;
+    table.add(null_empty_input_batch()).execute().await?;
+    assert_eq!(
+        storage_format_version(&table).await,
+        LanceFileVersion::V2_0.resolve(),
+        "v1 blob descriptors only exist below storage 2.2"
+    );
+    let dataset_uri = table.uri().await?;
+
+    // Any rewrite triggers it; deleting rows is the shape from the issue.
+    table.delete("id IN (1, 4)").await?;
+    let descriptors_before = v1_blob_descriptors(&table).await?;
+    let before = v1_blob_payloads(&dataset_uri, &table).await?;
+    assert_eq!(
+        summarize(&before),
+        expected_null_empty_survivors(),
+        "test setup no longer produces the null/empty/payload mix"
+    );
+
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
+
+    let descriptors_after = v1_blob_descriptors(&table).await?;
+    let after = v1_blob_payloads(&dataset_uri, &table).await?;
+    assert_eq!(
+        summarize(&after),
+        summarize(&before),
+        "optimize() lost blob payloads; descriptors before={descriptors_before:?} after={descriptors_after:?}"
+    );
+    assert!(after == before, "optimize() changed blob payload bytes");
+    Ok(())
+}
+
+/// Regression test for the blob v2 half of [#3744]: compaction rewrote a valid
+/// empty value as null, destroying the null-vs-empty distinction.
+///
+/// [#3744]: https://github.com/lancedb/lancedb/issues/3744
+#[tokio::test]
+async fn optimize_preserves_blob_v2_null_and_empty_distinction() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+    table.add(null_empty_input_batch()).execute().await?;
+    assert!(
+        supports_blob_v2(storage_format_version(&table).await),
+        "blob v2 columns require storage >= 2.2"
+    );
+
+    table.delete("id IN (1, 4)").await?;
+    let before = blob_v2_values(&table).await?;
+    assert_eq!(
+        before,
+        expected_null_empty_survivors(),
+        "test setup no longer produces the null/empty/payload mix"
+    );
+
+    let stats = table.optimize(OptimizeAction::All).await?;
+    assert_compacted(&stats);
+
+    assert_eq!(
+        blob_v2_values(&table).await?,
+        before,
+        "optimize() changed blob v2 values"
+    );
+    Ok(())
+}
+
+fn uri_struct_batch(id: i64, uri: &str) -> RecordBatch {
+    let image_field = blob("image", true);
+    let DataType::Struct(child_fields) = image_field.data_type().clone() else {
+        unreachable!("blob field is a struct");
+    };
+    let children: Vec<ArrayRef> = child_fields
+        .iter()
+        .map(|field| match field.name().as_str() {
+            "uri" => Arc::new(StringArray::from(vec![Some(uri)])) as ArrayRef,
+            _ => new_null_array(field.data_type(), 1),
+        })
+        .collect();
+    let image = StructArray::new(child_fields, children, None);
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            image_field,
+        ])),
+        vec![Arc::new(Int64Array::from(vec![id])), Arc::new(image)],
+    )
+    .unwrap()
+}
+
+fn uri_string_batch(id: i64, uri: &str) -> RecordBatch {
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("image", DataType::Utf8, true),
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![id])),
+            Arc::new(StringArray::from(vec![Some(uri)])),
+        ],
+    )
+    .unwrap()
+}
+
+fn write_payload_file_uri(dir: &std::path::Path, name: &str, payload: &[u8]) -> String {
+    let path = dir.join(name);
+    std::fs::write(&path, payload).unwrap();
+    url::Url::from_file_path(&path).unwrap().to_string()
+}
+
+#[tokio::test]
+async fn external_uri_struct_round_trips_with_flag() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let payload: &[u8] = b"external-struct-payload";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table
+        .add(uri_struct_batch(1, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_ranges_round_trip_with_registered_base_and_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let payload = b"0123456789abcdef";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let base_uri = url::Url::from_directory_path(tmp.path())
+        .unwrap()
+        .to_string();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+
+    for registered_base in [false, true] {
+        let field = lancedb::blob("image", true);
+        let DataType::Struct(children) = field.data_type().clone() else {
+            unreachable!("blob field is a struct");
+        };
+        let schema = Arc::new(Schema::new(vec![field]));
+        let name = if registered_base {
+            "registered"
+        } else {
+            "opt_in"
+        };
+        let table = db
+            .create_empty_table(name, schema.clone())
+            .write_options(WriteOptions {
+                lance_write_params: Some(WriteParams {
+                    initial_bases: registered_base.then(|| {
+                        vec![BasePath {
+                            id: 1,
+                            name: Some("external".to_string()),
+                            path: base_uri.clone(),
+                            is_dataset_root: false,
+                        }]
+                    }),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await?;
+        let values = StructArray::new(
+            children,
+            vec![
+                Arc::new(LargeBinaryArray::from(vec![
+                    None,
+                    None,
+                    None,
+                    Some(b"inline".as_slice()),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    Some(uri.as_str()),
+                    None,
+                ])),
+                Arc::new(UInt64Array::from(vec![Some(0), Some(4), None, None])),
+                Arc::new(UInt64Array::from(vec![Some(6), Some(6), None, None])),
+            ],
+            None,
+        );
+        table
+            .add(RecordBatch::try_new(schema, vec![Arc::new(values)])?)
+            .allow_external_blob_outside_bases(!registered_base)
+            .execute()
+            .await?;
+        let reopened = db.open_table(name).execute().await?;
+        let ids = collect_row_ids(&reopened).await?;
+        let bytes = reopened.fetch_blobs("image", &ids).await?;
+        assert_eq!(bytes.value(0), &payload[..6]);
+        assert_eq!(bytes.value(1), &payload[4..10]);
+        assert_eq!(bytes.value(2), payload);
+        assert_eq!(bytes.value(3), b"inline");
+        let files = reopened.fetch_blob_files("image", &ids).await?;
+        assert_eq!(files[1].as_ref().unwrap().size(), 6);
+        assert_eq!(
+            files[1].as_ref().unwrap().read_range(1..3).await?,
+            &payload[5..7]
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_uri_add_requires_opt_in() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", b"unreachable");
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let err = table
+        .add(uri_struct_batch(1, &uri))
+        .execute()
+        .await
+        .unwrap_err();
+
+    assert!(
+        err.to_string()
+            .contains("allow_external_blob_outside_bases"),
+        "got: {err}"
+    );
+    assert_eq!(table.count_rows(None).await?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn string_uri_input_round_trips_as_external_reference() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let payload: &[u8] = b"external-string-payload";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", payload);
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    table
+        .add(uri_string_batch(1, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+
+    let files = table.fetch_blob_files("image", &ids).await?;
+    let file = files[0].as_ref().expect("missing blob file");
+    assert_eq!(file.uri(), Some(uri.as_str()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn string_uri_inside_registered_base_does_not_need_the_flag() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db_path = tmp.path().join("db");
+    let external_base = tmp.path().join("external_base");
+    let object_dir = external_base.join("objects");
+    std::fs::create_dir_all(&object_dir).unwrap();
+    let payload: &[u8] = b"mapped-in-base";
+    let object_path = object_dir.join("mapped.bin");
+    std::fs::write(&object_path, payload).unwrap();
+    let object_uri = url::Url::from_file_path(&object_path).unwrap().to_string();
+    let base_uri = url::Url::from_file_path(&external_base)
+        .unwrap()
+        .to_string();
+
+    let db = connect(db_path.to_str().unwrap()).execute().await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .write_options(WriteOptions {
+            lance_write_params: Some(WriteParams {
+                initial_bases: Some(vec![BasePath {
+                    id: 1,
+                    name: Some("external".to_string()),
+                    path: base_uri,
+                    is_dataset_root: false,
+                }]),
+                ..Default::default()
+            }),
+        })
+        .execute()
+        .await?;
+
+    table
+        .add(uri_string_batch(1, &object_uri))
+        .execute()
+        .await?;
+
+    let ids = collect_row_ids(&table).await?;
+    let bytes = table.fetch_blobs("image", &ids).await?;
+    assert_eq!(bytes.value(0), payload);
+    Ok(())
+}
+
+#[tokio::test]
+async fn external_uri_rows_mix_with_inline_rows() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let external_payload: &[u8] = b"external-bytes";
+    let uri = write_payload_file_uri(tmp.path(), "payload.bin", external_payload);
+    let table =
+        create_inline_blob_table(&db, "t", &[1], &[Some(b"inline-bytes".as_slice())]).await?;
+
+    table
+        .add(uri_string_batch(2, &uri))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await?;
+
+    let pairs = collect_id_rowid(&table).await?;
+    let row_ids: Vec<u64> = pairs.iter().map(|(_, r)| *r).collect();
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    for (i, (id, _)) in pairs.iter().enumerate() {
+        match id {
+            1 => assert_eq!(bytes.value(i), b"inline-bytes"),
+            2 => assert_eq!(bytes.value(i), external_payload),
+            _ => unreachable!(),
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn malformed_string_uri_is_rejected_at_write() -> Result<()> {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().join("db").to_str().unwrap())
+        .execute()
+        .await?;
+    let table = db
+        .create_empty_table("t", blob_table_schema())
+        .execute()
+        .await?;
+
+    let err = table
+        .add(uri_string_batch(1, "not a uri"))
+        .allow_external_blob_outside_bases(true)
+        .execute()
+        .await
+        .unwrap_err();
+
+    assert!(err.to_string().contains("not a uri"), "got: {err}");
+    assert_eq!(table.count_rows(None).await?, 0);
+    Ok(())
+}
+
+fn layout_batch(wide: bool, id: i64, position: Option<u64>, size: Option<u64>) -> RecordBatch {
+    let field = if wide {
+        lancedb::blob("image", true)
+    } else {
+        blob("image", true)
+    };
+    let DataType::Struct(children) = field.data_type().clone() else {
+        unreachable!()
+    };
+    let mut columns: Vec<arrow_array::ArrayRef> = vec![
+        Arc::new(LargeBinaryArray::from(vec![Some(b"payload".as_slice())])),
+        new_null_array(&DataType::Utf8, 1),
+    ];
+    if wide {
+        columns.push(Arc::new(UInt64Array::from(vec![position])));
+        columns.push(Arc::new(UInt64Array::from(vec![size])));
+    }
+    RecordBatch::try_new(
+        Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            field,
+        ])),
+        vec![
+            Arc::new(Int64Array::from(vec![id])),
+            Arc::new(StructArray::new(children, columns, None)),
+        ],
+    )
+    .unwrap()
+}
+
+fn layout_reader(batches: Vec<RecordBatch>) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+    let schema = batches[0].schema();
+    Box::new(arrow_array::RecordBatchIterator::new(
+        batches.into_iter().map(Ok),
+        schema,
+    ))
+}
+
+#[tokio::test]
+async fn blob_layout_append_and_merge_normalize_both_directions() -> Result<()> {
+    for wide in [false, true] {
+        for merge in [false, true] {
+            let tmp = tempdir().unwrap();
+            let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+            let initial = layout_batch(wide, 1, None, None);
+            let schema = initial.schema();
+            let table = db.create_table("layouts", initial).execute().await?;
+            let input = layout_batch(!wide, if merge { 1 } else { 2 }, None, None);
+            if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                let result = builder
+                    .execute(layout_reader(vec![
+                        input,
+                        layout_batch(!wide, 2, None, None),
+                    ]))
+                    .await?;
+                assert_eq!(result.num_updated_rows, 1);
+                assert_eq!(result.num_inserted_rows, 1);
+            } else {
+                table.add(input).execute().await?;
+            }
+            assert_eq!(table.schema().await?, schema);
+            assert_eq!(table.count_rows(None).await?, 2);
+            let ids = collect_row_ids(&table).await?;
+            let values = table.fetch_blobs("image", &ids).await?;
+            assert_eq!(values.value(0), b"payload");
+            assert_eq!(values.value(1), b"payload");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_rejects_non_null_ranges_atomically_in_later_batches() -> Result<()> {
+    for merge in [false, true] {
+        for (position, size) in [(Some(0), None), (None, Some(6)), (Some(0), Some(6))] {
+            let tmp = tempdir().unwrap();
+            let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+            let table = db
+                .create_table("layouts", layout_batch(false, 1, None, None))
+                .execute()
+                .await?;
+            let version = table.version().await?;
+            // A successful first batch must not commit when a later batch has a range.
+            let input = layout_reader(vec![
+                layout_batch(true, 2, None, None),
+                layout_batch(true, 3, position, size),
+            ]);
+            let result = if merge {
+                let mut builder = table.merge_insert(&["id"]);
+                builder
+                    .when_matched_update_all(None)
+                    .when_not_matched_insert_all();
+                builder.execute(input).await.map(|_| ())
+            } else {
+                table.add(input).execute().await.map(|_| ())
+            };
+            let error = result.unwrap_err().to_string();
+            assert!(error.contains("cannot store byte ranges"), "{error}");
+            assert_eq!(table.version().await?, version);
+            assert_eq!(table.count_rows(None).await?, 1);
+            let ids = collect_row_ids(&table).await?;
+            assert_eq!(table.fetch_blobs("image", &ids).await?.value(0), b"payload");
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_overwrite_replaces_schema_in_both_directions() -> Result<()> {
+    for wide in [false, true] {
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+        let table = db
+            .create_table("layouts", layout_batch(wide, 1, None, None))
+            .execute()
+            .await?;
+        let input = layout_batch(!wide, 2, None, None);
+        let expected_schema = input.schema();
+        table
+            .add(input)
+            .mode(AddDataMode::Overwrite)
+            .execute()
+            .await?;
+        assert_eq!(table.schema().await?, expected_schema);
+        assert_eq!(table.count_rows(None).await?, 1);
+        let ids = collect_row_ids(&table).await?;
+        assert_eq!(table.fetch_blobs("image", &ids).await?.value(0), b"payload");
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn blob_layout_rte_merge_normalizes_before_writing() -> Result<()> {
+    use lancedb::{query::Select, table::RTEWriteSpec};
+    for wide in [false, true] {
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap()).execute().await?;
+        let table = db
+            .create_table("layouts", layout_batch(wide, 1, None, None))
+            .execute()
+            .await?;
+        table.set_unenforced_primary_key(["id"]).await?;
+        table.enable_rte(RTEWriteSpec::unsharded()).await?;
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        merge
+            .clone()
+            .execute(layout_reader(vec![layout_batch(!wide, 2, None, None)]))
+            .await?;
+        let batches = table
+            .query()
+            .select(Select::columns(&["id"]))
+            .execute()
+            .await?
+            .try_collect::<Vec<_>>()
+            .await?;
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+        if !wide {
+            let error = merge
+                .execute(layout_reader(vec![
+                    layout_batch(true, 3, None, None),
+                    layout_batch(true, 4, Some(0), Some(6)),
+                ]))
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("cannot store byte ranges"));
+            let batches = table
+                .query()
+                .select(Select::columns(&["id"]))
+                .execute()
+                .await?
+                .try_collect::<Vec<_>>()
+                .await?;
+            assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
+        }
+    }
+    Ok(())
+}

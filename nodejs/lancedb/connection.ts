@@ -3,12 +3,12 @@
 
 import {
   Data,
-  Schema,
   SchemaLike,
   TableLike,
   fromTableToStreamBuffer,
   isArrowTable,
   makeArrowTable,
+  resolveBlobInputs,
 } from "./arrow";
 import {
   Table as ArrowTable,
@@ -16,7 +16,31 @@ import {
   makeEmptyTable,
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import { Job } from "./job";
+import { Listing, ListingOptions, validateListingOptions } from "./listing";
+import {
+  MaterializedView,
+  MaterializedViewSelect,
+  normalizeSelect,
+  validateNonNegativeInteger,
+} from "./materialized_view";
 import { Connection as LanceDbConnection } from "./native";
+import type {
+  CreateNamespaceResponse,
+  DescribeNamespaceResponse,
+  DropNamespaceResponse,
+  JobInfo,
+  ListNamespacesResponse,
+  ListTablesResponse,
+} from "./native";
+import { ViewDescription, viewDescriptionFromNative } from "./view";
+export type {
+  CreateNamespaceResponse,
+  DescribeNamespaceResponse,
+  DropNamespaceResponse,
+  ListNamespacesResponse,
+  ListTablesResponse,
+};
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
 
@@ -43,7 +67,7 @@ export interface CreateTableOptions {
    * Options already set on the connection will be inherited by the table,
    * but can be overridden here.
    *
-   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   * The available options are described at https://docs.lancedb.com/storage/
    */
   storageOptions?: Record<string, string>;
 
@@ -74,12 +98,26 @@ export interface CreateTableOptions {
 
 export interface OpenTableOptions {
   /**
+   * Open the table scoped to this branch instead of the default branch.
+   *
+   * Reads and writes on the returned table operate in the branch's context.
+   */
+  branch?: string;
+  /**
+   * Open the table pinned to this version, producing a read-only view.
+   *
+   * Composes with {@link OpenTableOptions.branch}: when both are set, opens
+   * that branch at the version; otherwise opens `main` at the version. Call
+   * `checkoutLatest` to return to a writable state.
+   */
+  version?: number;
+  /**
    * Configuration for object storage.
    *
    * Options already set on the connection will be inherited by the table,
    * but can be overridden here.
    *
-   * The available options are described at https://lancedb.github.io/lancedb/guides/storage/
+   * The available options are described at https://docs.lancedb.com/storage/
    */
   storageOptions?: Record<string, string>;
   /**
@@ -99,6 +137,10 @@ export interface OpenTableOptions {
   indexCacheSize?: number;
 }
 
+/**
+ * @deprecated Use {@link ListTablesOptions} with {@link Connection.listTables}
+ * instead.
+ */
 export interface TableNamesOptions {
   /**
    * If present, only return names that come lexicographically after the
@@ -108,9 +150,63 @@ export interface TableNamesOptions {
    * the last table name from the previous page.
    */
   startAfter?: string;
+  /** The maximum number of names to return. Omitted returns all names; zero returns none. */
+  limit?: number;
+}
+
+export interface ListTablesOptions {
+  /**
+   * Token from a previous response, to resume listing where it left off.
+   *
+   * The token is opaque: it carries whatever the database needs to resume, and
+   * callers should not construct or interpret one.
+   */
+  pageToken?: string;
+  /**
+   * An upper bound on how many tables to return.
+   * Defaults to 100. Zero returns an empty page without a continuation token.
+   *
+   * A page may hold fewer than this and still not be the last one, so keep
+   * going while the response carries a page token rather than while pages are
+   * full.
+   */
+  limit?: number;
+}
+
+export interface ListNamespacesOptions {
+  /** Token from a previous response for pagination. */
+  pageToken?: string;
   /** An optional limit to the number of results to return. */
   limit?: number;
 }
+
+export interface CreateNamespaceOptions {
+  /** Creation mode. */
+  mode?: "create" | "exist_ok" | "overwrite";
+  /** Properties to set on the new namespace. */
+  properties?: Record<string, string>;
+}
+
+export interface DropNamespaceOptions {
+  /** Whether to skip if the namespace doesn't exist, or fail. */
+  mode?: "skip" | "fail";
+  /** Refuse to drop if non-empty (restrict) or drop recursively (cascade). */
+  behavior?: "restrict" | "cascade";
+}
+
+export interface RenameTableOptions {
+  /**
+   * The namespace path of the table being renamed. Defaults to the root
+   * namespace (`[]`) when omitted.
+   */
+  namespacePath?: string[];
+  /**
+   * The namespace path to move the table to as part of the rename. When
+   * omitted the table stays in `namespacePath`.
+   */
+  newNamespacePath?: string[];
+}
+
 /**
  * A LanceDB Connection that allows you to open tables and create new ones.
  *
@@ -161,31 +257,185 @@ export abstract class Connection {
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point (backwards compatibility)
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(options?: Partial<TableNamesOptions>): Promise<string[]>;
   /**
    * List all the table names in this database.
    *
    * Tables will be returned in lexicographical order.
-   * @param {string[]} namespace - The namespace to list tables from (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to list tables from (defaults to root namespace)
    * @param {Partial<TableNamesOptions>} options - options to control the
    * paging / start point
    *
+   * @deprecated Use {@link Connection.listTables} instead.
    */
   abstract tableNames(
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]>;
 
   /**
+   * List a page of the tables in this database.
+   *
+   * To retrieve the tables after the page, pass the `pageToken` the response
+   * carries back in. A page can be shorter than `limit` without being the last
+   * one, so walk until a response carries no page token:
+   *
+   * ```ts
+   * const names = [];
+   * let pageToken = undefined;
+   * do {
+   *   const page = await conn.listTables({ pageToken, limit: 100 });
+   *   names.push(...page.tables);
+   *   pageToken = page.pageToken;
+   * } while (pageToken);
+   * ```
+   *
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
+  /**
+   * List a page of the tables in this database.
+   *
+   * @param {string[]} namespacePath - The namespace path to list tables from
+   *   (defaults to root namespace)
+   * @param {Partial<ListTablesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListTablesResponse>} A page of table names and an
+   *   optional token for the tables after it.
+   */
+  abstract listTables(
+    namespacePath?: string[],
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse>;
+
+  /**
    * Open a table in the database.
    * @param {string} name - The name of the table
-   * @param {string[]} namespace - The namespace of the table (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path of the table (defaults to root namespace)
    * @param {Partial<OpenTableOptions>} options - Additional options
    */
+  /**
+   * Define a materialized view named `name` over the table `source`.
+   *
+   * The view is populated before creation returns. Set `withNoData` to create
+   * only its definition and empty backing table. The view is a normal table:
+   * it can be queried, indexed and searched, and it appears in `tableNames`.
+   */
+  abstract createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+      withNoData?: boolean;
+    },
+  ): Promise<MaterializedView>;
+
+  /**
+   * Open the materialized view named `name`.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract openMaterializedView(name: string): Promise<MaterializedView>;
+
+  /**
+   * The names of the materialized views in this database.
+   *
+   * Iterate lazily with `for await...of`. Local listings inspect table schemas
+   * one page at a time. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
+   */
+  abstract listMaterializedViews(options?: ListingOptions): Listing<string>;
+
+  /**
+   * Drop the materialized view named `name`.
+   *
+   * The view may become unavailable before physical cleanup finishes. Use
+   * {@link dropMaterializedViewAsync} to retain and wait for the cleanup job.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void>;
+
+  /**
+   * Start dropping the materialized view named `name` and return its cleanup
+   * job without waiting for completion.
+   *
+   * Rejects a table that exists but is not a materialized view.
+   */
+  abstract dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job>;
+
+  /**
+   * Create a view: a named query the database plans on every read.
+   *
+   * The query is planned once, at creation, so one that cannot be planned is
+   * rejected now rather than at the first read. A view holds no rows, and its
+   * readers see its sources as they are at read time.
+   *
+   * There is no replace: a name already taken is an error, and changing a
+   * view is a drop followed by a create.
+   */
+  abstract createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * What this database records about the view named `name`: its defining
+   * query and the schema that query resolved to.
+   */
+  abstract describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription>;
+
+  /**
+   * Drop the view named `name` and wait for its definition to be deleted.
+   *
+   * The tables it reads are untouched: a view holds no rows of its own. Use
+   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
+   */
+  abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping the view named `name` and return the job deleting its
+   * definition, without waiting for completion.
+   *
+   * The name is free before this resolves. When nothing was bound to it, the
+   * returned job is already finished and has no id.
+   */
+  abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
+
+  /**
+   * The names of the views in one namespace.
+   *
+   * Names only; a definition comes from {@link describeView}.
+   * Iterate lazily with `for await...of`. See {@link Listing} for pagination
+   * state and error behavior; options control page size and the starting token.
+   */
+  abstract listViews(
+    namespacePath?: string[],
+    options?: ListingOptions,
+  ): Listing<string>;
+
   abstract openTable(
     name: string,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table>;
 
@@ -194,7 +444,7 @@ export abstract class Connection {
    * @param {object} options - The options object.
    * @param {string} options.name - The name of the table.
    * @param {Data} options.data - Non-empty Array of Records to be inserted into the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    *
    */
   abstract createTable(
@@ -202,7 +452,7 @@ export abstract class Connection {
       name: string;
       data: Data;
     } & Partial<CreateTableOptions>,
-    namespace?: string[],
+    namespacePath?: string[],
   ): Promise<Table>;
   /**
    * Creates a new Table and initialize it with new data.
@@ -221,13 +471,13 @@ export abstract class Connection {
    * @param {string} name - The name of the table.
    * @param {Record<string, unknown>[] | TableLike} data - Non-empty Array of Records
    * to be inserted into the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createTable(
     name: string,
     data: Record<string, unknown>[] | TableLike,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
@@ -246,28 +496,188 @@ export abstract class Connection {
    * Creates a new empty Table
    * @param {string} name - The name of the table.
    * @param {Schema} schema - The schema of the table
-   * @param {string[]} namespace - The namespace to create the table in (defaults to root namespace)
+   * @param {string[]} namespacePath - The namespace path to create the table in (defaults to root namespace)
    * @param {Partial<CreateTableOptions>} options - Additional options
    */
   abstract createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table>;
 
   /**
    * Drop an existing table.
    * @param {string} name The name of the table to drop.
-   * @param {string[]} namespace The namespace of the table (defaults to root namespace).
+   * @param {string[]} namespacePath The namespace path of the table (defaults to root namespace).
    */
-  abstract dropTable(name: string, namespace?: string[]): Promise<void>;
+  abstract dropTable(name: string, namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Start dropping a table and return its cleanup job.
+   *
+   * The table may become unavailable before its data files are removed. Wait
+   * on the returned job to know when cleanup has finished.
+   */
+  abstract dropTableAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
   /**
    * Drop all tables in the database.
-   * @param {string[]} namespace The namespace to drop tables from (defaults to root namespace).
+   * @param {string[]} namespacePath The namespace path to drop tables from (defaults to root namespace).
    */
-  abstract dropAllTables(namespace?: string[]): Promise<void>;
+  abstract dropAllTables(namespacePath?: string[]): Promise<void>;
+
+  /**
+   * Describe a namespace, returning its properties.
+   *
+   * @param {string[]} namespacePath - The namespace path to describe, in
+   *   parent → child order, e.g. `["analytics", "sales"]`.
+   * @returns {Promise<DescribeNamespaceResponse>} The namespace's properties
+   *   (may be undefined if the namespace has none).
+   */
+  abstract describeNamespace(
+    namespacePath: string[],
+  ): Promise<DescribeNamespaceResponse>;
+
+  /**
+   * List the immediate child namespaces under the given parent.
+   *
+   * Results may be paginated. To retrieve subsequent pages, pass the
+   * `pageToken` returned by a previous call.
+   *
+   * @param {string[]} namespacePath - The parent namespace path. Defaults
+   *   to the root namespace if omitted.
+   * @param {Partial<ListNamespacesOptions>} options - Pagination options
+   *   (`pageToken`, `limit`).
+   * @returns {Promise<ListNamespacesResponse>} Child namespace names and
+   *   an optional token for fetching the next page.
+   */
+  abstract listNamespaces(
+    namespacePath?: string[],
+    options?: Partial<ListNamespacesOptions>,
+  ): Promise<ListNamespacesResponse>;
+
+  /**
+   * Create a new namespace at the given path.
+   *
+   * @param {string[]} namespacePath - The namespace path to create.
+   * @param {Partial<CreateNamespaceOptions>} options - Creation `mode`
+   *   ("create" | "exist_ok" | "overwrite") and optional `properties`
+   *   to attach to the namespace.
+   * @returns {Promise<CreateNamespaceResponse>} The properties of the
+   *   created namespace and an optional transaction id.
+   */
+  abstract createNamespace(
+    namespacePath: string[],
+    options?: Partial<CreateNamespaceOptions>,
+  ): Promise<CreateNamespaceResponse>;
+
+  /**
+   * Drop a namespace.
+   *
+   * Use `behavior: "cascade"` to also drop everything contained in the
+   * namespace (sub-namespaces and tables). The default `"restrict"`
+   * behavior refuses to drop a non-empty namespace.
+   *
+   * @param {string[]} namespacePath - The namespace path to drop.
+   * @param {Partial<DropNamespaceOptions>} options - `mode` ("skip" | "fail"
+   *   for missing-namespace handling) and `behavior` ("restrict" | "cascade").
+   * @returns {Promise<DropNamespaceResponse>} Any properties returned by
+   *   the server and an optional transaction id.
+   */
+  abstract dropNamespace(
+    namespacePath: string[],
+    options?: Partial<DropNamespaceOptions>,
+  ): Promise<DropNamespaceResponse>;
+
+  /**
+   * Clone a table from a source table.
+   *
+   * A shallow clone creates a new table that shares the underlying data files
+   * with the source table but has its own independent manifest. This allows
+   * both the source and cloned tables to evolve independently while initially
+   * sharing the same data, deletion, and index files.
+   *
+   * @param {string} targetTableName - The name of the target table to create.
+   * @param {string} sourceUri - The URI of the source table to clone from.
+   * @param {object} options - Clone options.
+   * @param {string[]} options.targetNamespacePath - The namespace path for the target table (defaults to root namespace).
+   * @param {number} options.sourceVersion - The version of the source table to clone.
+   * @param {string} options.sourceTag - The tag of the source table to clone.
+   * @param {boolean} options.isShallow - Whether to perform a shallow clone (defaults to true).
+   */
+  abstract cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespacePath?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table>;
+
+  /**
+   * Rename a table.
+   *
+   * Currently only supported by LanceDB Cloud. Local OSS connections and
+   * namespace-backed connections (via {@link connectNamespace}) reject with
+   * a "not supported" error.
+   *
+   * @param {string} currentName - The current name of the table.
+   * @param {string} newName - The new name for the table.
+   * @param {RenameTableOptions} options - Optional namespace paths. When
+   *   `newNamespacePath` is omitted the table stays in `namespacePath`.
+   */
+  abstract renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void>;
+
+  /**
+   * Open a server-side job by id, returning a handle with its record already
+   * populated. Rejects when the server has no such job, the way
+   * {@link Connection.openTable} does for a missing table.
+   *
+   * The returned {@link Job} answers for its own state, specification,
+   * result, failure and event history, so there is no separate
+   * connection-level call for any of them.
+   */
+  abstract openJob(jobId: string): Promise<Job>;
+
+  /**
+   * Iterate lazily over server-side jobs across the database's tables.
+   * Use `for await...of`. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
+   */
+  abstract listJobs(options?: ListingOptions): Listing<JobInfo>;
+
+  /**
+   * Request cancellation of a server-side job by id.
+   *
+   * Resolves to true if the server accepted the cancellation, false if no
+   * such job exists. Cancelling an already-terminal job is a no-op success.
+   */
+  abstract cancelJob(jobId: string): Promise<boolean>;
+
+  /**
+   * Pause a server-side job by id.
+   *
+   * The job's workers drain and it stays parked until resumed. Resolves to
+   * "pausing", "already_paused", or "committing" -- a job finalizing its
+   * results cannot be parked; retry shortly.
+   */
+  abstract pauseJob(jobId: string): Promise<string>;
+
+  /**
+   * Resume a paused server-side job by id.
+   *
+   * Its workers pick their work back up from checkpoints. Resolves to
+   * "resumed", "still_pausing" -- the pause's worker drain is not confirmed
+   * yet; retry shortly -- or "not_paused".
+   */
+  abstract resumeJob(jobId: string): Promise<string>;
 }
 
 /** @hideconstructor */
@@ -293,40 +703,185 @@ export class LocalConnection extends Connection {
   }
 
   async tableNames(
-    namespaceOrOptions?: string[] | Partial<TableNamesOptions>,
+    namespacePathOrOptions?: string[] | Partial<TableNamesOptions>,
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]> {
-    // Detect if first argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if first argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let tableNamesOptions: Partial<TableNamesOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // First argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // First argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       tableNamesOptions = options;
     } else {
       // First argument is options object (backwards compatibility)
-      namespace = undefined;
-      tableNamesOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      tableNamesOptions = namespacePathOrOptions;
     }
 
     return this.inner.tableNames(
-      namespace ?? [],
+      namespacePath ?? [],
       tableNamesOptions?.startAfter,
       tableNamesOptions?.limit,
     );
   }
 
+  async createMaterializedView(
+    name: string,
+    source: string,
+    options?: {
+      select?: MaterializedViewSelect;
+      where?: string;
+      limit?: number;
+      withNoData?: boolean;
+    },
+  ): Promise<MaterializedView> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    const innerTable = await this.inner.createMaterializedView(
+      name,
+      source,
+      normalizeSelect(options?.select),
+      options?.where,
+      options?.limit,
+      options?.withNoData ?? false,
+    );
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  async openMaterializedView(name: string): Promise<MaterializedView> {
+    const innerTable = await this.inner.openMaterializedView(name);
+    return new MaterializedView(new LocalTable(innerTable));
+  }
+
+  listMaterializedViews(options: ListingOptions = {}): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listMaterializedViews(options.pageToken, options.pageLimit),
+    );
+  }
+
+  async dropMaterializedView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<void> {
+    return this.inner.dropMaterializedView(name, namespacePath ?? []);
+  }
+
+  async dropMaterializedViewAsync(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<Job> {
+    return new Job(
+      await this.inner.dropMaterializedViewAsync(name, namespacePath ?? []),
+    );
+  }
+
+  async createView(
+    name: string,
+    query: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.createView(name, query, namespacePath ?? []),
+    );
+  }
+
+  async describeView(
+    name: string,
+    namespacePath?: string[],
+  ): Promise<ViewDescription> {
+    return viewDescriptionFromNative(
+      await this.inner.describeView(name, namespacePath ?? []),
+    );
+  }
+
+  async dropView(name: string, namespacePath?: string[]): Promise<void> {
+    return this.inner.dropView(name, namespacePath ?? []);
+  }
+
+  async dropViewAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return new Job(await this.inner.dropViewAsync(name, namespacePath ?? []));
+  }
+
+  listViews(
+    namespacePath?: string[],
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listViews(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
+    );
+  }
+
+  async listTables(
+    namespacePathOrOptions?: string[] | Partial<ListTablesOptions>,
+    options?: Partial<ListTablesOptions>,
+  ): Promise<ListTablesResponse> {
+    // Detect if first argument is namespacePath array or options object
+    const namespacePath = Array.isArray(namespacePathOrOptions)
+      ? namespacePathOrOptions
+      : undefined;
+    const listTablesOptions = Array.isArray(namespacePathOrOptions)
+      ? options
+      : namespacePathOrOptions;
+
+    return this.inner.listTables(
+      namespacePath ?? [],
+      listTablesOptions?.pageToken,
+      listTablesOptions?.limit,
+    );
+  }
+
   async openTable(
     name: string,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<OpenTableOptions>,
   ): Promise<Table> {
     const innerTable = await this.inner.openTable(
       name,
-      namespace ?? [],
+      namespacePath ?? [],
       cleanseStorageOptions(options?.storageOptions),
       options?.indexCacheSize,
+    );
+
+    let table: Table = new LocalTable(innerTable);
+    // "main" is the default branch, so treat it as no branch. On a real branch,
+    // scope and pin in one step (yielding "version V of branch B"); otherwise
+    // pin the version, if any, against main.
+    const branch =
+      options?.branch != null && options.branch !== "main"
+        ? options.branch
+        : undefined;
+    if (branch != null) {
+      table = await (await table.branches()).checkout(branch, options?.version);
+    } else if (options?.version != null) {
+      await table.checkout(options.version);
+    }
+    return table;
+  }
+
+  async cloneTable(
+    targetTableName: string,
+    sourceUri: string,
+    options?: {
+      targetNamespacePath?: string[];
+      sourceVersion?: number;
+      sourceTag?: string;
+      isShallow?: boolean;
+    },
+  ): Promise<Table> {
+    const innerTable = await this.inner.cloneTable(
+      targetTableName,
+      sourceUri,
+      options?.targetNamespacePath ?? [],
+      options?.sourceVersion ?? null,
+      options?.sourceTag ?? null,
+      options?.isShallow ?? true,
     );
 
     return new LocalTable(innerTable);
@@ -358,42 +913,42 @@ export class LocalConnection extends Connection {
     nameOrOptions:
       | string
       | ({ name: string; data: Data } & Partial<CreateTableOptions>),
-    dataOrNamespace?: Record<string, unknown>[] | TableLike | string[],
-    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
+    dataOrNamespacePath?: Record<string, unknown>[] | TableLike | string[],
+    namespacePathOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (typeof nameOrOptions !== "string" && "name" in nameOrOptions) {
-      // First overload: createTable(options, namespace?)
+      // First overload: createTable(options, namespacePath?)
       const { name, data, ...createOptions } = nameOrOptions;
-      const namespace = dataOrNamespace as string[] | undefined;
-      return this._createTableImpl(name, data, namespace, createOptions);
+      const namespacePath = dataOrNamespacePath as string[] | undefined;
+      return this._createTableImpl(name, data, namespacePath, createOptions);
     }
 
-    // Second overload: createTable(name, data, namespace?, options?)
+    // Second overload: createTable(name, data, namespacePath?, options?)
     const name = nameOrOptions;
-    const data = dataOrNamespace as Record<string, unknown>[] | TableLike;
+    const data = dataOrNamespacePath as Record<string, unknown>[] | TableLike;
 
-    // Detect if third argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if third argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let createOptions: Partial<CreateTableOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // Third argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // Third argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       createOptions = options;
     } else {
       // Third argument is options object (backwards compatibility)
-      namespace = undefined;
-      createOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      createOptions = namespacePathOrOptions;
     }
 
-    return this._createTableImpl(name, data, namespace, createOptions);
+    return this._createTableImpl(name, data, namespacePath, createOptions);
   }
 
   private async _createTableImpl(
     name: string,
     data: Data,
-    namespace?: string[],
+    namespacePath?: string[],
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
     if (data === undefined) {
@@ -407,7 +962,7 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
-      namespace ?? [],
+      namespacePath ?? [],
       storageOptions,
     );
 
@@ -417,21 +972,21 @@ export class LocalConnection extends Connection {
   async createEmptyTable(
     name: string,
     schema: import("./arrow").SchemaLike,
-    namespaceOrOptions?: string[] | Partial<CreateTableOptions>,
+    namespacePathOrOptions?: string[] | Partial<CreateTableOptions>,
     options?: Partial<CreateTableOptions>,
   ): Promise<Table> {
-    // Detect if third argument is namespace array or options object
-    let namespace: string[] | undefined;
+    // Detect if third argument is namespacePath array or options object
+    let namespacePath: string[] | undefined;
     let createOptions: Partial<CreateTableOptions> | undefined;
 
-    if (Array.isArray(namespaceOrOptions)) {
-      // Third argument is namespace array
-      namespace = namespaceOrOptions;
+    if (Array.isArray(namespacePathOrOptions)) {
+      // Third argument is namespacePath array
+      namespacePath = namespacePathOrOptions;
       createOptions = options;
     } else {
       // Third argument is options object (backwards compatibility)
-      namespace = undefined;
-      createOptions = namespaceOrOptions;
+      namespacePath = undefined;
+      createOptions = namespacePathOrOptions;
     }
 
     let mode: string = createOptions?.mode ?? "create";
@@ -454,18 +1009,97 @@ export class LocalConnection extends Connection {
       name,
       buf,
       mode,
-      namespace ?? [],
+      namespacePath ?? [],
       storageOptions,
     );
     return new LocalTable(innerTable);
   }
 
-  async dropTable(name: string, namespace?: string[]): Promise<void> {
-    return this.inner.dropTable(name, namespace ?? []);
+  async dropTable(name: string, namespacePath?: string[]): Promise<void> {
+    return this.inner.dropTable(name, namespacePath ?? []);
   }
 
-  async dropAllTables(namespace?: string[]): Promise<void> {
-    return this.inner.dropAllTables(namespace ?? []);
+  async dropTableAsync(name: string, namespacePath?: string[]): Promise<Job> {
+    return new Job(await this.inner.dropTableAsync(name, namespacePath ?? []));
+  }
+
+  async dropAllTables(namespacePath?: string[]): Promise<void> {
+    return this.inner.dropAllTables(namespacePath ?? []);
+  }
+
+  describeNamespace(
+    namespacePath: string[],
+  ): Promise<DescribeNamespaceResponse> {
+    return this.inner.describeNamespace(namespacePath);
+  }
+
+  listNamespaces(
+    namespacePath?: string[],
+    options?: Partial<ListNamespacesOptions>,
+  ): Promise<ListNamespacesResponse> {
+    return this.inner.listNamespaces(
+      namespacePath ?? [],
+      options?.pageToken,
+      options?.limit,
+    );
+  }
+
+  createNamespace(
+    namespacePath: string[],
+    options?: Partial<CreateNamespaceOptions>,
+  ): Promise<CreateNamespaceResponse> {
+    return this.inner.createNamespace(
+      namespacePath,
+      options?.mode,
+      options?.properties,
+    );
+  }
+
+  dropNamespace(
+    namespacePath: string[],
+    options?: Partial<DropNamespaceOptions>,
+  ): Promise<DropNamespaceResponse> {
+    return this.inner.dropNamespace(
+      namespacePath,
+      options?.mode,
+      options?.behavior,
+    );
+  }
+
+  async renameTable(
+    currentName: string,
+    newName: string,
+    options?: RenameTableOptions,
+  ): Promise<void> {
+    return this.inner.renameTable(
+      currentName,
+      newName,
+      options?.namespacePath ?? [],
+      options?.newNamespacePath,
+    );
+  }
+
+  async openJob(jobId: string): Promise<Job> {
+    return new Job(await this.inner.openJob(jobId));
+  }
+
+  listJobs(options: ListingOptions = {}): Listing<JobInfo> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listJobs(options.pageToken, options.pageLimit),
+    );
+  }
+
+  async cancelJob(jobId: string): Promise<boolean> {
+    return this.inner.cancelJob(jobId);
+  }
+
+  async pauseJob(jobId: string): Promise<string> {
+    return this.inner.pauseJob(jobId);
+  }
+
+  async resumeJob(jobId: string): Promise<string> {
+    return this.inner.resumeJob(jobId);
   }
 }
 
@@ -525,7 +1159,11 @@ async function parseTableData(
   if (isArrowTable(data)) {
     table = sanitizeTable(data);
   } else {
-    table = makeArrowTable(data as Record<string, unknown>[], options);
+    const records = await resolveBlobInputs(
+      data as Record<string, unknown>[],
+      options?.schema,
+    );
+    table = makeArrowTable(records, options);
   }
   if (streaming) {
     const buf = await fromTableToStreamBuffer(

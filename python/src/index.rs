@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use lancedb::index::vector::IvfFlatIndexBuilder;
-use lancedb::index::{
-    scalar::{BTreeIndexBuilder, FtsIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
-    Index as LanceDbIndex,
+use chrono::{DateTime, Utc};
+use lancedb::index::vector::{
+    IvfFlatIndexBuilder, IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder,
+    IvfPqIndexBuilder, IvfRqIndexBuilder, IvfSqIndexBuilder,
 };
-use pyo3::types::PyStringMethods;
+use lancedb::index::{
+    Index as LanceDbIndex,
+    scalar::{BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder},
+};
 use pyo3::IntoPyObject;
+use pyo3::types::PyStringMethods;
 use pyo3::{
+    Bound, FromPyObject, Py, PyAny, PyResult, Python,
     exceptions::{PyKeyError, PyValueError},
     intern, pyclass, pymethods,
-    types::PyAnyMethods,
-    Bound, FromPyObject, PyAny, PyResult, Python,
+    types::{PyAnyMethods, PyString},
 };
 
 use crate::util::parse_distance_type;
@@ -22,7 +25,7 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     let full_name = ob
         .getattr(intern!(ob.py(), "__class__"))?
         .getattr(intern!(ob.py(), "__name__"))?;
-    let full_name = full_name.downcast()?.to_string_lossy();
+    let full_name = full_name.cast::<PyString>()?.to_string_lossy();
 
     match full_name.rsplit_once('.') {
         Some((_, name)) => Ok(name.to_string()),
@@ -36,23 +39,47 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "BTree" => Ok(LanceDbIndex::BTree(BTreeIndexBuilder::default())),
             "Bitmap" => Ok(LanceDbIndex::Bitmap(Default::default())),
             "LabelList" => Ok(LanceDbIndex::LabelList(Default::default())),
+            "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
-                let inner_opts = FtsIndexBuilder::default()
+                let mut inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
-                    .map_err(|_| PyValueError::new_err(format!("LanceDB does not support the requested language: '{}'", params.language)))?
+                    .map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "LanceDB does not support the requested language: '{}'",
+                            params.language
+                        ))
+                    })?
                     .with_position(params.with_position)
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
-                    .remove_stop_words(params.remove_stop_words)
-                    .stem(params.stem)
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
-                    .ngram_prefix_only(params.prefix_only);
+                    .ngram_prefix_only(params.prefix_only)
+                    .custom_stop_words(params.custom_stop_words)
+                    .document_granularity(
+                        DocumentGranularity::try_from(params.document_granularity.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                    );
+                if let Some(stem) = params.stem {
+                    inner_opts = inner_opts.stem(stem);
+                }
+                if let Some(remove_stop_words) = params.remove_stop_words {
+                    inner_opts = inner_opts.remove_stop_words(remove_stop_words);
+                }
+                if let Some(memory_limit) = params.memory_limit {
+                    inner_opts = inner_opts.memory_limit_mb(memory_limit);
+                }
+                if let Some(num_workers) = params.num_workers {
+                    inner_opts = inner_opts.num_workers(num_workers);
+                }
+                let inner_opts = inner_opts
+                    .block_size(params.block_size)
+                    .map_err(|err| PyValueError::new_err(err.to_string()))?;
                 Ok(LanceDbIndex::FTS(inner_opts))
-            },
+            }
             "IvfFlat" => {
                 let params = source.extract::<IvfFlatParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -63,8 +90,12 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_flat_builder = ivf_flat_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_flat_builder =
+                        ivf_flat_builder.target_partition_size(target_partition_size);
+                }
                 Ok(LanceDbIndex::IvfFlat(ivf_flat_builder))
-            },
+            }
             "IvfPq" => {
                 let params = source.extract::<IvfPqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -76,11 +107,45 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_pq_builder = ivf_pq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_pq_builder = ivf_pq_builder.target_partition_size(target_partition_size);
+                }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     ivf_pq_builder = ivf_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
                 Ok(LanceDbIndex::IvfPq(ivf_pq_builder))
-            },
+            }
+            "IvfSq" => {
+                let params = source.extract::<IvfSqParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_sq_builder = IvfSqIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_sq_builder = ivf_sq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_sq_builder = ivf_sq_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfSq(ivf_sq_builder))
+            }
+            "IvfRq" => {
+                let params = source.extract::<IvfRqParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut ivf_rq_builder = IvfRqIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate)
+                    .num_bits(params.num_bits);
+                if let Some(num_partitions) = params.num_partitions {
+                    ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    ivf_rq_builder = ivf_rq_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfRq(ivf_rq_builder))
+            }
             "HnswPq" => {
                 let params = source.extract::<IvfHnswPqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -94,11 +159,14 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_pq_builder = hnsw_pq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_pq_builder = hnsw_pq_builder.target_partition_size(target_partition_size);
+                }
                 if let Some(num_sub_vectors) = params.num_sub_vectors {
                     hnsw_pq_builder = hnsw_pq_builder.num_sub_vectors(num_sub_vectors);
                 }
                 Ok(LanceDbIndex::IvfHnswPq(hnsw_pq_builder))
-            },
+            }
             "HnswSq" => {
                 let params = source.extract::<IvfHnswSqParams>()?;
                 let distance_type = parse_distance_type(params.distance_type)?;
@@ -111,10 +179,31 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_partitions) = params.num_partitions {
                     hnsw_sq_builder = hnsw_sq_builder.num_partitions(num_partitions);
                 }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_sq_builder = hnsw_sq_builder.target_partition_size(target_partition_size);
+                }
                 Ok(LanceDbIndex::IvfHnswSq(hnsw_sq_builder))
-            },
+            }
+            "HnswFlat" => {
+                let params = source.extract::<IvfHnswFlatParams>()?;
+                let distance_type = parse_distance_type(params.distance_type)?;
+                let mut hnsw_flat_builder = IvfHnswFlatIndexBuilder::default()
+                    .distance_type(distance_type)
+                    .max_iterations(params.max_iterations)
+                    .sample_rate(params.sample_rate)
+                    .num_edges(params.m)
+                    .ef_construction(params.ef_construction);
+                if let Some(num_partitions) = params.num_partitions {
+                    hnsw_flat_builder = hnsw_flat_builder.num_partitions(num_partitions);
+                }
+                if let Some(target_partition_size) = params.target_partition_size {
+                    hnsw_flat_builder =
+                        hnsw_flat_builder.target_partition_size(target_partition_size);
+                }
+                Ok(LanceDbIndex::IvfHnswFlat(hnsw_flat_builder))
+            }
             not_supported => Err(PyValueError::new_err(format!(
-                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, FTS, IvfPq, IvfHnswPq, or IvfHnswSq",
+                "Invalid index type '{}'.  Must be one of BTree, Bitmap, LabelList, Fm, FTS, IvfPq, IvfSq, IvfHnswPq, IvfHnswSq, or IvfHnswFlat",
                 not_supported
             ))),
         }
@@ -130,12 +219,17 @@ struct FtsParams {
     language: String,
     max_token_length: Option<usize>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
+    custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
+    block_size: usize,
+    memory_limit: Option<u64>,
+    num_workers: Option<usize>,
+    document_granularity: String,
 }
 
 #[derive(FromPyObject)]
@@ -144,6 +238,7 @@ struct IvfFlatParams {
     num_partitions: Option<u32>,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -154,6 +249,26 @@ struct IvfPqParams {
     num_bits: u32,
     max_iterations: u32,
     sample_rate: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfSqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    max_iterations: u32,
+    sample_rate: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[derive(FromPyObject)]
+struct IvfRqParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    num_bits: u32,
+    max_iterations: u32,
+    sample_rate: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -166,6 +281,7 @@ struct IvfHnswPqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
 #[derive(FromPyObject)]
@@ -176,9 +292,21 @@ struct IvfHnswSqParams {
     sample_rate: u32,
     m: u32,
     ef_construction: u32,
+    target_partition_size: Option<u32>,
 }
 
-#[pyclass(get_all)]
+#[derive(FromPyObject)]
+struct IvfHnswFlatParams {
+    distance_type: String,
+    num_partitions: Option<u32>,
+    max_iterations: u32,
+    sample_rate: u32,
+    m: u32,
+    ef_construction: u32,
+    target_partition_size: Option<u32>,
+}
+
+#[pyclass(module = "lancedb._lancedb", get_all)]
 /// A description of an index currently configured on a column
 pub struct IndexConfig {
     /// The type of the index
@@ -190,15 +318,77 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// Name of the index.
     pub name: String,
+    /// The UUID of the first segment of the index.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    pub type_url: Option<String>,
+    /// When the index was created.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    pub num_indexed_rows: Option<u64>,
+    /// The number of rows not yet covered by this index.
+    pub num_unindexed_rows: Option<u64>,
+    /// The total size in bytes of all index files across all segments.
+    pub size_bytes: Option<u64>,
+    /// The number of segments that make up the index.
+    pub num_segments: Option<u32>,
+    /// The on-disk index format version.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details parsed as a Python object (dict, list, etc.).
+    ///
+    /// Falls back to a raw string if JSON parsing fails. `None` when unavailable.
+    pub index_details: Option<Py<PyAny>>,
 }
 
 #[pymethods]
 impl IndexConfig {
-    pub fn __repr__(&self) -> String {
-        format!(
-            "Index({}, columns={:?}, name=\"{}\")",
-            self.index_type, self.columns, self.name
-        )
+    pub fn __repr__(&self, py: Python<'_>) -> String {
+        let mut fields = vec![
+            format!("name={:?}", self.name),
+            format!("index_type={:?}", self.index_type),
+            format!("columns={:?}", self.columns),
+        ];
+        if let Some(v) = &self.index_uuid {
+            fields.push(format!("index_uuid={:?}", v));
+        }
+        if let Some(v) = &self.type_url {
+            fields.push(format!("type_url={:?}", v));
+        }
+        if let Some(v) = self.created_at {
+            // Render the datetime's own Python repr so the value round-trips,
+            // falling back to RFC 3339 if the conversion ever fails.
+            let rendered = v
+                .into_pyobject(py)
+                .ok()
+                .and_then(|obj| obj.into_any().repr().ok())
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| v.to_rfc3339());
+            fields.push(format!("created_at={}", rendered));
+        }
+        if let Some(v) = self.num_indexed_rows {
+            fields.push(format!("num_indexed_rows={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.num_unindexed_rows {
+            fields.push(format!("num_unindexed_rows={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.size_bytes {
+            fields.push(format!("size_bytes={}", fmt_thousands(v)));
+        }
+        if let Some(v) = self.num_segments {
+            fields.push(format!("num_segments={}", v));
+        }
+        if let Some(v) = self.index_version {
+            fields.push(format!("index_version={}", v));
+        }
+        if let Some(v) = &self.index_details {
+            let details = v
+                .bind(py)
+                .repr()
+                .map(|r| r.to_string())
+                .unwrap_or_else(|_| "<unavailable>".to_string());
+            fields.push(format!("index_details={}", details));
+        }
+        format!("IndexConfig({})", fields.join(", "))
     }
 
     // For backwards-compatibility with the old sync SDK, we also support getting
@@ -208,18 +398,115 @@ impl IndexConfig {
             "index_type" => Ok(self.index_type.clone().into_pyobject(py)?.into_any()),
             "columns" => Ok(self.columns.clone().into_pyobject(py)?.into_any()),
             "name" | "index_name" => Ok(self.name.clone().into_pyobject(py)?.into_any()),
+            "index_uuid" => Ok(self.index_uuid.clone().into_pyobject(py)?.into_any()),
+            "type_url" => Ok(self.type_url.clone().into_pyobject(py)?.into_any()),
+            "created_at" => Ok(self.created_at.into_pyobject(py)?.into_any()),
+            "num_indexed_rows" => Ok(self.num_indexed_rows.into_pyobject(py)?.into_any()),
+            "num_unindexed_rows" => Ok(self.num_unindexed_rows.into_pyobject(py)?.into_any()),
+            "size_bytes" => Ok(self.size_bytes.into_pyobject(py)?.into_any()),
+            "num_segments" => Ok(self.num_segments.into_pyobject(py)?.into_any()),
+            "index_version" => Ok(self.index_version.into_pyobject(py)?.into_any()),
+            "index_details" => Ok(self
+                .index_details
+                .as_ref()
+                .map(|obj| obj.clone_ref(py))
+                .into_pyobject(py)?
+                .into_any()),
             _ => Err(PyKeyError::new_err(format!("Invalid key: {}", key))),
         }
     }
 }
 
-impl From<lancedb::index::IndexConfig> for IndexConfig {
-    fn from(value: lancedb::index::IndexConfig) -> Self {
+/// Format an integer with `_` thousands separators, e.g. `24_500_213`.
+///
+/// Underscores are valid Python int-literal syntax, so the repr stays
+/// copy-pasteable and machine-parseable while remaining readable.
+fn fmt_thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let bytes = digits.as_bytes();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, b) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
+            out.push('_');
+        }
+        out.push(*b as char);
+    }
+    out
+}
+
+fn parse_index_details(py: Python<'_>, s: String) -> Py<PyAny> {
+    let json = py.import("json").expect("json module is always available");
+    match json.call_method1("loads", (s.as_str(),)) {
+        Ok(obj) => obj.into_any().unbind(),
+        Err(_) => s.into_pyobject(py).unwrap().into_any().unbind(),
+    }
+}
+
+impl IndexConfig {
+    pub fn from_lancedb(py: Python<'_>, value: lancedb::index::IndexConfig) -> Self {
         let index_type = format!("{:?}", value.index_type);
         Self {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at,
+            num_indexed_rows: value.num_indexed_rows,
+            num_unindexed_rows: value.num_unindexed_rows,
+            size_bytes: value.size_bytes,
+            num_segments: value.num_segments,
+            index_version: value.index_version,
+            index_details: value.index_details.map(|s| parse_index_details(py, s)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::{PyDict, PyDictMethods};
+    use serde_json::json;
+
+    #[test]
+    fn fts_build_controls_are_forwarded() {
+        Python::initialize();
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"class FTS:
+    with_position = True
+    base_tokenizer = 'simple'
+    language = 'English'
+    max_token_length = None
+    lower_case = True
+    stem = False
+    remove_stop_words = False
+    custom_stop_words = None
+    ascii_folding = False
+    ngram_min_length = 3
+    ngram_max_length = 3
+    prefix_only = False
+    block_size = 128
+    memory_limit = 2048
+    num_workers = 7
+    document_granularity = 'row'
+
+config = FTS()",
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+
+            let config = locals.get_item("config").unwrap().unwrap();
+            let index = extract_index_params(&Some(config)).unwrap();
+            let LanceDbIndex::FTS(params) = index else {
+                panic!("expected FTS index parameters");
+            };
+            let training_json = params.to_training_json().unwrap();
+
+            assert_eq!(training_json.get("memory_limit"), Some(&json!(2048)));
+            assert_eq!(training_json.get("num_workers"), Some(&json!(7)));
+        });
     }
 }

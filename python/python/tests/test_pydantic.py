@@ -2,28 +2,24 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import json
-import sys
 from datetime import date, datetime
+from enum import Enum
 from typing import List, Optional, Tuple
 
 import pyarrow as pa
 import pydantic
 import pytest
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.pydantic import (
-    PYDANTIC_VERSION,
     LanceModel,
+    MultiVector,
     Vector,
     pydantic_to_schema,
-    MultiVector,
 )
 from pydantic import BaseModel
 from pydantic import Field
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 9),
-    reason="using native type alias requires python3.9 or higher",
-)
 def test_pydantic_to_arrow():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -83,10 +79,6 @@ def test_pydantic_to_arrow():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 10),
-    reason="using | type syntax requires python3.10 or higher",
-)
 def test_optional_types_py310():
     class TestModel(pydantic.BaseModel):
         a: str | None
@@ -105,10 +97,245 @@ def test_optional_types_py310():
     assert schema == expect_schema
 
 
-@pytest.mark.skipif(
-    sys.version_info > (3, 8),
-    reason="using native type alias requires python3.9 or higher",
-)
+def test_optional_structs():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        split: SplitInfo | None = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "split",
+                pa.struct(
+                    [
+                        pa.field("start_frame", pa.int64(), False),
+                        pa.field("end_frame", pa.int64(), False),
+                    ]
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_optional_struct_list_py310():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo] | None = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_bare_generic_raises_type_error():
+    # A bare, unparameterised List/Tuple has no element type to map to Arrow.
+    # It should raise a clear TypeError, not crash with AttributeError: __args__.
+    for bare in (List, Tuple):
+
+        class TestModel(pydantic.BaseModel):
+            items: bare
+
+        with pytest.raises(TypeError, match="unsupported type"):
+            pydantic_to_schema(TestModel)
+
+
+def test_nested_struct_list_optional():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: Optional[list[SplitInfo]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("start_frame", pa.int64(), False),
+                            pa.field("end_frame", pa.int64(), False),
+                        ]
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_items():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[Optional[SplitInfo]]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_container_and_items():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: Optional[list[Optional[SplitInfo]]] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                True,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
+def test_nested_struct_list_optional_items_pep604():
+    class SplitInfo(pydantic.BaseModel):
+        start_frame: int
+        end_frame: int
+
+    class TestModel(pydantic.BaseModel):
+        id: str
+        splits: list[SplitInfo | None]
+
+    schema = pydantic_to_schema(TestModel)
+
+    expect_schema = pa.schema(
+        [
+            pa.field("id", pa.utf8(), False),
+            pa.field(
+                "splits",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.struct(
+                            [
+                                pa.field("start_frame", pa.int64(), False),
+                                pa.field("end_frame", pa.int64(), False),
+                            ]
+                        ),
+                        True,
+                    )
+                ),
+                False,
+            ),
+        ]
+    )
+    assert schema == expect_schema
+
+
 def test_pydantic_to_arrow_py38():
     class StructModel(pydantic.BaseModel):
         a: str
@@ -188,22 +415,46 @@ def test_nullable_vector():
     assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
 
 
+def test_bare_vector_raises_clear_error():
+    namespace = {
+        "__name__": "test_model_without_pyarrow",
+        "LanceModel": LanceModel,
+        "Vector": Vector,
+    }
+
+    with pytest.raises(TypeError, match=r"Vector must be parameterized.*Vector\(128\)"):
+        exec("class TestModel(LanceModel):\n    vector: Vector", namespace)
+
+
+def test_embedding_vector_list_annotation():
+    embedding = MockTextEmbeddingFunction.create()
+
+    class StaticTypingModel(LanceModel):
+        text: str = embedding.SourceField()
+        vector: list[float] = embedding.VectorField()
+
+    schema = pydantic_to_schema(StaticTypingModel)
+    assert schema == pa.schema(
+        [
+            pa.field("text", pa.utf8(), False),
+            pa.field("vector", pa.list_(pa.float32(), embedding.ndims()), True),
+        ]
+    )
+
+    model = StaticTypingModel(text="hello", vector=[0.0] * embedding.ndims())
+    assert model.vector == [0.0] * embedding.ndims()
+
+
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
         vec: Vector(16)
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    if PYDANTIC_VERSION.major >= 2:
-        assert json.loads(data.model_dump_json()) == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
-    else:
-        assert data.dict() == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
+    assert json.loads(data.model_dump_json()) == {
+        "vec": list(range(16)),
+        "li": [1, 2, 3],
+    }
 
     schema = pydantic_to_schema(TestModel)
     assert schema == pa.schema(
@@ -213,10 +464,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION.major >= 2:
-        json_schema = TestModel.model_json_schema()
-    else:
-        json_schema = TestModel.schema()
+    json_schema = TestModel.model_json_schema()
 
     assert json_schema == {
         "properties": {
@@ -412,3 +660,76 @@ def test_multi_vector_in_lance_model():
 
     t = TestModel(id=1)
     assert t.vectors == [[0.0] * 16]
+
+
+def test_aliases_in_lance_model(mem_db):
+    data = [
+        {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+        {"vector": [5.9, 6.5], "item": "bar", "price": 20.0},
+    ]
+    tbl = mem_db.create_table("items", data=data)
+
+    class TestModel(LanceModel):
+        name: str = Field(alias="item")
+        price: float
+        distance: float = Field(alias="_distance")
+
+    model = (
+        tbl.search([5.9, 6.5])
+        .distance_type("cosine")
+        .limit(1)
+        .to_pydantic(TestModel)[0]
+    )
+    assert hasattr(model, "name")
+    assert hasattr(model, "distance")
+    assert model.distance < 0.01
+
+
+@pytest.mark.asyncio
+async def test_aliases_in_lance_model_async(mem_db_async):
+    data = [
+        {"vector": [8.3, 2.5], "item": "foo", "price": 12.0},
+        {"vector": [7.7, 3.9], "item": "bar", "price": 11.2},
+    ]
+    tbl = await mem_db_async.create_table("items", data=data)
+
+    class TestModel(LanceModel):
+        name: str = Field(alias="item")
+        price: float
+        distance: float = Field(alias="_distance")
+
+    model = (
+        await tbl.vector_search([7.7, 3.9])
+        .distance_type("cosine")
+        .limit(1)
+        .to_pydantic(TestModel)
+    )[0]
+    assert hasattr(model, "name")
+    assert hasattr(model, "distance")
+    assert model.distance < 0.01
+
+
+def test_enum_types():
+    """Enum fields should map to the Arrow type of their value (issue #1846)."""
+
+    class StrStatus(str, Enum):
+        PENDING = "pending"
+        RUNNING = "running"
+        DONE = "done"
+
+    class IntPriority(int, Enum):
+        LOW = 1
+        MEDIUM = 2
+        HIGH = 3
+
+    class TestModel(pydantic.BaseModel):
+        status: StrStatus
+        priority: IntPriority
+        opt_status: Optional[StrStatus] = None
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("priority").type == pa.int64()
+    assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
+    assert schema.field("opt_status").nullable

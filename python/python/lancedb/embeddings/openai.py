@@ -58,6 +58,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
     def sensitive_keys():
         return ["api_key"]
 
+    def endpoints(self) -> List[str]:
+        return [self.base_url] if self.base_url else []
+
     @staticmethod
     def model_names():
         return [
@@ -110,6 +113,9 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             valid_embeddings = {
                 idx: v.embedding for v, idx in zip(rs.data, valid_indices)
             }
+        except openai.AuthenticationError:
+            logging.error("Authentication failed: Invalid API key provided")
+            raise
         except openai.BadRequestError:
             logging.exception("Bad request: %s", texts)
             return [None] * len(texts)

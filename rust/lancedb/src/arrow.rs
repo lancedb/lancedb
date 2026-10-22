@@ -3,15 +3,28 @@
 
 use std::{pin::Pin, sync::Arc};
 
+// Re-export the arrow crates we depend on so downstream consumers can build
+// `RecordBatch`/arrays/builders against the exact same arrow line lancedb was
+// compiled against, instead of declaring their own (potentially mismatched)
+// direct arrow dependencies. See https://github.com/lancedb/lancedb/issues/3575.
+pub use arrow;
+pub use arrow_array;
+pub use arrow_buffer;
+pub use arrow_cast;
+pub use arrow_data;
+pub use arrow_ipc;
+pub use arrow_ord;
 pub use arrow_schema;
+pub use arrow_select;
 use datafusion_common::DataFusionError;
 use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use futures::{Stream, StreamExt, TryStreamExt};
+use lance_datagen::{BatchCount, BatchGeneratorBuilder, RowCount};
 
 #[cfg(feature = "polars")]
 use {crate::polars_arrow_convertors, polars::frame::ArrowChunk, polars::prelude::DataFrame};
 
-use crate::{error::Result, Error};
+use crate::{Error, error::Result};
 
 /// An iterator of batches that also has a schema
 pub trait RecordBatchReader: Iterator<Item = Result<arrow_array::RecordBatch>> {
@@ -111,33 +124,7 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> RecordBatchStream
 
 /// A trait for converting incoming data to Arrow
 ///
-/// Integrations should implement this trait to allow data to be
-/// imported directly from the integration.  For example, implementing
-/// this trait for `Vec<Vec<...>>` would allow the `Vec` to be directly
-/// used in methods like [`crate::connection::Connection::create_table`]
-/// or [`crate::table::Table::add`]
-pub trait IntoArrow {
-    /// Convert the data into an iterator of Arrow batches
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>>;
-}
-
 pub type BoxedRecordBatchReader = Box<dyn arrow_array::RecordBatchReader + Send>;
-
-impl<T: arrow_array::RecordBatchReader + Send + 'static> IntoArrow for T {
-    fn into_arrow(self) -> Result<Box<dyn arrow_array::RecordBatchReader + Send>> {
-        Ok(Box::new(self))
-    }
-}
-
-/// A trait for converting incoming data to Arrow asynchronously
-///
-/// Serves the same purpose as [`IntoArrow`], but for asynchronous data.
-///
-/// Note: Arrow has no async equivalent to RecordBatchReader and so
-pub trait IntoArrowStream {
-    /// Convert the data into a stream of Arrow batches
-    fn into_arrow(self) -> Result<SendableRecordBatchStream>;
-}
 
 impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream<S> {
     pub fn new(stream: S, schema: Arc<arrow_schema::Schema>) -> Self {
@@ -145,19 +132,23 @@ impl<S: Stream<Item = Result<arrow_array::RecordBatch>>> SimpleRecordBatchStream
     }
 }
 
-impl IntoArrowStream for SendableRecordBatchStream {
-    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
-        Ok(self)
-    }
+pub trait LanceDbDatagenExt {
+    fn into_ldb_stream(
+        self,
+        batch_size: RowCount,
+        num_batches: BatchCount,
+    ) -> SendableRecordBatchStream;
 }
 
-impl IntoArrowStream for datafusion_physical_plan::SendableRecordBatchStream {
-    fn into_arrow(self) -> Result<SendableRecordBatchStream> {
-        let schema = self.schema();
-        let stream = self.map_err(|df_err| Error::Runtime {
-            message: df_err.to_string(),
-        });
-        Ok(Box::pin(SimpleRecordBatchStream::new(stream, schema)))
+impl LanceDbDatagenExt for BatchGeneratorBuilder {
+    fn into_ldb_stream(
+        self,
+        batch_size: RowCount,
+        num_batches: BatchCount,
+    ) -> SendableRecordBatchStream {
+        let (stream, schema) = self.into_reader_stream(batch_size, num_batches);
+        let stream = stream.map_err(|err| Error::Arrow { source: err });
+        Box::pin(SimpleRecordBatchStream::new(stream, schema))
     }
 }
 
@@ -172,7 +163,7 @@ pub struct PolarsDataFrameRecordBatchReader {
 impl PolarsDataFrameRecordBatchReader {
     /// Creates a new `PolarsDataFrameRecordBatchReader` from a given Polars DataFrame.
     /// If the input dataframe does not have aligned chunks, this function undergoes
-    /// the costly operation of reallocating each series as a single contigous chunk.
+    /// the costly operation of reallocating each series as a single contiguous chunk.
     pub fn new(mut df: DataFrame) -> Result<Self> {
         df.align_chunks();
         let arrow_schema =
@@ -245,9 +236,7 @@ impl IntoPolars for SendableRecordBatchStream {
 #[cfg(all(test, feature = "polars"))]
 mod tests {
     use super::SendableRecordBatchStream;
-    use crate::arrow::{
-        IntoArrow, IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream,
-    };
+    use crate::arrow::{IntoPolars, PolarsDataFrameRecordBatchReader, SimpleRecordBatchStream};
     use polars::prelude::{DataFrame, NamedFrom, Series};
 
     fn get_record_batch_reader_from_polars() -> Box<dyn arrow_array::RecordBatchReader + Send> {
@@ -261,10 +250,7 @@ mod tests {
         float_series = Series::new("float", &[2.0]);
         let df2 = DataFrame::new(vec![string_series, int_series, float_series]).unwrap();
 
-        PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap())
-            .unwrap()
-            .into_arrow()
-            .unwrap()
+        Box::new(PolarsDataFrameRecordBatchReader::new(df1.vstack(&df2).unwrap()).unwrap())
     }
 
     #[test]

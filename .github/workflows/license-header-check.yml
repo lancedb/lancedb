@@ -9,13 +9,18 @@ on:
       - python/**
       - nodejs/**
       - java/**
+      - docs/web-tests/**
       - .github/workflows/license-header-check.yml
+
+permissions:
+  contents: read
+
 jobs:
   check-licenses:
     runs-on: ubuntu-latest
     steps:
       - name: Check out code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install license-header-checker
         working-directory: /tmp
         run: |

@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { readdirSync } from "fs";
+import { mkdirSync, readdirSync } from "fs";
+import { join } from "path";
 import { Field, Float64, Schema } from "apache-arrow";
 import * as tmp from "tmp";
-import { Connection, Table, connect } from "../lancedb";
+import {
+  Connection,
+  ListTablesResponse,
+  Table,
+  connect,
+  connectNamespace,
+} from "../lancedb";
 import { LocalTable } from "../lancedb/table";
 
 describe("when connecting", () => {
@@ -47,6 +54,15 @@ describe("given a connection", () => {
     await db.close();
     expect(db.isOpen()).toBe(false);
     await expect(db.tableNames()).rejects.toThrow("Connection is closed");
+    await expect(db.listTables()).rejects.toThrow("Connection is closed");
+    await expect(db.renameTable("a", "b")).rejects.toThrow(
+      "Connection is closed",
+    );
+  });
+
+  it("should report renameTable as unsupported on an OSS connection", async () => {
+    await db.createTable("a", [{ id: 1 }]);
+    await expect(db.renameTable("a", "b")).rejects.toThrow(/not supported/);
   });
   it("should be able to create a table from an object arg `createTable(options)`, or args `createTable(name, data, options)`", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
@@ -81,6 +97,16 @@ describe("given a connection", () => {
     await db.createTable("test4", [{ id: 1 }, { id: 2 }]);
   });
 
+  it("should return a completed job when dropping a local table", async () => {
+    await db.createTable("async-drop", [{ id: 1 }]);
+
+    const job = await db.dropTableAsync("async-drop");
+    expect(job.id).toBeNull();
+    await expect(job.status()).resolves.toBe("finished");
+    await job.wait();
+    await expect(db.tableNames()).resolves.toEqual([]);
+  });
+
   it("should fail if creating table twice, unless overwrite is true", async () => {
     let tbl = await db.createTable("test", [{ id: 1 }, { id: 2 }]);
     await expect(tbl.countRows()).resolves.toBe(2);
@@ -109,6 +135,92 @@ describe("given a connection", () => {
 
     tables = await db.tableNames({ startAfter: "a" });
     expect(tables).toEqual(["b", "c"]);
+  });
+
+  it("should respect limit and page token when listing tables", async () => {
+    const db = await connect(tmpDir.name);
+
+    await db.createTable("b", [{ id: 1 }]);
+    await db.createTable("a", [{ id: 1 }]);
+    await db.createTable("c", [{ id: 1 }]);
+
+    const all = await db.listTables();
+    expect(all.tables).toEqual(["a", "b", "c"]);
+    expect(all.pageToken).toBeUndefined();
+
+    const first = await db.listTables({ limit: 1 });
+    expect(first.tables).toEqual(["a"]);
+    expect(first.pageToken).toBeDefined();
+
+    const second = await db.listTables({
+      limit: 1,
+      pageToken: first.pageToken,
+    });
+    expect(second.tables).toEqual(["b"]);
+  });
+
+  it("should visit every table exactly once when walking pages", async () => {
+    const db = await connect(tmpDir.name);
+
+    const created = ["a", "b", "c", "d", "e"];
+    for (const name of created) {
+      await db.createTable(name, [{ id: 1 }]);
+    }
+
+    const seen: string[] = [];
+    let pageToken: string | undefined = undefined;
+    do {
+      const page: ListTablesResponse = await db.listTables({
+        limit: 2,
+        pageToken,
+      });
+      seen.push(...page.tables);
+      pageToken = page.pageToken;
+    } while (pageToken);
+
+    expect(seen).toEqual(created);
+  });
+
+  it("should list all names and use a default page size of 100", async () => {
+    const names = Array.from(
+      { length: 130 },
+      (_, i) => `t${i.toString().padStart(3, "0")}`,
+    );
+    for (const name of names) {
+      mkdirSync(join(tmpDir.name, `${name}.lance`));
+    }
+    await expect(db.tableNames()).resolves.toEqual(names);
+    await expect(db.tableNames({ limit: 0 })).resolves.toEqual([]);
+    const first = await db.listTables();
+    expect(first.tables).toEqual(names.slice(0, 100));
+    expect(first.pageToken).toBeDefined();
+    const second = await db.listTables({ pageToken: first.pageToken });
+    expect(second.tables).toEqual(names.slice(100));
+    expect(second.pageToken).toBeUndefined();
+    await expect(db.listTables({ limit: 200 })).resolves.toEqual({
+      tables: names,
+      pageToken: undefined,
+    });
+    await expect(db.listTables({ limit: 0 })).resolves.toEqual({
+      tables: [],
+      pageToken: undefined,
+    });
+  });
+
+  it("should list tables in a namespace", async () => {
+    const db = await connect(tmpDir.name, {
+      // biome-ignore lint/style/useNamingConvention: opaque backend property key, must match Rust
+      namespaceClientProperties: { manifest_enabled: "true" },
+    });
+    await db.createNamespace(["child"]);
+    await db.createTable("nested", [{ id: 1 }], ["child"]);
+
+    await expect(db.listTables(["child"])).resolves.toEqual(
+      expect.objectContaining({ tables: ["nested"] }),
+    );
+    await expect(db.listTables()).resolves.toEqual(
+      expect.objectContaining({ tables: [] }),
+    );
   });
 
   it("should create tables in v2 mode", async () => {
@@ -163,18 +275,22 @@ describe("given a connection", () => {
 
     let manifestDir =
       tmpDir.name + "/test_manifest_paths_v2_empty.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
 
     table = (await db.createTable("test_manifest_paths_v2", [{ id: 1 }], {
       enableV2ManifestPaths: true,
     })) as LocalTable;
     expect(await table.usesV2ManifestPaths()).toBe(true);
     manifestDir = tmpDir.name + "/test_manifest_paths_v2.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
   });
 
   it("should be able to migrate tables to the V2 manifest paths", async () => {
@@ -191,15 +307,305 @@ describe("given a connection", () => {
 
     const manifestDir =
       tmpDir.name + "/test_manifest_path_migration.lance/_versions";
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d\.manifest$/);
-    });
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d\.manifest$/);
+      });
 
     await table.migrateManifestPathsV2();
     expect(await table.usesV2ManifestPaths()).toBe(true);
 
-    readdirSync(manifestDir).forEach((file) => {
-      expect(file).toMatch(/^\d{20}\.manifest$/);
+    readdirSync(manifestDir)
+      .filter((f) => f.endsWith(".manifest"))
+      .forEach((file) => {
+        expect(file).toMatch(/^\d{20}\.manifest$/);
+      });
+  });
+});
+
+describe("clone table functionality", () => {
+  let tmpDir: tmp.DirResult;
+  let db: Connection;
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    db = await connect(tmpDir.name);
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should clone a table with latest version (default behavior)", async () => {
+    // Create source table with some data
+    const data = [
+      { id: 1, text: "hello", vector: [1.0, 2.0] },
+      { id: 2, text: "world", vector: [3.0, 4.0] },
+    ];
+    const sourceTable = await db.createTable("source", data);
+
+    // Add more data to create a new version
+    const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
+    await sourceTable.add(moreData);
+
+    // Clone the table (should get latest version with 3 rows)
+    const sourceUri = `${tmpDir.name}/source.lance`;
+    const clonedTable = await db.cloneTable("cloned", sourceUri);
+
+    // Verify cloned table has all 3 rows
+    expect(await clonedTable.countRows()).toBe(3);
+    expect((await db.tableNames()).includes("cloned")).toBe(true);
+  });
+
+  it("should clone a table from a specific version", async () => {
+    // Create source table with initial data
+    const data = [
+      { id: 1, text: "hello", vector: [1.0, 2.0] },
+      { id: 2, text: "world", vector: [3.0, 4.0] },
+    ];
+    const sourceTable = await db.createTable("source", data);
+
+    // Get the initial version
+    const initialVersion = await sourceTable.version();
+
+    // Add more data to create a new version
+    const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
+    await sourceTable.add(moreData);
+
+    // Verify source now has 3 rows
+    expect(await sourceTable.countRows()).toBe(3);
+
+    // Clone from the initial version (should have only 2 rows)
+    const sourceUri = `${tmpDir.name}/source.lance`;
+    const clonedTable = await db.cloneTable("cloned", sourceUri, {
+      sourceVersion: initialVersion,
     });
+
+    // Verify cloned table has only the initial 2 rows
+    expect(await clonedTable.countRows()).toBe(2);
+  });
+
+  it("should clone a table from a tagged version", async () => {
+    // Create source table with initial data
+    const data = [
+      { id: 1, text: "hello", vector: [1.0, 2.0] },
+      { id: 2, text: "world", vector: [3.0, 4.0] },
+    ];
+    const sourceTable = await db.createTable("source", data);
+
+    // Create a tag for the current version
+    const tags = await sourceTable.tags();
+    await tags.create("v1.0", await sourceTable.version());
+
+    // Add more data after the tag
+    const moreData = [{ id: 3, text: "test", vector: [5.0, 6.0] }];
+    await sourceTable.add(moreData);
+
+    // Verify source now has 3 rows
+    expect(await sourceTable.countRows()).toBe(3);
+
+    // Clone from the tagged version (should have only 2 rows)
+    const sourceUri = `${tmpDir.name}/source.lance`;
+    const clonedTable = await db.cloneTable("cloned", sourceUri, {
+      sourceTag: "v1.0",
+    });
+
+    // Verify cloned table has only the tagged version's 2 rows
+    expect(await clonedTable.countRows()).toBe(2);
+  });
+
+  it("should fail when attempting deep clone", async () => {
+    // Create source table with some data
+    const data = [
+      { id: 1, text: "hello", vector: [1.0, 2.0] },
+      { id: 2, text: "world", vector: [3.0, 4.0] },
+    ];
+    await db.createTable("source", data);
+
+    // Try to create a deep clone (should fail)
+    const sourceUri = `${tmpDir.name}/source.lance`;
+    await expect(
+      db.cloneTable("cloned", sourceUri, { isShallow: false }),
+    ).rejects.toThrow("Deep clone is not yet implemented");
+  });
+});
+
+describe("namespaces", () => {
+  let tmpDir: tmp.DirResult;
+  let db: Connection;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    // The local DirectoryNamespace backend only supports child namespaces
+    // when manifest mode is enabled (see lance-namespace-impls/src/dir.rs).
+    db = await connect(tmpDir.name, {
+      // biome-ignore lint/style/useNamingConvention: opaque backend property key, must match Rust
+      namespaceClientProperties: { manifest_enabled: "true" },
+    });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should create and describe a namespace", async () => {
+    await db.createNamespace(["myns"]);
+    const desc = await db.describeNamespace(["myns"]);
+    expect(desc).toBeDefined();
+  });
+
+  it("should list namespaces created at the root", async () => {
+    await db.createNamespace(["alpha"]);
+    await db.createNamespace(["beta"]);
+    const list = await db.listNamespaces();
+    expect(list.namespaces).toEqual(expect.arrayContaining(["alpha", "beta"]));
+  });
+
+  it("should list child namespaces under a parent", async () => {
+    await db.createNamespace(["parent"]);
+    await db.createNamespace(["parent", "child"]);
+    const list = await db.listNamespaces(["parent"]);
+    expect(list.namespaces).toContain("child");
+  });
+
+  it("should drop a namespace", async () => {
+    await db.createNamespace(["ephemeral"]);
+    await db.dropNamespace(["ephemeral"]);
+    const list = await db.listNamespaces();
+    expect(list.namespaces).not.toContain("ephemeral");
+  });
+
+  it("should raise an error on any namespace op after close", async () => {
+    await db.close();
+    await expect(db.describeNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+    await expect(db.listNamespaces()).rejects.toThrow("Connection is closed");
+    await expect(db.createNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+    await expect(db.dropNamespace(["foo"])).rejects.toThrow(
+      "Connection is closed",
+    );
+  });
+
+  it("should raise an understandable error when describing a non-existent namespace", async () => {
+    await expect(db.describeNamespace(["does-not-exist"])).rejects.toThrow(
+      /not found/i,
+    );
+  });
+
+  it("should raise an error when creating a namespace that already exists", async () => {
+    await db.createNamespace(["dup"]);
+    await expect(db.createNamespace(["dup"])).rejects.toThrow();
+  });
+
+  it("should reject an unrecognized createNamespace mode with a clear error", async () => {
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.createNamespace(["x"], { mode: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid mode 'frobnicate'/);
+  });
+
+  it("should reject an unrecognized dropNamespace mode with a clear error", async () => {
+    await db.createNamespace(["x"]);
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.dropNamespace(["x"], { mode: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid mode 'frobnicate'/);
+  });
+
+  it("should reject an unrecognized dropNamespace behavior with a clear error", async () => {
+    await db.createNamespace(["x"]);
+    await expect(
+      // biome-ignore lint/suspicious/noExplicitAny: deliberately bypass TS to test runtime validation
+      db.dropNamespace(["x"], { behavior: "frobnicate" as any }),
+    ).rejects.toThrow(/Invalid behavior 'frobnicate'/);
+  });
+});
+
+describe("connectNamespace", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("connects via the dir implementation and supports table ops", async () => {
+    const db = await connectNamespace("dir", { root: tmpDir.name });
+    await db.createTable("users", [{ id: 1 }, { id: 2 }]);
+    await expect(db.tableNames()).resolves.toContain("users");
+  });
+
+  it("throws a clear error when implName is empty", async () => {
+    await expect(connectNamespace("", {})).rejects.toThrow(
+      "implName must be a non-empty string",
+    );
+  });
+
+  it("throws when the namespace implementation is unknown", async () => {
+    await expect(connectNamespace("not-a-real-impl", {})).rejects.toThrow();
+  });
+
+  it("passes storage options through to the namespace", async () => {
+    const db = await connectNamespace(
+      "dir",
+      { root: tmpDir.name },
+      { storageOptions: { newTableDataStorageVersion: "stable" } },
+    );
+    await db.createTable("plumbing", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("plumbing");
+  });
+
+  it("supports child namespaces when manifestEnabled is true on the dir config", async () => {
+    const writer = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await writer.createNamespace(["analytics"]);
+    await writer.createTable("orders", [{ id: 1 }, { id: 2 }], ["analytics"]);
+    await writer.close();
+
+    const reader = await connectNamespace("dir", {
+      root: tmpDir.name,
+      manifestEnabled: true,
+    });
+    await expect(reader.tableNames(["analytics"])).resolves.toContain("orders");
+    const orders = await reader.openTable("orders", ["analytics"]);
+    await expect(orders.countRows()).resolves.toBe(2);
+  });
+
+  it("merges extraProperties into the dir config and is overridden by typed fields", async () => {
+    // Two observable assertions:
+    // - Typed `root` overrides extraProperties.root: createTable would fail
+    //   under the bogus path if the override didn't happen.
+    // - extraProperties.manifest_enabled="false" is honored end-to-end. Child
+    //   namespaces require manifest mode (default true), so explicitly
+    //   disabling it via extraProperties must make createNamespace reject. If
+    //   extraProperties pass-through were silently broken, the default would
+    //   let createNamespace succeed.
+    const db = await connectNamespace("dir", {
+      root: tmpDir.name,
+      extraProperties: {
+        root: "/should/be/overridden",
+        // biome-ignore lint/style/useNamingConvention: backend property key
+        manifest_enabled: "false",
+      },
+    });
+    await db.createTable("base", [{ id: 1 }]);
+    await expect(db.tableNames()).resolves.toContain("base");
+    await expect(db.createNamespace(["analytics"])).rejects.toThrow();
+  });
+
+  it("flows unknown top-level keys through when implName is dynamic (no silent drop)", async () => {
+    // Routes via the third overload because `impl` is `string`, not the
+    // literal `"dir"`. The dispatcher still notices the runtime value is
+    // "dir", but unknown keys like `manifest_enabled` must not be silently
+    // dropped during the conversion.
+    //
+    // Asserting a *negative* outcome (manifest disabled -> createNamespace
+    // rejects) is required for observability, since the backend default for
+    // `manifest_enabled` is true.
+    const impl: string = "dir";
+    const db = await connectNamespace(impl, {
+      root: tmpDir.name,
+      // biome-ignore lint/style/useNamingConvention: backend property key
+      manifest_enabled: "false",
+    });
+    await expect(db.createNamespace(["mixed"])).rejects.toThrow();
   });
 });

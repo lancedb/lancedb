@@ -1,12 +1,17 @@
 # Release process
 
-There are five total packages we release. Four are the `lancedb` packages
-for Python, Rust, Java, and Node.js. The other one is the legacy `vectordb`
-package node.js.
+We release four `lancedb` packages: Python, Rust, Java, and Node.js.
 
-The Python package is versioned and released separately from the Rust, Java, and Node.js
-ones. For Node.js the release process is shared between `lancedb` and
-`vectordb` for now.
+All four share a single version number, defined by `current_version` in
+`.bumpversion.toml`. One `vX.Y.Z` tag releases all of them, so a breaking change
+in any SDK bumps the minor version for every SDK.
+
+> [!NOTE]
+> Python used to be versioned separately, under `python-vX.Y.Z` tags. It ran
+> three minor versions ahead of the other SDKs, which made the two numbers hard
+> to reason about. Both tracks were merged at `v0.37.0`: the Python line went
+> `0.36` → `0.37` as usual, while Rust, Java, and Node.js jumped `0.33` → `0.37`
+> to catch up. Tags before `v0.37.0` follow the old split scheme.
 
 ## Preview releases
 
@@ -27,20 +32,21 @@ The release process uses a handful of GitHub actions to automate the process.
   ┌─────────────────────┐
   │Create Release Commit│
   └─┬───────────────────┘
-    │                           ┌────────────┐ ┌──►Python GH Release
-    ├──►(tag) python-vX.Y.Z ───►│PyPI Publish├─┤
-    │                           └────────────┘ └──►Python Wheels
-    │
-    │                           ┌───────────┐
-    └──►(tag) vX.Y.Z ───┬──────►│NPM Publish├──┬──►Rust/Node GH Release
-                        │       └───────────┘  │
-                        │                      └──►NPM Packages
-                        │       ┌─────────────┐
-                        ├──────►│Cargo Publish├───►Cargo Release
-                        │       └─────────────┘
-                        │       ┌─────────────┐
-                        └──────►│Maven Publish├───►Java Maven Repo Release
-                                └─────────────┘
+    │                    ┌──────────────┐
+    └──►(tag) vX.Y.Z ─┬─►│GitHub Release├───►GH Release
+                      │  └──────────────┘
+                      │  ┌────────────┐
+                      ├─►│PyPI Publish├─────►Python Wheels
+                      │  └────────────┘
+                      │  ┌───────────┐
+                      ├─►│NPM Publish├──────►NPM Packages
+                      │  └───────────┘
+                      │  ┌─────────────┐
+                      ├─►│Cargo Publish├────►Cargo Release
+                      │  └─────────────┘
+                      │  ┌─────────────┐
+                      └─►│Maven Publish├────►Java Maven Repo Release
+                         └─────────────┘
 ```
 
 To start a release, trigger a `Create Release Commit` action from

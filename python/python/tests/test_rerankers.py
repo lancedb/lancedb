@@ -21,15 +21,15 @@ from lancedb.rerankers import (
     OpenaiReranker,
     JinaReranker,
     AnswerdotaiRerankers,
+    TypeSafeReranker,
     VoyageAIReranker,
+    MRRReranker,
+    WatsonxReranker,
 )
 from lancedb.table import LanceTable
 
-# Tests rely on FTS index
-pytest.importorskip("lancedb.fts")
 
-
-def get_test_table(tmp_path, use_tantivy):
+def get_test_table(tmp_path):
     db = lancedb.connect(tmp_path)
     # Create a LanceDB table schema with a vector and a text column
     emb = EmbeddingFunctionRegistry.get_instance().get("test").create()
@@ -46,6 +46,7 @@ def get_test_table(tmp_path, use_tantivy):
         db,
         "my_table",
         schema=MyTable,
+        mode="overwrite",
     )
 
     # Need to test with a bunch of phrases to make sure sorting is consistent
@@ -81,7 +82,7 @@ def get_test_table(tmp_path, use_tantivy):
         "but his son was mortal",
         "there hasn't been a good battlefield game since 2142",
         "I wish they would make another one",
-        "campains are not as good as they used to be",
+        "campaigns are not as good as they used to be",
         "Multiplayer and open world games have destroyed the single player experience",
         "Maybe the future is console games",
         "I don't know",
@@ -96,12 +97,20 @@ def get_test_table(tmp_path, use_tantivy):
     )
 
     # Create a fts index
-    table.create_fts_index("text", use_tantivy=use_tantivy)
+    table.create_fts_index("text", replace=True)
 
     return table, MyTable
 
 
-def _run_test_reranker(reranker, table, query, query_vector, schema):
+def _run_test_reranker(
+    reranker, table, query, query_vector, schema, deterministic=True
+):
+    """Exercise a reranker across search types.
+
+    Set ``deterministic=False`` for rerankers whose scores can vary between
+    identical calls, such as remote model APIs; repeated searches are then not
+    expected to return the same order.
+    """
     # Hybrid search setting
     result1 = (
         table.search(query, query_type="hybrid", vector_column_name="vector")
@@ -113,7 +122,8 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
         .rerank(reranker=reranker)
         .to_pydantic(schema)
     )
-    assert result1 == result2
+    if deterministic:
+        assert result1 == result2
 
     query_vector = table.to_pandas()["vector"][0]
     result = (
@@ -203,11 +213,13 @@ def _run_test_reranker(reranker, table, query, query_vector, schema):
     )
     assert len(result_deduped) <= 20
     result_arrow = reranker.rerank_multivector([rs1.to_arrow(), rs2.to_arrow()], query)
-    assert len(result) == 20 and result == result_arrow
+    assert len(result) == 20 and len(result_arrow) == 20
+    if deterministic:
+        assert result == result_arrow
 
 
-def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
-    table, schema = get_test_table(tmp_path, use_tantivy)
+def _run_test_hybrid_reranker(reranker, tmp_path):
+    table, schema = get_test_table(tmp_path)
     # The default reranker
     result1 = (
         table.search(
@@ -283,8 +295,7 @@ def _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy):
     )
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_linear_combination(tmp_path, use_tantivy):
+def test_linear_combination(tmp_path):
     reranker = LinearCombinationReranker()
 
     vector_results = pa.Table.from_pydict(
@@ -311,13 +322,109 @@ def test_linear_combination(tmp_path, use_tantivy):
     assert "_score" not in combined_results.column_names
     assert "_relevance_score" in combined_results.column_names
 
-    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_rrf_reranker(tmp_path, use_tantivy):
+def test_rrf_reranker(tmp_path):
     reranker = RRFReranker()
-    _run_test_hybrid_reranker(reranker, tmp_path, use_tantivy)
+    _run_test_hybrid_reranker(reranker, tmp_path)
+
+
+def test_mrr_reranker(tmp_path):
+    reranker = MRRReranker()
+    _run_test_hybrid_reranker(reranker, tmp_path)
+
+    # Test multi-vector part
+    table, schema = get_test_table(tmp_path)
+    query = "single player experience"
+    rs1 = table.search(query, vector_column_name="vector").limit(10).with_row_id(True)
+    rs2 = (
+        table.search(query, vector_column_name="meta_vector")
+        .limit(10)
+        .with_row_id(True)
+    )
+    result = reranker.rerank_multivector([rs1, rs2])
+    assert "_relevance_score" in result.column_names
+    assert len(result) <= 20
+
+    if len(result) > 1:
+        assert np.all(np.diff(result.column("_relevance_score").to_numpy()) <= 0), (
+            "The _relevance_score should be descending."
+        )
+
+    # Test with duplicate results
+    result_deduped = reranker.rerank_multivector([rs1, rs2, rs1])
+    assert len(result_deduped) == len(result)
+
+
+def test_mrr_reranker_empty_input():
+    reranker = MRRReranker()
+    with pytest.raises(ValueError, match="must not be empty"):
+        reranker.rerank_multivector([])
+
+
+def test_mrr_multivector_rewards_consensus():
+    # Reciprocal ranks must be averaged across *all* ranking systems, treating a
+    # missing system as 0. A document ranked first by every system must outrank a
+    # document ranked first by only one of them.
+    reranker = MRRReranker()
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    # Doc 1 is rank 1 in only the first system; doc 2 is rank 1 in two systems
+    # and rank 2 in the third (strong cross-system consensus).
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([2, 3, 4])
+    rs3 = ranking([2, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2, rs3])
+    scores = {
+        row_id: score
+        for row_id, score in zip(
+            result["_rowid"].to_pylist(),
+            result["_relevance_score"].to_pylist(),
+        )
+    }
+
+    # sum of reciprocal ranks / number of systems
+    assert scores[1] == pytest.approx(1.0 / 3)
+    assert scores[2] == pytest.approx((0.5 + 1.0 + 1.0) / 3)
+    assert scores[2] > scores[1]
+    # The consensus document ranks first overall.
+    assert result["_rowid"].to_pylist()[0] == 2
+
+
+def test_rrf_multivector_ranks_each_result_list():
+    # RRF scores a document by its rank *within each* result list. The top hit
+    # of the second list must score the same as the top hit of the first list,
+    # not as if it were ranked after every row of the first list.
+    reranker = RRFReranker(K=60)
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([4, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+
+    assert scores[1] == pytest.approx(1 / 61)
+    assert scores[4] == pytest.approx(1 / 61)
+    assert scores[5] == pytest.approx(1 / 62)
+    # the second-ranked hit of the second list beats the third hit of the first
+    assert scores[5] > scores[3]
+
+    # A document found by both lists sums its reciprocal ranks from each list.
+    result = reranker.rerank_multivector([ranking([1, 2]), ranking([2, 3])])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+    assert scores[2] == pytest.approx(1 / 62 + 1 / 61)
+    assert result["_rowid"].to_pylist() == [2, 1, 3]
 
 
 def test_rrf_reranker_distance():
@@ -333,7 +440,7 @@ def test_rrf_reranker_distance():
     table = db.create_table("test", data)
 
     table.create_index(num_partitions=1, num_sub_vectors=2)
-    table.create_fts_index("text", use_tantivy=False)
+    table.create_fts_index("text")
 
     reranker = RRFReranker(return_score="all")
 
@@ -392,35 +499,39 @@ def test_rrf_reranker_distance():
 @pytest.mark.skipif(
     os.environ.get("COHERE_API_KEY") is None, reason="COHERE_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cohere_reranker(tmp_path, use_tantivy):
+def test_cohere_reranker(tmp_path):
     pytest.importorskip("cohere")
     reranker = CohereReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cross_encoder_reranker(tmp_path, use_tantivy):
+def test_cross_encoder_reranker(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_colbert_reranker(tmp_path, use_tantivy):
+def test_cross_encoder_reranker_kwargs(tmp_path):
+    pytest.importorskip("sentence_transformers")
+    reranker = CrossEncoderReranker(batch_size=4, max_length=64)
+    assert reranker.model.max_length == 64
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+def test_colbert_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = ColbertReranker()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_answerdotai_reranker(tmp_path, use_tantivy):
+def test_answerdotai_reranker(tmp_path):
     pytest.importorskip("rerankers")
     reranker = AnswerdotaiRerankers()
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
@@ -429,10 +540,9 @@ def test_answerdotai_reranker(tmp_path, use_tantivy):
     or os.environ.get("OPENAI_BASE_URL") is not None,
     reason="OPENAI_API_KEY not set",
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_openai_reranker(tmp_path, use_tantivy):
+def test_openai_reranker(tmp_path):
     pytest.importorskip("openai")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
@@ -440,10 +550,9 @@ def test_openai_reranker(tmp_path, use_tantivy):
 @pytest.mark.skipif(
     os.environ.get("JINA_API_KEY") is None, reason="JINA_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_jina_reranker(tmp_path, use_tantivy):
+def test_jina_reranker(tmp_path):
     pytest.importorskip("jina")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     reranker = JinaReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
@@ -451,12 +560,115 @@ def test_jina_reranker(tmp_path, use_tantivy):
 @pytest.mark.skipif(
     os.environ.get("VOYAGE_API_KEY") is None, reason="VOYAGE_API_KEY not set"
 )
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_voyageai_reranker(tmp_path, use_tantivy):
+def test_voyageai_reranker(tmp_path):
     pytest.importorskip("voyageai")
-    reranker = VoyageAIReranker(model_name="rerank-2")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    reranker = VoyageAIReranker(model_name="rerank-2.5")
+    table, schema = get_test_table(tmp_path)
     _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+class _FakeTypeSafeClient:
+    """Stands in for ``typesafe_sdk.TypeSafeClient``; scores by word overlap."""
+
+    def __init__(self):
+        self.requests = []
+
+    def system_one(self, state, questions, model):
+        self.requests.append((state, questions, model))
+        query_words = set(state["query"].lower().split())
+        answers = {}
+        for key, question in questions.items():
+            document = (
+                state["document"]
+                if "document" in state
+                else question["instructions"]["document"]
+            )
+            doc_words = set(document.lower().split())
+            noul = len(query_words & doc_words) / len(query_words)
+            answers[key] = type("NoulAnswer", (), {"noul": noul})()
+        return type("SystemOneResponse", (), {"answers": answers})()
+
+
+@pytest.mark.parametrize("batch_size", [1, 40])
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_typesafe_reranker_with_fake_client(tmp_path, batch_size, return_score):
+    reranker = TypeSafeReranker(
+        max_concurrency=4, batch_size=batch_size, return_score=return_score
+    )
+    reranker._client = _FakeTypeSafeClient()
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+    state, questions, model = reranker._client.requests[0]
+    assert model == "jev-latest"
+    if batch_size == 1:
+        assert set(state) == {"query", "document"}
+        assert questions == {
+            "relevance": {
+                "type": "noul",
+                "instructions": reranker.instructions,
+                "criteria": reranker.criteria,
+            }
+        }
+    else:
+        assert set(state) == {"query"}
+        assert 1 <= len(questions) <= batch_size
+
+
+def test_typesafe_reranker_scores_each_row():
+    reranker = TypeSafeReranker(
+        column="body",
+        instructions="Is this about cats?",
+        criteria={},
+        return_score="all",
+    )
+    reranker._client = _FakeTypeSafeClient()
+    results = pa.table(
+        {
+            "body": ["dogs bark", "cats purr and cats nap", None, "cats"],
+            "_distance": [0.1, 0.2, 0.3, 0.4],
+        }
+    )
+
+    reranked = reranker.rerank_vector("cats nap", results)
+
+    assert reranked["body"].to_pylist() == [
+        "cats purr and cats nap",
+        "cats",
+        "dogs bark",
+        None,
+    ]
+    assert reranked["_relevance_score"].to_pylist() == [1.0, 0.5, 0.0, 0.0]
+    assert reranked["_distance"].to_pylist() == [0.2, 0.4, 0.1, 0.3]
+    # Null documents are scored 0 without a request.
+    assert len(reranker._client.requests) == 3
+    assert reranker._client.requests[0][1] == {
+        "relevance": {"type": "noul", "instructions": "Is this about cats?"}
+    }
+
+
+def test_typesafe_reranker_rejects_invalid_arguments():
+    with pytest.raises(ValueError, match="criteria keys"):
+        TypeSafeReranker(criteria={"yes": "relevant"})
+    with pytest.raises(ValueError, match="max_concurrency"):
+        TypeSafeReranker(max_concurrency=0)
+
+
+@pytest.mark.skipif(
+    os.environ.get("TYPESAFE_API_KEY") is None, reason="TYPESAFE_API_KEY not set"
+)
+def test_typesafe_reranker(tmp_path):
+    pytest.importorskip("typesafe_sdk")
+    reranker = TypeSafeReranker()
+    table, schema = get_test_table(tmp_path)
+    _run_test_reranker(
+        reranker,
+        table,
+        "single player experience",
+        None,
+        schema,
+        deterministic=False,
+    )
 
 
 def test_empty_result_reranker():
@@ -474,7 +686,7 @@ def test_empty_result_reranker():
 
     # Create empty table with schema
     empty_table = db.create_table("empty_table", schema=schema, mode="overwrite")
-    empty_table.create_fts_index("text", use_tantivy=False, replace=True)
+    empty_table.create_fts_index("text", replace=True)
     for reranker in [
         CrossEncoderReranker(),
         # ColbertReranker(),
@@ -501,11 +713,82 @@ def test_empty_result_reranker():
         )
 
 
-@pytest.mark.parametrize("use_tantivy", [True, False])
-def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
+def test_empty_hybrid_result_reranker():
+    """Test that hybrid search with empty results after filtering doesn't crash.
+
+    Regression test for https://github.com/lancedb/lancedb/issues/2425
+    """
+    from lancedb.query import LanceHybridQueryBuilder
+
+    # Simulate empty vector and FTS results with the expected schema
+    vector_schema = pa.schema(
+        [
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 4)),
+            ("_rowid", pa.uint64()),
+            ("_distance", pa.float32()),
+        ]
+    )
+    fts_schema = pa.schema(
+        [
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 4)),
+            ("_rowid", pa.uint64()),
+            ("_score", pa.float32()),
+        ]
+    )
+    empty_vector = pa.table(
+        {
+            "text": pa.array([], type=pa.string()),
+            "vector": pa.array([], type=pa.list_(pa.float32(), 4)),
+            "_rowid": pa.array([], type=pa.uint64()),
+            "_distance": pa.array([], type=pa.float32()),
+        },
+        schema=vector_schema,
+    )
+    empty_fts = pa.table(
+        {
+            "text": pa.array([], type=pa.string()),
+            "vector": pa.array([], type=pa.list_(pa.float32(), 4)),
+            "_rowid": pa.array([], type=pa.uint64()),
+            "_score": pa.array([], type=pa.float32()),
+        },
+        schema=fts_schema,
+    )
+
+    for reranker in [LinearCombinationReranker(), RRFReranker()]:
+        result = LanceHybridQueryBuilder._combine_hybrid_results(
+            fts_results=empty_fts,
+            vector_results=empty_vector,
+            norm="score",
+            fts_query="nonexistent query",
+            reranker=reranker,
+            limit=10,
+            with_row_ids=False,
+        )
+        assert len(result) == 0
+        assert "_relevance_score" in result.column_names
+        assert "_rowid" not in result.column_names
+
+    # Also test with with_row_ids=True
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=empty_fts,
+        vector_results=empty_vector,
+        norm="score",
+        fts_query="nonexistent query",
+        reranker=LinearCombinationReranker(),
+        limit=10,
+        with_row_ids=True,
+    )
+    assert len(result) == 0
+    assert "_relevance_score" in result.column_names
+    assert "_rowid" in result.column_names
+
+
+def test_cross_encoder_reranker_return_all(tmp_path):
     pytest.importorskip("sentence_transformers")
     reranker = CrossEncoderReranker(return_score="all")
-    table, schema = get_test_table(tmp_path, use_tantivy)
+    table, schema = get_test_table(tmp_path)
     query = "single player experience"
     result = (
         table.search(query, query_type="hybrid", vector_column_name="vector")
@@ -515,3 +798,120 @@ def test_cross_encoder_reranker_return_all(tmp_path, use_tantivy):
     assert "_relevance_score" in result.column_names
     assert "_score" in result.column_names
     assert "_distance" in result.column_names
+
+
+def test_answerdotai_reranker_return_all(tmp_path):
+    pytest.importorskip("rerankers")
+    reranker = AnswerdotaiRerankers(return_score="all")
+    table, schema = get_test_table(tmp_path)
+    query = "single player experience"
+    result = (
+        table.search(query, query_type="hybrid", vector_column_name="vector")
+        .rerank(reranker=reranker)
+        .to_arrow()
+    )
+    assert "_relevance_score" in result.column_names
+    assert "_score" in result.column_names
+    assert "_distance" in result.column_names
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for LinearCombinationReranker scoring bugs (issue #3154)
+# ---------------------------------------------------------------------------
+
+
+def test_linear_combination_best_match_ranks_first():
+    """
+    The document that is BOTH the closest vector match AND the only FTS match
+    must rank first.  Previously _combine_score subtracted from 1, inverting
+    the ranking so the worst document ranked highest.
+    """
+    reranker = LinearCombinationReranker(weight=0.7, return_score="all")
+
+    # rowid 0: perfect vector match, sole FTS match  → should rank 1st
+    # rowid 1: mediocre vector, no FTS match
+    # rowid 2: bad vector, no FTS match
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1, 2],
+            "_distance": [0.0, 0.5, 0.9],
+        }
+    )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0],
+            "_score": [1.0],
+        }
+    )
+
+    combined = reranker.merge_results(vector_results, fts_results, fill=1.0)
+    scores = dict(
+        zip(
+            combined["_rowid"].to_pylist(),
+            combined["_relevance_score"].to_pylist(),
+        )
+    )
+
+    # rowid 0 must have the highest relevance score
+    assert scores[0] > scores[1], (
+        f"Best match (rowid 0, score={scores[0]:.4f}) should beat "
+        f"mid match (rowid 1, score={scores[1]:.4f})"
+    )
+    assert scores[1] > scores[2], (
+        f"Mid match (rowid 1, score={scores[1]:.4f}) should beat "
+        f"bad match (rowid 2, score={scores[2]:.4f})"
+    )
+
+
+def test_linear_combination_missing_fts_is_penalised():
+    """
+    A document with no FTS match must score *lower* than a document that
+    has a mediocre FTS match, everything else being equal.  Previously
+    missing-FTS entries used fill=1.0 directly, which gave them a reward
+    (via the 1-(...) inversion) instead of a penalty.
+    """
+    reranker = LinearCombinationReranker(weight=0.5, return_score="all")
+
+    vector_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0, 1],
+            "_distance": [0.2, 0.2],  # identical vector scores
+        }
+    )
+    fts_results = pa.Table.from_pydict(
+        {
+            "_rowid": [0],  # rowid 1 has no FTS match
+            "_score": [0.3],  # small FTS score
+        }
+    )
+
+    combined = reranker.merge_results(vector_results, fts_results, fill=1.0)
+    scores = dict(
+        zip(
+            combined["_rowid"].to_pylist(),
+            combined["_relevance_score"].to_pylist(),
+        )
+    )
+
+    # rowid 0 has a small FTS score; rowid 1 has none.
+    # Even a small FTS contribution should beat having none at all.
+    assert scores[0] > scores[1], (
+        f"Document with FTS score (rowid 0, {scores[0]:.4f}) should beat "
+        f"document with no FTS match (rowid 1, {scores[1]:.4f})"
+    )
+
+
+@pytest.mark.skipif(
+    os.environ.get("WATSONX_API_KEY") is None
+    or (
+        os.environ.get("WATSONX_PROJECT_ID") is None
+        and os.environ.get("WATSONX_SPACE_ID") is None
+    ),
+    reason="WATSONX_API_KEY and one of WATSONX_PROJECT_ID / "
+    "WATSONX_SPACE_ID must be set",
+)
+def test_watsonx_reranker(tmp_path):
+    pytest.importorskip("ibm_watsonx_ai")
+    table, schema = get_test_table(tmp_path)
+    reranker = WatsonxReranker()
+    _run_test_reranker(reranker, table, "single player experience", None, schema)

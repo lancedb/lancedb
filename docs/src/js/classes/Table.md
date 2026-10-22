@@ -69,13 +69,34 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+The `{ computed }` form stores the expression rather than evaluating it
+now: the column is committed with no values, and rows get them from
+[Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
+large table as on an empty one.
+
+A refresh also recomputes the rows whose inputs changed since they were
+computed, so a mutated input is reflected by the next refresh. While a
+declaration reads a column, that column cannot be renamed, retyped or
+dropped.
+
+On LanceDB Cloud and Enterprise the expression is planned by the
+server, and the refresh runs as a server job -- see
+[Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
 #### Parameters
 
-* **newColumnTransforms**: [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
-    pairs of column names and
-    the SQL expression to use to calculate the value of the new column. These
-    expressions will be evaluated for each row in the table, and can
-    reference existing columns in the table.
+* **newColumnTransforms**:
+    \| `Field`&lt;`any`&gt;
+    \| `Field`&lt;`any`&gt;[]
+    \| `Schema`&lt;`any`&gt;
+    \| [`AddColumnsSql`](../interfaces/AddColumnsSql.md)[]
+    \| `object`
+    Either:
+    - An array of objects with column names and SQL expressions to calculate values
+    - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+    - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+    - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+    - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
 
 #### Returns
 
@@ -83,6 +104,13 @@ Add new columns with defined values.
 
 A promise that resolves to an object
 containing the new version number of the table after adding the columns.
+
+#### Example
+
+```ts
+await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+const { rowsFilled } = await table.refreshColumn("doubled");
+```
 
 ***
 
@@ -106,6 +134,38 @@ Alter the name or nullability of columns.
 
 A promise that resolves to an object
 containing the new version number of the table after altering the columns.
+
+***
+
+### blobColumns()
+
+```ts
+abstract blobColumns(): Promise<string[]>
+```
+
+Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+Blobs inside lists are omitted because a row ID does not identify an element.
+
+#### Returns
+
+`Promise`&lt;`string`[]&gt;
+
+***
+
+### branches()
+
+```ts
+abstract branches(): Promise<Branches>
+```
+
+Get the branch manager for this table.
+
+Branches are isolated, writable lines of history forked from another
+branch (or version). Writes on a branch do not affect `main`.
+
+#### Returns
+
+`Promise`&lt;[`Branches`](Branches.md)&gt;
 
 ***
 
@@ -168,6 +228,39 @@ version of the table.
 
 ***
 
+### checkpointRTE()
+
+```ts
+abstract checkpointRTE(): Promise<void>
+```
+
+Converge this table's RTE write path into its base table.
+
+Freezes once, then triggers compaction and polls until the SSTables that existed
+at the start is gone. The target set is fixed at the start, so
+SSTables created *during* the checkpoint are ignored — that is what
+lets it terminate under write load, and what makes it best-effort: it
+converges the fresh tier as of some instant. Idempotent, abandonable at
+any point, and safe to run on a cadence.
+
+There is no liveness bound — the compactor pool is shared across tables,
+so a checkpoint queued behind unrelated work looks exactly like one that
+is merging. The caller owns the deadline.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+const before = await table.getRTEStats();
+await table.checkpointRTE();
+const after = await table.getRTEStats();
+```
+
+***
+
 ### close()
 
 ```ts
@@ -183,6 +276,43 @@ Any attempt to use the table after it is closed will result in an error.
 #### Returns
 
 `void`
+
+***
+
+### closeRTEWriters()
+
+```ts
+abstract closeRTEWriters(): Promise<void>
+```
+
+Drain and close any cached RTE shard writers held for this table.
+
+When an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) is installed, `mergeInsert` opens RTE
+shard writers and caches them for reuse across calls. This closes them,
+flushing pending data; writers reopen lazily on the next `mergeInsert`.
+It is a no-op when no writers are cached.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### compactRTE()
+
+```ts
+abstract compactRTE(): Promise<void>
+```
+
+Trigger a background SSTable compaction pass per table shard.
+
+Returns once the passes are *dispatched*, not once they finish — watch
+[Table#getRTEStats](Table.md#getrtestats) for progress, or use
+[Table#checkpointRTE](Table.md#checkpointrte) to wait for convergence.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -258,6 +388,46 @@ await table.createIndex("my_float_col");
 
 ***
 
+### createIndexAsync()
+
+```ts
+abstract createIndexAsync(column, options?): Promise<Job>
+```
+
+Create an index, returning a handle to the indexing job.
+
+The job may already be complete when returned; callers must not assume
+the index exists until [Job.wait](Job.md#wait) resolves.
+
+#### Parameters
+
+* **column**: `string`
+
+* **options?**: `Partial`&lt;[`IndexOptions`](../interfaces/IndexOptions.md)&gt;
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+***
+
+### currentBranch()
+
+```ts
+abstract currentBranch(): null | string
+```
+
+The branch this table handle is scoped to, or `null` for the main branch.
+
+A handle returned by [Branches.create](Branches.md#create) or [Branches.checkout](Branches.md#checkout)
+reports the branch it targets; a handle opened normally reports `null`.
+
+#### Returns
+
+`null` \| `string`
+
+***
+
 ### delete()
 
 ```ts
@@ -276,6 +446,23 @@ Delete the rows that satisfy the predicate.
 
 A promise that resolves to an object
 containing the new version number of the table
+
+***
+
+### disableRTE()
+
+```ts
+abstract disableRTE(): Promise<void>
+```
+
+Remove the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) from this table, reverting to the standard
+`mergeInsert` write path.
+
+Errors if no spec is currently set.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -344,6 +531,219 @@ Drop an index from the table.
 
 ***
 
+### enableRTE()
+
+```ts
+abstract enableRTE(spec): Promise<void>
+```
+
+Install an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) on this table, selecting Lance's MemWAL
+LSM-style write path for future `mergeInsert` calls.
+
+`RTEWriteSpec` chooses one of three sharding strategies via `specType`:
+
+- `"bucket"` — hash-bucket writes by the single-column unenforced primary
+  key (`column` and `numBuckets` required).
+- `"identity"` — shard by the raw value of a scalar `column`.
+- `"unsharded"` — route every write to a single shard.
+
+All variants require the table to have an unenforced primary key
+([Table#setUnenforcedPrimaryKey](Table.md#setunenforcedprimarykey)); bucket sharding additionally
+requires it to be the single column being bucketed.
+
+Omitting `maintainedIndexes` maintains every index the table has,
+including ones created later, and skips a kind the RTE cannot maintain.
+Naming them pins an exact set, and a still-building index is rejected
+rather than quietly omitted.
+
+#### Parameters
+
+* **spec**: [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)
+    The sharding spec to install.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+#### Example
+
+```ts
+await table.setUnenforcedPrimaryKey("id");
+await table.enableRTE({
+  specType: "bucket",
+  column: "id",
+  numBuckets: 16,
+  maintainedIndexes: ["id_idx"],
+});
+```
+
+***
+
+### fetchBlobFiles()
+
+```ts
+abstract fetchBlobFiles(
+   column,
+   rowIds,
+   options?): Promise<(null | BlobFile)[]>
+```
+
+Opens lazy blob handles for `column` at the given row IDs using the
+table's current checkout.
+
+Preserves input order, duplicates, and nulls. Use this for large payloads.
+See [Table.fetchBlobs](Table.md#fetchblobs) for row-ID validity across versions.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial handles are returned.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| [`BlobFile`](BlobFile.md))[]&gt;
+
+***
+
+### fetchBlobs()
+
+```ts
+abstract fetchBlobs(
+   column,
+   rowIds,
+   options?): Promise<(null | Buffer)[]>
+```
+
+Bytes for `column` at row IDs from [Query.withRowId](Query.md#withrowid).
+
+Reads the table's current checkout. IDs from another version can fail after
+compaction unless stable row ids are enabled. Results keep input order and
+duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+One missing or deleted row ID rejects the entire batch, including on remote
+tables; no partial results are returned.
+Blobs inside lists cannot be fetched by row ID.
+
+Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+The client splits requests automatically and reads an individual larger
+blob through the Range route. This method still materializes all bytes in
+memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
+
+#### Parameters
+
+* **column**: `string`
+
+* **rowIds**: readonly (`number` \| `bigint`)[]
+
+* **options?**: [`BlobReadOptions`](../type-aliases/BlobReadOptions.md)
+
+#### Returns
+
+`Promise`&lt;(`null` \| `Buffer`)[]&gt;
+
+***
+
+### flushRTE()
+
+```ts
+abstract flushRTE(): Promise<void>
+```
+
+Freeze every table shard's active memtable into a new SSTable.
+
+Returns once the freeze is committed. Freezing an empty memtable is a no-op,
+so this is safe to call repeatedly.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
+
+***
+
+### functionErrors()
+
+```ts
+abstract functionErrors(options?): Promise<FunctionErrors>
+```
+
+The per-row errors Function refreshes recorded on this table.
+
+A refresh running under a skip policy records each row it skipped with
+the input that failed and the error. This lists those records, newest
+job first, plus a summary for any fragment whose per-row detail was
+capped. LanceDB Cloud and Enterprise only; reading errors needs read
+access to the table, since a message carries the value that failed.
+
+#### Parameters
+
+* **options?**: [`FunctionErrorsOptions`](../interfaces/FunctionErrorsOptions.md)
+    Optional filters: `jobId`,
+    `column`, and `limit` (server default 10000, cap 100000).
+
+#### Returns
+
+`Promise`&lt;[`FunctionErrors`](../interfaces/FunctionErrors.md)&gt;
+
+The records, the capped fragments,
+and whether the listing stopped at its limit.
+
+#### Example
+
+```ts
+const { records, truncated } = await table.functionErrors({ column: "embedding" });
+```
+
+***
+
+### getRTESpec()
+
+```ts
+abstract getRTESpec(): Promise<undefined | RTEWriteSpec>
+```
+
+Read the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) currently installed on this table.
+
+Resolves to `undefined` when the RTE write path is not enabled (no
+spec has been set, or it was removed with [Table#disableRTE](Table.md#disablerte)).
+The spec is the one installed, including its maintained-index selection:
+an absent `maintainedIndexes` for every index the table has, an empty
+array for none.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)&gt;
+
+***
+
+### getRTEStats()
+
+```ts
+abstract getRTEStats(includeSstableRows?): Promise<undefined | RTEStats>
+```
+
+Read live per-table-shard RTE state.
+
+Answers "how far behind is my fresh tier", "which table shard is hot", and
+"why is my fresh-tier vector search brute-force". Mutates no table state.
+
+Resolves to `undefined` only when the RTE write path is not enabled.
+
+#### Parameters
+
+* **includeSstableRows?**: `boolean`
+    Also count rows per SSTable.
+    Off by default because each count opens an uncached Lance dataset.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| [`RTEStats`](../interfaces/RTEStats.md)&gt;
+
+***
+
 ### indexStats()
 
 ```ts
@@ -367,6 +767,27 @@ Use [Table.listIndices](Table.md#listindices) to find the names of the indices.
 
 ***
 
+### initialStorageOptions()
+
+```ts
+abstract initialStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the initial storage options that were passed in when opening this table.
+
+For dynamically refreshed options (e.g., credential vending), use
+[Table.latestStorageOptions](Table.md#lateststorageoptions).
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
+
+***
+
 ### isOpen()
 
 ```ts
@@ -378,6 +799,28 @@ Return true if the table has not been closed
 #### Returns
 
 `boolean`
+
+***
+
+### latestStorageOptions()
+
+```ts
+abstract latestStorageOptions(): Promise<undefined | null | Record<string, string>>
+```
+
+Get the latest storage options, refreshing from provider if configured.
+
+This method is useful for credential vending scenarios where storage options
+may be refreshed dynamically. If no dynamic provider is configured, this
+returns the initial static options.
+
+Warning: This is an internal API and the return value is subject to change.
+
+#### Returns
+
+`Promise`&lt;`undefined` \| `null` \| `Record`&lt;`string`, `string`&gt;&gt;
+
+The storage options, or undefined if no storage options were configured.
 
 ***
 
@@ -415,9 +858,17 @@ List all the versions of the table
 abstract mergeInsert(on): MergeInsertBuilder
 ```
 
+Create a [MergeInsertBuilder](MergeInsertBuilder.md), which combines new data with the
+existing table in a single transaction — inserting, updating and deleting
+rows depending on how they match.
+
 #### Parameters
 
 * **on**: `string` \| `string`[]
+    The column, or columns, to match source rows against target
+    rows on. Typically a key or id column. Several columns match on the
+    composite key: a source row updates a target row only when it agrees on
+    every one of them.
 
 #### Returns
 
@@ -441,19 +892,7 @@ Modeled after ``VACUUM`` in PostgreSQL.
  - Prune: Removes old versions of the dataset
  - Index: Optimizes the indices, adding new data to existing indices
 
- Experimental API
- ----------------
-
- The optimization process is undergoing active development and may change.
- Our goal with these changes is to improve the performance of optimization and
- reduce the complexity.
-
- That being said, it is essential today to run optimize if you want the best
- performance.  It should be stable and safe to use in production, but it our
- hope that the API may be simplified (or not even need to be called) in the
- future.
-
- The frequency an application shoudl call optimize is based on the frequency of
+ The frequency an application should call optimize is based on the frequency of
  data modifications.  If data is frequently added, deleted, or updated then
  optimize should be run frequently.  A good rule of thumb is to run optimize if
  you have added or modified 100,000 or more records or run more than 20 data
@@ -466,6 +905,34 @@ Modeled after ``VACUUM`` in PostgreSQL.
 #### Returns
 
 `Promise`&lt;[`OptimizeStats`](../interfaces/OptimizeStats.md)&gt;
+
+***
+
+### prewarmData()
+
+```ts
+abstract prewarmData(columns?): Promise<void>
+```
+
+Prewarm one or more columns of data in the table.
+
+#### Parameters
+
+* **columns?**: `string`[]
+    The columns to prewarm. If undefined, all columns are prewarmed.
+    This will load the column data into the page cache so that future queries that
+    read those columns avoid the initial cold-start latency.  This call initiates
+    prewarming and returns once the request is accepted; the warming itself may
+    continue in the background.  Calling it on already-prewarmed columns is a
+    no-op on the server.
+    Prewarming is generally useful for columns used in filters or projections.
+    Large columns (e.g. high-dimensional vectors or binary data) may not be
+    practical to prewarm.
+    This feature is currently only supported on remote tables.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -561,6 +1028,67 @@ for await (const batch of table.query()) {
 
 ***
 
+### refreshColumn()
+
+```ts
+abstract refreshColumn(column): Promise<RefreshColumnResult>
+```
+
+Fill the rows of a computed column that hold no value yet.
+
+Rows appended since the last refresh are filled by the next one, and
+rows whose inputs changed since they were computed are recomputed;
+everything else is left as it is. Local tables only: a remote refresh
+runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`RefreshColumnResult`](../interfaces/RefreshColumnResult.md)&gt;
+
+A promise that resolves to the
+number of rows filled and the new version number of the table.
+
+***
+
+### refreshColumnAsync()
+
+```ts
+abstract refreshColumnAsync(column): Promise<Job>
+```
+
+Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
+job instead of blocking until it completes.
+
+The job may already be complete when returned; callers must not assume
+the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
+an unknown column, or one that is not computed -- rejects here rather
+than failing the job. On local tables the job runs in-process; on
+LanceDB Cloud and Enterprise it is the server's backfill job.
+
+#### Parameters
+
+* **column**: `string`
+    The name of the computed column to fill.
+
+#### Returns
+
+`Promise`&lt;[`Job`](Job.md)&gt;
+
+#### Example
+
+```ts
+const job = await table.refreshColumnAsync("doubled");
+await job.wait();
+console.log(await job.status()); // "finished"
+```
+
+***
+
 ### restore()
 
 ```ts
@@ -604,7 +1132,7 @@ Get the schema of the table.
 abstract search(
    query,
    queryType?,
-   ftsColumns?): Query | VectorQuery
+   ftsColumns?): Query | VectorQuery | AutoQuery
 ```
 
 Create a search query to find the nearest neighbors
@@ -626,7 +1154,32 @@ of the given query
 
 #### Returns
 
-[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md)
+[`Query`](Query.md) \| [`VectorQuery`](VectorQuery.md) \| [`AutoQuery`](AutoQuery.md)
+
+***
+
+### setUnenforcedPrimaryKey()
+
+```ts
+abstract setUnenforcedPrimaryKey(columns): Promise<void>
+```
+
+Set the unenforced primary key for this table to a single column.
+
+"Unenforced" means LanceDB does not check uniqueness on writes; the
+column is recorded in the schema as the primary key for use by features
+such as `merge_insert`. Only single-column primary keys are supported,
+and the key cannot be changed once set.
+
+#### Parameters
+
+* **columns**: `string` \| `string`[]
+    The primary key column. A one-element
+    array is also accepted; passing more than one column is rejected.
+
+#### Returns
+
+`Promise`&lt;`void`&gt;
 
 ***
 
@@ -705,8 +1258,11 @@ Create a query that returns a subset of the rows in the table.
 
 #### Parameters
 
-* **rowIds**: `number`[]
+* **rowIds**: readonly (`number` \| `bigint`)[]
     The row ids of the rows to return.
+    Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+    For convenience / backwards compatibility, `number[]` is also accepted (for
+    small row ids that fit in a safe integer).
 
 #### Returns
 
@@ -727,6 +1283,32 @@ Return the table as an arrow table
 #### Returns
 
 `Promise`&lt;`Table`&lt;`any`&gt;&gt;
+
+***
+
+### tokenize()
+
+```ts
+abstract tokenize(query, options): Promise<FtsToken[]>
+```
+
+Tokenize a full-text search query using the tokenizer configured on an FTS index.
+
+Specify exactly one of `column` or `indexName`.
+
+Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+the client process from index metadata. For remote tables, this means the
+same tokenizer model files must also exist locally.
+
+#### Parameters
+
+* **query**: `string`
+
+* **options**: [`TokenizeTableOptions`](../type-aliases/TokenizeTableOptions.md)
+
+#### Returns
+
+`Promise`&lt;[`FtsToken`](../interfaces/FtsToken.md)[]&gt;
 
 ***
 
@@ -801,11 +1383,11 @@ value is 0")
 Note: if your condition is something like "some_id_column == 7" and
 you are updating many rows (with different ids) then you will get
 better performance with a single [`merge_insert`] call instead of
-repeatedly calilng this method.
+repeatedly calling this method.
 
 ##### Parameters
 
-* **updates**: `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **updates**: `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
     the
     columns to update
 
@@ -824,6 +1406,41 @@ Keys in the map should specify the name of the column to update.
 Values in the map provide the new value of the column.  These can
 be SQL literal strings (e.g. "7" or "'foo'") or they can be expressions
 based on the row being updated (e.g. "my_col + 1")
+
+***
+
+### updateFieldMetadata()
+
+```ts
+abstract updateFieldMetadata(updates): Promise<UpdateFieldMetadataResult>
+```
+
+Update per-field (column) metadata.
+
+The following keys are treated specially, by convention, and should be
+used when appropriate:
+
+- `lancedb:description`: for a human-readable description of a field.
+- `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+  names the tag category; e.g. `lancedb:tag:model: "clip"`.
+- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+  `feature_v2` might be in the same logical column.
+- `lancedb:status`: for status options (`production`, `candidate`,
+  `deprecated`, `archived`) to designate the current life cycle state of
+  this column.
+
+#### Parameters
+
+* **updates**: [`FieldMetadataUpdate`](../interfaces/FieldMetadataUpdate.md)[]
+    One or more per-field updates. Each
+    update's metadata is merged into the field's existing metadata by default;
+    a value of `null` deletes that key, and `replace: true` swaps the whole map.
+
+#### Returns
+
+`Promise`&lt;[`UpdateFieldMetadataResult`](../interfaces/UpdateFieldMetadataResult.md)&gt;
+
+resolves to the new table version.
 
 ***
 

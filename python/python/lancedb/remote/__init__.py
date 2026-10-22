@@ -8,7 +8,30 @@ from typing import List, Optional
 
 from lancedb import __version__
 
-__all__ = ["TimeoutConfig", "RetryConfig", "ClientConfig"]
+from .header import HeaderProvider
+from .oauth import (
+    ClientAuthMethod,
+    OAuthConfig,
+    OAuthFlowType,
+    OAuthSession,
+    TokenCacheOptions,
+)
+
+# The API reference renders this module with a single mkdocstrings directive,
+# which only picks up names listed here. New public names must be added to this
+# list, or they will silently go undocumented.
+__all__ = [
+    "TimeoutConfig",
+    "RetryConfig",
+    "TlsConfig",
+    "ClientConfig",
+    "HeaderProvider",
+    "OAuthConfig",
+    "OAuthFlowType",
+    "ClientAuthMethod",
+    "OAuthSession",
+    "TokenCacheOptions",
+]
 
 
 @dataclass
@@ -113,15 +136,78 @@ class RetryConfig:
 
 
 @dataclass
+class TlsConfig:
+    """TLS/mTLS configuration for the remote HTTP client.
+
+    Attributes
+    ----------
+    cert_file: Optional[str]
+        Path to the client certificate file (PEM format) for mTLS authentication.
+    key_file: Optional[str]
+        Path to the client private key file (PEM format) for mTLS authentication.
+    ssl_ca_cert: Optional[str]
+        Path to the CA certificate file (PEM format) for server verification.
+    assert_hostname: bool
+        Whether to verify the hostname in the server's certificate. Default is True.
+        Set to False to disable hostname verification (use with caution).
+    """
+
+    cert_file: Optional[str] = None
+    key_file: Optional[str] = None
+    ssl_ca_cert: Optional[str] = None
+    assert_hostname: bool = True
+
+
+@dataclass
 class ClientConfig:
+    """Configuration for the LanceDB Cloud HTTP client.
+
+    Attributes
+    ----------
+    user_agent: str
+        User agent string sent with requests.
+    retry_config: RetryConfig
+        Configuration for retrying failed requests.
+    timeout_config: Optional[TimeoutConfig]
+        Configuration for request timeouts.
+    blob_request_concurrency: Optional[int]
+        Maximum concurrent blob HTTP requests across all handles on this
+        connection. Defaults to 8. Set a positive integer here or via
+        `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY`.
+    extra_headers: Optional[dict]
+        Additional headers to include in requests.
+    id_delimiter: Optional[str]
+        The delimiter joining a namespace path and a name into one object
+        identifier. ``"$"`` is the only supported value, and leaving this
+        unset is how to get it; anything else is rejected when the connection
+        is created.
+    tls_config: Optional[TlsConfig]
+        TLS/mTLS configuration for secure connections.
+    header_provider: Optional[HeaderProvider]
+        Provider for dynamic headers to be added to each request.
+    user_id: Optional[str]
+        User identifier for tracking purposes. This is sent as the
+        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+
+        This can also be set via the `LANCEDB_USER_ID` environment variable.
+        Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another
+        environment variable that contains the user ID value.
+    """
+
     user_agent: str = f"LanceDB-Python-Client/{__version__}"
     retry_config: RetryConfig = field(default_factory=RetryConfig)
     timeout_config: Optional[TimeoutConfig] = field(default_factory=TimeoutConfig)
+    blob_request_concurrency: Optional[int] = None
     extra_headers: Optional[dict] = None
     id_delimiter: Optional[str] = None
+    tls_config: Optional[TlsConfig] = None
+    header_provider: Optional["HeaderProvider"] = None
+    user_id: Optional[str] = None
 
     def __post_init__(self):
         if isinstance(self.retry_config, dict):
             self.retry_config = RetryConfig(**self.retry_config)
         if isinstance(self.timeout_config, dict):
             self.timeout_config = TimeoutConfig(**self.timeout_config)
+        if isinstance(self.tls_config, dict):
+            self.tls_config = TlsConfig(**self.tls_config)

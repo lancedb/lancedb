@@ -2,25 +2,123 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+from __future__ import annotations
+
+from dataclasses import replace
 from datetime import timedelta
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Iterable, List, Optional, Union
+import sys
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 from urllib.parse import urlparse
+from uuid import UUID
 import warnings
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from overrides import override
 
 # Remove this import to fix circular dependency
 # from lancedb import connect_async
-from lancedb.remote import ClientConfig
+from lancedb.remote import ClientConfig, RetryConfig, TimeoutConfig, TlsConfig
 import pyarrow as pa
-from overrides import override
 
 from ..common import DATA
+from lancedb.listing import Listing
 from ..db import DBConnection, LOOP
+from ..functions import FunctionVersion, UdfDefinition
+from ..job import AsyncJob, Job
+from ..sql import Query as SqlQuery
+from ..sql import QueryDescription, QueryParameters
+from ..materialized_view import MaterializedView, MaterializedViewSource, SelectArg
+from ..secrets import EnvVarSecret, SecretInfo
+from ..view import ViewDescription
+
+if TYPE_CHECKING:
+    from .._lancedb import JobInfo
 from ..embeddings import EmbeddingFunctionConfig
+from lance_namespace import (
+    LanceNamespace,
+    CreateNamespaceResponse,
+    DescribeNamespaceResponse,
+    DropNamespaceResponse,
+    ListNamespacesResponse,
+    ListTablesResponse,
+)
 from ..pydantic import LanceModel
 from ..table import Table
 from ..util import validate_table_name
+
+
+def _duration_seconds(value: Optional[timedelta]) -> Optional[float]:
+    return value.total_seconds() if value is not None else None
+
+
+def _timeout_config_to_dict(
+    config: Optional[TimeoutConfig],
+) -> Optional[dict[str, Any]]:
+    if config is None:
+        return None
+    return {
+        "timeout": _duration_seconds(config.timeout),
+        "connect_timeout": _duration_seconds(config.connect_timeout),
+        "read_timeout": _duration_seconds(config.read_timeout),
+        "pool_idle_timeout": _duration_seconds(config.pool_idle_timeout),
+    }
+
+
+def _retry_config_to_dict(config: RetryConfig) -> dict[str, Any]:
+    return {
+        "retries": config.retries,
+        "connect_retries": config.connect_retries,
+        "read_retries": config.read_retries,
+        "backoff_factor": config.backoff_factor,
+        "backoff_jitter": config.backoff_jitter,
+        "statuses": config.statuses,
+    }
+
+
+def _tls_config_to_dict(config: Optional[TlsConfig]) -> Optional[dict[str, Any]]:
+    if config is None:
+        return None
+    return {
+        "cert_file": config.cert_file,
+        "key_file": config.key_file,
+        "ssl_ca_cert": config.ssl_ca_cert,
+        "assert_hostname": config.assert_hostname,
+    }
+
+
+def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
+    if config.header_provider is not None:
+        raise ValueError(
+            "Cannot serialize a remote connection with a header_provider. "
+            "Use static api_key/extra_headers or provide a worker-side "
+            "connection factory instead."
+        )
+    return {
+        "user_agent": config.user_agent,
+        "retry_config": _retry_config_to_dict(config.retry_config),
+        "timeout_config": _timeout_config_to_dict(config.timeout_config),
+        "blob_request_concurrency": config.blob_request_concurrency,
+        "extra_headers": config.extra_headers,
+        "id_delimiter": config.id_delimiter,
+        "tls_config": _tls_config_to_dict(config.tls_config),
+        "header_provider": None,
+        "user_id": config.user_id,
+    }
 
 
 class RemoteDBConnection(DBConnection):
@@ -37,6 +135,8 @@ class RemoteDBConnection(DBConnection):
         connection_timeout: Optional[float] = None,
         read_timeout: Optional[float] = None,
         storage_options: Optional[Dict[str, str]] = None,
+        read_consistency_interval: Optional[timedelta] = None,
+        sql_host_override: Optional[str] = None,
     ):
         """Connect to a remote LanceDB database."""
         if isinstance(client_config, dict):
@@ -51,6 +151,7 @@ class RemoteDBConnection(DBConnection):
                 "request_thread_pool is no longer used and will be removed in "
                 "a future release.",
                 DeprecationWarning,
+                stacklevel=2,
             )
 
         if connection_timeout is not None:
@@ -59,6 +160,7 @@ class RemoteDBConnection(DBConnection):
                 "release. Please use client_config.timeout_config.connect_timeout "
                 "instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.connect_timeout = timedelta(
                 seconds=connection_timeout
@@ -69,12 +171,19 @@ class RemoteDBConnection(DBConnection):
                 "read_timeout is deprecated and will be removed in a future release. "
                 "Please use client_config.timeout_config.read_timeout instead.",
                 DeprecationWarning,
+                stacklevel=2,
             )
             client_config.timeout_config.read_timeout = timedelta(seconds=read_timeout)
 
         parsed = urlparse(db_url)
         if parsed.scheme != "db":
             raise ValueError(f"Invalid scheme: {parsed.scheme}, only accepts db://")
+        self.db_url = db_url
+        self.api_key = api_key
+        self.region = region
+        self.host_override = host_override
+        self.sql_host_override = sql_host_override
+        self.storage_options = storage_options
         self.db_name = parsed.netloc
 
         self.client_config = client_config
@@ -88,92 +197,256 @@ class RemoteDBConnection(DBConnection):
                 api_key=api_key,
                 region=region,
                 host_override=host_override,
+                sql_host_override=sql_host_override,
                 client_config=client_config,
                 storage_options=storage_options,
+                read_consistency_interval=read_consistency_interval,
             )
         )
+
+    @classmethod
+    def _from_catalog(
+        cls,
+        inner,
+        name,
+        endpoint,
+        api_key,
+        client_config,
+        oauth_config,
+        sql_host_override,
+    ):
+        config = (
+            ClientConfig(**client_config)
+            if isinstance(client_config, dict)
+            else (client_config or ClientConfig())
+        )
+        headers = {
+            key: value
+            for key, value in (config.extra_headers or {}).items()
+            if key.lower() not in ("x-lancedb-database", "x-lancedb-database-prefix")
+        }
+        headers["x-lancedb-database"] = name
+        result = cls.__new__(cls)
+        result.db_url = inner.uri
+        result.db_name = name
+        result.api_key = api_key or ""
+        result.region = "us-east-1"
+        result.host_override = endpoint
+        result.sql_host_override = sql_host_override
+        result.storage_options = None
+        result.client_config = replace(config, extra_headers=headers)
+        result._catalog_oauth = oauth_config is not None
+        result._conn = inner
+        return result
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
 
     @override
+    def serialize(self) -> str:
+        if getattr(self, "_catalog_oauth", False):
+            raise ValueError(
+                "Cannot serialize a catalog connection using OAuth; "
+                "provide a worker-side connection factory"
+            )
+        return json.dumps(
+            {
+                "connection_type": "remote",
+                "db_url": self.db_url,
+                "api_key": self.api_key,
+                "region": self.region,
+                "host_override": self.host_override,
+                "sql_host_override": self.sql_host_override,
+                "client_config": _client_config_to_dict(self.client_config),
+                "storage_options": self.storage_options,
+            }
+        )
+
+    @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """List immediate child namespace names in the given namespace.
 
         Parameters
         ----------
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The parent namespace to list namespaces in.
             None or empty list represents root namespace.
         page_token: str, optional
-            The token to use for pagination. If not present, start from the beginning.
-        limit: int, default 10
-            The size of the page to return.
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return.
 
         Returns
         -------
-        Iterable of str
-            List of immediate child namespace names
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
+        if namespace_path is None:
+            namespace_path = []
         return LOOP.run(
             self._conn.list_namespaces(
-                namespace=namespace, page_token=page_token, limit=limit
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
     @override
-    def create_namespace(self, namespace: List[str]) -> None:
+    def create_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """Create a new namespace.
 
         Parameters
         ----------
-        namespace: List[str]
+        namespace_path: List[str]
             The namespace identifier to create.
+        mode: str, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists). Case insensitive.
+        properties: Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
         """
-        LOOP.run(self._conn.create_namespace(namespace=namespace))
+        return LOOP.run(
+            self._conn.create_namespace(
+                namespace_path=namespace_path, mode=mode, properties=properties
+            )
+        )
 
     @override
-    def drop_namespace(self, namespace: List[str]) -> None:
+    def drop_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse:
         """Drop a namespace.
 
         Parameters
         ----------
-        namespace: List[str]
+        namespace_path: List[str]
             The namespace identifier to drop.
+        mode: str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior: str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        return LOOP.run(self._conn.drop_namespace(namespace=namespace))
+        return LOOP.run(
+            self._conn.drop_namespace(
+                namespace_path=namespace_path, mode=mode, behavior=behavior
+            )
+        )
+
+    @override
+    def describe_namespace(
+        self, namespace_path: List[str]
+    ) -> DescribeNamespaceResponse:
+        """Describe a namespace.
+
+        Parameters
+        ----------
+        namespace_path: List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
+
+    @override
+    def list_tables(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """List a page of tables in this database.
+
+        Parameters
+        ----------
+        namespace_path: List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token: str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit: int, optional
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return LOOP.run(
+            self._conn.list_tables(
+                namespace_path=namespace_path, page_token=page_token, limit=limit
+            )
+        )
 
     @override
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
+        *,
+        namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """List the names of all tables in the database.
 
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
+
         Parameters
         ----------
-        namespace: List[str], default []
+        namespace_path: List[str], default []
             The namespace to list tables in.
             Empty list represents root namespace.
         page_token: str
             The last token to start the new page.
-        limit: int, default 10
-            The maximum number of tables to return for each page.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
         An iterator of table names.
         """
+        import warnings
+
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if namespace_path is None:
+            namespace_path = []
         return LOOP.run(
             self._conn.table_names(
-                namespace=namespace, start_after=page_token, limit=limit
+                namespace_path=namespace_path, start_after=page_token, limit=limit
             )
         )
 
@@ -182,9 +455,11 @@ class RemoteDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
         """Open a Lance Table in the database.
 
@@ -192,9 +467,17 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to open the table from.
             None or empty list represents root namespace.
+        branch: str, optional
+            If provided, open a handle scoped to this branch instead of the
+            default branch. Reads and writes operate in the branch's context.
+        version: int, optional
+            If provided, open the table pinned to this version, producing a
+            read-only handle. Composes with ``branch``: when both are given,
+            opens that branch at the version; otherwise opens ``main`` at the
+            version. Call ``checkout_latest`` to return to a writable state.
 
         Returns
         -------
@@ -202,14 +485,85 @@ class RemoteDBConnection(DBConnection):
         """
         from .table import RemoteTable
 
+        if namespace_path is None:
+            namespace_path = []
+        if storage_options is not None:
+            logging.info(
+                "storage_options is ignored for remote tables"
+                " (storage is managed; set storage_options on connect() instead)"
+            )
         if index_cache_size is not None:
             logging.info(
-                "index_cache_size is ignored in LanceDb Cloud"
+                "index_cache_size is ignored for remote tables"
                 " (there is no local cache to configure)"
             )
 
-        table = LOOP.run(self._conn.open_table(name, namespace=namespace))
-        return RemoteTable(table, self.db_name)
+        table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
+        tbl = RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=namespace_path,
+        )
+        if branch is not None:
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
+        return tbl
+
+    def clone_table(
+        self,
+        target_table_name: str,
+        source_uri: str,
+        *,
+        target_namespace_path: Optional[List[str]] = None,
+        source_version: Optional[int] = None,
+        source_tag: Optional[str] = None,
+        is_shallow: bool = True,
+    ) -> Table:
+        """Clone a table from a source table.
+
+        Parameters
+        ----------
+        target_table_name: str
+            The name of the target table to create.
+        source_uri: str
+            The URI of the source table to clone from.
+        target_namespace_path: List[str], optional
+            The namespace for the target table.
+            None or empty list represents root namespace.
+        source_version: int, optional
+            The version of the source table to clone.
+        source_tag: str, optional
+            The tag of the source table to clone.
+        is_shallow: bool, default True
+            Whether to perform a shallow clone (True) or deep clone (False).
+            Currently only shallow clone is supported.
+
+        Returns
+        -------
+        A RemoteTable object representing the cloned table.
+        """
+        from .table import RemoteTable
+
+        if target_namespace_path is None:
+            target_namespace_path = []
+        table = LOOP.run(
+            self._conn.clone_table(
+                target_table_name,
+                source_uri,
+                target_namespace_path=target_namespace_path,
+                source_version=source_version,
+                source_tag=source_tag,
+                is_shallow=is_shallow,
+            )
+        )
+        return RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=target_namespace_path,
+        )
 
     @override
     def create_table(
@@ -220,9 +574,10 @@ class RemoteDBConnection(DBConnection):
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
         mode: Optional[str] = None,
+        exist_ok: bool = False,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -230,7 +585,7 @@ class RemoteDBConnection(DBConnection):
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to create the table in.
             None or empty list represents root namespace.
         data: The data to initialize the table, *optional*
@@ -248,11 +603,20 @@ class RemoteDBConnection(DBConnection):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
+        mode: str, default "create"
+            The mode to use when creating the table.
+            Can be either "create", "overwrite", or "exist_ok".
+        exist_ok: bool, default False
+            If exist_ok is True, and mode is None or "create", mode will be changed
+            to "exist_ok".
         on_bad_vectors: str, default "error"
             What to do if any of the vectors are not the same size or contains NaNs.
             One of "error", "drop", "fill".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+        embedding_functions: list of EmbeddingFunctionConfig, optional
+            The embedding functions to store in the table schema and use to
+            generate vectors when creating the table or adding data.
 
         Returns
         -------
@@ -319,13 +683,14 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        if exist_ok:
+            if mode == "create":
+                mode = "exist_ok"
+            elif not mode:
+                mode = "exist_ok"
+        if namespace_path is None:
+            namespace_path = []
         validate_table_name(name)
-        if embedding_functions is not None:
-            logging.warning(
-                "embedding_functions is not yet supported on LanceDB Cloud."
-                "Please vote https://github.com/lancedb/lancedb/issues/626 "
-                "for this feature."
-            )
 
         from .table import RemoteTable
 
@@ -333,36 +698,158 @@ class RemoteDBConnection(DBConnection):
             self._conn.create_table(
                 name,
                 data,
-                namespace=namespace,
+                namespace_path=namespace_path,
                 mode=mode,
                 schema=schema,
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
+                embedding_functions=embedding_functions,
             )
         )
-        return RemoteTable(table, self.db_name)
+        return RemoteTable(
+            table,
+            self.db_name,
+            connection_state=self.serialize,
+            namespace_path=namespace_path,
+        )
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
+    def create_materialized_view(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> MaterializedView:
+        from .table import RemoteTable
+
+        view = LOOP.run(
+            self._conn.create_materialized_view(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
+        return MaterializedView(
+            RemoteTable(
+                view.table,
+                self.db_name,
+                connection_state=self.serialize,
+                namespace_path=[],
+            )
+        )
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: SelectArg = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._conn.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
+        return Job(job)
+
+    @override
+    def open_materialized_view(self, name: str) -> MaterializedView:
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
+
+    @override
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """List materialized views.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_materialized_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._conn.drop_materialized_view_async(name, namespace_path=namespace_path)
+        )
+        return Job(job)
+
+    @override
+    def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the database.
 
         Parameters
         ----------
         name: str
             The name of the table.
-        namespace: List[str], optional
+        namespace_path: List[str], optional
             The namespace to drop the table from.
             None or empty list represents root namespace.
         """
-        LOOP.run(self._conn.drop_table(name, namespace=namespace))
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._conn.drop_table(name, namespace_path=namespace_path))
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: Optional[List[str]] = None,
-        new_namespace: Optional[List[str]] = None,
+        cur_namespace_path: Optional[List[str]] = None,
+        new_namespace_path: Optional[List[str]] = None,
     ):
         """Rename a table in the database.
 
@@ -373,15 +860,293 @@ class RemoteDBConnection(DBConnection):
         new_name: str
             The new name of the table.
         """
+        if cur_namespace_path is None:
+            cur_namespace_path = []
+        if new_namespace_path is None:
+            new_namespace_path = []
         LOOP.run(
             self._conn.rename_table(
                 cur_name,
                 new_name,
-                cur_namespace=cur_namespace,
-                new_namespace=new_namespace,
+                cur_namespace_path=cur_namespace_path,
+                new_namespace_path=new_namespace_path,
             )
         )
 
-    async def close(self):
-        """Close the connection to the database."""
-        self._client.close()
+    @override
+    def open_job(self, job_id: str) -> Job:
+        """Open a server-side job by id. See
+        [DBConnection.open_job][lancedb.db.DBConnection.open_job].
+        """
+        return Job(LOOP.run(self._conn.open_job(job_id)))
+
+    @override
+    def create_function_async(
+        self,
+        definition: UdfDefinition,
+        *,
+        secrets: Optional[Sequence[EnvVarSecret]] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Job[FunctionVersion]:
+        job = LOOP.run(
+            self._conn.create_function_async(
+                definition, secrets=secrets, namespace_path=namespace_path
+            )
+        )
+        return Job(job)
+
+    @override
+    def get_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> FunctionVersion:
+        return LOOP.run(
+            self._conn.get_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def list_functions(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[FunctionVersion]:
+        """List functions.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_functions(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_function(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> bool:
+        return LOOP.run(
+            self._conn.drop_function(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
+
+    @override
+    def drop_function_async(
+        self,
+        name: str,
+        *,
+        version: str,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Tuple[bool, Job]:
+        dropped, job = LOOP.run(
+            self._conn.drop_function_async(
+                name, version=version, namespace_path=namespace_path
+            )
+        )
+        return dropped, Job(job)
+
+    @override
+    def create_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.create_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def alter_secret(
+        self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
+
+    @override
+    def describe_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> SecretInfo:
+        return LOOP.run(self._conn.describe_secret(name, namespace_path=namespace_path))
+
+    @override
+    def list_secrets(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List secrets.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_secrets(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_secret(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_secret(name, namespace_path=namespace_path))
+
+    @override
+    def create_view(
+        self, name: str, query: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(
+            self._conn.create_view(name, query, namespace_path=namespace_path)
+        )
+
+    @override
+    def describe_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> ViewDescription:
+        return LOOP.run(self._conn.describe_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_view(name, namespace_path=namespace_path))
+
+    @override
+    def drop_view_async(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        job = LOOP.run(self._conn.drop_view_async(name, namespace_path=namespace_path))
+        return Job(job)
+
+    @override
+    def list_views(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List views.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def list_jobs(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[JobInfo]:
+        """List server-side jobs across the database's tables.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+        )
+
+    @override
+    def cancel_job(self, job_id: str) -> bool:
+        """Request cancellation of a server-side job by id.
+
+        Returns True if the server accepted the cancellation, False if no
+        such job exists. Cancelling an already-terminal job is a no-op
+        success.
+        """
+        return LOOP.run(self._conn.cancel_job(job_id))
+
+    @override
+    def pause_job(self, job_id: str) -> str:
+        """Pause a server-side job by id.
+
+        Returns "pausing", "already_paused", or "committing".
+        """
+        return LOOP.run(self._conn.pause_job(job_id))
+
+    @override
+    def resume_job(self, job_id: str) -> str:
+        """Resume a paused server-side job by id.
+
+        Returns "resumed", "still_pausing", or "not_paused".
+        """
+        return LOOP.run(self._conn.resume_job(job_id))
+
+    @override
+    def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> SqlQuery:
+        """Start executing SQL through this remote connection.
+
+        Unqualified tables use this connection's database and the
+        ``["public"]`` namespace by default. Fully qualified table names may
+        reference other databases available to the same deployment.
+        ``parameters`` binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        """
+        return SqlQuery(
+            LOOP.run(
+                self._conn.execute_query_async(
+                    query,
+                    default_namespace_path=default_namespace_path,
+                    parameters=parameters,
+                )
+            )
+        )
+
+    @override
+    def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query by its connection-scoped id."""
+        return LOOP.run(
+            self._conn.describe_query(
+                query_id,
+            )
+        )
+
+    @override
+    def namespace_client(self) -> LanceNamespace:
+        """Get the equivalent namespace client for this connection.
+
+        Returns a RestNamespace with the same URI and authentication headers.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        return LOOP.run(self._conn.namespace_client())
+
+    @override
+    def is_open(self) -> bool:
+        return self._conn.is_open()
+
+    @override
+    def close(self) -> None:
+        self._conn.close()

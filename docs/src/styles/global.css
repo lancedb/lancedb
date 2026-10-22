@@ -1,35 +1,37 @@
 :root {
-    --md-primary-fg-color: #625eff;
+    --md-primary-fg-color: #F46F52;
+    --md-accent-fg-color: #F46F52;
     --md-text-font: "IBMPlexSans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
     --md-code-font: "IBMPlexMono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
 }
 
 [data-md-color-scheme="slate"] {
     --md-hue: 210;
+    --md-primary-fg-color: #E35B3F;
+    --md-accent-fg-color: #E35B3F;
 }
 
 @font-face {
-    font-family: "IBMPlexSans";
-    src: local("IBMPlexSans"), url("fonts/IBMPlexSans-Regular.woff2");
+    font-family: "Inter";
+    src: local("Inter_18pt"), url("Inter_18pt-Black.ttf");
 }
 @font-face {
-    font-family: "IBMPlexSans";
-    src: local("IBMPlexSans-Italic"), url("fonts/IBMPlexSans-Italic.woff2");
+    font-family: "Inter";
+    src: local("Inter_18pt-Italic"), url("Inter_18pt-Italic.ttf");
     font-style: italic;
 }
 @font-face {
-    font-family: "IBMPlexSans";
-    src: local("IBMPlexSans-Bold"), url("fonts/IBMPlexSans-SemiBold.woff2");
+    font-family: "Inter";
+    src: local("Inter_18pt-Bold"), url("Inter_18pt-Bold.ttf");
     font-weight: bold;
 }
 
-@font-face {
-    font-family: "IBMPlexMono";
+/* @font-face {
+    font-family: "Inter";
     src: local("IBM Plex Mono"), local("IBM-Plex-Mono"), local("IBMPlexMono"), local("IBM-Plex-Mono-Regular"), local("IBMPlexMono-Regular"), url("fonts/IBMPlexMono-Regular.woff2");
 }
 @font-face {
-    font-family: "IBMPlexMono";
+    font-family: "Inter";
     src: local("IBM Plex Mono Italic"), local("IBM-Plex-Mono-Italic"), local("IBMPlexMono-Italic"), url("fonts/IBMPlexMono-Italic.woff2");
     font-style: italic;
-}
-
+} */

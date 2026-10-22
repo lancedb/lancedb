@@ -3,6 +3,8 @@
 
 use std::sync::Arc;
 
+use crate::error::PythonErrorExt;
+use crate::runtime::future_into_py;
 use arrow::{
     datatypes::SchemaRef,
     pyarrow::{IntoPyArrow, ToPyArrow},
@@ -10,12 +12,8 @@ use arrow::{
 use futures::stream::StreamExt;
 use lancedb::arrow::SendableRecordBatchStream;
 use pyo3::{
-    exceptions::PyStopAsyncIteration, pyclass, pymethods, Bound, PyAny, PyObject, PyRef, PyResult,
-    Python,
+    Bound, Py, PyAny, PyRef, PyResult, Python, exceptions::PyStopAsyncIteration, pyclass, pymethods,
 };
-use pyo3_async_runtimes::tokio::future_into_py;
-
-use crate::error::PythonErrorExt;
 
 #[pyclass]
 pub struct RecordBatchStream {
@@ -36,8 +34,11 @@ impl RecordBatchStream {
 #[pymethods]
 impl RecordBatchStream {
     #[getter]
-    pub fn schema(&self, py: Python) -> PyResult<PyObject> {
-        (*self.schema).clone().into_pyarrow(py)
+    pub fn schema(&self, py: Python) -> PyResult<Py<PyAny>> {
+        (*self.schema)
+            .clone()
+            .into_pyarrow(py)
+            .map(|obj| obj.unbind())
     }
 
     pub fn __aiter__(self_: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -53,7 +54,12 @@ impl RecordBatchStream {
                 .next()
                 .await
                 .ok_or_else(|| PyStopAsyncIteration::new_err(""))?;
-            Python::with_gil(|py| inner_next.infer_error()?.to_pyarrow(py))
+            Python::attach(|py| {
+                inner_next
+                    .infer_error()?
+                    .to_pyarrow(py)
+                    .map(|obj| obj.unbind())
+            })
         })
     }
 }

@@ -5,7 +5,6 @@ import {
   Data as ArrowData,
   Table as ArrowTable,
   Binary,
-  Bool,
   BufferType,
   DataType,
   DateUnit,
@@ -18,10 +17,7 @@ import {
   FixedSizeList,
   Float,
   Float32,
-  Float64,
   Int,
-  Int32,
-  Int64,
   LargeBinary,
   List,
   Null,
@@ -34,32 +30,35 @@ import {
   Struct,
   Timestamp,
   Type,
-  Uint8,
   Utf8,
   Vector,
   makeVector as arrowMakeVector,
+  util as arrowUtil,
   vectorFromArray as badVectorFromArray,
   makeBuilder,
   makeData,
-  makeTable,
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
+import { typedArrayToArrowType } from "./arrow_type";
+import {
+  blobToRead,
+  coerceBlobValue,
+  isBlobField,
+  withBlobBytes,
+} from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
-import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
+import {
+  EmbeddingFunctionConfig,
+  getRegistry,
+  parseEmbeddingMetadata,
+} from "./embedding/registry";
 import {
   sanitizeField,
   sanitizeSchema,
   sanitizeTable,
   sanitizeType,
 } from "./sanitize";
-
-/**
- * Check if a field name indicates a vector column.
- */
-function nameSuggestsVectorColumn(fieldName: string): boolean {
-  const nameLower = fieldName.toLowerCase();
-  return nameLower.includes("vector") || nameLower.includes("embedding");
-}
+import { inferSchema } from "./schema";
 
 export * from "apache-arrow";
 export type SchemaLike =
@@ -72,15 +71,47 @@ export type SchemaLike =
 export type FieldLike =
   | Field
   | {
-      type: string;
+      type: string | DataTypeLike;
       name: string;
-      nullable?: boolean;
+      nullable: boolean;
       metadata?: Map<string, string>;
     };
+/**
+ * A `DataType` from any copy or version of apache-arrow.
+ *
+ * Arrow 21 brands its classes with `unique symbol` properties, so a type
+ * object from a second copy of the library no longer satisfies the `DataType`
+ * type of this one even though it is structurally identical. Inputs that only
+ * need to be sanitized accept this looser shape instead.
+ */
+export type DataTypeLike = DataType | { readonly typeId: number };
+
+/**
+ * Create an Arrow field backed by LanceDB's JSON extension type.
+ *
+ * @param name - The field name.
+ * @param nullable - Whether the field accepts null values.
+ * @example
+ * ```ts
+ * import { connect, makeJsonField } from "@lancedb/lancedb";
+ * import { Schema } from "apache-arrow";
+ *
+ * const schema = new Schema([makeJsonField("metadata")]);
+ * const db = await connect("/path/to/database");
+ * await db.createTable("items", [{ metadata: '{"source":"api"}' }], { schema });
+ * ```
+ */
+export function makeJsonField(name: string, nullable = true): Field {
+  return new Field(
+    name,
+    new Utf8(),
+    nullable,
+    new Map([["ARROW:extension:name", "arrow.json"]]),
+  );
+}
 
 export type DataLike =
-  // biome-ignore lint/suspicious/noExplicitAny: <explanation>
-  | import("apache-arrow").Data<Struct<any>>
+  | import("apache-arrow").Data
   | {
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       type: any;
@@ -89,6 +120,7 @@ export type DataLike =
       stride: number;
       nullable: boolean;
       children: DataLike[];
+      dictionary?: { data: readonly DataLike[] };
       get nullCount(): number;
       // biome-ignore lint/suspicious/noExplicitAny: <explanation>
       values: Buffers<any>[BufferType.DATA];
@@ -114,8 +146,9 @@ export type TableLike =
 export type IntoVector =
   | Float32Array
   | Float64Array
+  | Uint8Array
   | number[]
-  | Promise<Float32Array | Float64Array | number[]>;
+  | Promise<Float32Array | Float64Array | Uint8Array | number[]>;
 
 export type MultiVector = IntoVector[];
 
@@ -123,12 +156,46 @@ export function isMultiVector(value: unknown): value is MultiVector {
   return Array.isArray(value) && isIntoVector(value[0]);
 }
 
+// Float16Array is not in TypeScript's standard lib yet; access dynamically
+type Float16ArrayCtor = new (
+  ...args: unknown[]
+) => { buffer: ArrayBuffer; byteOffset: number; byteLength: number };
+const float16ArrayCtor = (globalThis as unknown as Record<string, unknown>)
+  .Float16Array as Float16ArrayCtor | undefined;
+
 export function isIntoVector(value: unknown): value is IntoVector {
   return (
     value instanceof Float32Array ||
     value instanceof Float64Array ||
+    value instanceof Uint8Array ||
+    (float16ArrayCtor !== undefined && value instanceof float16ArrayCtor) ||
     (Array.isArray(value) && !Array.isArray(value[0]))
   );
+}
+
+/**
+ * Extract the underlying byte buffer and data type from a typed array
+ * for passing to the Rust NAPI layer without precision loss.
+ */
+export function extractVectorBuffer(
+  vector: Float32Array | Float64Array | Uint8Array,
+): { data: Uint8Array; dtype: string } | null {
+  if (float16ArrayCtor !== undefined && vector instanceof float16ArrayCtor) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float16",
+    };
+  }
+  if (vector instanceof Float64Array) {
+    return {
+      data: new Uint8Array(vector.buffer, vector.byteOffset, vector.byteLength),
+      dtype: "float64",
+    };
+  }
+  if (vector instanceof Uint8Array && !(vector instanceof Float32Array)) {
+    return { data: vector, dtype: "uint8" };
+  }
+  return null;
 }
 
 export function isArrowTable(value: object): value is TableLike {
@@ -279,7 +346,7 @@ export class MakeArrowTableOptions {
 }
 
 /**
- * An enhanced version of the {@link makeTable} function from Apache Arrow
+ * An enhanced version of the apache-arrow makeTable function from Apache Arrow
  * that supports nested fields and embeddings columns.
  *
  * (typically you do not need to call this function.  It will be called automatically
@@ -387,6 +454,39 @@ export function makeArrowTable(
     );
   }
 
+  if (schema !== undefined) {
+    // Validate blob values up front and give every one the full
+    // storage shape, so inference sees the same struct whether a row
+    // passed bytes, a URI, or a partial struct.
+    data = mapBlobInputs(data, schema, (value, field, row, storageField) => {
+      if (value === undefined) {
+        return value;
+      }
+      try {
+        const normalized = coerceBlobValue(value, storageField);
+        if (
+          normalized === null ||
+          !(storageField.type instanceof Struct) ||
+          storageField.type.children.length === 2
+        ) {
+          return normalized;
+        }
+        // Keep even unused range children during schema inference. Otherwise
+        // creating a range-capable table with inline data would lose them.
+        return Object.fromEntries(
+          storageField.type.children.map((child) => [
+            child.name,
+            normalized[child.name as keyof typeof normalized] ?? null,
+          ]),
+        );
+      } catch (e) {
+        throw new Error(
+          `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,
+        );
+      }
+    });
+  }
+
   let schemaMetadata = schema?.metadata || new Map<string, string>();
   if (metadata !== undefined) {
     schemaMetadata = new Map([...schemaMetadata, ...metadata]);
@@ -402,12 +502,14 @@ export function makeArrowTable(
       throw new Error("A schema must be provided if data is empty");
     } else {
       schema = new Schema(schema.fields, schemaMetadata);
+      validateBlobSchema(schema);
       return new ArrowTable(schema);
     }
   }
 
   let inferredSchema = inferSchema(data, schema, opt);
   inferredSchema = new Schema(inferredSchema.fields, schemaMetadata);
+  validateBlobSchema(inferredSchema);
 
   const finalColumns: Record<string, Vector> = {};
   for (const field of inferredSchema.fields) {
@@ -417,104 +519,165 @@ export function makeArrowTable(
   return new ArrowTable(inferredSchema, finalColumns);
 }
 
-function inferSchema(
-  data: Array<Record<string, unknown>>,
-  schema: Schema | undefined,
-  opts: MakeArrowTableOptions,
-): Schema {
-  // We will collect all fields we see in the data.
-  const pathTree = new PathTree<DataType>();
-
-  for (const [rowI, row] of data.entries()) {
-    for (const [path, value] of rowPathsAndValues(row)) {
-      if (!pathTree.has(path)) {
-        // First time seeing this field.
-        if (schema !== undefined) {
-          const field = getFieldForPath(schema, path);
-          if (field === undefined) {
-            throw new Error(
-              `Found field not in schema: ${path.join(".")} at row ${rowI}`,
-            );
-          } else {
-            pathTree.set(path, field.type);
-          }
-        } else {
-          const inferredType = inferType(value, path, opts);
-          if (inferredType === undefined) {
-            throw new Error(`Failed to infer data type for field ${path.join(
-              ".",
-            )} at row ${rowI}. \
-                             Consider providing an explicit schema.`);
-          }
-          pathTree.set(path, inferredType);
-        }
-      } else if (schema === undefined) {
-        const currentType = pathTree.get(path);
-        const newType = inferType(value, path, opts);
-        if (currentType !== newType) {
-          new Error(`Failed to infer schema for data. Previously inferred type \
-                     ${currentType} but found ${newType} at row ${rowI}. Consider \
-                     providing an explicit schema.`);
-        }
-      }
-    }
-  }
-
-  if (schema === undefined) {
-    function fieldsFromPathTree(pathTree: PathTree<DataType>): Field[] {
-      const fields = [];
-      for (const [name, value] of pathTree.map.entries()) {
-        if (value instanceof PathTree) {
-          const children = fieldsFromPathTree(value);
-          fields.push(new Field(name, new Struct(children), true));
-        } else {
-          fields.push(new Field(name, value, true));
-        }
-      }
-      return fields;
-    }
-    const fields = fieldsFromPathTree(pathTree);
-    return new Schema(fields);
-  } else {
-    function takeMatchingFields(
-      fields: Field[],
-      pathTree: PathTree<DataType>,
-    ): Field[] {
-      const outFields = [];
-      for (const field of fields) {
-        if (pathTree.map.has(field.name)) {
-          const value = pathTree.get([field.name]);
-          if (value instanceof PathTree) {
-            const struct = field.type as Struct;
-            const children = takeMatchingFields(struct.children, value);
-            outFields.push(
-              new Field(field.name, new Struct(children), field.nullable),
-            );
-          } else {
-            outFields.push(
-              new Field(field.name, value as DataType, field.nullable),
-            );
-          }
-        }
-      }
-      return outFields;
-    }
-    const fields = takeMatchingFields(schema.fields, pathTree);
-    return new Schema(fields);
+function validateBlobSchema(schema: Schema): void {
+  for (const field of schema.fields) {
+    validateBlobField(field);
   }
 }
 
-function* rowPathsAndValues(
-  row: Record<string, unknown>,
-  basePath: string[] = [],
-): Generator<[string[], unknown]> {
-  for (const [key, value] of Object.entries(row)) {
-    if (isObject(value)) {
-      yield* rowPathsAndValues(value, [...basePath, key]);
-    } else {
-      yield [[...basePath, key], value];
+function validateBlobField(field: Field): void {
+  if (
+    isFixedSizeList(field.type) &&
+    containsBlobField(field.type.children[0])
+  ) {
+    throw new Error(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  }
+  for (const child of field.type.children ?? []) {
+    validateBlobField(child);
+  }
+}
+
+function containsBlobField(field: Field): boolean {
+  if (isBlobField(field)) {
+    return true;
+  }
+  return (field.type.children ?? []).some((child: Field) =>
+    containsBlobField(child),
+  );
+}
+
+type BlobInputVisitor = (
+  value: unknown,
+  field: string,
+  row: number,
+  storageField: Field,
+) => unknown;
+
+/**
+ * Calls `visit` on every value that lands in a blob column of `schema`,
+ * including blobs nested in structs and lists, and replaces it with the
+ * result. Records and arrays are copied only where a value changed, so the
+ * caller's data is never mutated.
+ */
+function mapBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+  visit: BlobInputVisitor,
+): Array<Record<string, unknown>> {
+  if (!schema.fields.some(containsBlobField)) {
+    return data;
+  }
+  return data.map((record, row) =>
+    isObject(record)
+      ? mapBlobFields(record, schema.fields, "", row, visit)
+      : record,
+  );
+}
+
+function mapBlobFields(
+  record: Record<string, unknown>,
+  fields: Field[],
+  prefix: string,
+  row: number,
+  visit: BlobInputVisitor,
+): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const field of fields) {
+    if (!containsBlobField(field) || !Object.hasOwn(record, field.name)) {
+      continue;
+    }
+    const value = record[field.name];
+    const mapped = mapBlobField(
+      value,
+      field,
+      `${prefix}${field.name}`,
+      row,
+      visit,
+    );
+    if (mapped !== value) {
+      out ??= { ...record };
+      out[field.name] = mapped;
     }
   }
+  return out ?? record;
+}
+
+function mapBlobField(
+  value: unknown,
+  field: Field,
+  label: string,
+  row: number,
+  visit: BlobInputVisitor,
+): unknown {
+  if (isBlobField(field)) {
+    return visit(value, label, row, field);
+  }
+  if (field.type instanceof Struct && isObject(value)) {
+    return mapBlobFields(value, field.type.children, `${label}.`, row, visit);
+  }
+  if (isList(field.type) && Array.isArray(value)) {
+    const child = field.type.children[0];
+    let out: unknown[] | undefined;
+    for (const [index, element] of value.entries()) {
+      const mapped = mapBlobField(
+        element,
+        child,
+        `${label}[${index}]`,
+        row,
+        visit,
+      );
+      if (mapped !== element) {
+        out ??= [...value];
+        out[index] = mapped;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/**
+ * Reads `Blob` / `File` values in the blob columns of `schema` into bytes so
+ * the synchronous conversion in {@link makeArrowTable} can accept them.
+ * Returns `data` itself when there is nothing to read.
+ */
+export async function resolveBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema?: SchemaLike,
+): Promise<Array<Record<string, unknown>>> {
+  if (schema === undefined || schema === null) {
+    return data;
+  }
+  const sanitized = sanitizeSchema(schema);
+  // Keyed by the Blob itself, so rows sharing one Blob (bare or as
+  // `{ data }`) read it once and share the bytes.
+  const reads = new Map<Blob, Promise<Uint8Array>>();
+  mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    if (source !== undefined && !reads.has(source)) {
+      reads.set(
+        source,
+        source.arrayBuffer().then((buffer) => new Uint8Array(buffer)),
+      );
+    }
+    return value;
+  });
+  if (reads.size === 0) {
+    return data;
+  }
+  const bytes = new Map(
+    await Promise.all(
+      [...reads].map(async ([source, read]) => [source, await read] as const),
+    ),
+  );
+  return mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    return source === undefined
+      ? value
+      : withBlobBytes(value, bytes.get(source) as Uint8Array);
+  });
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -526,143 +689,24 @@ function isObject(value: unknown): value is Record<string, unknown> {
     !(value instanceof Date) &&
     !(value instanceof Set) &&
     !(value instanceof Map) &&
-    !(value instanceof Buffer)
+    !(value instanceof Buffer) &&
+    !ArrayBuffer.isView(value)
   );
 }
 
-function getFieldForPath(schema: Schema, path: string[]): Field | undefined {
-  let current: Field | Schema = schema;
+function valueAtPath(datum: Record<string, unknown>, path: string[]): unknown {
+  let current: unknown = datum;
   for (const key of path) {
-    if (current instanceof Schema) {
-      const field: Field | undefined = current.fields.find(
-        (f) => f.name === key,
-      );
-      if (field === undefined) {
-        return undefined;
-      }
-      current = field;
-    } else if (current instanceof Field && DataType.isStruct(current.type)) {
-      const struct: Struct = current.type;
-      const field = struct.children.find((f) => f.name === key);
-      if (field === undefined) {
-        return undefined;
-      }
-      current = field;
+    if (current == null) {
+      return null;
+    }
+    if (isObject(current) && (Object.hasOwn(current, key) || key in current)) {
+      current = current[key];
     } else {
       return undefined;
     }
   }
-  if (current instanceof Field) {
-    return current;
-  } else {
-    return undefined;
-  }
-}
-
-/**
- * Try to infer which Arrow type to use for a given value.
- *
- * May return undefined if the type cannot be inferred.
- */
-function inferType(
-  value: unknown,
-  path: string[],
-  opts: MakeArrowTableOptions,
-): DataType | undefined {
-  if (typeof value === "bigint") {
-    return new Int64();
-  } else if (typeof value === "number") {
-    // Even if it's an integer, it's safer to assume Float64. Users can
-    // always provide an explicit schema or use BigInt if they mean integer.
-    return new Float64();
-  } else if (typeof value === "string") {
-    if (opts.dictionaryEncodeStrings) {
-      return new Dictionary(new Utf8(), new Int32());
-    } else {
-      return new Utf8();
-    }
-  } else if (typeof value === "boolean") {
-    return new Bool();
-  } else if (value instanceof Buffer) {
-    return new Binary();
-  } else if (Array.isArray(value)) {
-    if (value.length === 0) {
-      return undefined; // Without any values we can't infer the type
-    }
-    if (path.length === 1 && Object.hasOwn(opts.vectorColumns, path[0])) {
-      const floatType = sanitizeType(opts.vectorColumns[path[0]].type);
-      return new FixedSizeList(
-        value.length,
-        new Field("item", floatType, true),
-      );
-    }
-    const valueType = inferType(value[0], path, opts);
-    if (valueType === undefined) {
-      return undefined;
-    }
-    // Try to automatically detect embedding columns.
-    if (nameSuggestsVectorColumn(path[path.length - 1])) {
-      // Check if value is a Uint8Array for integer vector type determination
-      if (value instanceof Uint8Array) {
-        // For integer vectors, we default to Uint8 (matching Python implementation)
-        const child = new Field("item", new Uint8(), true);
-        return new FixedSizeList(value.length, child);
-      } else {
-        // For float vectors, we default to Float32
-        const child = new Field("item", new Float32(), true);
-        return new FixedSizeList(value.length, child);
-      }
-    } else {
-      const child = new Field("item", valueType, true);
-      return new List(child);
-    }
-  } else {
-    // TODO: timestamp
-    return undefined;
-  }
-}
-
-class PathTree<V> {
-  map: Map<string, V | PathTree<V>>;
-
-  constructor(entries?: [string[], V][]) {
-    this.map = new Map();
-    if (entries !== undefined) {
-      for (const [path, value] of entries) {
-        this.set(path, value);
-      }
-    }
-  }
-  has(path: string[]): boolean {
-    let ref: PathTree<V> = this;
-    for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
-        return false;
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return true;
-  }
-  get(path: string[]): V | undefined {
-    let ref: PathTree<V> = this;
-    for (const part of path) {
-      if (!(ref instanceof PathTree) || !ref.map.has(part)) {
-        return undefined;
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    return ref as V;
-  }
-  set(path: string[], value: V): void {
-    let ref: PathTree<V> = this;
-    for (const part of path.slice(0, path.length - 1)) {
-      if (!ref.map.has(part)) {
-        ref.map.set(part, new PathTree<V>());
-      }
-      ref = ref.map.get(part) as PathTree<V>;
-    }
-    ref.map.set(path[path.length - 1], value);
-  }
+  return current;
 }
 
 function transposeData(
@@ -670,39 +714,96 @@ function transposeData(
   field: Field,
   path: string[] = [],
 ): Vector {
-  if (field.type instanceof Struct) {
-    const childFields = field.type.children;
-    const fullPath = [...path, field.name];
-    const childVectors = childFields.map((child) => {
-      return transposeData(data, child, fullPath);
+  const valuesPath = [...path, field.name];
+  if (isBlobField(field) && field.type instanceof Struct) {
+    const blobRows = data.map((datum) =>
+      coerceBlobValue(valueAtPath(datum, valuesPath), field),
+    );
+    const childVectors = field.type.children.map((child) => {
+      const values = blobRows.map((row) =>
+        row == null ? null : (row[child.name as keyof typeof row] ?? null),
+      );
+      return makeVector(values, child.type, undefined, child.nullable);
     });
+    const nullCount = blobRows.filter((row) => row === null).length;
     const structData = makeData({
       type: field.type,
-      children: childVectors as unknown as ArrowData<DataType>[],
+      length: blobRows.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(blobRows.map((row) => row !== null))
+          : undefined,
+      children: childVectors.map((v) => v.data[0]),
+    });
+    return arrowMakeVector(structData);
+  }
+  if (isList(field.type) && containsBlobField(field.type.children[0])) {
+    return transposeListData(data, field, valuesPath);
+  }
+  const values = data.map((datum) => valueAtPath(datum, valuesPath));
+  if (field.type instanceof Struct) {
+    const childFields = field.type.children;
+    const childVectors = childFields.map((child) => {
+      return transposeData(data, child, valuesPath);
+    });
+    const nullCount = values.filter((value) => value === null).length;
+    const structData = makeData({
+      type: field.type,
+      length: values.length,
+      nullCount,
+      nullBitmap:
+        nullCount > 0
+          ? arrowUtil.packBools(values.map((value) => value !== null))
+          : undefined,
+      children: childVectors.map((v) => v.data[0]),
     });
     return arrowMakeVector(structData);
   } else {
-    const valuesPath = [...path, field.name];
-    const values = data.map((datum) => {
-      let current: unknown = datum;
-      for (const key of valuesPath) {
-        if (current == null) {
-          return null;
-        }
-
-        if (
-          isObject(current) &&
-          (Object.hasOwn(current, key) || key in current)
-        ) {
-          current = current[key];
-        } else {
-          return null;
-        }
-      }
-      return current;
-    });
-    return makeVector(values, field.type);
+    return makeVector(values, field.type, undefined, field.nullable);
   }
+}
+
+function transposeListData(
+  data: Record<string, unknown>[],
+  field: Field,
+  valuesPath: string[],
+): Vector {
+  const listType = field.type as List;
+  const childField = listType.children[0];
+  const lists = data.map((datum) => valueAtPath(datum, valuesPath));
+  const flattened: Record<string, unknown>[] = [];
+  const validity: boolean[] = [];
+  const offsets: number[] = [0];
+
+  for (const list of lists) {
+    if (list == null) {
+      validity.push(false);
+      offsets.push(flattened.length);
+      continue;
+    }
+    if (!Array.isArray(list)) {
+      throw new Error(`expected an array for list field '${field.name}'`);
+    }
+    validity.push(true);
+    for (const element of list) {
+      flattened.push({ [childField.name]: element });
+    }
+    offsets.push(flattened.length);
+  }
+
+  const childVector = transposeData(flattened, childField, []);
+  const nullCount = validity.filter((valid) => !valid).length;
+  return arrowMakeVector(
+    makeData({
+      type: listType,
+      length: lists.length,
+      nullCount,
+      nullBitmap: nullCount > 0 ? arrowUtil.packBools(validity) : undefined,
+      valueOffsets: Int32Array.from(offsets),
+      child: childVector.data[0],
+    }),
+  );
 }
 
 /**
@@ -748,9 +849,30 @@ function makeVector(
   values: unknown[],
   type?: DataType,
   stringAsDictionary?: boolean,
+  nullable?: boolean,
   // biome-ignore lint/suspicious/noExplicitAny: skip
 ): Vector<any> {
   if (type !== undefined) {
+    // Convert undefined values to null for nullable fields
+    if (nullable) {
+      values = values.map((v) => (v === undefined ? null : v));
+    }
+
+    // workaround for: https://github.com/apache/arrow-js/issues/68
+    if (DataType.isBool(type)) {
+      const hasNonNullValue = values.some((v) => v !== null && v !== undefined);
+      if (!hasNonNullValue) {
+        const nullBitmap = new Uint8Array(Math.ceil(values.length / 8));
+        const data = makeData({
+          type: type,
+          length: values.length,
+          nullCount: values.length,
+          nullBitmap,
+        });
+        return arrowMakeVector(data);
+      }
+    }
+
     // No need for inference, let Arrow create it
     if (type instanceof Int) {
       if (DataType.isInt(type) && type.bitWidth === 64) {
@@ -781,7 +903,7 @@ function makeVector(
   }
   if (values.length === 0) {
     throw Error(
-      "makeVector requires at least one value or the type must be specfied",
+      "makeVector requires at least one value or the type must be specified",
     );
   }
   const sampleValue = values.find((val) => val !== null && val !== undefined);
@@ -789,6 +911,16 @@ function makeVector(
     throw Error(
       "makeVector cannot infer the type if all values are null or undefined",
     );
+  }
+  if (ArrayBuffer.isView(sampleValue) && !(sampleValue instanceof DataView)) {
+    const info = typedArrayToArrowType(sampleValue);
+    if (info !== undefined) {
+      const fslType = new FixedSizeList(
+        info.length,
+        new Field("item", info.elementType, true),
+      );
+      return vectorFromArray(values, fslType);
+    }
   }
   if (Array.isArray(sampleValue)) {
     // Default Arrow inference doesn't handle list types
@@ -826,7 +958,7 @@ async function applyEmbeddingsFromMetadata(
 
   for (const functionEntry of functions.values()) {
     const sourceColumn = columns[functionEntry.sourceColumn];
-    const destColumn = functionEntry.vectorColumn ?? "vector";
+    const destColumn = functionEntry.vectorColumn;
     if (sourceColumn === undefined) {
       throw new Error(
         `Cannot apply embedding function because the source column '${functionEntry.sourceColumn}' was not present in the data`,
@@ -875,7 +1007,12 @@ async function applyEmbeddingsFromMetadata(
   for (const field of schema.fields) {
     if (!(field.name in columns)) {
       const nullValues = new Array(table.numRows).fill(null);
-      columns[field.name] = makeVector(nullValues, field.type);
+      columns[field.name] = makeVector(
+        nullValues,
+        field.type,
+        undefined,
+        field.nullable,
+      );
     }
   }
 
@@ -939,7 +1076,12 @@ async function applyEmbeddings<T>(
     } else if (schema != null) {
       const destField = schema.fields.find((f) => f.name === destColumn);
       if (destField != null) {
-        newColumns[destColumn] = makeVector([], destField.type);
+        newColumns[destColumn] = makeVector(
+          [],
+          destField.type,
+          undefined,
+          destField.nullable,
+        );
       } else {
         throw new Error(
           `Attempt to apply embeddings to an empty table failed because schema was missing embedding column '${destColumn}'`,
@@ -1019,7 +1161,7 @@ async function applyEmbeddings<T>(
  * customized by the `embeddingDataType` property of the embedding function.
  *
  * If a schema is provided in `makeTableOptions` then it should include the
- * embedding columns.  If no schema is provded then embedding columns will
+ * embedding columns.  If no schema is provided then embedding columns will
  * be placed at the end of the table, after all of the input columns.
  */
 export async function convertToTable(
@@ -1040,6 +1182,11 @@ export async function convertToTable(
       makeTableOptions.schema as Schema,
     );
   }
+
+  processedData = await resolveBlobInputs(
+    processedData,
+    makeTableOptions?.schema,
+  );
 
   const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
@@ -1096,6 +1243,71 @@ export async function fromRecordsToStreamBuffer(
   return Buffer.from(await writer.toUint8Array());
 }
 
+// `Type.Utf8View` / `Type.BinaryView` as numbers: the enum members only exist
+// in Arrow 21+, and this module compiles against every supported release.
+const UTF8_VIEW_TYPE_ID = 24;
+const BINARY_VIEW_TYPE_ID = 23;
+
+/**
+ * Copy a Utf8View / BinaryView `Data` into a single `Data` of `type`.
+ */
+function materializeViewData(child: ArrowData, type: DataType): ArrowData {
+  const builder = makeBuilder({ type, nullValues: [null] });
+  for (const value of new Vector([child])) {
+    builder.append(value);
+  }
+  return builder.finish().flush();
+}
+
+/**
+ * Rebuild any top-level Utf8View / BinaryView column as Utf8 / Binary.
+ *
+ * Lance stores the view types as their offset-based equivalents anyway, so
+ * nothing is lost. Doing it here also sidesteps an Arrow JS 21 bug: its IPC
+ * writer emits a truncated views buffer for a *sliced* view array, which the
+ * Rust reader rejects with "Need at least N bytes in buffers[0]".
+ *
+ * The record batches are rebuilt positionally rather than through a
+ * `Record<string, Vector>`: JavaScript enumerates integer-like keys first, so
+ * a field named e.g. `"1"` would otherwise be paired with the wrong column.
+ *
+ * Tables without view columns are returned as-is.
+ */
+function materializeViewColumns(table: ArrowTable): ArrowTable {
+  const replacements = new Map<number, DataType>();
+  table.schema.fields.forEach((field, i) => {
+    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
+      replacements.set(i, new Utf8());
+    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
+      replacements.set(i, new Binary());
+    }
+  });
+  if (replacements.size === 0) {
+    return table;
+  }
+  const fields = table.schema.fields.map((field, i) => {
+    const type = replacements.get(i);
+    return type === undefined
+      ? field
+      : new Field(field.name, type, field.nullable, field.metadata);
+  });
+  const schema = new Schema(fields, table.schema.metadata);
+  const batches = table.batches.map((batch) => {
+    const children = batch.data.children.map((child, i) => {
+      const type = replacements.get(i);
+      return type === undefined ? child : materializeViewData(child, type);
+    });
+    const data = makeData({
+      type: new Struct(fields),
+      length: batch.numRows,
+      nullCount: 0,
+      children,
+    });
+    return new RecordBatch(schema, data);
+  });
+  return new ArrowTable(schema, batches);
+}
+
 /**
  * Serialize an Arrow Table into a buffer using the Arrow IPC File serialization
  *
@@ -1112,7 +1324,10 @@ export async function fromTableToBuffer(
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
+  validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }
@@ -1175,6 +1390,19 @@ export async function fromRecordBatchToBuffer(
 }
 
 /**
+ * Create a buffer containing a single record batch using the Arrow IPC Stream
+ * serialization. Each call produces a self-contained Stream message (schema +
+ * batch + EOS) suitable for incremental decode by `arrow_ipc::reader::StreamReader`.
+ */
+export async function fromRecordBatchToStreamBuffer(
+  batch: RecordBatch,
+): Promise<Buffer> {
+  const table = materializeViewColumns(new ArrowTable([batch]));
+  const writer = RecordBatchStreamWriter.writeAll(table);
+  return Buffer.from(await writer.toUint8Array());
+}
+
+/**
  * Serialize an Arrow Table into a buffer using the Arrow IPC Stream serialization
  *
  * This function will apply `embeddings` to the table in a manner similar to
@@ -1187,7 +1415,9 @@ export async function fromTableToStreamBuffer(
   embeddings?: EmbeddingFunctionConfig,
   schema?: SchemaLike,
 ): Promise<Buffer> {
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }
@@ -1251,19 +1481,35 @@ function validateSchemaEmbeddings(
     if (isFixedSizeList(field.type)) {
       field = sanitizeField(field);
       if (data.length !== 0 && data?.[0]?.[field.name] === undefined) {
+        // Check if there's an embedding function registered for this field
+        let hasEmbeddingFunction = false;
+
+        // Check schema metadata for embedding functions
         if (schema.metadata.has("embedding_functions")) {
-          const embeddings = JSON.parse(
+          const entries = parseEmbeddingMetadata(
             schema.metadata.get("embedding_functions")!,
           );
-          if (
-            // biome-ignore lint/suspicious/noExplicitAny: we don't know the type of `f`
-            embeddings.find((f: any) => f["vectorColumn"] === field.name) ===
-            undefined
-          ) {
+          if (entries.some((f) => f.vectorColumn === field.name)) {
+            hasEmbeddingFunction = true;
+          }
+        }
+
+        // Check passed embedding function parameter
+        if (embeddings && embeddings.vectorColumn === field.name) {
+          hasEmbeddingFunction = true;
+        }
+
+        // If the field is nullable AND there's no embedding function, allow undefined/omitted values
+        if (field.nullable && !hasEmbeddingFunction) {
+          fields.push(field);
+        } else {
+          // Either not nullable OR has embedding function - require explicit values
+          if (hasEmbeddingFunction) {
+            // Don't add to missingEmbeddingFields since this is expected to be filled by embedding function
+            fields.push(field);
+          } else {
             missingEmbeddingFields.push(field);
           }
-        } else {
-          missingEmbeddingFields.push(field);
         }
       } else {
         fields.push(field);
@@ -1298,7 +1544,7 @@ export function ensureNestedFieldsExist(
     for (const field of schema.fields) {
       if (field.name in row) {
         if (
-          field.type.constructor.name === "Struct" &&
+          isPlainStructField(field) &&
           row[field.name] !== null &&
           row[field.name] !== undefined
         ) {
@@ -1313,13 +1559,25 @@ export function ensureNestedFieldsExist(
           completeRow[field.name] = row[field.name];
         }
       } else {
-        // Field is missing from the data - set to null
-        completeRow[field.name] = null;
+        // Keep a missing struct valid while filling each of its children with
+        // null. This is distinct from an explicitly null struct value.
+        completeRow[field.name] = isPlainStructField(field)
+          ? ensureStructFieldsExist({}, field.type as Struct)
+          : null;
       }
     }
 
     return completeRow;
   });
+}
+
+/**
+ * Blob fields are Arrow structs, but their values are bytes, URIs, or
+ * `{ data } | { uri }` inputs that the blob coercion in `makeArrowTable`
+ * handles, so they must not be filled in like ordinary structs.
+ */
+function isPlainStructField(field: Field): boolean {
+  return field.type.constructor.name === "Struct" && !isBlobField(field);
 }
 
 /**
@@ -1335,7 +1593,7 @@ function ensureStructFieldsExist(
   for (const childField of structType.children) {
     if (childField.name in data) {
       if (
-        childField.type.constructor.name === "Struct" &&
+        isPlainStructField(childField) &&
         data[childField.name] !== null &&
         data[childField.name] !== undefined
       ) {
@@ -1349,8 +1607,11 @@ function ensureStructFieldsExist(
         completeStruct[childField.name] = data[childField.name];
       }
     } else {
-      // Field is missing - set to null
-      completeStruct[childField.name] = null;
+      // Keep a missing struct valid while filling each of its children with
+      // null. This is distinct from an explicitly null struct value.
+      completeStruct[childField.name] = isPlainStructField(childField)
+        ? ensureStructFieldsExist({}, childField.type as Struct)
+        : null;
     }
   }
 

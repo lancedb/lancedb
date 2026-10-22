@@ -2,15 +2,26 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import * as fs from "fs";
+import { getEventListeners } from "node:events";
+import { pathToFileURL } from "node:url";
 import * as path from "path";
 import * as tmp from "tmp";
 
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
-
-import { MatchQuery, PhraseQuery, Table, connect } from "../lancedb";
+import {
+  AutoQuery,
+  type BlobInput,
+  type BlobMode,
+  Connection,
+  MatchQuery,
+  PhraseQuery,
+  Query,
+  Table,
+  VectorQuery,
+  blob,
+  connect,
+  isBlobField,
+  tokenize,
+} from "../lancedb";
 import {
   Table as ArrowTable,
   Field,
@@ -21,6 +32,9 @@ import {
   Int64,
   List,
   Schema,
+  SchemaLike,
+  Struct,
+  Type,
   Uint8,
   Utf8,
   makeArrowTable,
@@ -39,20 +53,22 @@ import {
   Operator,
   instanceOfFullTextQuery,
 } from "../lancedb/query";
-import exp = require("constants");
+import { LocalTable } from "../lancedb/table";
+import {
+  type ApacheArrow,
+  arrow18,
+  arrowVersions,
+  latestArrow,
+} from "./arrow_versions";
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+describe.each(arrowVersions)(
   "Given a table",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
     let tmpDir: tmp.DirResult;
     let table: Table;
 
-    const schema:
-      | import("apache-arrow-15").Schema
-      | import("apache-arrow-16").Schema
-      | import("apache-arrow-17").Schema
-      | import("apache-arrow-18").Schema = new arrow.Schema([
+    const schema: InstanceType<ApacheArrow["Schema"]> = new arrow.Schema([
       new arrow.Field("id", new arrow.Float64(), true),
     ]);
 
@@ -77,6 +93,210 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await expect(table.countRows()).resolves.toBe(3);
     });
 
+    it("creates and adds Arrow tables with large string and binary columns", async () => {
+      const data = new arrow.Table({
+        text: arrow.vectorFromArray(["alpha", "beta"], new arrow.LargeUtf8()),
+        bytes: arrow.vectorFromArray(
+          [Buffer.from("one"), Buffer.from("two")],
+          new arrow.LargeBinary(),
+        ),
+      });
+      const conn = await connect(tmpDir.name);
+      const largeTable = await conn.createTable("large_columns", data);
+      await largeTable.add(data);
+
+      const rows = await largeTable.query().toArray();
+      expect(rows.map((row) => row.text)).toEqual([
+        "alpha",
+        "beta",
+        "alpha",
+        "beta",
+      ]);
+      expect(rows.map((row) => Buffer.from(row.bytes).toString())).toEqual([
+        "one",
+        "two",
+        "one",
+        "two",
+      ]);
+      const fields = (await largeTable.schema()).fields;
+      expect(fields.map((field) => field.type.typeId)).toEqual([
+        arrow.Type.LargeUtf8,
+        arrow.Type.LargeBinary,
+      ]);
+    });
+
+    it("should support a foreign Float64 vector schema end to end", async () => {
+      const conn = await connect(tmpDir.name);
+      const schema = new arrow.Schema([
+        new arrow.Field("resource_id", new arrow.Int32(), false),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            3,
+            new arrow.Field("value", new arrow.Float64(), true),
+          ),
+          false,
+        ),
+      ]);
+      const data = [
+        {
+          // biome-ignore lint/style/useNamingConvention: matches the reported schema
+          resource_id: 0,
+          vector: [0.1, 0.1, 0.1],
+        },
+      ];
+
+      const resources = await conn.createTable("resources", data, { schema });
+
+      const existing = await resources
+        .query()
+        .where("resource_id = 0")
+        .limit(1)
+        .toArray();
+      expect(existing).toHaveLength(1);
+
+      const matched = await resources
+        .search(Float64Array.from(data[0].vector))
+        .limit(1)
+        .toArray();
+      expect(matched).toHaveLength(1);
+      expect(matched[0]["resource_id"]).toBe(0);
+    });
+
+    it("should support branches", async () => {
+      await table.add([{ id: 1 }]);
+      expect(await table.countRows()).toBe(1);
+
+      expect(table.currentBranch()).toBeNull();
+
+      // fork an isolated, writable branch from main
+      const branch = await (await table.branches()).create("exp");
+      expect(branch.currentBranch()).toBe("exp");
+      expect(await branch.countRows()).toBe(1);
+      await branch.add([{ id: 2 }]);
+      expect(await branch.countRows()).toBe(2);
+      // main is untouched by branch writes
+      expect(await table.countRows()).toBe(1);
+
+      // listed, with main (null) as the parent
+      const list = await (await table.branches()).list();
+      expect(Object.keys(list)).toContain("exp");
+      expect(list["exp"].parentBranch).toBeNull();
+
+      // fromRef="main" is equivalent to the default
+      await (await table.branches()).create("exp2", "main");
+      const list2 = await (await table.branches()).list();
+      expect(list2["exp2"].parentBranch).toBeNull();
+
+      // checkout returns a handle scoped to the branch's latest
+      const checkedOut = await (await table.branches()).checkout("exp");
+      expect(checkedOut.currentBranch()).toBe("exp");
+      expect(await checkedOut.countRows()).toBe(2);
+
+      // delete removes it
+      await (await table.branches()).delete("exp");
+      await (await table.branches()).delete("exp2");
+      const after = await (await table.branches()).list();
+      expect(Object.keys(after)).not.toContain("exp");
+    });
+
+    it("should open a branch via open_table", async () => {
+      const db = await connect(tmpDir.name);
+      await table.add([{ id: 1 }]);
+      const branch = await (await table.branches()).create("exp");
+      await branch.add([{ id: 2 }]);
+
+      // open_table(..., { branch }) returns a handle scoped to the branch
+      const opened = await db.openTable("some_table", undefined, {
+        branch: "exp",
+      });
+      expect(await opened.countRows()).toBe(2);
+      // opening without branch still tracks main
+      expect(await (await db.openTable("some_table")).countRows()).toBe(1);
+    });
+
+    it("should open a branch at a version isolated from main and HEAD", async () => {
+      const db = await connect(tmpDir.name);
+      // main: a single fork-point row
+      const t = await db.createTable("bv_table", [{ id: 0 }]);
+      const mainV1 = await t.version();
+
+      // fork "exp", then advance exp AND main independently past the fork so
+      // they diverge while sharing version numbers
+      const exp = await (await t.branches()).create("exp");
+      await exp.add([{ id: 1 }]); // exp: {0, 1}
+      const expV2 = await exp.version();
+      await exp.add([{ id: 2 }]); // exp HEAD: {0, 1, 2}
+      await t.add([{ id: 100 }, { id: 101 }, { id: 102 }]); // main HEAD: {0,100,101,102}
+      expect(await t.version()).toBe(expV2);
+
+      // open exp at the shared version: the data must be exp's, not main's.
+      // count alone cannot prove this (main@v2 also exists), so assert
+      // provenance by content.
+      const pinned = await db.openTable("bv_table", undefined, {
+        branch: "exp",
+        version: expV2,
+      });
+      expect(await pinned.countRows()).toBe(2); // not exp HEAD (3), not main@v2 (4)
+      expect(await pinned.countRows("id = 1")).toBe(1); // exp's post-fork row
+      expect(await pinned.countRows("id = 100")).toBe(0); // main's rows invisible
+
+      // the same coordinate is reachable directly via branches().checkout(name, version)
+      const pinnedDirect = await (await t.branches()).checkout("exp", expV2);
+      expect(await pinnedDirect.countRows()).toBe(2);
+
+      // the HEADs are unaffected
+      expect(
+        await (
+          await db.openTable("bv_table", undefined, { branch: "exp" })
+        ).countRows(),
+      ).toBe(3);
+      expect(await (await db.openTable("bv_table")).countRows()).toBe(4);
+
+      // version-only (no branch) time-travels main itself: its fork-point
+      // version holds only main's first row, and the shared version number
+      // resolves to main's data, not the branch's ("opens main at the version")
+      const oldMain = await db.openTable("bv_table", undefined, {
+        version: mainV1,
+      });
+      expect(await oldMain.countRows()).toBe(1);
+      const sharedOnMain = await db.openTable("bv_table", undefined, {
+        version: expV2,
+      });
+      expect(await sharedOnMain.countRows()).toBe(4); // main@v2, not exp@v2 (2)
+
+      // detached head: writing to a pinned version is rejected
+      await expect(pinned.add([{ id: 9 }])).rejects.toThrow(
+        /cannot be modified/,
+      );
+
+      // a nonexistent version is rejected -- on main, and on a branch (a
+      // distinct resolution path, on the branch's manifests)
+      await expect(
+        db.openTable("bv_table", undefined, { version: 9999 }),
+      ).rejects.toThrow();
+      await expect(
+        db.openTable("bv_table", undefined, { branch: "exp", version: 9999 }),
+      ).rejects.toThrow();
+
+      // checkoutLatest re-attaches the pinned handle to the BRANCH's HEAD
+      // (writable again), not main's HEAD (4), and not staying pinned (2)
+      await pinned.checkoutLatest();
+      expect(await pinned.countRows()).toBe(3); // exp HEAD
+      await pinned.add([{ id: 3 }]);
+      expect(await pinned.countRows()).toBe(4); // writable again
+    });
+
+    it("rejects invalid branch inputs", async () => {
+      const branches = await table.branches();
+      await expect(branches.create("")).rejects.toThrow("non-empty");
+      await expect(branches.checkout("")).rejects.toThrow("non-empty");
+      await expect(branches.delete("")).rejects.toThrow("non-empty");
+      await expect(branches.create("bad", "main", -1)).rejects.toThrow(
+        "non-negative",
+      );
+    });
+
     it("should show table stats", async () => {
       await table.add([{ id: 1 }, { id: 2 }]);
       await table.add([{ id: 1 }]);
@@ -96,8 +316,26 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         },
         numIndices: 0,
         numRows: 3,
-        totalBytes: 24,
+        numDeletedRows: 0,
+        // Full on-disk size of the two data files, footers and metadata included.
+        totalBytes: 550,
       });
+
+      // Index files count toward totalBytes too (only deletion files and
+      // manifests are excluded).
+      await table.createIndex("id", { config: Index.btree() });
+      const statsWithIndex = await table.stats();
+      expect(statsWithIndex.numIndices).toBe(1);
+      expect(statsWithIndex.totalBytes).toBeGreaterThan(550);
+
+      // Both rows with id = 1 are deleted, but that empties the second
+      // fragment, which is dropped outright rather than kept with a deletion
+      // file, so only the row marked in the surviving fragment is counted.
+      await table.delete("id = 1");
+      const stats = await table.stats();
+      expect(stats.numRows).toBe(1);
+      expect(stats.numDeletedRows).toBe(1);
+      expect(stats.fragmentStats.numFragments).toBe(1);
     });
 
     it("should overwrite data if asked", async () => {
@@ -106,6 +344,48 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(addRes.version).toBe(2);
       await table.add([{ id: 1 }], { mode: "overwrite" });
       await expect(table.countRows()).resolves.toBe(1);
+    });
+
+    it("should invoke the progress callback", async () => {
+      const events: import("../lancedb").WriteProgress[] = [];
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }], {
+        progress: (p) => events.push(p),
+      });
+
+      expect(events.length).toBeGreaterThan(0);
+      const last = events[events.length - 1];
+      expect(last.done).toBe(true);
+      // Earlier callbacks must have done=false.
+      for (const ev of events.slice(0, -1)) {
+        expect(ev.done).toBe(false);
+      }
+      // outputRows reflects the rows added in this call, not table size.
+      expect(last.outputRows).toBe(3);
+      // The input source (an array) reports a row count, so totalRows is set.
+      expect(last.totalRows).toBe(3);
+      // outputRows is monotonic.
+      for (let i = 1; i < events.length; i++) {
+        expect(events[i].outputRows).toBeGreaterThanOrEqual(
+          events[i - 1].outputRows,
+        );
+      }
+    });
+
+    it("should swallow errors thrown from the progress callback", async () => {
+      const warn = jest
+        .spyOn(console, "warn")
+        .mockImplementation(() => undefined);
+      try {
+        const res = await table.add([{ id: 1 }, { id: 2 }], {
+          progress: () => {
+            throw new Error("callback bomb");
+          },
+        });
+        expect(res.version).toBeGreaterThan(0);
+        expect(warn).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("should let me close the table", async () => {
@@ -180,6 +460,26 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(await table.countRows("id == 10")).toBe(1);
     });
 
+    it("should let me update float values to NaN and Infinity", async () => {
+      const db = await connect(tmpDir.name);
+      const floats = await db.createTable("floats", [
+        { id: 1, price: 1.5 },
+        { id: 2, price: 2.5 },
+        { id: 3, price: 3.5 },
+        { id: 4, price: 4.5 },
+      ]);
+      await floats.update({ values: { price: NaN }, where: "id = 1" });
+      await floats.update({ values: { price: Infinity }, where: "id = 2" });
+      await floats.update({ values: { price: -Infinity }, where: "id = 3" });
+
+      const rows = await floats.query().toArray();
+      const price = (id: number) => rows.find((row) => row.id === id).price;
+      expect(price(1)).toBeNaN();
+      expect(price(2)).toBe(Infinity);
+      expect(price(3)).toBe(-Infinity);
+      expect(price(4)).toBe(4.5);
+    });
+
     // https://github.com/lancedb/lancedb/issues/1293
     test.each([new arrow.Float16(), new arrow.Float32(), new arrow.Float64()])(
       "can create empty table with non default float type: %s",
@@ -212,8 +512,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       },
     );
 
-    // TODO: https://github.com/lancedb/lancedb/issues/1832
-    it.skip("should be able to omit nullable fields", async () => {
+    it("should be able to omit nullable fields", async () => {
       const db = await connect(tmpDir.name);
       const schema = new arrow.Schema([
         new arrow.Field(
@@ -237,23 +536,36 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([data3]);
 
       let res = await table.query().limit(10).toArray();
-      const resVector = res.map((r) => r.get("vector").toArray());
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
       expect(resVector).toEqual([null, data2.vector, data3.vector]);
-      const resItem = res.map((r) => r.get("item").toArray());
+      const resItem = res.map((r) => r.item);
       expect(resItem).toEqual(["foo", null, "bar"]);
-      const resPrice = res.map((r) => r.get("price").toArray());
+      const resPrice = res.map((r) => r.price);
       expect(resPrice).toEqual([10.0, 2.0, 3.0]);
 
       const data4 = { item: "foo" };
       // We can't omit a column if it's not nullable
-      await expect(table.add([data4])).rejects.toThrow("Invalid user input");
+      await expect(table.add([data4])).rejects.toThrow(
+        "Append with different schema",
+      );
 
       // But we can alter columns to make them nullable
       await table.alterColumns([{ path: "price", nullable: true }]);
       await table.add([data4]);
 
-      res = (await table.query().limit(10).toArray()).map((r) => r.toJSON());
-      expect(res).toEqual([data1, data2, data3, data4]);
+      res = (await table.query().limit(10).toArray()).map((r) => ({
+        ...r.toJSON(),
+        vector: r.vector ? Array.from(r.vector) : null,
+      }));
+      // Rust fills missing nullable fields with null
+      expect(res).toEqual([
+        { ...data1, vector: null },
+        { ...data2, item: null },
+        data3,
+        { ...data4, price: null, vector: null },
+      ]);
     });
 
     it("should be able to insert nullable data for non-nullable fields", async () => {
@@ -291,6 +603,74 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
       const res = await table.takeOffsets([1, 2]).toArrow();
       expect(res.getChild("id")?.toJSON()).toEqual([2, 3]);
+    });
+
+    it("should support takeRowIds with bigint array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Get actual row IDs using withRowId()
+      const allRows = await table.query().withRowId().toArray();
+      const rowIds = allRows.map((row) => row._rowid) as bigint[];
+
+      // Verify row IDs are bigint
+      expect(typeof rowIds[0]).toBe("bigint");
+
+      // Use takeRowIds with bigint array (the main use case from issue #2722)
+      const res = await table.takeRowIds([rowIds[0], rowIds[2]]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with number array for backwards compatibility", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Small row IDs can be passed as numbers
+      const res = await table.takeRowIds([0, 2]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should support takeRowIds with mixed bigint and number array", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // Mixed array of bigint and number
+      const res = await table.takeRowIds([0n, 1, 2n]).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 2, 3]);
+    });
+
+    it("should throw for non-integer number in takeRowIds", () => {
+      expect(() => table.takeRowIds([1.5])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+      expect(() => table.takeRowIds([0, 1.1, 2])).toThrow(
+        "Row id must be an integer (or bigint)",
+      );
+    });
+
+    it("should expose useRTE on takeRowIds as the base-only escape hatch", async () => {
+      await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+      // useRTE(false) is reachable on TakeQuery (the escape hatch for RTE tables,
+      // where take-by-row-id auto-routes to the LSM scanner and is rejected).
+      const res = await table.takeRowIds([0, 2]).useRTE(false).toArray();
+      expect(res.map((r) => r.id)).toEqual([1, 3]);
+    });
+
+    it("should throw for negative number in takeRowIds", () => {
+      expect(() => table.takeRowIds([-1])).toThrow("Row id cannot be negative");
+      expect(() => table.takeRowIds([0, -5, 2])).toThrow(
+        "Row id cannot be negative",
+      );
+    });
+
+    it("should throw for unsafe large number in takeRowIds", () => {
+      // Number.MAX_SAFE_INTEGER + 1 is not safe
+      const unsafeNumber = Number.MAX_SAFE_INTEGER + 1;
+      expect(() => table.takeRowIds([unsafeNumber])).toThrow(
+        "Row id is too large for number; use bigint instead",
+      );
+    });
+
+    it("should reject negative bigint in takeRowIds", async () => {
+      await table.add([{ id: 1 }]);
+      // Negative bigint should be rejected by the Rust layer
+      expect(() => {
+        table.takeRowIds([-1n]);
+      }).toThrow("Row id cannot be negative");
     });
 
     it("should return the table as an instance of an arrow table", async () => {
@@ -331,16 +711,212 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const table = await db.createTable("my_table", data);
       expect(await table.countRows()).toEqual(2);
     });
+
+    it("should allow undefined and omitted nullable vector fields", async () => {
+      // Test for the bug: can't pass undefined or omit vector column
+      const db = await connect("memory://");
+      const schema = new arrow.Schema([
+        new arrow.Field("id", new arrow.Int32(), true),
+        new arrow.Field(
+          "vector",
+          new arrow.FixedSizeList(
+            32,
+            new arrow.Field("item", new arrow.Float32(), true),
+          ),
+          true, // nullable = true
+        ),
+      ]);
+      const table = await db.createEmptyTable("test_table", schema);
+
+      // Should not throw error for undefined value
+      await table.add([{ id: 0, vector: undefined }]);
+
+      // Should not throw error for omitted field
+      await table.add([{ id: 1 }]);
+
+      // Should still work for null
+      await table.add([{ id: 2, vector: null }]);
+
+      // Should still work for actual vector
+      const testVector = new Array(32).fill(0.5);
+      await table.add([{ id: 3, vector: testVector }]);
+      expect(await table.countRows()).toEqual(4);
+
+      const res = await table.query().limit(10).toArray();
+      const resVector = res.map((r) =>
+        r.vector ? Array.from(r.vector) : null,
+      );
+      expect(resVector).toEqual([null, null, null, testVector]);
+    });
   },
 );
 
+// https://github.com/lancedb/lancedb/issues/1963
+// These types were added in Arrow 21, so they are built with a second copy of
+// that release rather than the per-version matrix above, and reading them back
+// needs the library's own Arrow to know them too.
+const hostArrowSupportsViewTypes =
+  typeof (arrow as unknown as Record<string, unknown>).Utf8View === "function";
+(hostArrowSupportsViewTypes ? it : it.skip)(
+  "creates and adds tables with LargeList, Utf8View and BinaryView columns",
+  async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const makeData = () =>
+      new latestArrow.Table({
+        id: latestArrow.vectorFromArray([1, 2], new latestArrow.Int32()),
+        tags: latestArrow.vectorFromArray(
+          [["a", "b"], ["c"]],
+          new latestArrow.LargeList(
+            new latestArrow.Field("item", new latestArrow.Utf8(), true),
+          ),
+        ),
+        text: latestArrow.vectorFromArray(
+          ["short", "a string that is longer than the twelve inline bytes"],
+          new latestArrow.Utf8View(),
+        ),
+        bytes: latestArrow.vectorFromArray(
+          [new Uint8Array([1, 2, 3]), new Uint8Array(20).fill(7)],
+          new latestArrow.BinaryView(),
+        ),
+      });
+    const table = await db.createTable("views", makeData());
+    await table.add(makeData());
+
+    const schema = await table.schema();
+    // Take the enum from the Arrow 21 copy: the host Arrow may predate
+    // `Type.LargeList`, and this file still has to type-check there.
+    expect(schema.fields.map((f) => f.type.typeId)).toEqual([
+      latestArrow.Type.Int,
+      latestArrow.Type.LargeList,
+      // Lance stores the view types as their offset-based equivalents.
+      latestArrow.Type.Utf8,
+      latestArrow.Type.Binary,
+    ]);
+    const rows = await table.query().toArrow();
+    expect(rows.numRows).toBe(4);
+    const row = rows.get(1)!.toJSON();
+    expect(row.id).toBe(2);
+    expect(row.tags.toJSON()).toEqual(["c"]);
+    expect(row.text).toBe(
+      "a string that is longer than the twelve inline bytes",
+    );
+    expect(Array.from(row.bytes)).toEqual(Array(20).fill(7));
+
+    // Arrow JS 21 serializes a *sliced* view column with a truncated views
+    // buffer; the library rebuilds view columns as Utf8/Binary so this works.
+    const sliced = makeData().slice(1, 2);
+    expect(sliced.getChild("text")!.data[0].offset).toBe(1);
+    const slicedTable = await db.createTable("views_sliced", sliced);
+    await slicedTable.add(sliced);
+    const slicedRows = await slicedTable.query().toArrow();
+    expect(slicedRows.numRows).toBe(2);
+    for (const i of [0, 1]) {
+      const r = slicedRows.get(i)!.toJSON();
+      expect(r.id).toBe(2);
+      expect(r.text).toBe(
+        "a string that is longer than the twelve inline bytes",
+      );
+      expect(Array.from(r.bytes)).toEqual(Array(20).fill(7));
+    }
+
+    // Regression: a field with an integer-like name. JavaScript enumerates
+    // such keys first, so a key-ordered rebuild would pair "1" with the text
+    // column's values. The batches are built explicitly to pin field order.
+    const numericSchema = new latestArrow.Schema([
+      new latestArrow.Field("text", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("1", new latestArrow.Utf8View(), true),
+      new latestArrow.Field("n", new latestArrow.Int32(), true),
+    ]);
+    const column = (
+      values: unknown[],
+      type: InstanceType<typeof latestArrow.DataType>,
+    ) => latestArrow.vectorFromArray(values, type).data[0];
+    const numericBatch = new latestArrow.RecordBatch(
+      numericSchema,
+      latestArrow.makeData({
+        type: new latestArrow.Struct(numericSchema.fields),
+        length: 3,
+        nullCount: 0,
+        children: [
+          column(["t0", "t1", "t2"], new latestArrow.Utf8View()),
+          column(["one0", "one1", "one2"], new latestArrow.Utf8View()),
+          column([0, 1, 2], new latestArrow.Int32()),
+        ],
+      }),
+    );
+    const numericData = new latestArrow.Table(numericSchema, [numericBatch]);
+    const numericTable = await db.createTable("views_numeric", numericData);
+    await numericTable.add(numericData.slice(1));
+    const numericRows = (await numericTable.query().toArrow()).toArray();
+    expect(numericRows.map((r) => r.toJSON())).toEqual([
+      { text: "t0", "1": "one0", n: 0 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+      { text: "t1", "1": "one1", n: 1 },
+      { text: "t2", "1": "one2", n: 2 },
+    ]);
+    tmpDir.removeCallback();
+  },
+);
+
+it("should query documents with LangChain PDF metadata", async () => {
+  const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  try {
+    const db = await connect(tmpDir.name);
+    const documents = [
+      {
+        text: "first page",
+        vector: [1, 0],
+        source: "first.pdf",
+        loc: { pageNumber: 1, lines: { from: 1, to: 12 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+      {
+        text: "second page",
+        vector: [0, 1],
+        source: "second.pdf",
+        loc: { pageNumber: 2, lines: { from: 13, to: 24 } },
+        pdf: {
+          version: "1.10.100",
+          info: {
+            format: "PDF 1.7",
+            producer: "pdf.js",
+            creator: "Writer",
+          },
+          totalPages: 2,
+        },
+      },
+    ];
+    const documentsTable = await db.createTable("documents", documents);
+
+    const results = await documentsTable.query().toArray();
+
+    expect(results).toHaveLength(2);
+    expect(results[0].source).toBe("first.pdf");
+    expect(results[0].pdf.info.producer).toBe("pdf.js");
+    expect(results[1].loc.pageNumber).toBe(2);
+  } finally {
+    tmpDir.removeCallback();
+  }
+});
+
 describe("merge insert", () => {
   let tmpDir: tmp.DirResult;
+  let conn: Connection;
   let table: Table;
 
   beforeEach(async () => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
-    const conn = await connect(tmpDir.name);
+    conn = await connect(tmpDir.name);
 
     table = await conn.createTable("some_table", [
       { a: 1, b: "a" },
@@ -377,6 +953,38 @@ describe("merge insert", () => {
     const result = (await table.toArrow()).toArray().sort((a, b) => a.a - b.a);
 
     expect(result.map((row) => ({ ...row }))).toEqual(expected);
+  });
+  test("upsert on a composite key", async () => {
+    const composite = await conn.createTable("composite", [
+      { shard: "a", id: 1, val: "x" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+    ]);
+
+    // ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    // existing row on each key column separately but on neither pair, so it is
+    // an insert.
+    const mergeInsertRes = await composite
+      .mergeInsert(["shard", "id"])
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { shard: "a", id: 1, val: "X" },
+        { shard: "b", id: 2, val: "W" },
+      ]);
+    expect(mergeInsertRes.numUpdatedRows).toBe(1);
+    expect(mergeInsertRes.numInsertedRows).toBe(1);
+
+    const result = (await composite.toArrow())
+      .toArray()
+      .sort((a, b) => a.shard.localeCompare(b.shard) || a.id - b.id);
+
+    expect(result.map((row) => ({ ...row }))).toEqual([
+      { shard: "a", id: 1, val: "X" },
+      { shard: "a", id: 2, val: "y" },
+      { shard: "b", id: 1, val: "z" },
+      { shard: "b", id: 2, val: "W" },
+    ]);
   });
   test("conditional update", async () => {
     const newData = [
@@ -488,6 +1096,32 @@ describe("merge insert", () => {
         .execute(newData, { timeoutMs: 0 }),
     ).rejects.toThrow("merge insert timed out");
   });
+
+  test("useIndex", async () => {
+    const newData = [
+      { a: 2, b: "x" },
+      { a: 4, b: "z" },
+    ];
+
+    // Test with useIndex(true) - should work fine
+    const result1 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(true)
+      .execute(newData);
+
+    expect(result1.numInsertedRows).toBe(1); // Only a=4 should be inserted
+
+    // Test with useIndex(false) - should also work fine
+    const newData2 = [{ a: 5, b: "w" }];
+    const result2 = await table
+      .mergeInsert("a")
+      .whenNotMatchedInsertAll()
+      .useIndex(false)
+      .execute(newData2);
+
+    expect(result2.numInsertedRows).toBe(1); // a=5 should be inserted
+  });
 });
 
 describe("When creating an index", () => {
@@ -523,20 +1157,26 @@ describe("When creating an index", () => {
   afterEach(() => tmpDir.removeCallback());
 
   it("should create a vector index on vector columns", async () => {
-    await tbl.createIndex("vec");
+    const job = await tbl.createIndexAsync("vec");
+    expect(job.id).toBeNull();
+    await job.wait();
+    // Cancelling a job that already finished succeeds and does nothing.
+    await job.cancel();
 
     // check index directory
     const indexDir = path.join(tmpDir.name, "test.lance", "_indices");
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfPq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfPq",
+        columns: ["vec"],
+      }),
+    );
     const stats = await tbl.indexStats("vec_idx");
-    expect(stats?.loss).toBeDefined();
+    expect(stats).toBeDefined();
 
     // Search without specifying the column
     let rst = await tbl
@@ -584,16 +1224,292 @@ describe("When creating an index", () => {
       .toArrow();
     expect(rst.numRows).toBe(2);
 
+    expect(() => tbl.vectorSearch(queryVec).nprobes(0)).toThrow(
+      "Invalid input, nprobes must be greater than 0",
+    );
+    expect(() =>
+      tbl.query().nearestTo(queryVec).fullTextSearch("dog").nprobes(0),
+    ).toThrow("Invalid input, nprobes must be greater than 0");
     expect(() => tbl.query().nearestTo(queryVec).minimumNprobes(0)).toThrow(
       "Invalid input, minimum_nprobes must be greater than 0",
     );
-    expect(() => tbl.query().nearestTo(queryVec).maximumNprobes(5)).toThrow(
+    expect(() =>
+      tbl.query().nearestTo(queryVec).minimumNprobes(10).maximumNprobes(5),
+    ).toThrow(
       "Invalid input, maximum_nprobes must be greater than or equal to minimum_nprobes",
     );
 
     await tbl.dropIndex("vec_idx");
     const indices2 = await tbl.listIndices();
     expect(indices2.length).toBe(0);
+  });
+
+  it("should preserve canonical nested field paths across index lifecycle", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field("rowId", new Int32(), true),
+      new Field("row-id", new Int32(), true),
+      new Field("userId", new Int32(), true),
+      new Field(
+        "metadata",
+        new Struct([new Field("user_id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "MetaData",
+        new Struct([new Field("userId", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "payload",
+        new Struct([new Field("text", new Utf8(), true)]),
+        true,
+      ),
+      new Field(
+        "meta-data",
+        new Struct([new Field("user-id", new Int32(), true)]),
+        true,
+      ),
+      new Field(
+        "literal",
+        new Struct([new Field("a.b", new Int32(), true)]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "nested_field_index_lifecycle",
+      makeArrowTable(
+        Array.from({ length: 300 }, (_, rowId) => ({
+          rowId,
+          "row-id": rowId,
+          userId: rowId,
+          metadata: { ["user_id"]: rowId },
+          ["MetaData"]: { userId: rowId },
+          image: { embedding: [rowId, rowId + 1] },
+          payload: { text: `document ${rowId}` },
+          "meta-data": { "user-id": rowId },
+          literal: { "a.b": rowId },
+        })),
+        { schema: nestedSchema },
+      ),
+    );
+
+    await nestedTable.createIndex("rowId", {
+      config: Index.btree(),
+      name: "row_id_idx",
+    });
+    await nestedTable.createIndex("`row-id`", {
+      config: Index.btree(),
+      name: "row_dash_id_idx",
+    });
+    await nestedTable.createIndex("userId", {
+      config: Index.btree(),
+      name: "top_user_id_idx",
+    });
+    await nestedTable.createIndex("metadata.user_id", {
+      config: Index.btree(),
+      name: "nested_user_id_idx",
+    });
+    await nestedTable.createIndex("MetaData.userId", {
+      config: Index.btree(),
+      name: "mixed_case_metadata_user_id_idx",
+    });
+    await nestedTable.createIndex("`meta-data`.`user-id`", {
+      config: Index.btree(),
+      name: "escaped_names_idx",
+    });
+    await nestedTable.createIndex("literal.`a.b`", {
+      config: Index.btree(),
+      name: "literal_dot_idx",
+    });
+    await nestedTable.createIndex("image.embedding", {
+      name: "image_embedding_idx",
+    });
+    await nestedTable.createIndex("payload.text", {
+      config: Index.fts({ withPosition: false }),
+      name: "payload_text_idx",
+    });
+
+    const indices = await nestedTable.listIndices();
+    expect(indices).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "row_id_idx",
+          indexType: "BTree",
+          columns: ["rowId"],
+        }),
+        expect.objectContaining({
+          name: "row_dash_id_idx",
+          indexType: "BTree",
+          columns: ["`row-id`"],
+        }),
+        expect.objectContaining({
+          name: "top_user_id_idx",
+          indexType: "BTree",
+          columns: ["userId"],
+        }),
+        expect.objectContaining({
+          name: "nested_user_id_idx",
+          indexType: "BTree",
+          columns: ["metadata.user_id"],
+        }),
+        expect.objectContaining({
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        }),
+        expect.objectContaining({
+          name: "escaped_names_idx",
+          indexType: "BTree",
+          columns: ["`meta-data`.`user-id`"],
+        }),
+        expect.objectContaining({
+          name: "literal_dot_idx",
+          indexType: "BTree",
+          columns: ["literal.`a.b`"],
+        }),
+        expect.objectContaining({
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        }),
+        expect.objectContaining({
+          name: "payload_text_idx",
+          indexType: "FTS",
+          columns: ["payload.text"],
+        }),
+      ]),
+    );
+
+    const stats = await nestedTable.indexStats(
+      "mixed_case_metadata_user_id_idx",
+    );
+    expect(stats?.numIndexedRows).toEqual(300);
+    expect(stats?.indexType).toEqual("BTREE");
+
+    const filtered = await nestedTable
+      .query()
+      .where("MetaData.userId = 42")
+      .limit(1)
+      .toArray();
+    expect(filtered[0].MetaData.userId).toEqual(42);
+
+    const escapedFiltered = await nestedTable
+      .query()
+      .where("`row-id` = 43")
+      .limit(1)
+      .toArray();
+    expect(escapedFiltered[0]["row-id"]).toEqual(43);
+
+    const explicit = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .column("image.embedding")
+      .limit(1)
+      .toArray();
+    const inferred = await nestedTable
+      .query()
+      .nearestTo([0.0, 1.0])
+      .limit(1)
+      .toArray();
+    expect(inferred[0].rowId).toEqual(explicit[0].rowId);
+
+    await nestedTable.add([
+      {
+        rowId: 300,
+        "row-id": 300,
+        userId: 300,
+        metadata: { ["user_id"]: 300 },
+        ["MetaData"]: { userId: 300 },
+        image: { embedding: [300.0, 301.0] },
+        payload: { text: "document 300" },
+        "meta-data": { "user-id": 300 },
+        literal: { "a.b": 300 },
+      },
+    ]);
+    await nestedTable.optimize();
+    const indicesAfterOptimize = await nestedTable.listIndices();
+    expect(indicesAfterOptimize).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "mixed_case_metadata_user_id_idx",
+          indexType: "BTree",
+          columns: ["MetaData.userId"],
+        }),
+        expect.objectContaining({
+          name: "image_embedding_idx",
+          indexType: "IvfPq",
+          columns: ["image.embedding"],
+        }),
+      ]),
+    );
+  });
+
+  it("should report multiple nested vector candidates", async () => {
+    const db = await connect(tmpDir.name);
+    const nestedSchema = new Schema([
+      new Field(
+        "image",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+      new Field(
+        "text",
+        new Struct([
+          new Field(
+            "embedding",
+            new FixedSizeList(2, new Field("item", new Float32(), true)),
+            true,
+          ),
+        ]),
+        true,
+      ),
+    ]);
+    const nestedTable = await db.createTable(
+      "multiple_nested_vectors",
+      makeArrowTable(
+        [
+          {
+            image: { embedding: [0.0, 1.0] },
+            text: { embedding: [2.0, 3.0] },
+          },
+        ],
+        { schema: nestedSchema },
+      ),
+    );
+
+    await expect(
+      nestedTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/image\.embedding.*text\.embedding/);
+  });
+
+  it("should report when no default vector column exists", async () => {
+    const db = await connect(tmpDir.name);
+    const noVectorTable = await db.createTable(
+      "no_vector",
+      makeArrowTable([{ id: 0, label: "cat" }]),
+    );
+
+    await expect(
+      noVectorTable.query().nearestTo([0.0, 1.0]).limit(1).toArray(),
+    ).rejects.toThrow(/No vector column/);
   });
 
   it("should wait for index readiness", async () => {
@@ -671,11 +1587,13 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
     const indices = await tbl.listIndices();
     expect(indices.length).toBe(1);
-    expect(indices[0]).toEqual({
-      name: "vec_idx",
-      indexType: "IvfHnswSq",
-      columns: ["vec"],
-    });
+    expect(indices[0]).toEqual(
+      expect.objectContaining({
+        name: "vec_idx",
+        indexType: "IvfHnswSq",
+        columns: ["vec"],
+      }),
+    );
 
     // Search without specifying the column
     let rst = await tbl
@@ -779,6 +1697,15 @@ describe("When creating an index", () => {
     });
   });
 
+  it("should be able to create IVF_RQ", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfRq({
+        numPartitions: 10,
+        numBits: 1,
+      }),
+    });
+  });
+
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
     // Default is replace=true
@@ -839,6 +1766,20 @@ describe("When creating an index", () => {
     expect(fs.readdirSync(indexDir)).toHaveLength(1);
   });
 
+  test("create an FM index", async () => {
+    // FM-Index accelerates substring search on a string/binary column.
+    const db = await connect(tmpDir.name);
+    const fmTbl = await db.createTable("fm_table", [
+      { id: 0, text: "hello world" },
+      { id: 1, text: "foo bar" },
+    ]);
+    await fmTbl.createIndex("text", {
+      config: Index.fm(),
+    });
+    const indexDir = path.join(tmpDir.name, "fm_table.lance", "_indices");
+    expect(fs.readdirSync(indexDir)).toHaveLength(1);
+  });
+
   test("should be able to get index stats", async () => {
     await tbl.createIndex("id");
 
@@ -849,7 +1790,6 @@ describe("When creating an index", () => {
     expect(stats?.distanceType).toBeUndefined();
     expect(stats?.indexType).toEqual("BTREE");
     expect(stats?.numIndices).toEqual(1);
-    expect(stats?.loss).toBeUndefined();
   });
 
   test("when getting stats on non-existent index", async () => {
@@ -999,6 +1939,35 @@ describe("When creating an index", () => {
     expect(rst64Query.toString()).toEqual(rst64Search.toString());
     expect(rst64Query.numRows).toBe(2);
   });
+
+  it("should expose rich metadata fields on IndexConfig", async () => {
+    await tbl.createIndex("id", { config: Index.btree() });
+    await tbl.createIndex("vec");
+
+    const indicesByName = Object.fromEntries(
+      (await tbl.listIndices()).map((idx) => [idx.name, idx]),
+    );
+
+    const scalarIdx = indicesByName["id_idx"];
+    expect(scalarIdx).toBeDefined();
+    expect(typeof scalarIdx.indexUuid).toBe("string");
+    expect(scalarIdx.numIndexedRows).toBe(300);
+    expect(scalarIdx.numUnindexedRows).toBe(0);
+    expect(scalarIdx.numSegments).toBeGreaterThanOrEqual(1);
+    expect(scalarIdx.sizeBytes).toBeGreaterThan(0);
+    // Use toString check to avoid cross-realm instanceof failures with native Date objects
+    expect(Object.prototype.toString.call(scalarIdx.createdAt)).toBe(
+      "[object Date]",
+    );
+    expect((scalarIdx.createdAt as Date).getTime()).toBeGreaterThan(0);
+    expect(typeof scalarIdx.indexDetails).toBe("object");
+
+    const vectorIdx = indicesByName["vec_idx"];
+    expect(vectorIdx).toBeDefined();
+    expect(typeof vectorIdx.indexUuid).toBe("string");
+    expect(vectorIdx.numIndexedRows).toBe(300);
+    expect(typeof vectorIdx.indexDetails).toBe("object");
+  });
 });
 
 describe("When querying a table", () => {
@@ -1076,6 +2045,194 @@ describe("Read consistency interval", () => {
   });
 });
 
+describe("automatic search schema consistency", () => {
+  let tmpDir: tmp.DirResult;
+
+  class SchemaRefreshEmbedding extends EmbeddingFunction<string> {
+    ndims() {
+      return 2;
+    }
+
+    embeddingDataType() {
+      return new Float32();
+    }
+
+    async computeSourceEmbeddings(data: string[]) {
+      return data.map((value) => [value.length, 1]);
+    }
+
+    async computeQueryEmbeddings(value: string) {
+      return [value.length, 1];
+    }
+  }
+
+  function embeddingSchema() {
+    const func = new SchemaRefreshEmbedding();
+    return LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+  }
+
+  beforeEach(() => {
+    getRegistry().reset();
+    register("schema-refresh")(SchemaRefreshEmbedding);
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+
+  afterEach(() => {
+    getRegistry().reset();
+    tmpDir.removeCallback();
+  });
+
+  it("uses the schema refreshed from another connection", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const stale = await first.createTable("docs", [{ text: "before" }], {
+        schema: embeddingSchema(),
+      });
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "after hello" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+
+      const search = stale.search("hello");
+      expect(search).toBeInstanceOf(AutoQuery);
+      expect(search).not.toBeInstanceOf(Query);
+      expect(search).not.toBeInstanceOf(VectorQuery);
+      expect("nprobes" in search).toBe(false);
+
+      const rows = await search.toArray();
+      expect(rows[0].text).toBe("after hello");
+      expect((await stale.schema()).metadata.has("embedding_functions")).toBe(
+        false,
+      );
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it("tracks embedding metadata across checkout and restore", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      await first.createTable("docs", [{ text: "before" }], {
+        schema: embeddingSchema(),
+      });
+      const table = await second.createTable(
+        "docs",
+        [{ text: "after hello" }],
+        { mode: "overwrite" },
+      );
+      await table.createIndex("text", { config: Index.fts() });
+
+      await table.checkout(1);
+      expect((await table.search("before").toArray())[0].text).toBe("before");
+
+      await table.checkoutLatest();
+      expect((await table.search("hello").toArray())[0].text).toBe(
+        "after hello",
+      );
+
+      await table.checkout(1);
+      await table.restore();
+      expect((await table.search("before").toArray())[0].text).toBe("before");
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+
+  it("pins automatic search while computing an embedding", async () => {
+    let markStarted!: () => void;
+    let releaseEmbedding!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const released = new Promise<void>((resolve) => {
+      releaseEmbedding = resolve;
+    });
+
+    class BlockingEmbedding extends SchemaRefreshEmbedding {
+      async computeQueryEmbeddings(value: string) {
+        markStarted();
+        await released;
+        return [value.length, 1];
+      }
+    }
+
+    register("schema-refresh-blocking")(BlockingEmbedding);
+    const func = new BlockingEmbedding();
+    const schema = LanceSchema({
+      text: func.sourceField(new Utf8()),
+      vector: func.vectorField(),
+    });
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const table = await first.createTable(
+        "docs",
+        [{ text: "hello before" }],
+        { schema },
+      );
+      const pending = table.search("hello").toArray();
+      await started;
+
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "hello after" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+      releaseEmbedding();
+
+      expect((await pending)[0].text).toBe("hello before");
+    } finally {
+      releaseEmbedding();
+      first.close();
+      second.close();
+    }
+  });
+
+  it("refreshes a reused automatic search for every execution", async () => {
+    const first = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+    const second = await connect(tmpDir.name, { readConsistencyInterval: 0 });
+
+    try {
+      const table = await first.createTable("docs", [
+        { text: "hello before", marker: "before" },
+      ]);
+      await table.createIndex("text", { config: Index.fts() });
+      const search = table.search("hello").select(["text"]);
+
+      const before = (await search.toArray())[0];
+      expect(before.text).toBe("hello before");
+      expect(before.marker).toBeUndefined();
+
+      const replacement = await second.createTable(
+        "docs",
+        [{ text: "hello after", marker: "after" }],
+        { mode: "overwrite" },
+      );
+      await replacement.createIndex("text", { config: Index.fts() });
+
+      const after = (await search.toArray())[0];
+      expect(after.text).toBe("hello after");
+      expect(after.marker).toBeUndefined();
+    } finally {
+      first.close();
+      second.close();
+    }
+  });
+});
+
 describe("schema evolution", function () {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -1104,6 +2261,98 @@ describe("schema evolution", function () {
         true,
       ),
       new Field("price", new Float32(), false),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
+  it("can add columns with schema for explicit data types", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Define schema for new columns with explicit data types
+    // Note: All columns must be nullable when using addColumns with Schema
+    // because they are initially populated with null values
+    const newColumnsSchema = new Schema([
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+
+    const result = await table.addColumns(newColumnsSchema);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+      new Field("rating", new Int32(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+
+    // Verify that new columns are populated with null values
+    const results = await table.query().toArray();
+    expect(results).toHaveLength(1);
+    expect(results[0].price).toBeNull();
+    expect(results[0].category).toBeNull();
+    expect(results[0].rating).toBeNull();
+  });
+
+  it("can add a single column using Field", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add a single field
+    const priceField = new Field("price", new Float64(), true);
+    const result = await table.addColumns(priceField);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+    ]);
+    expect(await table.schema()).toEqual(expectedSchema);
+  });
+
+  it("can add multiple columns using array of Fields", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("vectors", [
+      { id: 1n, vector: [0.1, 0.2] },
+    ]);
+
+    // Add multiple fields as array
+    const fields = [
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
+    ];
+    const result = await table.addColumns(fields);
+    expect(result).toHaveProperty("version");
+    expect(result.version).toBe(2);
+
+    const expectedSchema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "vector",
+        new FixedSizeList(2, new Field("item", new Float32(), true)),
+        true,
+      ),
+      new Field("price", new Float64(), true),
+      new Field("category", new Utf8(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema);
   });
@@ -1176,6 +2425,33 @@ describe("schema evolution", function () {
       new Field("price", new Float64(), true),
     ]);
     expect(await table.schema()).toEqual(expectedSchema3);
+  });
+
+  it("can update field metadata", async function () {
+    const con = await connect(tmpDir.name);
+    const table = await con.createTable("fm", [
+      { id: 1, category: "a" },
+      { id: 2, category: "b" },
+    ]);
+
+    const res = await table.updateFieldMetadata([
+      { path: "category", metadata: { unit: "label", pii: "false" } },
+    ]);
+    expect(res).toHaveProperty("version");
+    expect(res.version).toBe(2);
+
+    let cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label");
+    expect(cat?.metadata.get("pii")).toBe("false");
+
+    // merge: add a key, delete one via null, keep the rest
+    await table.updateFieldMetadata([
+      { path: "category", metadata: { source: "import", pii: null } },
+    ]);
+    cat = (await table.schema()).fields.find((f) => f.name === "category");
+    expect(cat?.metadata.get("unit")).toBe("label"); // preserved
+    expect(cat?.metadata.get("source")).toBe("import"); // added
+    expect(cat?.metadata.has("pii")).toBe(false); // deleted
   });
 
   it("can cast to various types", async function () {
@@ -1307,6 +2583,1031 @@ describe("when dealing with versioning", () => {
   });
 });
 
+function legacyBlob(name: string): Field {
+  const field = blob(name);
+  return new Field(
+    name,
+    new Struct((field.type as Struct).children.slice(0, 2)),
+    field.nullable,
+    field.metadata,
+  );
+}
+
+describe("when dealing with blob columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it.each([false, true])(
+    "normalizes Arrow blob layouts for append and merge (range target: %s)",
+    async (wide) => {
+      const db = await connect(tmpDir.name);
+      const schema = (full: boolean) =>
+        new Schema([
+          new Field("id", new Int64(), true),
+          full ? blob("image") : legacyBlob("image"),
+        ]);
+      const table = await db.createTable(
+        "layouts",
+        [{ id: 1n, image: Buffer.from("old") }],
+        { schema: schema(wide) },
+      );
+      await table.add(
+        makeArrowTable([{ id: 2n, image: Buffer.from("appended") }], {
+          schema: schema(!wide),
+        }),
+      );
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .whenNotMatchedInsertAll()
+        .execute(
+          makeArrowTable(
+            [
+              { id: 1n, image: Buffer.from("updated") },
+              { id: 3n, image: Buffer.from("inserted") },
+            ],
+            { schema: schema(!wide) },
+          ),
+        );
+      expect(await table.schema()).toEqual(schema(wide));
+      const rows = await table.query().withRowId().toArray();
+      rows.sort((a, b) => Number(a.id - b.id));
+      expect(
+        await table.fetchBlobs(
+          "image",
+          rows.map((row) => row._rowid as bigint),
+        ),
+      ).toEqual([
+        Buffer.from("updated"),
+        Buffer.from("appended"),
+        Buffer.from("inserted"),
+      ]);
+      if (!wide) {
+        const bad = makeArrowTable(
+          [
+            {
+              id: 1n,
+              image: { uri: "s3://registered/file", position: 0, size: 6 },
+            },
+          ],
+          { schema: schema(true) },
+        );
+        const version = await table.version();
+        await expect(table.add(bad)).rejects.toThrow(
+          /cannot store byte ranges/,
+        );
+        await expect(
+          table
+            .mergeInsert("id")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute(bad),
+        ).rejects.toThrow(/cannot store byte ranges/);
+        expect(await table.version()).toBe(version);
+        expect(await table.countRows()).toBe(3);
+      }
+      const replacement = makeArrowTable(
+        [{ id: 4n, image: Buffer.from("replacement") }],
+        { schema: schema(!wide) },
+      );
+      await table.add(replacement, { mode: "overwrite" });
+      expect(await table.schema()).toEqual(schema(!wide));
+      expect(await table.countRows()).toBe(1);
+      const [row] = await table.query().withRowId().toArray();
+      expect(await table.fetchBlobs("image", [row._rowid as bigint])).toEqual([
+        Buffer.from("replacement"),
+      ]);
+    },
+  );
+
+  it("rejects unsupported blob values in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const row = { id: 1n, image: new ReadableStream() };
+
+    await expect(db.createTable("invalid", [row], { schema })).rejects.toThrow(
+      /field image at row 0/,
+    );
+
+    const table = await db.createEmptyTable("empty", schema);
+    await expect(table.add([row])).rejects.toThrow(/field image at row 0/);
+    await expect(table.countRows()).resolves.toBe(0);
+  });
+
+  it("requires an explicit opt-in for blob URIs outside registered bases", async () => {
+    const { table, uri } = await openExternalBlobTable();
+
+    await expect(table.add([{ id: 1n, payload: uri }])).rejects.toThrow(
+      "allow_external_blob_outside_bases",
+    );
+    await expect(table.countRows()).resolves.toBe(0);
+
+    await expect(
+      table.add([{ id: 2n, payload: uri }], {
+        allowExternalBlobOutsideBases: false,
+      }),
+    ).rejects.toThrow("allow_external_blob_outside_bases");
+    await expect(table.countRows()).resolves.toBe(0);
+  });
+
+  it.each([
+    ["URI string", (uri: string) => uri],
+    ["URI struct", (uri: string) => ({ uri })],
+    ["URL", (uri: string) => new URL(uri)],
+    ["URL struct", (uri: string) => ({ uri: new URL(uri) })],
+  ])(
+    "round-trips an external blob from a %s after reopening",
+    async (_label, blobValue) => {
+      const { db, table, uri, payload } = await openExternalBlobTable();
+
+      const result = await table.add([{ id: 1n, payload: blobValue(uri) }], {
+        allowExternalBlobOutsideBases: true,
+      });
+      expect(result.version).toBeGreaterThan(0);
+      await expect(table.countRows()).resolves.toBe(1);
+
+      table.close();
+      const reopened = await db.openTable("external_blobs");
+      const rows = await reopened.query().withRowId().toArray();
+      expect(rows).toHaveLength(1);
+      expect(rows[0].payload.blob_uri).toBe(uri);
+      const bytes = await reopened.fetchBlobs("payload", [
+        rows[0]._rowid as bigint,
+      ]);
+      expect(bytes[0]).toEqual(payload);
+    },
+  );
+
+  it("applies the external blob opt-in to Arrow table input", async () => {
+    const { table, schema, uri, payload } = await openExternalBlobTable();
+    const input = makeArrowTable([{ id: 1n, payload: uri }], { schema });
+
+    const result = await table.add(input, {
+      allowExternalBlobOutsideBases: true,
+    });
+
+    expect(result.version).toBeGreaterThan(0);
+    const rows = await table.query().withRowId().toArray();
+    expect(rows[0].payload.blob_uri).toBe(uri);
+    const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
+    expect(bytes[0]).toEqual(payload);
+  });
+
+  it.each([0, 4])(
+    "fetches the exact external range at position %s after reopening",
+    async (position) => {
+      const { db, uri, payload } = await openExternalBlobTable();
+      const schema = new Schema([
+        new Field("id", new Int64(), true),
+        blob("payload"),
+      ]);
+      const rows: { id: bigint; payload: BlobInput }[] = [
+        { id: 1n, payload: Buffer.from("inline") },
+        { id: 2n, payload: { uri: new URL(uri), position, size: 6 } },
+        { id: 3n, payload: uri },
+        { id: 4n, payload: null },
+      ];
+      const table = await db.createTable("ranges", rows.slice(0, 1), {
+        schema,
+      });
+      await table.add(rows.slice(1), { allowExternalBlobOutsideBases: true });
+      table.close();
+      const reopened = await db.openTable("ranges");
+      const results = await reopened.query().withRowId().toArray();
+      results.sort((a, b) => Number(a.id - b.id));
+      expect(results[1].payload.position).toBe(BigInt(position));
+      expect(results[1].payload.size).toBe(6n);
+      expect(
+        await reopened.fetchBlobs(
+          "payload",
+          results.map((r) => r._rowid as bigint),
+        ),
+      ).toEqual([
+        Buffer.from("inline"),
+        payload.subarray(position, position + 6),
+        payload,
+        null,
+      ]);
+    },
+  );
+
+  it.each([0, 4])(
+    "rejects ranges at position %s on reopened minimal tables without writing",
+    async (position) => {
+      const { db, uri, payload } = await openExternalBlobTable();
+      const table = await db.createEmptyTable(
+        "legacy_blobs",
+        new Schema([new Field("id", new Int64(), true), legacyBlob("payload")]),
+      );
+      table.close();
+      const reopened = await db.openTable("legacy_blobs");
+      await expect(
+        reopened.add(
+          [
+            { id: 1n, payload: Buffer.from("inline") },
+            { id: 2n, payload: { uri, position, size: 6 } },
+          ],
+          { allowExternalBlobOutsideBases: true },
+        ),
+      ).rejects.toThrow(/storage schema cannot store byte ranges/);
+      expect(await reopened.countRows()).toBe(0);
+      await reopened.add(
+        [
+          { id: 3n, payload: uri },
+          { id: 4n, payload: Buffer.from("inline") },
+        ],
+        { allowExternalBlobOutsideBases: true },
+      );
+      const rows = await reopened.query().withRowId().toArray();
+      rows.sort((a, b) => Number(a.id - b.id));
+      expect(
+        await reopened.fetchBlobs(
+          "payload",
+          rows.map((r) => r._rowid as bigint),
+        ),
+      ).toEqual([payload, Buffer.from("inline")]);
+    },
+  );
+
+  it.each([{ position: 0 }, { size: 6 }, { position: 0, size: 0 }])(
+    "rejects partial or empty ranges without writing: %p",
+    async (range) => {
+      const { db, uri } = await openExternalBlobTable();
+      const table = await db.createEmptyTable(
+        "invalid_ranges",
+        new Schema([blob("payload")]),
+      );
+      await expect(
+        table.add(
+          [{ payload: Buffer.from("inline") }, { payload: { uri, ...range } }],
+          { allowExternalBlobOutsideBases: true },
+        ),
+      ).rejects.toThrow(/both position and size|size must be positive/);
+      expect(await table.countRows()).toBe(0);
+    },
+  );
+
+  it("applies the external blob opt-in only to the current add", async () => {
+    const { table, uri } = await openExternalBlobTable();
+
+    await table.add([{ id: 1n, payload: uri }], {
+      allowExternalBlobOutsideBases: true,
+    });
+    await expect(table.countRows()).resolves.toBe(1);
+
+    await expect(table.add([{ id: 2n, payload: uri }])).rejects.toThrow(
+      "allow_external_blob_outside_bases",
+    );
+    await expect(table.countRows()).resolves.toBe(1);
+  });
+
+  it("supports progress and overwrite with the external blob opt-in", async () => {
+    const { table, uri, payload } = await openExternalBlobTable();
+    await table.add([{ id: 1n, payload: Buffer.from("old") }]);
+
+    let resolveFinal!: (progress: import("../lancedb").WriteProgress) => void;
+    let rejectFinal!: (error: Error) => void;
+    const finalProgress = new Promise<import("../lancedb").WriteProgress>(
+      (resolve, reject) => {
+        resolveFinal = resolve;
+        rejectFinal = reject;
+      },
+    );
+    const timeout = setTimeout(
+      () => rejectFinal(new Error("timed out waiting for final progress")),
+      5_000,
+    );
+    try {
+      const result = await table.add([{ id: 2n, payload: uri }], {
+        mode: "overwrite",
+        allowExternalBlobOutsideBases: true,
+        progress: (progress) => {
+          if (progress.done) {
+            resolveFinal(progress);
+          }
+        },
+      });
+      expect(result.version).toBeGreaterThan(0);
+      const progress = await finalProgress;
+      expect(progress.outputRows).toBe(1);
+      expect(progress.totalRows).toBe(1);
+    } finally {
+      clearTimeout(timeout);
+    }
+
+    const rows = await table.query().withRowId().toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(2n);
+    const bytes = await table.fetchBlobs("payload", [rows[0]._rowid as bigint]);
+    expect(bytes[0]).toEqual(payload);
+  });
+
+  it("accepts ArrayBuffer, Blob, and File in createTable and add", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const rows: { id: bigint; image: BlobInput }[] = [
+      { id: 1n, image: new TextEncoder().encode("array-buffer").buffer },
+      { id: 2n, image: new Blob(["blob"]) },
+      { id: 3n, image: { data: new File(["file"], "f.txt") } },
+    ];
+    const table = await db.createTable("widened", rows.slice(0, 2), {
+      schema,
+    });
+    await table.add(rows.slice(2));
+
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual([
+      "array-buffer",
+      "blob",
+      "file",
+    ]);
+  });
+
+  it("accepts Blob values in mergeInsert", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "merge_blobs",
+      [{ id: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: 1n, image: new Blob(["new"]) },
+        { id: 2n, image: new Uint8Array([104, 105]).buffer },
+      ]);
+    const results = await table.query().select(["id"]).withRowId().toArray();
+    results.sort((a, b) => Number(a.id - b.id));
+    const bytes = await table.fetchBlobs(
+      "image",
+      results.map((row) => row._rowid as bigint),
+    );
+    expect(bytes.map((b) => b?.toString())).toEqual(["new", "hi"]);
+  });
+
+  it("discovers blob columns", async () => {
+    const { table } = await openBlobTable();
+    expect(await table.blobColumns()).toEqual(["image"]);
+  });
+
+  it("preserves order, duplicates, and nulls", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [alphaId, betaId, nullId] = rowIds;
+    const bytes = await table.fetchBlobs("image", [
+      betaId,
+      alphaId,
+      betaId,
+      nullId,
+    ]);
+    expect(bytes.map((b) => (b == null ? null : b.toString()))).toEqual([
+      "beta",
+      "alpha",
+      "beta",
+      null,
+    ]);
+    const files = await table.fetchBlobFiles("image", [
+      betaId,
+      nullId,
+      alphaId,
+    ]);
+    expect(files.map((f) => f == null)).toEqual([false, true, false]);
+  });
+
+  it("reads full blob contents", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const bytes = await table.fetchBlobs("image", rowIds);
+    expect(bytes[0]!.equals(alpha)).toBe(true);
+    expect(bytes[1]!.equals(beta)).toBe(true);
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(files[0]!.size()).toBe(BigInt(alpha.length));
+    expect(Buffer.from(await files[0]!.read()).toString()).toBe("alpha");
+    expect(Buffer.from(await files[1]!.read()).toString()).toBe("beta");
+  });
+
+  it("rejects a whole blob read batch when one row ID was deleted", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await table.delete("id = 2");
+
+    await expect(table.fetchBlobs("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+    await expect(table.fetchBlobFiles("image", rowIds)).rejects.toThrow(
+      `first missing row ids: [${rowIds[1]}]`,
+    );
+  });
+
+  it("adds a LargeBinary Arrow column to a blob table", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([new Field("id", new Int64()), blob("image")]);
+    const table = await db.createTable(
+      "blobs",
+      [{ id: 1n, image: Buffer.from("alpha") }],
+      { schema },
+    );
+    const payload = Buffer.from("beta");
+    const data = new arrow18.Table({
+      id: arrow18.vectorFromArray([2n], new arrow18.Int64()),
+      image: arrow18.vectorFromArray([payload], new arrow18.LargeBinary()),
+    });
+    await table.add(data);
+
+    const rows = await table.query().withRowId().toArray();
+    const rowId = rows.find((row) => row.id === 2n)!._rowid as bigint;
+    const [actual] = await table.fetchBlobs("image", [rowId]);
+    expect(actual).toEqual(payload);
+  });
+
+  it("reads a half-open range", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    expect(Buffer.from(await files[0]!.readRange(0n, 2n)).toString()).toBe(
+      "al",
+    );
+  });
+
+  it("readRange does not move the cursor", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect((await handle!.readRange(1n, 3n)).toString()).toBe("lp");
+    expect(await handle!.read()).toEqual(alpha);
+    expect(await handle!.read()).toEqual(Buffer.alloc(0));
+  });
+
+  it("fails when readRange end is past the blob size", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const files = await table.fetchBlobFiles("image", rowIds);
+    await expect(
+      files[0]!.readRange(0n, BigInt(alpha.length + 1)),
+    ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("reads at most maxBytes and advances the cursor", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect((await handle!.read(2n)).toString()).toBe("al");
+    expect(await handle!.tell()).toBe(2n);
+    expect((await handle!.read(2n)).toString()).toBe("ph");
+    expect((await handle!.read(10n)).toString()).toBe("a");
+    expect(await handle!.tell()).toBe(5n);
+    expect(await handle!.read(1n)).toEqual(Buffer.alloc(0));
+  });
+
+  it("seeks the cursor", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await handle!.seek(3n);
+    expect(await handle!.tell()).toBe(3n);
+    expect((await handle!.read()).toString()).toBe("ha");
+    await handle!.seek(0n);
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("rejects a negative seek position", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await expect(handle!.seek(-1n)).rejects.toThrow(/cannot be negative/);
+  });
+
+  it("readRanges returns one buffer per range in order", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const buffers = await handle!.readRanges([
+      { start: 3n, end: 5n },
+      { start: 0n, end: 2n },
+      { start: 3n, end: 5n },
+    ]);
+    expect(buffers.map((b) => b.toString())).toEqual(["ha", "al", "ha"]);
+    expect(await handle!.tell()).toBe(0n);
+  });
+
+  it("fails when a readRanges end is past the blob size", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    await expect(
+      handle!.readRanges([
+        { start: 0n, end: 1n },
+        { start: 0n, end: BigInt(alpha.length + 1) },
+      ]),
+    ).rejects.toThrow(/exceeds blob size/);
+  });
+
+  it("fails reads after close and closes once", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    expect(handle!.isClosed()).toBe(false);
+    await handle!.close();
+    expect(handle!.isClosed()).toBe(true);
+    await expect(handle!.close()).resolves.toBeUndefined();
+    await expect(handle!.read()).rejects.toThrow(/already closed/);
+    await expect(handle!.read(1n)).rejects.toThrow(/already closed/);
+    await expect(handle!.readRange(0n, 1n)).rejects.toThrow(/already closed/);
+    await expect(handle!.readRanges([{ start: 0n, end: 1n }])).rejects.toThrow(
+      /already closed/,
+    );
+    await expect(handle!.seek(0n)).rejects.toThrow(/already closed/);
+    await expect(handle!.tell()).rejects.toThrow(/already closed/);
+    expect(handle!.size()).toBe(5n);
+  });
+
+  it("rejects reads with an already aborted signal", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const signal = AbortSignal.abort();
+    const abortError = { name: "AbortError" };
+    await expect(handle!.read(undefined, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(handle!.read(2n, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(handle!.readRange(0n, 1n, { signal })).rejects.toMatchObject(
+      abortError,
+    );
+    await expect(
+      handle!.readRanges([{ start: 0n, end: 1n }], { signal }),
+    ).rejects.toMatchObject(abortError);
+    await expect(
+      table.fetchBlobs("image", rowIds, { signal }),
+    ).rejects.toMatchObject(abortError);
+    await expect(
+      table.fetchBlobFiles("image", rowIds, { signal }),
+    ).rejects.toMatchObject(abortError);
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("rejects with the abort reason", async () => {
+    const { table, rowIds } = await openBlobTable();
+    const [handle] = await table.fetchBlobFiles("image", rowIds);
+    const reason = new Error("caller gave up");
+    await expect(
+      handle!.readRange(0n, 1n, { signal: AbortSignal.abort(reason) }),
+    ).rejects.toBe(reason);
+  });
+
+  it("reads with a signal and removes its abort listener", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const controller = new AbortController();
+    const { signal } = controller;
+    const [handle] = await table.fetchBlobFiles("image", rowIds, { signal });
+    expect((await handle!.readRange(0n, 2n, { signal })).toString()).toBe("al");
+    expect(await table.fetchBlobs("image", rowIds, { signal })).toEqual([
+      alpha,
+      beta,
+      null,
+    ]);
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
+    controller.abort();
+    expect(await handle!.read()).toEqual(alpha);
+  });
+
+  it("cancels an in-flight read", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("payload", { inlineSizeThreshold: 0, dedicatedSizeThreshold: 1 }),
+    ]);
+    const payload = Buffer.alloc(32 * 1024 * 1024, 7);
+    const table = await db.createTable("large_blobs", [{ id: 1n, payload }], {
+      schema,
+    });
+    const [row] = await table.query().withRowId().toArray();
+    const [handle] = await table.fetchBlobFiles("payload", [
+      row._rowid as bigint,
+    ]);
+    const controller = new AbortController();
+    const pending = handle!.readRange(0n, handle!.size(), {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(await handle!.readRange(0n, 4n)).toEqual(payload.subarray(0, 4));
+  });
+
+  it("toArrow returns blob bytes with blobMode bytes", async () => {
+    const { table, alpha, beta } = await openBlobTable();
+    const result = await table.query().toArrow({ blobMode: "bytes" });
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const byId = new Map(
+      result.toArray().map((row) => [Number(row.id), row.image]),
+    );
+    expect(Buffer.from(byId.get(1)!)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!)).toEqual(beta);
+    expect(byId.get(3)).toBeNull();
+  });
+
+  it("toArray returns blob bytes and keeps _rowid only when asked", async () => {
+    const { table, rowIds, alpha } = await openBlobTable();
+    const [plain] = await table
+      .query()
+      .where("id = 1")
+      .select(["id", "image"])
+      .toArray({ blobMode: "bytes" });
+    expect(Object.keys(plain)).toEqual(["id", "image"]);
+    expect(Buffer.from(plain.image)).toEqual(alpha);
+
+    const [withRowId] = await table
+      .query()
+      .where("id = 1")
+      .withRowId()
+      .toArray({ blobMode: "bytes" });
+    expect(withRowId._rowid).toBe(rowIds[0]);
+    expect(Buffer.from(withRowId.image)).toEqual(alpha);
+  });
+
+  it("fills a renamed blob column with bytes", async () => {
+    const { table, beta } = await openBlobTable();
+    const [row] = await table
+      .query()
+      .where("id = 2")
+      .select(
+        new Map([
+          ["key", "id"],
+          ["picture", "image"],
+        ]),
+      )
+      .toArray({ blobMode: "bytes" });
+    expect(Number(row.key)).toBe(2);
+    expect(Buffer.from(row.picture)).toEqual(beta);
+  });
+
+  it("returns blob bytes from a take query", async () => {
+    const { table, rowIds, alpha, beta } = await openBlobTable();
+    const rows = await table
+      .takeRowIds([rowIds[1], rowIds[0]])
+      .toArray({ blobMode: "bytes" });
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(Buffer.from(byId.get(1)!.image)).toEqual(alpha);
+    expect(Buffer.from(byId.get(2)!.image)).toEqual(beta);
+    expect(Object.keys(rows[0])).not.toContain("_rowid");
+  });
+
+  it("does not change later executions of the same query", async () => {
+    const { table } = await openBlobTable();
+    const query = table.query().where("id = 1");
+    await query.toArray({ blobMode: "bytes" });
+    const [row] = await query.toArray();
+    expect(Object.keys(row)).not.toContain("_rowid");
+    expect(Number(row.image.size)).toBe(5);
+  });
+
+  it("skips row ids when no blob column is selected", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .select(["id"])
+      .toArrow({ blobMode: "bytes" });
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id"]);
+    expect(result.numRows).toBe(3);
+  });
+
+  it("returns an empty bytes column for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table
+      .query()
+      .where("id > 100")
+      .toArrow({ blobMode: "bytes" });
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isLargeBinary(field.type)).toBe(true);
+    expect(isBlobField(field)).toBe(false);
+  });
+
+  it("keeps the descriptor schema for an empty result", async () => {
+    const { table } = await openBlobTable();
+    const result = await table.query().where("id > 100").toArrow();
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((f) => f.name)).toEqual(["id", "image"]);
+    const field = result.schema.fields.find((f) => f.name === "image")!;
+    expect(arrow.DataType.isStruct(field.type)).toBe(true);
+  });
+
+  it("rejects an unknown blobMode", async () => {
+    const { table } = await openBlobTable();
+    await expect(
+      table.query().toArray({ blobMode: "lazy" as BlobMode }),
+    ).rejects.toThrow(/blobMode must be/);
+  });
+
+  it("reruns the query when the table changes before the version check", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      await update(2n, "new");
+      return liveVersion();
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(2n);
+    expect(Buffer.from(row.image).toString()).toBe("new");
+  });
+
+  it("reads bytes from the query's version when a write lands before the fetch", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    native.version = async () => {
+      native.version = liveVersion;
+      const version = await liveVersion();
+      await update(2n, "new");
+      return version;
+    };
+    const [row] = await table.query().toArray({ blobMode: "bytes" });
+    expect(row.generation).toBe(1n);
+    expect(Buffer.from(row.image).toString()).toBe("old");
+  });
+
+  it("fails when the table changes during every attempt", async () => {
+    const { table, native, update } = await openVersionedBlobTable();
+    const liveVersion = native.version.bind(native);
+    let generation = 1n;
+    native.version = async () => {
+      generation += 1n;
+      await update(generation, `generation ${generation}`);
+      return liveVersion();
+    };
+    try {
+      await expect(
+        table.query().toArray({ blobMode: "bytes" }),
+      ).rejects.toThrow(/changed during each of 3 attempts/);
+      expect(generation).toBe(4n);
+    } finally {
+      native.version = liveVersion;
+    }
+  });
+
+  it("rejects fetchBlobs on a non-blob column", async () => {
+    const { table, rowIds } = await openBlobTable();
+    await expect(table.fetchBlobs("id", rowIds)).rejects.toThrow(/blob/i);
+  });
+
+  it("discovers and fetches nested blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("info", new Struct([blob("image")]), true),
+    ]);
+    const payload = Buffer.from("nested");
+    const table = await db.createTable(
+      "nested_blobs",
+      [{ id: 1n, info: { image: payload } }],
+      { schema },
+    );
+    expect(await table.blobColumns()).toEqual(["info.image"]);
+    const rows = await table.query().withRowId().toArray();
+    const bytes = await table.fetchBlobs("info.image", [
+      rows[0]._rowid as bigint,
+    ]);
+    expect(bytes[0]!.equals(payload)).toBe(true);
+  });
+
+  it("creates list blobs without advertising unfetchable elements", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("images", new List(blob("image")), true),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const gamma = Buffer.from("gamma");
+    const table = await db.createTable(
+      "list_blobs",
+      [{ id: 1n, images: [alpha, beta] }],
+      { schema },
+    );
+    await table.add([
+      { id: 2n, images: null },
+      { id: 3n, images: [gamma, null] },
+      { id: 4n, images: [] },
+    ]);
+    expect(await table.blobColumns()).toEqual([]);
+    const [first] = await table.query().withRowId().toArray();
+    for (const column of ["images", "images.image"]) {
+      await expect(
+        table.fetchBlobs(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+      await expect(
+        table.fetchBlobFiles(column, [first._rowid as bigint]),
+      ).rejects.toThrow(/blobs inside lists cannot be fetched/);
+    }
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(descriptorSizes(byId.get(1)!.images)).toEqual([
+      alpha.length,
+      beta.length,
+    ]);
+    expect(byId.get(2)!.images).toBeNull();
+    expect(descriptorSizes(byId.get(3)!.images)).toEqual([gamma.length, null]);
+    expect(Array.from(byId.get(4)!.images as Iterable<unknown>)).toHaveLength(
+      0,
+    );
+  });
+
+  it("creates and adds list struct blob columns", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "items",
+        new List(
+          new Field(
+            "item",
+            new Struct([new Field("name", new Utf8(), true), blob("image")]),
+            true,
+          ),
+        ),
+        true,
+      ),
+    ]);
+    const alpha = Buffer.from("nested-alpha");
+    const beta = Buffer.from("nested-beta");
+    const table = await db.createTable(
+      "list_struct_blobs",
+      [{ id: 1n, items: [{ name: "one", image: alpha }] }],
+      { schema },
+    );
+    await table.add([
+      {
+        id: 2n,
+        items: [
+          { name: "two", image: beta },
+          { name: "three", image: null },
+        ],
+      },
+    ]);
+    expect(await table.blobColumns()).toEqual([]);
+    const rows = await table.query().toArray();
+    const byId = new Map(rows.map((row) => [Number(row.id), row]));
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(1)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([alpha.length]);
+    expect(
+      descriptorSizes(
+        Array.from(byId.get(2)!.items as Iterable<{ image: unknown }>).map(
+          (item) => item.image,
+        ),
+      ),
+    ).toEqual([beta.length, null]);
+  });
+
+  it("rejects blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable(
+        "fsl_blobs",
+        [{ id: 1n, frames: [Buffer.from("a"), Buffer.from("b")] }],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects blob fields inside a nested fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field(
+        "clip",
+        new Struct([
+          new Field("frames", new FixedSizeList(2, blob("frame")), true),
+        ]),
+        true,
+      ),
+    ]);
+    await expect(
+      db.createTable(
+        "nested_fsl_blobs",
+        [
+          {
+            id: 1n,
+            clip: { frames: [Buffer.from("a"), Buffer.from("b")] },
+          },
+        ],
+        { schema },
+      ),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  it("rejects an Arrow table with blob fields inside a fixed-size list", async () => {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      new Field("frames", new FixedSizeList(2, blob("frame")), true),
+    ]);
+    await expect(
+      db.createTable("fsl_blobs_ipc", new ArrowTable(schema)),
+    ).rejects.toThrow(
+      "Blob fields inside FixedSizeList are not supported. Use List instead.",
+    );
+  });
+
+  function descriptorSizes(values: unknown): (number | null)[] {
+    return Array.from(
+      values as Iterable<{ size?: bigint | number } | null>,
+    ).map((value) => (value == null ? null : Number(value.size)));
+  }
+
+  async function openVersionedBlobTable() {
+    const db = await connect(tmpDir.name, {
+      storageOptions: { newTableEnableStableRowIds: "true" },
+    });
+    const schema = new Schema([
+      new Field("id", new Int64(), false),
+      new Field("generation", new Int64(), true),
+      blob("image"),
+    ]);
+    const table = await db.createTable(
+      "versions",
+      [{ id: 1n, generation: 1n, image: Buffer.from("old") }],
+      { schema },
+    );
+    const native = (
+      table as unknown as { inner: { version: () => Promise<number> } }
+    ).inner;
+    const update = async (generation: bigint, image: string) => {
+      await table
+        .mergeInsert("id")
+        .whenMatchedUpdateAll()
+        .execute([{ id: 1n, generation, image: Buffer.from(image) }]);
+    };
+    return { table, native, update };
+  }
+
+  async function openBlobTable() {
+    const db = await connect(tmpDir.name);
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("image"),
+    ]);
+    const alpha = Buffer.from("alpha");
+    const beta = Buffer.from("beta");
+    const table = await db.createTable(
+      "blobs",
+      [
+        { id: 1n, image: alpha },
+        { id: 2n, image: beta },
+        { id: 3n, image: null },
+      ],
+      { schema },
+    );
+    const rows = await table.query().withRowId().toArray();
+    const rowIdById = new Map(
+      rows.map((r) => [Number(r.id), r._rowid as bigint]),
+    );
+    const rowIds = [1, 2, 3].map((id) => rowIdById.get(id)!);
+    return { table, rowIds, alpha, beta };
+  }
+
+  async function openExternalBlobTable() {
+    const db = await connect(path.join(tmpDir.name, "db"));
+    const payload = Buffer.from("external-payload");
+    const payloadPath = path.join(tmpDir.name, "payload.bin");
+    fs.writeFileSync(payloadPath, payload);
+    const uri = pathToFileURL(payloadPath).href;
+    const schema = new Schema([
+      new Field("id", new Int64(), true),
+      blob("payload"),
+    ]);
+    const table = await db.createEmptyTable("external_blobs", schema);
+    return { db, table, schema, uri, payload };
+  }
+});
+
 describe("when dealing with tags", () => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
@@ -1400,6 +3701,15 @@ describe("when dealing with tags", () => {
   });
 });
 
+/** Returns a Date strictly later than every instant observed before the call. */
+async function nextMillisecond(): Promise<Date> {
+  const start = Date.now();
+  while (Date.now() <= start) {
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  return new Date();
+}
+
 describe("when optimizing a dataset", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -1422,14 +3732,21 @@ describe("when optimizing a dataset", () => {
   });
 
   it("cleanups old versions", async () => {
-    const stats = await table.optimize({ cleanupOlderThan: new Date() });
+    // Lance stores version timestamps with nanosecond precision while a JS
+    // Date only has millisecond precision. A cutoff captured in the same
+    // millisecond as the last commit would truncate to *before* that commit
+    // and leave it in place, so wait for the clock to tick over first.
+    const cutoff = await nextMillisecond();
+    const stats = await table.optimize({ cleanupOlderThan: cutoff });
     expect(stats.prune.bytesRemoved).toBeGreaterThan(0);
-    expect(stats.prune.oldVersionsRemoved).toBe(3);
+    expect(stats.prune.oldVersionsRemoved).toBe(2);
   });
 
   it("delete unverified", async () => {
     const version = await table.version();
-    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${version - 1}.manifest`;
+    const versionFile = `${tmpDir.name}/${table.name}.lance/_versions/${String(
+      18446744073709551615n - (BigInt(version) - 1n),
+    ).padStart(20, "0")}.manifest`;
     fs.rmSync(versionFile);
 
     let stats = await table.optimize({ deleteUnverified: false });
@@ -1443,7 +3760,25 @@ describe("when optimizing a dataset", () => {
   });
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])(
+it("passes cleanupOlderThan to the native binding as an absolute timestamp", async () => {
+  const optimize = jest.fn().mockResolvedValue({
+    compaction: {
+      filesAdded: 0,
+      filesRemoved: 0,
+      fragmentsAdded: 0,
+      fragmentsRemoved: 0,
+    },
+    prune: { bytesRemoved: 0, oldVersionsRemoved: 0 },
+  });
+  const table = new LocalTable({ optimize } as never);
+  const cutoff = new Date("2020-01-02T03:04:05.678Z");
+
+  await table.optimize({ cleanupOlderThan: cutoff, deleteUnverified: true });
+
+  expect(optimize).toHaveBeenCalledWith(cutoff.getTime(), true);
+});
+
+describe.each(arrowVersions)(
   "when optimizing a dataset",
   // biome-ignore lint/suspicious/noExplicitAny: <explanation>
   (arrow: any) => {
@@ -1522,7 +3857,24 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       );
     });
 
-    test("full text search if no embedding function provided", async () => {
+    test("full text search if only an unrelated embedding function is registered", async () => {
+      register("unused")(
+        class extends EmbeddingFunction<string> {
+          ndims() {
+            return 3;
+          }
+          embeddingDataType() {
+            return new Float32();
+          }
+          async computeQueryEmbeddings(_data: string) {
+            return [1, 2, 3];
+          }
+          async computeSourceEmbeddings(data: string[]) {
+            return data.map(() => [1, 2, 3]);
+          }
+        },
+      );
+
       const db = await connect(tmpDir.name);
       const data = [
         { text: "hello world", vector: [0.1, 0.2, 0.3] },
@@ -1542,6 +3894,434 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         .search(new MatchQuery("goodbye", "text"))
         .toArray();
       expect(results2[0].text).toBe(data[1].text);
+    });
+
+    test("auto search stays consistent with the active revision", async () => {
+      let initCalls = 0;
+      let queryCalls = 0;
+      let markStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        markStarted = resolve;
+      });
+      let releaseEmbedding!: () => void;
+      const embeddingReleased = new Promise<void>((resolve) => {
+        releaseEmbedding = resolve;
+      });
+
+      @register("refresh-test")
+      class TestEmbedding extends EmbeddingFunction<string> {
+        async init() {
+          initCalls += 1;
+        }
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings(value: string) {
+          queryCalls += 1;
+          if (value === "blocked") {
+            markStarted();
+            await embeddingReleased;
+          }
+          return value === "greetings" ? [0.1] : [0.2];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map((value) =>
+            value === "hello world" ? [0.1] : [0.2],
+          );
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      await writer.createTable("test", [{ text: "plain", vector: [0.0] }]);
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("test");
+      type SnapshotCountingNative = {
+        querySnapshot: () => Promise<unknown>;
+      };
+      const native = (tracked as unknown as { inner: SnapshotCountingNative })
+        .inner;
+      const querySnapshot = native.querySnapshot.bind(native);
+      let snapshotCalls = 0;
+      native.querySnapshot = async () => {
+        snapshotCalls += 1;
+        return await querySnapshot();
+      };
+      const autoQuery = tracked.search("greetings").select(["text"]).limit(1);
+
+      const func = new TestEmbedding();
+      const schema = LanceSchema({
+        text: func.sourceField(new arrow.Utf8()),
+        vector: func.vectorField(),
+      });
+      const data = [{ text: "hello world" }, { text: "goodbye world" }];
+      await writer.createTable("test", data, { mode: "overwrite", schema });
+      const baselineInitCalls = initCalls;
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeDefined();
+      const results = await autoQuery.toArray();
+      expect(results[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
+      expect(snapshotCalls).toBe(1);
+
+      const repeatedResults = await autoQuery.toArray();
+      expect(repeatedResults[0].text).toBe(data[0].text);
+      expect(initCalls).toBe(baselineInitCalls + 1);
+      expect(queryCalls).toBe(1);
+      expect(snapshotCalls).toBe(2);
+
+      const pending = tracked
+        .search("blocked")
+        .select(["text"])
+        .limit(1)
+        .toArray();
+      await started;
+
+      const ftsData = [
+        { text: "greetings from full text", vector: [0.0] },
+        { text: "blocked from full text", vector: [0.0] },
+      ];
+      const ftsTable = await writer.createTable("test", ftsData, {
+        mode: "overwrite",
+      });
+      await ftsTable.createIndex("text", { config: Index.fts() });
+      releaseEmbedding();
+
+      const pendingResults = await pending;
+      expect(pendingResults[0].text).toBe(data[1].text);
+
+      expect(
+        (await tracked.schema()).metadata.get("embedding_functions"),
+      ).toBeUndefined();
+      const ftsResults = await autoQuery.toArray();
+      expect(ftsResults[0].text).toBe(ftsData[0].text);
+    });
+
+    test("auto search keeps newer preparation during a revision race", async () => {
+      let aCalls = 0;
+      let bCalls = 0;
+      let markAStarted!: () => void;
+      const aStarted = new Promise<void>((resolve) => {
+        markAStarted = resolve;
+      });
+      let releaseA!: () => void;
+      const aReleased = new Promise<void>((resolve) => {
+        releaseA = resolve;
+      });
+      let markBStarted!: () => void;
+      const bStarted = new Promise<void>((resolve) => {
+        markBStarted = resolve;
+      });
+      let releaseB!: () => void;
+      const bReleased = new Promise<void>((resolve) => {
+        releaseB = resolve;
+      });
+
+      @register("race-a")
+      class EmbeddingA extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          aCalls += 1;
+          markAStarted();
+          await aReleased;
+          return [0.1];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.1]);
+        }
+      }
+
+      @register("race-b")
+      class EmbeddingB extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          bCalls += 1;
+          markBStarted();
+          await bReleased;
+          return [0.2];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.2]);
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      const embeddingA = new EmbeddingA();
+      const schemaA = LanceSchema({
+        text: embeddingA.sourceField(new arrow.Utf8()),
+        vector: embeddingA.vectorField(),
+      });
+      await writer.createTable("race", [{ text: "revision a" }], {
+        schema: schemaA,
+      });
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("race");
+      const query = tracked.search("query");
+
+      const first = query.toArray();
+      await aStarted;
+
+      const embeddingB = new EmbeddingB();
+      const schemaB = LanceSchema({
+        text: embeddingB.sourceField(new arrow.Utf8()),
+        vector: embeddingB.vectorField(),
+      });
+      await writer.createTable("race", [{ text: "revision b" }], {
+        mode: "overwrite",
+        schema: schemaB,
+      });
+      const second = query.toArray();
+      await bStarted;
+
+      releaseA();
+      releaseB();
+      await Promise.all([first, second]);
+      expect(aCalls).toBe(1);
+      expect(bCalls).toBe(1);
+    });
+
+    test("stale FTS routing keeps newer vector preparation", async () => {
+      let vectorCalls = 0;
+      let markVectorStarted!: () => void;
+      const vectorStarted = new Promise<void>((resolve) => {
+        markVectorStarted = resolve;
+      });
+      let releaseVector!: () => void;
+      const vectorReleased = new Promise<void>((resolve) => {
+        releaseVector = resolve;
+      });
+
+      @register("stale-fts-race")
+      class RaceEmbedding extends EmbeddingFunction<string> {
+        ndims() {
+          return 1;
+        }
+        embeddingDataType() {
+          return new arrow.Float32();
+        }
+        async computeQueryEmbeddings() {
+          vectorCalls += 1;
+          markVectorStarted();
+          await vectorReleased;
+          return [0.1];
+        }
+        async computeSourceEmbeddings(values: string[]) {
+          return values.map(() => [0.1]);
+        }
+      }
+
+      const writer = await connect(tmpDir.name);
+      const ftsTable = await writer.createTable("stale_fts", [
+        { text: "hello", vector: [0.0] },
+      ]);
+      await ftsTable.createIndex("text", { config: Index.fts() });
+
+      const reader = await connect(tmpDir.name, {
+        readConsistencyInterval: 0,
+      });
+      const tracked = await reader.openTable("stale_fts");
+      type Snapshot = {
+        schema: () => Promise<Buffer>;
+      };
+      type NativeWithSnapshot = {
+        querySnapshot: () => Promise<Snapshot>;
+      };
+      const native = (tracked as unknown as { inner: NativeWithSnapshot })
+        .inner;
+      const querySnapshot = native.querySnapshot.bind(native);
+      let snapshotCalls = 0;
+      let markStaleSchemaStarted!: () => void;
+      const staleSchemaStarted = new Promise<void>((resolve) => {
+        markStaleSchemaStarted = resolve;
+      });
+      let releaseStaleSchema!: () => void;
+      const staleSchemaReleased = new Promise<void>((resolve) => {
+        releaseStaleSchema = resolve;
+      });
+      native.querySnapshot = async () => {
+        const snapshot = await querySnapshot();
+        snapshotCalls += 1;
+        if (snapshotCalls === 1) {
+          const schema = snapshot.schema.bind(snapshot);
+          snapshot.schema = async () => {
+            markStaleSchemaStarted();
+            await staleSchemaReleased;
+            return await schema();
+          };
+        }
+        return snapshot;
+      };
+
+      const query = tracked.search("hello");
+      const staleFtsExecution = query.toArray();
+      await staleSchemaStarted;
+
+      const embedding = new RaceEmbedding();
+      const vectorSchema = LanceSchema({
+        text: embedding.sourceField(new arrow.Utf8()),
+        vector: embedding.vectorField(),
+      });
+      await writer.createTable("stale_fts", [{ text: "hello" }], {
+        mode: "overwrite",
+        schema: vectorSchema,
+      });
+
+      const vectorExecution = query.toArray();
+      await vectorStarted;
+      releaseStaleSchema();
+      await staleFtsExecution;
+      releaseVector();
+      await vectorExecution;
+
+      await query.toArray();
+      expect(vectorCalls).toBe(1);
+    });
+
+    test("tokenizes FTS queries by column or index name", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        {
+          text: "Running in cafés",
+          japanese: "Hello, こんにちは世界!",
+          vector: [0.1, 0.2, 0.3],
+        },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "simple" }),
+      });
+      await table.createIndex("japanese", {
+        config: Index.fts({
+          baseTokenizer: "icu",
+          stem: false,
+          removeStopWords: false,
+        }),
+        name: "japanese_icu_idx",
+      });
+
+      await expect(table.tokenize("hello", {} as never)).rejects.toThrow(
+        "Specify exactly one",
+      );
+      await expect(
+        table.tokenize("hello", {
+          column: "text",
+          indexName: "text_idx",
+        } as never),
+      ).rejects.toThrow("Specify exactly one");
+
+      const simpleTokens = await table.tokenize("Running in cafés", {
+        column: "text",
+      });
+      expect(simpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const icuTokens = await table.tokenize("Hello, こんにちは世界!", {
+        indexName: "japanese_icu_idx",
+      });
+      expect(icuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+
+      const directSimpleTokens = await tokenize("Running in cafés", {
+        baseTokenizer: "simple",
+      });
+      expect(directSimpleTokens).toEqual([
+        { text: "run", position: 0 },
+        { text: "cafe", position: 2 },
+      ]);
+
+      const directIcuTokens = await tokenize("Hello, こんにちは世界!", {
+        baseTokenizer: "icu",
+        stem: false,
+        removeStopWords: false,
+      });
+      expect(directIcuTokens).toEqual([
+        { text: "hello", position: 0 },
+        { text: "こんにちは", position: 1 },
+        { text: "世界", position: 2 },
+      ]);
+    });
+
+    test("full text search fast search", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [{ text: "hello world", vector: [0.1, 0.2, 0.3], id: 1 }];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts(),
+      });
+
+      // Insert unindexed data after creating the index.
+      await table.add([{ text: "xyz", vector: [0.4, 0.5, 0.6], id: 2 }]);
+
+      const withFlatSearch = await table
+        .search("xyz", "fts")
+        .limit(10)
+        .toArray();
+      expect(withFlatSearch.length).toBeGreaterThan(0);
+
+      const fastSearchResults = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(fastSearchResults.length).toBe(0);
+
+      const nearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(nearestToTextFastSearch.length).toBe(0);
+
+      // fastSearch should be chainable with other methods.
+      const chainedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .select(["text"])
+        .limit(5)
+        .toArray();
+      expect(chainedFastSearch.length).toBe(0);
+
+      await table.optimize();
+
+      const indexedFastSearch = await table
+        .search("xyz", "fts")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedFastSearch.length).toBeGreaterThan(0);
+
+      const indexedNearestToTextFastSearch = await table
+        .query()
+        .nearestToText("xyz")
+        .fastSearch()
+        .limit(10)
+        .toArray();
+      expect(indexedNearestToTextFastSearch.length).toBeGreaterThan(0);
     });
 
     test("prewarm full text search index", async () => {
@@ -1564,6 +4344,25 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
 
       const results = await table.search("lance").toArray();
       expect(results.length).toBe(3);
+    });
+
+    test("prewarmData errors on local tables", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "alpha", vector: [0.1, 0.2, 0.3] },
+        { text: "beta", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("prewarm_data_test", data);
+
+      // prewarmData is only supported on remote tables. We verify the call
+      // is wired through napi and surfaces the expected error for both
+      // arg shapes (undefined and string[]).
+      await expect(table.prewarmData()).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
+      await expect(table.prewarmData(["text"])).rejects.toThrow(
+        "prewarm_data is currently only supported on remote tables",
+      );
     });
 
     test("full text index on list", async () => {
@@ -1616,6 +4415,57 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       expect(results3.length).toBe(1);
     });
 
+    test("full text search with custom posting block size", async () => {
+      const db = await connect(tmpDir.name);
+      const data = [
+        { text: "hello world", vector: [0.1, 0.2, 0.3] },
+        { text: "goodbye world", vector: [0.4, 0.5, 0.6] },
+      ];
+      const table = await db.createTable("test", data);
+      await table.createIndex("text", {
+        config: Index.fts({ blockSize: 256 }),
+      });
+
+      const index = (await table.listIndices()).find(
+        (index) => index.indexType === "FTS",
+      );
+      expect(index?.indexVersion).toBe(3);
+      expect(
+        (index?.indexDetails as Record<string, unknown>)["block_size"],
+      ).toBe(256);
+
+      const results = await table.search("hello").toArray();
+      expect(results[0].text).toBe(data[0].text);
+    });
+
+    test("rejects invalid full text posting block size", () => {
+      expect(() => Index.fts({ blockSize: 129 as 128 | 256 })).toThrow(
+        "128 or 256",
+      );
+    });
+
+    test.each(["Klingon", "english"])(
+      "rejects unsupported full text language %s with a catchable error",
+      (language) => {
+        expect(() => Index.fts({ language })).toThrow(
+          new Error(
+            `LanceDB does not support the requested language: '${language}'`,
+          ),
+        );
+      },
+    );
+
+    test("full text search with a supported language", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("test", [{ text: "running" }]);
+      await table.createIndex("text", {
+        config: Index.fts({ language: "English", stem: true }),
+      });
+
+      const results = await table.search("run").toArray();
+      expect(results.map((row) => row.text)).toEqual(["running"]);
+    });
+
     test("full text search without lowercase", async () => {
       const db = await connect(tmpDir.name);
       const data = [
@@ -1663,7 +4513,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const db = await connect(tmpDir.name);
       const data = [
         { text: "fa", vector: [0.1, 0.2, 0.3] },
-        { text: "fo", vector: [0.4, 0.5, 0.6] },
+        { text: "fo", vector: [0.4, 0.5, 0.6] }, // spellchecker:disable-line
         { text: "fob", vector: [0.4, 0.5, 0.6] },
         { text: "focus", vector: [0.4, 0.5, 0.6] },
         { text: "foo", vector: [0.4, 0.5, 0.6] },
@@ -1688,7 +4538,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
       const resultSet = new Set(fuzzyResults.map((r) => r.text));
       expect(resultSet.has("foo")).toBe(true);
       expect(resultSet.has("fob")).toBe(true);
-      expect(resultSet.has("fo")).toBe(true);
+      expect(resultSet.has("fo")).toBe(true); // spellchecker:disable-line
       expect(resultSet.has("food")).toBe(true);
 
       const prefixResults = await table
@@ -1744,6 +4594,20 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
         )
         .toArray();
       expect(mustNotResults.length).toBe(1);
+    });
+
+    test("full text search code tokenizer", async () => {
+      const db = await connect(tmpDir.name);
+      const table = await db.createTable("test", [
+        { id: 1, text: "def getUserName(user_id): return user_id" },
+        { id: 2, text: "def parseFile(file_path): return file_path" },
+      ]);
+      await table.createIndex("text", {
+        config: Index.fts({ baseTokenizer: "code" }),
+      });
+
+      const results = await table.search("getUserName", "fts").toArray();
+      expect(results.map((row) => row.id)).toEqual([1]);
     });
 
     test("full text search ngram", async () => {
@@ -1821,6 +4685,15 @@ describe.each([arrow15, arrow16, arrow17, arrow18])(
   },
 );
 
+test("tokenize supports custom stop words", async () => {
+  const tokens = await tokenize("the lance data", {
+    stem: false,
+    removeStopWords: true,
+    customStopWords: ["lance"],
+  });
+  expect(tokens.map((token) => token.text)).toEqual(["the", "data"]);
+});
+
 describe("when calling explainPlan", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -1864,8 +4737,13 @@ describe("when calling analyzePlan", () => {
       .fill(1)
       .map(() => Math.random());
     const plan = await table.query().nearestTo(queryVec).analyzePlan();
-    console.log("Query Plan:\n", plan); // <--- Print the plan
     expect(plan).toMatch("AnalyzeExec");
+
+    const fullPlan = await table
+      .query()
+      .nearestTo(queryVec)
+      .analyzePlan("full");
+    expect(fullPlan).toMatch("AnalyzeExec");
   });
 });
 
@@ -1902,6 +4780,30 @@ describe("column name options", () => {
     results.sort((a, b) => a.query_index - b.query_index);
     expect(results[0].query_index).toBe(0);
     expect(results[1].query_index).toBe(1);
+  });
+
+  test("observes promised additional vectors while the query is pending", async () => {
+    const initialVector = new Promise<number[]>(() => undefined);
+    const query = table.query().nearestTo(initialVector);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      query.addQueryVector(Promise.reject(new Error("extra vector failed")));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+
+      const rejectedQuery = table
+        .query()
+        .nearestTo([0.1, 0.2])
+        .addQueryVector(Promise.reject(new Error("consumed vector failed")));
+      await expect(rejectedQuery.toArray()).rejects.toThrow(
+        "consumed vector failed",
+      );
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
   });
 
   test("index and search multivectors", async () => {
@@ -1941,5 +4843,536 @@ describe("column name options", () => {
       .limit(10)
       .toArray();
     expect(results2.length).toBe(10);
+  }, 30_000);
+});
+
+describe("when creating an empty table", () => {
+  let con: Connection;
+  beforeEach(async () => {
+    const tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    con = await connect(tmpDir.name);
+  });
+  afterEach(() => {
+    con.close();
+  });
+
+  it("can create an empty table from an arrow Schema", async () => {
+    const schema = new Schema([
+      new Field("id", new Int64()),
+      new Field("vector", new Float64()),
+    ]);
+    const table = await con.createEmptyTable("test", schema);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+
+  it("can add and query JSON data", async () => {
+    const schema = new Schema([
+      new Field("id", new Int32(), true),
+      new Field(
+        "meta",
+        new Utf8(),
+        true,
+        new Map([["ARROW:extension:name", "arrow.json"]]),
+      ),
+    ]);
+    const table = await con.createEmptyTable("json", schema);
+    const meta = JSON.stringify({ x: 1 });
+
+    await table.add([{ id: 1, meta }]);
+
+    const rows = await table.query().toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(1);
+    expect(rows[0].meta).toBe(meta);
+  });
+
+  it("can create an empty table from schema that specifies field types by name", async () => {
+    const schemaLike = {
+      fields: [
+        {
+          name: "id",
+          type: "int64",
+          nullable: true,
+        },
+        {
+          name: "vector",
+          type: "float64",
+          nullable: true,
+        },
+      ],
+      metadata: new Map(),
+      names: ["id", "vector"],
+    } satisfies SchemaLike;
+    const table = await con.createEmptyTable("test", schemaLike);
+    const actualSchema = await table.schema();
+    expect(actualSchema.fields[0].type.typeId).toBe(Type.Int);
+    expect((actualSchema.fields[0].type as Int64).bitWidth).toBe(64);
+    expect(actualSchema.fields[1].type.typeId).toBe(Type.Float);
+    expect((actualSchema.fields[1].type as Float64).precision).toBe(2);
+  });
+});
+
+// Ensure we can create float32 arrays without using Arrow
+// by utilizing native JS TypedArray support
+//
+// https://github.com/lancedb/lancedb/issues/3115
+describe("when creating a table with Float32Array vectors", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it("should persist Float32Array as FixedSizeList<Float32> in the LanceDB schema", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("test", [
+      { id: "a", vector: new Float32Array([0.1, 0.2, 0.3]) },
+      { id: "b", vector: new Float32Array([0.4, 0.5, 0.6]) },
+    ]);
+
+    const schema = await table.schema();
+    const vectorField = schema.fields.find((f) => f.name === "vector");
+    expect(vectorField).toBeDefined();
+    expect(vectorField!.type).toBeInstanceOf(FixedSizeList);
+
+    const fsl = vectorField!.type as FixedSizeList;
+    expect(fsl.listSize).toBe(3);
+    expect(fsl.children[0].type.typeId).toBe(Type.Float);
+    // precision: HALF=0, SINGLE=1, DOUBLE=2
+    expect((fsl.children[0].type as Float32).precision).toBe(1);
+  });
+});
+
+describe("setUnenforcedPrimaryKey", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("sets a single-column primary key (string or one-element array)", async () => {
+    const conn = await connect(tmpDir.name);
+    const schema = new arrow.Schema([
+      new arrow.Field("id", new arrow.Int64(), false),
+    ]);
+    const t1 = await conn.createEmptyTable("t1", schema);
+    await t1.setUnenforcedPrimaryKey("id");
+
+    const t2 = await conn.createEmptyTable("t2", schema);
+    await t2.setUnenforcedPrimaryKey(["id"]);
+  });
+
+  it("rejects a compound primary key", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await expect(
+      table.setUnenforcedPrimaryKey(["id", "name"]),
+    ).rejects.toThrow();
+  });
+
+  it("rejects changing the primary key once set", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Int64(), false),
+        new arrow.Field("name", new arrow.Utf8(), false),
+      ]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await expect(table.setUnenforcedPrimaryKey("name")).rejects.toThrow();
+    await expect(table.setUnenforcedPrimaryKey("id")).rejects.toThrow();
+  });
+});
+
+describe("enableRTE / disableRTE", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function makeTable(conn: Connection): Promise<Table> {
+    return await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Int64(), false)]),
+    );
+  }
+
+  it("installs and removes a bucket spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.enableRTE({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+    });
+    await table.disableRTE();
+    // A second unset errors — there is no spec left to remove.
+    await expect(table.disableRTE()).rejects.toThrow();
+    // A fresh spec can be installed after unset.
+    await table.enableRTE({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 8,
+    });
+  });
+
+  it("installs an unsharded spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.enableRTE({ specType: "unsharded" });
+    await table.disableRTE();
+  });
+
+  it("installs an identity spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    await table.enableRTE({ specType: "identity", column: "id" });
+    await table.disableRTE();
+  });
+
+  it("rejects an invalid spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+
+    await table.setUnenforcedPrimaryKey("id");
+    // num_buckets out of range.
+    await expect(
+      table.enableRTE({
+        specType: "bucket",
+        column: "id",
+        numBuckets: 0,
+      }),
+    ).rejects.toThrow();
+    // Column mismatch.
+    await expect(
+      table.enableRTE({
+        specType: "bucket",
+        column: "missing",
+        numBuckets: 4,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("reads back the installed spec via getRTESpec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await makeTable(conn);
+    await table.setUnenforcedPrimaryKey("id");
+
+    // Nothing installed yet.
+    expect(await table.getRTESpec()).toBeUndefined();
+
+    // A real scalar index is needed to name it as a maintained index.
+    await table.add([{ id: 1 }, { id: 2 }, { id: 3 }]);
+    await table.createIndex("id");
+    const indexName = (await table.listIndices())[0].name;
+
+    // Bucket spec round-trips, including maintained indexes and writer config
+    // defaults. Lance writer-config keys are canonically snake_case.
+    // biome-ignore lint/style/useNamingConvention: Lance writer-config keys are snake_case
+    const writerConfigDefaults = { durable_write: "false" };
+    await table.enableRTE({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 4,
+      maintainedIndexes: [indexName],
+      writerConfigDefaults,
+    });
+    const spec = await table.getRTESpec();
+    expect(spec).toBeDefined();
+    expect(spec?.specType).toBe("bucket");
+    expect(spec?.column).toBe("id");
+    expect(spec?.numBuckets).toBe(4);
+    expect(spec?.maintainedIndexes).toEqual([indexName]);
+    expect(spec?.writerConfigDefaults).toEqual(writerConfigDefaults);
+
+    // After unset, undefined again.
+    await table.disableRTE();
+    expect(await table.getRTESpec()).toBeUndefined();
+
+    // Identity round-trips (column recovered from the schema).
+    await table.enableRTE({ specType: "identity", column: "id" });
+    const identity = await table.getRTESpec();
+    expect(identity?.specType).toBe("identity");
+    expect(identity?.column).toBe("id");
+    await table.disableRTE();
+
+    // Unsharded round-trips (no routing column).
+    await table.enableRTE({ specType: "unsharded" });
+    const unsharded = await table.getRTESpec();
+    expect(unsharded?.specType).toBe("unsharded");
+    expect(unsharded?.column).toBeFalsy();
+  });
+});
+
+describe("LSM merge insert", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function bucketTable(conn: Connection): Promise<Table> {
+    // The primary key column must be non-nullable.
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([
+        new arrow.Field("id", new arrow.Utf8(), false),
+        new arrow.Field("value", new arrow.Float64(), true),
+      ]),
+    );
+    await table.add([
+      { id: "a", value: 1 },
+      { id: "b", value: 2 },
+    ]);
+    await table.setUnenforcedPrimaryKey("id");
+    // numBuckets = 1: every row routes to the single bucket.
+    await table.enableRTE({
+      specType: "bucket",
+      column: "id",
+      numBuckets: 1,
+    });
+    return table;
+  }
+
+  it("routes merge_insert through the shard writer", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([
+        { id: "c", value: 3 },
+        { id: "d", value: 4 },
+      ]);
+    // LSM path: rows go to the RTE, so only numRows is populated.
+    expect(res.numRows).toBe(2);
+    expect(res.version).toBe(0);
+    expect(res.numInsertedRows).toBe(0);
+
+    await table.closeRTEWriters();
+  });
+
+  it("falls back to the standard path with useRTE(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenNotMatchedInsertAll()
+      .useRTE(false)
+      .execute([
+        { id: "b", value: 9 },
+        { id: "e", value: 5 },
+      ]);
+    // Standard path commits: id="e" inserted ("b" already exists).
+    expect(res.numInsertedRows).toBe(1);
+    expect(await table.countRows()).toBe(3);
+  });
+
+  it("supports validateSingleShard(false)", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    const res = await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .validateSingleShard(false)
+      .execute([{ id: "f", value: 6 }]);
+    expect(res.numRows).toBe(1);
+  });
+
+  it("rejects a non-upsert merge under an RTE spec", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn);
+
+    await expect(
+      table
+        .mergeInsert("id")
+        .whenNotMatchedInsertAll()
+        .execute([{ id: "g", value: 7 }]),
+    ).rejects.toThrow();
+  });
+
+  it("auto-routes reads through the RTE scanner", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await bucketTable(conn); // base ids "a", "b"
+
+    await table
+      .mergeInsert("id")
+      .whenMatchedUpdateAll()
+      .whenNotMatchedInsertAll()
+      .execute([{ id: "c", value: 3 }]);
+
+    // Default read auto-routes and includes the active memtable row.
+    const lsm = await table.query().toArray();
+    expect(lsm.map((r) => r.id).sort()).toEqual(["a", "b", "c"]);
+
+    // useRTE(false) bypasses the RTE and reads the base table only.
+    const baseOnly = await table.query().useRTE(false).toArray();
+    expect(baseOnly.map((r) => r.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("reads the base table when no RTE spec is installed", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await conn.createEmptyTable(
+      "plain",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    // No spec: default read and useRTE(false) both succeed against the base table.
+    await expect(table.query().toArray()).resolves.toBeDefined();
+    await expect(table.query().useRTE(false).toArray()).resolves.toBeDefined();
+    // useRTE(true) demands RTE routing; without a spec it errors.
+    await expect(table.query().useRTE(true).toArray()).rejects.toThrow();
+  });
+});
+
+describe("LSM convergence and stats", () => {
+  let tmpDir: tmp.DirResult;
+
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  async function lsmTable(conn: Connection): Promise<Table> {
+    const table = await conn.createEmptyTable(
+      "t",
+      new arrow.Schema([new arrow.Field("id", new arrow.Utf8(), false)]),
+    );
+    await table.setUnenforcedPrimaryKey("id");
+    await table.enableRTE({ specType: "unsharded" });
+    return table;
+  }
+
+  // These four route through the server that owns the RTE, so a local table
+  // rejects them rather than answering. What is asserted here is that the
+  // bindings reach the core at all; the behavior against a real endpoint is
+  // covered by the mocked endpoint tests in rust/lancedb/src/remote/table.rs.
+  it("rejects flushRTE on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.flushRTE()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects compactRTE on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.compactRTE()).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects getRTEStats on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    await expect(table.getRTEStats()).rejects.toThrow(/not supported/i);
+    await expect(table.getRTEStats(true)).rejects.toThrow(/not supported/i);
+  });
+
+  it("rejects checkpointRTE on a local table", async () => {
+    const conn = await connect(tmpDir.name);
+    const table = await lsmTable(conn);
+
+    // checkpointRTE freezes first, so it surfaces flushRTE's rejection.
+    await expect(table.checkpointRTE()).rejects.toThrow(/not supported/i);
+  });
+});
+
+describe("computed columns", () => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("declares a column and fills it on refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    let rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled)).toEqual([null, null]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(2);
+
+    rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+  });
+
+  it("records Function errors only on remote tables", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("errors_local", [{ x: 1 }]);
+    await expect(table.functionErrors()).rejects.toThrow(
+      "LanceDB Cloud and Enterprise",
+    );
+  });
+
+  it("returns a job handle from refreshColumnAsync", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+
+    const job = await table.refreshColumnAsync("doubled");
+    expect(job.id).toBeNull();
+    await job.wait();
+    expect(await job.status()).toBe("finished");
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([2, 4]);
+
+    // Bad input rejects at the call, not through the job.
+    await expect(table.refreshColumnAsync("x")).rejects.toThrow(
+      "not a computed column",
+    );
+  });
+
+  it("fills rows added since the last refresh", async () => {
+    const db = await connect(tmpDir.name);
+    const table = await db.createTable("computed_append", [{ x: 1 }]);
+
+    await table.addColumns({
+      computed: [{ name: "doubled", valueSql: "x * 2" }],
+    });
+    await table.refreshColumn("doubled");
+    await table.add([{ x: 5 }]);
+
+    const result = await table.refreshColumn("doubled");
+    expect(result.rowsFilled).toBe(1);
+
+    const rows = await table.query().toArray();
+    expect(rows.map((r) => r.doubled).sort()).toEqual([10, 2]);
   });
 });

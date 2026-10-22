@@ -5,344 +5,289 @@
 
 import tempfile
 import shutil
-from typing import Dict, Optional
+import importlib
+import http.server
+import json
+import threading
+from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 import pyarrow as pa
 import lancedb
-from lance_namespace.namespace import NATIVE_IMPLS, LanceNamespace
-from lance_namespace_urllib3_client.models import (
-    ListTablesRequest,
-    ListTablesResponse,
-    DescribeTableRequest,
-    DescribeTableResponse,
-    RegisterTableRequest,
-    RegisterTableResponse,
-    DeregisterTableRequest,
-    DeregisterTableResponse,
-    CreateTableRequest,
-    CreateTableResponse,
-    DropTableRequest,
-    DropTableResponse,
-    ListNamespacesRequest,
-    ListNamespacesResponse,
-    CreateNamespaceRequest,
-    CreateNamespaceResponse,
-    DropNamespaceRequest,
-    DropNamespaceResponse,
+from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
+from lancedb.listing import AsyncListing, Listing
+from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.query import Query
+from lancedb.table import AsyncTable, LanceTable
+
+
+PUSHDOWN_DATA = pa.table(
+    {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
 
 
-class TempNamespace(LanceNamespace):
-    """A simple dictionary-backed namespace for testing."""
-
-    # Class-level storage to persist table registry across instances
-    _global_registry: Dict[str, Dict[str, str]] = {}
-    # Class-level storage for namespaces (supporting 1-level namespace)
-    _global_namespaces: Dict[str, set] = {}
-
-    def __init__(self, **properties):
-        """Initialize the test namespace.
-
-        Args:
-            root: The root directory for tables (optional)
-            **properties: Additional configuration properties
-        """
-        self.config = TempNamespaceConfig(properties)
-        # Use the root as a key to maintain separate registries per root
-        root = self.config.root
-        if root not in self._global_registry:
-            self._global_registry[root] = {}
-        if root not in self._global_namespaces:
-            self._global_namespaces[root] = set()
-        self.tables = self._global_registry[root]  # Reference to shared registry
-        self.namespaces = self._global_namespaces[
-            root
-        ]  # Reference to shared namespaces
-
-    def list_tables(self, request: ListTablesRequest) -> ListTablesResponse:
-        """List all tables in the namespace."""
-        if not request.id:
-            # List all tables in root namespace
-            tables = [name for name in self.tables.keys() if "." not in name]
-        else:
-            # List tables in specific namespace (1-level only)
-            if len(request.id) == 1:
-                namespace_name = request.id[0]
-                prefix = f"{namespace_name}."
-                tables = [
-                    name[len(prefix) :]
-                    for name in self.tables.keys()
-                    if name.startswith(prefix)
-                ]
-            else:
-                # Multi-level namespaces not supported
-                raise ValueError("Only 1-level namespaces are supported")
-        return ListTablesResponse(tables=tables)
-
-    def describe_table(self, request: DescribeTableRequest) -> DescribeTableResponse:
-        """Describe a table by returning its location."""
-        if not request.id:
-            raise ValueError("Invalid table ID")
-
-        if len(request.id) == 1:
-            # Root namespace table
-            table_name = request.id[0]
-        elif len(request.id) == 2:
-            # Namespaced table (1-level namespace)
-            namespace_name, table_name = request.id
-            table_name = f"{namespace_name}.{table_name}"
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        if table_name not in self.tables:
-            raise RuntimeError(f"Table does not exist: {table_name}")
-
-        table_uri = self.tables[table_name]
-        return DescribeTableResponse(location=table_uri)
-
-    def create_table(
-        self, request: CreateTableRequest, request_data: bytes
-    ) -> CreateTableResponse:
-        """Create a table in the namespace."""
-        if not request.id:
-            raise ValueError("Invalid table ID")
-
-        if len(request.id) == 1:
-            # Root namespace table
-            table_name = request.id[0]
-            table_uri = f"{self.config.root}/{table_name}.lance"
-        elif len(request.id) == 2:
-            # Namespaced table (1-level namespace)
-            namespace_name, base_table_name = request.id
-            # Add namespace to our namespace set
-            self.namespaces.add(namespace_name)
-            table_name = f"{namespace_name}.{base_table_name}"
-            table_uri = f"{self.config.root}/{namespace_name}/{base_table_name}.lance"
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        # Check if table already exists
-        if table_name in self.tables:
-            if request.mode == "overwrite":
-                # Drop existing table for overwrite mode
-                del self.tables[table_name]
-            else:
-                raise RuntimeError(f"Table already exists: {table_name}")
-
-        # Parse the Arrow IPC stream to get the schema and create the actual table
-        import pyarrow.ipc as ipc
-        import io
-        import lance
-        import os
-
-        # Create directory if needed for namespaced tables
-        os.makedirs(os.path.dirname(table_uri), exist_ok=True)
-
-        # Read the IPC stream
-        reader = ipc.open_stream(io.BytesIO(request_data))
-        table = reader.read_all()
-
-        # Create the actual Lance table
-        lance.write_dataset(table, table_uri)
-
-        # Store the table mapping
-        self.tables[table_name] = table_uri
-
-        return CreateTableResponse(location=table_uri)
-
-    def drop_table(self, request: DropTableRequest) -> DropTableResponse:
-        """Drop a table from the namespace."""
-        if not request.id:
-            raise ValueError("Invalid table ID")
-
-        if len(request.id) == 1:
-            # Root namespace table
-            table_name = request.id[0]
-        elif len(request.id) == 2:
-            # Namespaced table (1-level namespace)
-            namespace_name, base_table_name = request.id
-            table_name = f"{namespace_name}.{base_table_name}"
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        if table_name not in self.tables:
-            raise RuntimeError(f"Table does not exist: {table_name}")
-
-        # Get the table URI
-        table_uri = self.tables[table_name]
-
-        # Delete the actual table files
-        import shutil
-        import os
-
-        if os.path.exists(table_uri):
-            shutil.rmtree(table_uri, ignore_errors=True)
-
-        # Remove from registry
-        del self.tables[table_name]
-
-        return DropTableResponse()
-
-    def register_table(self, request: RegisterTableRequest) -> RegisterTableResponse:
-        """Register a table with the namespace."""
-        if not request.id or len(request.id) != 1:
-            raise ValueError("Invalid table ID")
-
-        if not request.location:
-            raise ValueError("Table location is required")
-
-        table_name = request.id[0]
-        self.tables[table_name] = request.location
-
-        return RegisterTableResponse()
-
-    def deregister_table(
-        self, request: DeregisterTableRequest
-    ) -> DeregisterTableResponse:
-        """Deregister a table from the namespace."""
-        if not request.id or len(request.id) != 1:
-            raise ValueError("Invalid table ID")
-
-        table_name = request.id[0]
-        if table_name not in self.tables:
-            raise RuntimeError(f"Table does not exist: {table_name}")
-
-        del self.tables[table_name]
-        return DeregisterTableResponse()
-
-    def list_namespaces(self, request: ListNamespacesRequest) -> ListNamespacesResponse:
-        """List child namespaces."""
-        if not request.id:
-            # List root-level namespaces
-            namespaces = list(self.namespaces)
-        elif len(request.id) == 1:
-            # For 1-level namespace, there are no child namespaces
-            namespaces = []
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        return ListNamespacesResponse(namespaces=namespaces)
-
-    def create_namespace(
-        self, request: CreateNamespaceRequest
-    ) -> CreateNamespaceResponse:
-        """Create a namespace."""
-        if not request.id:
-            raise ValueError("Invalid namespace ID")
-
-        if len(request.id) == 1:
-            # Create 1-level namespace
-            namespace_name = request.id[0]
-            self.namespaces.add(namespace_name)
-
-            # Create directory for the namespace
-            import os
-
-            namespace_dir = f"{self.config.root}/{namespace_name}"
-            os.makedirs(namespace_dir, exist_ok=True)
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        return CreateNamespaceResponse()
-
-    def drop_namespace(self, request: DropNamespaceRequest) -> DropNamespaceResponse:
-        """Drop a namespace."""
-        if not request.id:
-            raise ValueError("Invalid namespace ID")
-
-        if len(request.id) == 1:
-            # Drop 1-level namespace
-            namespace_name = request.id[0]
-
-            if namespace_name not in self.namespaces:
-                raise RuntimeError(f"Namespace does not exist: {namespace_name}")
-
-            # Check if namespace has any tables
-            prefix = f"{namespace_name}."
-            tables_in_namespace = [
-                name for name in self.tables.keys() if name.startswith(prefix)
-            ]
-            if tables_in_namespace:
-                raise RuntimeError(
-                    f"Cannot drop namespace '{namespace_name}': contains tables"
-                )
-
-            # Remove namespace
-            self.namespaces.remove(namespace_name)
-
-            # Remove directory
-            import shutil
-            import os
-
-            namespace_dir = f"{self.config.root}/{namespace_name}"
-            if os.path.exists(namespace_dir):
-                shutil.rmtree(namespace_dir, ignore_errors=True)
-        else:
-            raise ValueError("Only 1-level namespaces are supported")
-
-        return DropNamespaceResponse()
+def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_file(sink, table.schema) as writer:
+        writer.write_table(table)
+    return sink.getvalue().to_pybytes()
 
 
-class TempNamespaceConfig:
-    """Configuration for TestNamespace."""
+class _FailingSyncInner:
+    name = "hist"
 
-    ROOT = "root"
+    def current_branch(self):
+        # The pushdown gate only routes server-side when on the default branch.
+        return None
 
-    def __init__(self, properties: Optional[Dict[str, str]] = None):
-        """Initialize configuration from properties.
+    async def schema(self):
+        return PUSHDOWN_DATA.schema
 
-        Args:
-            properties: Dictionary of configuration properties
-        """
-        if properties is None:
-            properties = {}
-
-        self._root = properties.get(self.ROOT, "/tmp")
-
-    @property
-    def root(self) -> str:
-        """Get the namespace root directory."""
-        return self._root
+    async def to_arrow(self):
+        raise RuntimeError("direct table to_arrow should not be used")
 
 
-NATIVE_IMPLS["temp"] = f"{TempNamespace.__module__}.TempNamespace"
+class _FailingAsyncInner:
+    def name(self):
+        return "hist"
+
+    async def schema(self):
+        return PUSHDOWN_DATA.schema
+
+    def query(self):
+        raise AssertionError("direct async query should not be used")
+
+
+class _NamespaceClient:
+    def __init__(self):
+        self.requests = []
+
+    def query_table(self, request):
+        self.requests.append(request)
+        return _ipc_file()
+
+
+def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
+    table = LanceTable.__new__(LanceTable)
+    table._table = _FailingSyncInner()
+    table._namespace_path = ["geneva"]
+    table._namespace_client = namespace_client
+    table._pushdown_operations = {"QueryTable"}
+    # This test exercises the Python-side pushdown path (non-native client), so
+    # pushdown is not routed to Rust.
+    table._route_pushdown_to_rust = False
+    return table
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["test_ns"]])
+async def test_namespace_table_names_defaults_and_limits(tmp_path, namespace_path):
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    if namespace_path:
+        db.create_namespace(namespace_path)
+    names = [f"t{idx:03}" for idx in range(12)]
+    schema = pa.schema([pa.field("id", pa.int64())])
+    for name in names:
+        db.create_table(name, schema=schema, namespace_path=namespace_path)
+
+    assert list(db.table_names(namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=None, namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert list(db.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    assert (
+        list(
+            db.table_names(page_token=names[1], limit=2, namespace_path=namespace_path)
+        )
+        == names[2:4]
+    )
+
+    adb = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    assert list(await adb.table_names(namespace_path=namespace_path)) == names
+    assert (
+        list(await adb.table_names(limit=None, namespace_path=namespace_path)) == names
+    )
+    assert list(await adb.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert (
+        list(await adb.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    )
+    assert (
+        list(
+            await adb.table_names(
+                page_token=names[1], limit=2, namespace_path=namespace_path
+            )
+        )
+        == names[2:4]
+    )
+
+
+@pytest.fixture
+def paginated_rest_namespace():
+    names = [f"t{idx:03}" for idx in reversed(range(12))]
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            requests.append((unquote(url.path), query))
+            token = query.get("page_token", [None])[0]
+            if token not in {None, "opaque-next"}:
+                self.send_error(400, "Unknown page token")
+                return
+            start = 0 if token is None else 10
+            body = {"tables": names[start : start + 10]}
+            if start == 0:
+                body["page_token"] = "opaque-next"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["n"]])
+async def test_rest_namespace_table_names_collects_pages(
+    paginated_rest_namespace, namespace_path
+):
+    properties, requests = paginated_rest_namespace
+    names = [f"t{idx:03}" for idx in range(12)]
+    db = lancedb.connect_namespace("rest", properties)
+    first = db.list_tables(namespace_path=namespace_path)
+    second = db.list_tables(namespace_path=namespace_path, page_token=first.page_token)
+    assert len(first.tables) == 10
+    assert first.page_token == "opaque-next"
+    assert sorted(first.tables + second.tables) == names
+    assert second.page_token is None
+
+    assert list(db.table_names(namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=None, namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=11, namespace_path=namespace_path)) == names[:11]
+    assert (
+        list(db.table_names(page_token="t005", limit=2, namespace_path=namespace_path))
+        == names[6:8]
+    )
+
+    adb = lancedb.connect_namespace_async("rest", properties)
+    assert list(await adb.table_names(namespace_path=namespace_path)) == names
+    assert (
+        list(await adb.table_names(limit=None, namespace_path=namespace_path)) == names
+    )
+    assert (
+        list(await adb.table_names(limit=11, namespace_path=namespace_path))
+        == names[:11]
+    )
+    assert (
+        list(
+            await adb.table_names(
+                page_token="t005", limit=2, namespace_path=namespace_path
+            )
+        )
+        == names[6:8]
+    )
+
+    request_count = len(requests)
+    assert list(db.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert list(await adb.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert len(requests) == request_count
+    identifier = "$" if not namespace_path else "n"
+    assert all(path == f"/v1/namespace/{identifier}/table/list" for path, _ in requests)
 
 
 class TestNamespaceConnection:
-    """Test namespace-based LanceDB connection."""
+    """Test namespace-based LanceDB connection using DirectoryNamespace."""
 
     def setup_method(self):
         """Set up test fixtures."""
         self.temp_dir = tempfile.mkdtemp()
-        # Clear the TestNamespace registry for this test
-        if self.temp_dir in TempNamespace._global_registry:
-            TempNamespace._global_registry[self.temp_dir].clear()
-        if self.temp_dir in TempNamespace._global_namespaces:
-            TempNamespace._global_namespaces[self.temp_dir].clear()
 
     def teardown_method(self):
         """Clean up test fixtures."""
-        # Clear the TestNamespace registry
-        if self.temp_dir in TempNamespace._global_registry:
-            del TempNamespace._global_registry[self.temp_dir]
-        if self.temp_dir in TempNamespace._global_namespaces:
-            del TempNamespace._global_namespaces[self.temp_dir]
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_connect_namespace_test(self):
-        """Test connecting to LanceDB through TestNamespace."""
-        # Connect using TestNamespace
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        """Test connecting to LanceDB through DirectoryNamespace."""
+        # Connect using DirectoryNamespace
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Should be a LanceNamespaceDBConnection
         assert isinstance(db, lancedb.LanceNamespaceDBConnection)
 
-        # Initially no tables
+        # Initially no tables in root
         assert len(list(db.table_names())) == 0
+
+    def test_connect_via_connect_helper(self):
+        """Connecting via lancedb.connect should delegate to namespace connection."""
+        db = lancedb.connect(
+            namespace_client_impl="dir",
+            namespace_client_properties={"root": self.temp_dir},
+        )
+
+        assert isinstance(db, lancedb.LanceNamespaceDBConnection)
+        assert len(list(db.table_names())) == 0
+
+    def test_list_materialized_views(self):
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_table("source", [{"id": 1}])
+        db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, Listing)
+        assert names.num_page_results() == 0
+        assert list(names) == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
+
+    def test_sync_builtin_namespace_uses_rust_without_python_client(self, monkeypatch):
+        """Built-in sync namespace connections should not construct or call the
+        Python namespace client for normal namespace/table management."""
+        namespace_module = importlib.import_module("lancedb.namespace")
+
+        def fail_namespace_connect(*args, **kwargs):
+            raise AssertionError("Python namespace client should not be constructed")
+
+        monkeypatch.setattr(
+            namespace_module, "namespace_connect", fail_namespace_connect
+        )
+
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert isinstance(db, lancedb.LanceNamespaceDBConnection)
+        assert db._namespace_client is None
+        assert db._route_pushdown_to_rust is True
+
+        db.create_namespace(["test_ns"])
+        assert "test_ns" in db.list_namespaces().namespaces
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
+        assert table.namespace == ["test_ns"]
+        assert "test_table" in db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in db.list_tables(namespace_path=["test_ns"]).tables
+
+        opened = db.open_table("test_table", namespace_path=["test_ns"])
+        assert opened.namespace == ["test_ns"]
+
+        db.drop_table("test_table", namespace_path=["test_ns"])
+        assert db.list_tables(namespace_path=["test_ns"]).tables == []
+        db.drop_namespace(["test_ns"])
+        assert "test_ns" not in db.list_namespaces().namespaces
 
     def test_create_table_through_namespace(self):
         """Test creating a table through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
 
         # Define schema for empty table
         schema = pa.schema(
@@ -353,13 +298,15 @@ class TestNamespaceConnection:
             ]
         )
 
-        # Create empty table
-        table = db.create_table("test_table", schema=schema)
+        # Create empty table in child namespace
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
         assert table is not None
         assert table.name == "test_table"
+        assert table.namespace == ["test_ns"]
+        assert table.id == "test_ns$test_table"
 
-        # Table should appear in namespace
-        table_names = list(db.table_names())
+        # Table should appear in child namespace
+        table_names = list(db.table_names(namespace_path=["test_ns"]))
         assert "test_table" in table_names
         assert len(table_names) == 1
 
@@ -368,23 +315,63 @@ class TestNamespaceConnection:
         assert len(result) == 0
         assert list(result.columns) == ["id", "vector", "text"]
 
+    def test_table_to_pandas_blob_lazy_through_namespace(self):
+        """Namespace-backed tables should use Lance blob-aware pandas conversion."""
+        pytest.importorskip("lance")
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_namespace(["test_ns"])
+        data = pa.table(
+            {
+                "id": pa.array([1, 2], pa.int64()),
+                "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+            },
+            schema=pa.schema(
+                [
+                    pa.field("id", pa.int64()),
+                    pa.field(
+                        "blob",
+                        pa.large_binary(),
+                        metadata={"lance-encoding:blob": "true"},
+                    ),
+                ]
+            ),
+        )
+
+        # Legacy v1 blob columns are only writable at file version <= 2.1.
+        table = db.create_table(
+            "blob_table",
+            data,
+            namespace_path=["test_ns"],
+            storage_options={"new_table_data_storage_version": "2.1"},
+        )
+        df = table.to_pandas(blob_mode="lazy").sort_values("id")
+
+        blob = df["blob"].iloc[0]
+        assert hasattr(blob, "readall")
+        assert blob.readall() == b"hello"
+
     def test_open_table_through_namespace(self):
         """Test opening an existing table through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
-        # Create a table with schema
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
+
+        # Create a table with schema in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("test_table", schema=schema)
+        db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
 
         # Open the table
-        table = db.open_table("test_table")
+        table = db.open_table("test_table", namespace_path=["test_ns"])
         assert table is not None
         assert table.name == "test_table"
+        assert table.namespace == ["test_ns"]
+        assert table.id == "test_ns$test_table"
 
         # Verify empty table with correct schema
         result = table.to_pandas()
@@ -393,40 +380,50 @@ class TestNamespaceConnection:
 
     def test_drop_table_through_namespace(self):
         """Test dropping a table through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
-        # Create tables
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
+
+        # Create tables in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("table1", schema=schema)
-        db.create_table("table2", schema=schema)
+        db.create_table("table1", schema=schema, namespace_path=["test_ns"])
+        db.create_table("table2", schema=schema, namespace_path=["test_ns"])
 
-        # Verify both tables exist
-        table_names = list(db.table_names())
+        # Verify both tables exist in child namespace
+        table_names = list(db.table_names(namespace_path=["test_ns"]))
         assert "table1" in table_names
         assert "table2" in table_names
         assert len(table_names) == 2
 
         # Drop one table
-        db.drop_table("table1")
+        db.drop_table("table1", namespace_path=["test_ns"])
 
         # Verify only table2 remains
-        table_names = list(db.table_names())
+        table_names = list(db.table_names(namespace_path=["test_ns"]))
         assert "table1" not in table_names
         assert "table2" in table_names
         assert len(table_names) == 1
 
+        # Drop the second table
+        db.drop_table("table2", namespace_path=["test_ns"])
+        assert len(list(db.table_names(namespace_path=["test_ns"]))) == 0
+
         # Should not be able to open dropped table
-        with pytest.raises(RuntimeError):
-            db.open_table("table1")
+        with pytest.raises(TableNotFoundError):
+            db.open_table("table1", namespace_path=["test_ns"])
 
     def test_create_table_with_schema(self):
         """Test creating a table with explicit schema through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
 
         # Define schema
         schema = pa.schema(
@@ -437,9 +434,10 @@ class TestNamespaceConnection:
             ]
         )
 
-        # Create table with schema
-        table = db.create_table("test_table", schema=schema)
+        # Create table with schema in child namespace
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
         assert table is not None
+        assert table.namespace == ["test_ns"]
 
         # Verify schema
         table_schema = table.schema
@@ -447,28 +445,46 @@ class TestNamespaceConnection:
         assert table_schema.field("id").type == pa.int64()
         assert table_schema.field("text").type == pa.string()
 
-    def test_rename_table_not_supported(self):
-        """Test that rename_table raises NotImplementedError."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+    def test_rename_table(self):
+        """Test that rename_table renames a table in the namespace.
 
-        # Create a table
+        The `dir` namespace implementation in lance-namespace-impls does not
+        implement `rename_table` yet (only the `rest` backend does), so it
+        currently falls back to the default trait method which raises
+        NotSupported. This is expected to start passing once the `dir`
+        backend gains rename_table support upstream.
+        """
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
+
+        # Create a table in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("old_name", schema=schema)
+        db.create_table("old_name", schema=schema, namespace_path=["test_ns"])
 
-        # Rename should raise NotImplementedError
-        with pytest.raises(NotImplementedError, match="rename_table is not supported"):
-            db.rename_table("old_name", "new_name")
+        # Rename the table within the same namespace
+        with pytest.raises(NotImplementedError, match="rename_table not implemented"):
+            db.rename_table(
+                "old_name",
+                "new_name",
+                cur_namespace_path=["test_ns"],
+                new_namespace_path=["test_ns"],
+            )
 
     def test_drop_all_tables(self):
         """Test dropping all tables through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
-        # Create multiple tables
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
+
+        # Create multiple tables in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
@@ -476,22 +492,30 @@ class TestNamespaceConnection:
             ]
         )
         for i in range(3):
-            db.create_table(f"table{i}", schema=schema)
+            db.create_table(f"table{i}", schema=schema, namespace_path=["test_ns"])
 
-        # Verify tables exist
-        assert len(list(db.table_names())) == 3
+        # Verify tables exist in child namespace
+        assert len(list(db.table_names(namespace_path=["test_ns"]))) == 3
 
-        # Drop all tables
-        db.drop_all_tables()
+        # Drop all tables in child namespace
+        db.drop_all_tables(namespace_path=["test_ns"])
 
-        # Verify all tables are gone
-        assert len(list(db.table_names())) == 0
+        # Verify all tables are gone from child namespace
+        assert len(list(db.table_names(namespace_path=["test_ns"]))) == 0
+
+        # Test that table_names works with keyword-only namespace parameter
+        db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
+        result = list(db.table_names(namespace_path=["test_ns"]))
+        assert "test_table" in result
 
     def test_table_operations(self):
         """Test various table operations through namespace."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
-        # Create a table with schema
+        # Create a child namespace first
+        db.create_namespace(["test_ns"])
+
+        # Create a table with schema in child namespace
         schema = pa.schema(
             [
                 pa.field("id", pa.int64()),
@@ -499,7 +523,7 @@ class TestNamespaceConnection:
                 pa.field("text", pa.string()),
             ]
         )
-        table = db.create_table("test_table", schema=schema)
+        table = db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
 
         # Verify empty table was created
         result = table.to_pandas()
@@ -531,7 +555,7 @@ class TestNamespaceConnection:
         # Connect with storage options
         storage_opts = {"test_option": "test_value"}
         db = lancedb.connect_namespace(
-            "temp", {"root": self.temp_dir}, storage_options=storage_opts
+            "dir", {"root": self.temp_dir}, storage_options=storage_opts
         )
 
         # Storage options should be preserved
@@ -549,16 +573,16 @@ class TestNamespaceConnection:
 
     def test_namespace_operations(self):
         """Test namespace management operations."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Initially no namespaces
-        assert len(list(db.list_namespaces())) == 0
+        assert len(db.list_namespaces().namespaces) == 0
 
         # Create a namespace
         db.create_namespace(["test_namespace"])
 
         # Verify namespace exists
-        namespaces = list(db.list_namespaces())
+        namespaces = db.list_namespaces().namespaces
         assert "test_namespace" in namespaces
         assert len(namespaces) == 1
 
@@ -570,37 +594,37 @@ class TestNamespaceConnection:
             ]
         )
         table = db.create_table(
-            "test_table", schema=schema, namespace=["test_namespace"]
+            "test_table", schema=schema, namespace_path=["test_namespace"]
         )
         assert table is not None
 
         # Verify table exists in namespace
-        tables_in_namespace = list(db.table_names(namespace=["test_namespace"]))
+        tables_in_namespace = list(db.table_names(namespace_path=["test_namespace"]))
         assert "test_table" in tables_in_namespace
         assert len(tables_in_namespace) == 1
 
         # Open table from namespace
-        table = db.open_table("test_table", namespace=["test_namespace"])
+        table = db.open_table("test_table", namespace_path=["test_namespace"])
         assert table is not None
         assert table.name == "test_table"
 
         # Drop table from namespace
-        db.drop_table("test_table", namespace=["test_namespace"])
+        db.drop_table("test_table", namespace_path=["test_namespace"])
 
         # Verify table no longer exists in namespace
-        tables_in_namespace = list(db.table_names(namespace=["test_namespace"]))
+        tables_in_namespace = list(db.table_names(namespace_path=["test_namespace"]))
         assert len(tables_in_namespace) == 0
 
         # Drop namespace
         db.drop_namespace(["test_namespace"])
 
         # Verify namespace no longer exists
-        namespaces = list(db.list_namespaces())
+        namespaces = db.list_namespaces().namespaces
         assert len(namespaces) == 0
 
     def test_namespace_with_tables_cannot_be_dropped(self):
         """Test that namespaces containing tables cannot be dropped."""
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Create namespace and table
         db.create_namespace(["test_namespace"])
@@ -610,20 +634,20 @@ class TestNamespaceConnection:
                 pa.field("vector", pa.list_(pa.float32(), 2)),
             ]
         )
-        db.create_table("test_table", schema=schema, namespace=["test_namespace"])
+        db.create_table("test_table", schema=schema, namespace_path=["test_namespace"])
 
         # Try to drop namespace with tables - should fail
-        with pytest.raises(RuntimeError, match="contains tables"):
+        with pytest.raises(NamespaceNotEmptyError):
             db.drop_namespace(["test_namespace"])
 
         # Drop table first
-        db.drop_table("test_table", namespace=["test_namespace"])
+        db.drop_table("test_table", namespace_path=["test_namespace"])
 
         # Now dropping namespace should work
         db.drop_namespace(["test_namespace"])
 
     def test_same_table_name_different_namespaces(self):
-        db = lancedb.connect_namespace("temp", {"root": self.temp_dir})
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
 
         # Create two namespaces
         db.create_namespace(["namespace_a"])
@@ -640,10 +664,10 @@ class TestNamespaceConnection:
 
         # Create table with same name in both namespaces
         table_a = db.create_table(
-            "same_name_table", schema=schema, namespace=["namespace_a"]
+            "same_name_table", schema=schema, namespace_path=["namespace_a"]
         )
         table_b = db.create_table(
-            "same_name_table", schema=schema, namespace=["namespace_b"]
+            "same_name_table", schema=schema, namespace_path=["namespace_b"]
         )
 
         # Add different data to each table
@@ -661,7 +685,9 @@ class TestNamespaceConnection:
         table_b.add(data_b)
 
         # Verify data in namespace_a table
-        opened_table_a = db.open_table("same_name_table", namespace=["namespace_a"])
+        opened_table_a = db.open_table(
+            "same_name_table", namespace_path=["namespace_a"]
+        )
         result_a = opened_table_a.to_pandas().sort_values("id").reset_index(drop=True)
         assert len(result_a) == 2
         assert result_a["id"].tolist() == [1, 2]
@@ -672,7 +698,9 @@ class TestNamespaceConnection:
         assert [v.tolist() for v in result_a["vector"]] == [[1.0, 2.0], [3.0, 4.0]]
 
         # Verify data in namespace_b table
-        opened_table_b = db.open_table("same_name_table", namespace=["namespace_b"])
+        opened_table_b = db.open_table(
+            "same_name_table", namespace_path=["namespace_b"]
+        )
         result_b = opened_table_b.to_pandas().sort_values("id").reset_index(drop=True)
         assert len(result_b) == 3
         assert result_b["id"].tolist() == [10, 20, 30]
@@ -692,7 +720,504 @@ class TestNamespaceConnection:
         assert "same_name_table" not in root_tables
 
         # Clean up
-        db.drop_table("same_name_table", namespace=["namespace_a"])
-        db.drop_table("same_name_table", namespace=["namespace_b"])
+        db.drop_table("same_name_table", namespace_path=["namespace_a"])
+        db.drop_table("same_name_table", namespace_path=["namespace_b"])
         db.drop_namespace(["namespace_a"])
         db.drop_namespace(["namespace_b"])
+
+
+@pytest.mark.asyncio
+class TestAsyncNamespaceConnection:
+    """Test async namespace-based LanceDB connection using DirectoryNamespace."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    async def test_connect_namespace_async(self):
+        """Test connecting to LanceDB through DirectoryNamespace asynchronously."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Should be an AsyncLanceNamespaceDBConnection
+        assert isinstance(db, lancedb.AsyncLanceNamespaceDBConnection)
+
+        # Initially no tables in root
+        table_names = await db.table_names()
+        assert len(list(table_names)) == 0
+
+    async def test_list_materialized_views(self):
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        await db.create_table("source", [{"id": 1}])
+        await db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, AsyncListing)
+        assert names.num_page_results() == 0
+        assert [name async for name in names] == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
+
+    async def test_async_builtin_namespace_uses_rust_without_python_client(
+        self, monkeypatch
+    ):
+        """Built-in async namespace connections should not construct or call the
+        Python namespace client for normal namespace/table management."""
+        namespace_module = importlib.import_module("lancedb.namespace")
+
+        def fail_namespace_connect(*args, **kwargs):
+            raise AssertionError("Python namespace client should not be constructed")
+
+        monkeypatch.setattr(
+            namespace_module, "namespace_connect", fail_namespace_connect
+        )
+
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert isinstance(db, lancedb.AsyncLanceNamespaceDBConnection)
+        assert db._namespace_client is None
+        assert db._route_pushdown_to_rust is True
+
+        await db.create_namespace(["test_ns"])
+        assert "test_ns" in (await db.list_namespaces()).namespaces
+
+        schema = pa.schema([pa.field("id", pa.int64())])
+        table = await db.create_table(
+            "test_table", schema=schema, namespace_path=["test_ns"]
+        )
+        assert table._namespace_path == ["test_ns"]
+        assert table._namespace_client is None
+        assert table._route_pushdown_to_rust is True
+        assert "test_table" in await db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in (await db.list_tables(namespace_path=["test_ns"])).tables
+
+        opened = await db.open_table("test_table", namespace_path=["test_ns"])
+        assert opened._namespace_path == ["test_ns"]
+
+        await db.drop_table("test_table", namespace_path=["test_ns"])
+        assert (await db.list_tables(namespace_path=["test_ns"])).tables == []
+        await db.drop_namespace(["test_ns"])
+        assert "test_ns" not in (await db.list_namespaces()).namespaces
+
+    async def test_async_namespace_client_is_lazy(self):
+        """namespace_client() should still return the backing client on demand."""
+        pytest.importorskip("lance")
+        from lance.namespace import DirectoryNamespace
+
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert db._namespace_client is None
+
+        ns_client = await db.namespace_client()
+
+        assert isinstance(ns_client, DirectoryNamespace)
+        namespace_id = ns_client.namespace_id().replace("\\\\", "\\")
+        assert str(self.temp_dir) in namespace_id
+        assert db._namespace_client is ns_client
+
+    # Async connect via namespace helper is not enabled yet.
+
+    async def test_create_table_async(self):
+        """Test creating a table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Define schema for empty table
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+                pa.field("text", pa.string()),
+            ]
+        )
+
+        # Create empty table in child namespace
+        table = await db.create_table(
+            "test_table", schema=schema, namespace_path=["test_ns"]
+        )
+        assert table is not None
+        assert isinstance(table, lancedb.AsyncTable)
+
+        # Table should appear in child namespace
+        table_names = await db.table_names(namespace_path=["test_ns"])
+        assert "test_table" in list(table_names)
+
+    async def test_open_table_async(self):
+        """Test opening an existing table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create a table with schema in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        await db.create_table("test_table", schema=schema, namespace_path=["test_ns"])
+
+        # Open the table
+        table = await db.open_table("test_table", namespace_path=["test_ns"])
+        assert table is not None
+        assert isinstance(table, lancedb.AsyncTable)
+
+        # Test write operation - add data to the table
+        test_data = [
+            {"id": 1, "vector": [1.0, 2.0]},
+            {"id": 2, "vector": [3.0, 4.0]},
+            {"id": 3, "vector": [5.0, 6.0]},
+        ]
+        await table.add(test_data)
+
+        # Test read operation - query the table
+        result = await table.to_arrow()
+        assert len(result) == 3
+        assert result.schema.field("id").type == pa.int64()
+        assert result.schema.field("vector").type == pa.list_(pa.float32(), 2)
+
+        # Verify data content
+        result_df = result.to_pandas()
+        assert result_df["id"].tolist() == [1, 2, 3]
+        assert [v.tolist() for v in result_df["vector"]] == [
+            [1.0, 2.0],
+            [3.0, 4.0],
+            [5.0, 6.0],
+        ]
+
+        # Test update operation
+        await table.update({"id": 20}, where="id = 2")
+        result = await table.to_arrow()
+        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
+        assert result_df["id"].tolist() == [1, 3, 20]
+
+        # Test delete operation
+        await table.delete("id = 1")
+        result = await table.to_arrow()
+        assert len(result) == 2
+        result_df = result.to_pandas().sort_values("id").reset_index(drop=True)
+        assert result_df["id"].tolist() == [3, 20]
+
+    async def test_drop_table_async(self):
+        """Test dropping a table asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create tables in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        await db.create_table("table1", schema=schema, namespace_path=["test_ns"])
+        await db.create_table("table2", schema=schema, namespace_path=["test_ns"])
+
+        # Verify both tables exist in child namespace
+        table_names = list(await db.table_names(namespace_path=["test_ns"]))
+        assert "table1" in table_names
+        assert "table2" in table_names
+        assert len(table_names) == 2
+
+        # Drop one table
+        await db.drop_table("table1", namespace_path=["test_ns"])
+
+        # Verify only table2 remains
+        table_names = list(await db.table_names(namespace_path=["test_ns"]))
+        assert "table1" not in table_names
+        assert "table2" in table_names
+        assert len(table_names) == 1
+
+    async def test_namespace_operations_async(self):
+        """Test namespace management operations asynchronously."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Initially no namespaces
+        namespaces = await db.list_namespaces()
+        assert len(namespaces.namespaces) == 0
+
+        # Create a namespace
+        await db.create_namespace(["test_namespace"])
+
+        # Verify namespace exists
+        namespaces = (await db.list_namespaces()).namespaces
+        assert "test_namespace" in namespaces
+        assert len(namespaces) == 1
+
+        # Create table in namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        table = await db.create_table(
+            "test_table", schema=schema, namespace_path=["test_namespace"]
+        )
+        assert table is not None
+
+        # Verify table exists in namespace
+        tables_in_namespace = list(
+            await db.table_names(namespace_path=["test_namespace"])
+        )
+        assert "test_table" in tables_in_namespace
+        assert len(tables_in_namespace) == 1
+
+        # Drop table from namespace
+        await db.drop_table("test_table", namespace_path=["test_namespace"])
+
+        # Verify table no longer exists in namespace
+        tables_in_namespace = list(
+            await db.table_names(namespace_path=["test_namespace"])
+        )
+        assert len(tables_in_namespace) == 0
+
+        # Drop namespace
+        await db.drop_namespace(["test_namespace"])
+
+        # Verify namespace no longer exists
+        namespaces = (await db.list_namespaces()).namespaces
+        assert len(namespaces) == 0
+
+    async def test_drop_all_tables_async(self):
+        """Test dropping all tables asynchronously through namespace."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+
+        # Create a child namespace first
+        await db.create_namespace(["test_ns"])
+
+        # Create multiple tables in child namespace
+        schema = pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field("vector", pa.list_(pa.float32(), 2)),
+            ]
+        )
+        for i in range(3):
+            await db.create_table(
+                f"table{i}", schema=schema, namespace_path=["test_ns"]
+            )
+
+        # Verify tables exist in child namespace
+        table_names = await db.table_names(namespace_path=["test_ns"])
+        assert len(list(table_names)) == 3
+
+        # Drop all tables in child namespace
+        await db.drop_all_tables(namespace_path=["test_ns"])
+
+        # Verify all tables are gone from child namespace
+        table_names = await db.table_names(namespace_path=["test_ns"])
+        assert len(list(table_names)) == 0
+
+
+class TestPushdownOperations:
+    """Test pushdown operations on namespace connections."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def test_query_table_pushdown_stored(self):
+        """Test that QueryTable pushdown is stored on sync connection."""
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": self.temp_dir},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert "QueryTable" in db._namespace_client_pushdown_operations
+
+    def test_create_table_pushdown_stored(self):
+        """Test that CreateTable pushdown is stored on sync connection."""
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": self.temp_dir},
+            namespace_client_pushdown_operations=["CreateTable"],
+        )
+        assert "CreateTable" in db._namespace_client_pushdown_operations
+
+    def test_both_pushdowns_stored(self):
+        """Test that both pushdown operations can be set together."""
+        db = lancedb.connect_namespace(
+            "dir",
+            {"root": self.temp_dir},
+            namespace_client_pushdown_operations=["QueryTable", "CreateTable"],
+        )
+        assert "QueryTable" in db._namespace_client_pushdown_operations
+        assert "CreateTable" in db._namespace_client_pushdown_operations
+
+    def test_pushdown_defaults_to_empty(self):
+        """Test that pushdown operations default to empty."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert len(db._namespace_client_pushdown_operations) == 0
+
+    def test_route_pushdown_to_rust_for_native_rest(self):
+        """A natively-built rest connection must defer QueryTable pushdown to
+        Rust so reads carry the x-lancedb-min-timestamp read-freshness header."""
+        db = lancedb.connect_namespace(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_route_pushdown_to_rust_for_native_dir(self):
+        """The sync dir connection is natively built and defers QueryTable
+        pushdown to Rust."""
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is True
+
+    def test_async_route_pushdown_to_rust_for_native_rest(self):
+        """The async connection must not silently bypass the read-freshness fix:
+        a natively-built rest connection defers pushdown to Rust (regression test
+        for the async path omitting the freshness header)."""
+        db = lancedb.connect_namespace_async(
+            "rest",
+            {"uri": "http://localhost:12345"},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert db._route_pushdown_to_rust is True
+
+    def test_async_route_pushdown_to_rust_for_native_dir(self):
+        """The async dir connection is natively built and defers QueryTable
+        pushdown to Rust."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert db._route_pushdown_to_rust is True
+
+    def test_lance_table_to_arrow_uses_query_pushdown(self):
+        namespace_client = _NamespaceClient()
+        table = _namespace_lance_table(namespace_client)
+
+        assert table.to_arrow().equals(PUSHDOWN_DATA)
+        assert table.to_pandas()["id"].tolist() == list(range(12))
+        assert len(namespace_client.requests) == 2
+        assert [request.id for request in namespace_client.requests] == [
+            ["geneva", "hist"],
+            ["geneva", "hist"],
+        ]
+        # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
+        # field is i32); sys.maxsize would overflow the Rust binding.
+        assert [request.k for request in namespace_client.requests] == [
+            _MAX_QUERY_K,
+            _MAX_QUERY_K,
+        ]
+        assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+    def test_probe_fields_pass_through_independently(self):
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(
+                vector=[1.0, 2.0],
+                nprobes=20,
+                minimum_nprobes=3,
+                maximum_nprobes=10,
+            ),
+        )
+
+        assert request.nprobes == 20
+        assert request.minimum_nprobes == 3
+        assert request.maximum_nprobes == 10
+
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(vector=[1.0, 2.0], nprobes=5, maximum_nprobes=0),
+        )
+        assert request.nprobes == 5
+        assert request.maximum_nprobes == 0
+        assert request.to_dict()["maximum_nprobes"] == 0
+
+
+@pytest.mark.asyncio
+class TestAsyncPushdownOperations:
+    """Test pushdown operations on async namespace connections."""
+
+    def setup_method(self):
+        """Set up test fixtures."""
+        self.temp_dir = tempfile.mkdtemp()
+
+    def teardown_method(self):
+        """Clean up test fixtures."""
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    async def test_async_query_table_pushdown_stored(self):
+        """Test that QueryTable pushdown is stored on async connection."""
+        db = lancedb.connect_namespace_async(
+            "dir",
+            {"root": self.temp_dir},
+            namespace_client_pushdown_operations=["QueryTable"],
+        )
+        assert "QueryTable" in db._namespace_client_pushdown_operations
+
+    async def test_async_create_table_pushdown_stored(self):
+        """Test that CreateTable pushdown is stored on async connection."""
+        db = lancedb.connect_namespace_async(
+            "dir",
+            {"root": self.temp_dir},
+            namespace_client_pushdown_operations=["CreateTable"],
+        )
+        assert "CreateTable" in db._namespace_client_pushdown_operations
+
+    async def test_async_pushdown_defaults_to_empty(self):
+        """Test that pushdown operations default to empty on async connection."""
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        assert len(db._namespace_client_pushdown_operations) == 0
+
+    async def test_async_table_to_arrow_uses_query_pushdown(self):
+        namespace_client = _NamespaceClient()
+
+        table = AsyncTable(
+            _FailingAsyncInner(),
+            namespace_path=["geneva"],
+            namespace_client=namespace_client,
+            pushdown_operations={"QueryTable"},
+        )
+
+        assert (await table.to_arrow()).equals(PUSHDOWN_DATA)
+        assert (await table.to_pandas())["id"].tolist() == list(range(12))
+        assert len(namespace_client.requests) == 2
+        assert [request.id for request in namespace_client.requests] == [
+            ["geneva", "hist"],
+            ["geneva", "hist"],
+        ]
+        # Unlimited reads cap k at i32::MAX (the namespace query_table `k`
+        # field is i32); sys.maxsize would overflow the Rust binding.
+        assert [request.k for request in namespace_client.requests] == [
+            _MAX_QUERY_K,
+            _MAX_QUERY_K,
+        ]
+        assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
+
+
+def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
+    db = lancedb.connect(str(tmp_path / "db"))
+    table = db.create_table(
+        "local",
+        data=[
+            {"id": 1, "vector": [1.0, 2.0]},
+            {"id": 2, "vector": [3.0, 4.0]},
+        ],
+    )
+
+    assert table.to_arrow().column("id").to_pylist() == [1, 2]
+    assert table.to_pandas()["id"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("effort", [0.0, 0.5, 1.0])
+def test_namespace_request_rejects_search_effort(effort):
+    from lancedb.query import Query
+
+    with pytest.raises(
+        ValueError, match="namespace QueryTable does not support search_effort"
+    ):
+        _query_to_namespace_request(
+            ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
+        )

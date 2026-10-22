@@ -8,6 +8,14 @@
 
 ## Properties
 
+### numDeletedRows
+
+```ts
+numDeletedRows: number;
+```
+
+***
+
 ### version
 
 ```ts

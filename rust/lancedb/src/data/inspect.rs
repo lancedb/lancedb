@@ -5,9 +5,9 @@ use std::collections::HashMap;
 
 use arrow::compute::kernels::{aggregate::bool_and, length::length};
 use arrow_array::{
+    Array, GenericListArray, OffsetSizeTrait, PrimitiveArray, RecordBatchReader,
     cast::AsArray,
     types::{ArrowPrimitiveType, Int32Type, Int64Type},
-    Array, GenericListArray, OffsetSizeTrait, PrimitiveArray, RecordBatchReader,
 };
 use arrow_ord::cmp::eq;
 use arrow_schema::DataType;
@@ -52,13 +52,13 @@ pub fn infer_vector_columns(
     for field in reader.schema().fields() {
         match field.data_type() {
             DataType::FixedSizeList(sub_field, _) if sub_field.data_type().is_floating() => {
-                columns.push(field.name().to_string());
+                columns.push(field.name().clone());
             }
             DataType::List(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_to_infer.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().clone(), None);
             }
             DataType::LargeList(sub_field) if sub_field.data_type().is_floating() && !strict => {
-                columns_to_infer.insert(field.name().to_string(), None);
+                columns_to_infer.insert(field.name().clone(), None);
             }
             _ => {}
         }
@@ -78,7 +78,7 @@ pub fn infer_vector_columns(
                 _ => {
                     return Err(Error::Schema {
                         message: format!("Column {} is not a list", col_name),
-                    })
+                    });
                 }
             } {
                 if let Some(Some(prev_dim)) = columns_to_infer.get(&col_name) {
@@ -102,8 +102,8 @@ mod tests {
     use super::*;
 
     use arrow_array::{
-        types::{Float32Type, Float64Type},
         FixedSizeListArray, Float32Array, ListArray, RecordBatch, RecordBatchIterator, StringArray,
+        types::{Float32Type, Float64Type},
     };
     use arrow_schema::{DataType, Field, Schema};
     use std::{sync::Arc, vec};

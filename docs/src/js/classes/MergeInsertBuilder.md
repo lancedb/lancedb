@@ -52,6 +52,80 @@ the merge result
 
 ***
 
+### useIndex()
+
+```ts
+useIndex(useIndex): MergeInsertBuilder
+```
+
+Controls whether to use indexes for the merge operation.
+
+When set to `true` (the default), the operation will use an index if available
+on the join key for improved performance. When set to `false`, it forces a full
+table scan even if an index exists. This can be useful for benchmarking or when
+the query optimizer chooses a suboptimal path.
+
+#### Parameters
+
+* **useIndex**: `boolean`
+    Whether to use indices for the merge operation. Defaults to `true`.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
+
+***
+
+### useRTE()
+
+```ts
+useRTE(enable): MergeInsertBuilder
+```
+
+Control RTE routing for this merge.
+
+By default (unset), a `mergeInsert` on a table with an RTE write spec is
+routed through Lance's MemWAL shard writer, and a table without one uses the
+standard path.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `true` forces RTE routing and errors if the table has no
+    RTE write spec. `false` forces the standard write path even when a spec is set.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
+
+***
+
+### validateSingleShard()
+
+```ts
+validateSingleShard(validateSingleShard): MergeInsertBuilder
+```
+
+Controls how an LSM merge checks that its input targets a single shard.
+
+When a table has an RTE write spec, every row in a `mergeInsert` call must
+route to the same shard. When `true` (the default), every row is inspected
+to verify this. When `false`, only the first row is inspected and the
+shard it routes to is used for the whole input — a faster path for callers
+that have already pre-sharded their input. Has no effect on tables without
+an RTE write spec.
+
+#### Parameters
+
+* **validateSingleShard**: `boolean`
+    Whether to check every row routes to one shard. Defaults to `true`.
+
+#### Returns
+
+[`MergeInsertBuilder`](MergeInsertBuilder.md)
+
+***
+
 ### whenMatchedUpdateAll()
 
 ```ts
@@ -67,7 +141,7 @@ Currently this causes multiple copies of the row to be created
 but that behavior is subject to change.
 
 An optional condition may be specified.  If it is, then only
-matched rows that satisfy the condtion will be updated.  Any
+matched rows that satisfy the condition will be updated.  Any
 rows that do not satisfy the condition will be left as they
 are.  Failing to satisfy the condition does not cause a
 "matched row" to become a "not matched" row.

@@ -1,0 +1,1712 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+//! Namespace-based database implementation that delegates table management to lance-namespace
+
+use lance_datafusion::utils::StreamingWriteSource;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use lance::io::commit::namespace_manifest::LanceNamespaceExternalManifestStore;
+use lance_io::object_store::{ObjectStoreParams, StorageOptionsAccessor};
+use lance_namespace::{
+    LanceNamespace,
+    error::{ErrorCode, NamespaceError},
+    models::{
+        CreateNamespaceRequest, CreateNamespaceResponse, DeclareTableRequest,
+        DescribeNamespaceRequest, DescribeNamespaceResponse, DescribeTableRequest,
+        DropNamespaceRequest, DropNamespaceResponse, DropTableRequest, ListNamespacesRequest,
+        ListNamespacesResponse, ListTablesRequest, ListTablesResponse, RenameTableRequest,
+    },
+};
+use lance_namespace_impls::ConnectBuilder;
+use lance_table::io::commit::CommitHandler;
+use lance_table::io::commit::external_manifest::ExternalManifestCommitHandler;
+
+use crate::blob::ensure_blob_storage_version;
+use crate::connection::NamespaceClientPushdownOperation;
+use crate::database::ReadConsistency;
+use crate::database::listing::{NewTableConfig, take_request_creation_overrides};
+use crate::database::read_freshness::{
+    FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
+};
+use crate::error::{Error, Result};
+use crate::table::{NativeTable, map_namespace_lance_error};
+use lance::dataset::WriteMode;
+
+use super::{
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
+    Database, OpenTableRequest, TableNamesRequest,
+};
+
+/// Returns true if the given `lance::Error` (anywhere in its source chain) is a
+/// `NamespaceError::TableAlreadyExists`.
+fn is_table_already_exists_namespace_error(err: &lance::Error) -> bool {
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(err);
+    while let Some(e) = current {
+        if let Some(ns_err) = e.downcast_ref::<NamespaceError>() {
+            return ns_err.code() == ErrorCode::TableAlreadyExists;
+        }
+        current = e.source();
+    }
+    false
+}
+
+/// Object-id delimiter default (matches `RestNamespaceBuilder`'s); overridable
+/// via the `delimiter` property.
+const DEFAULT_NAMESPACE_DELIMITER: &str = "$";
+
+/// A database implementation that uses lance-namespace for table management
+pub struct LanceNamespaceDatabase {
+    namespace: Arc<dyn LanceNamespace>,
+    // Storage options to be inherited by tables
+    storage_options: HashMap<String, String>,
+    // Read consistency interval for tables
+    read_consistency_interval: Option<std::time::Duration>,
+    // Optional session for object stores and caching
+    session: Option<Arc<lance::session::Session>>,
+    // database URI
+    uri: String,
+    // Operations to push down to the namespace server
+    pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    // Namespace implementation type (e.g., "dir", "rest")
+    ns_impl: String,
+    // Namespace properties used to construct the namespace client
+    ns_properties: HashMap<String, String>,
+    // Options for tables created by this connection
+    new_table_config: NewTableConfig,
+    // Per-table read-freshness baselines, shared with the context provider.
+    freshness_baselines: FreshnessBaselines,
+    // Delimiter for building freshness keys; see `table_freshness`.
+    delimiter: String,
+}
+
+fn resolve_delimiter(ns_properties: &HashMap<String, String>) -> String {
+    ns_properties
+        .get("delimiter")
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_NAMESPACE_DELIMITER.to_string())
+}
+
+impl LanceNamespaceDatabase {
+    pub fn from_namespace_client(
+        namespace_client: Arc<dyn LanceNamespace>,
+        namespace_client_impl: String,
+        namespace_client_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        namespace_client_pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    ) -> Self {
+        // Client is pre-built, so we can't install the freshness provider here;
+        // baselines are still tracked for a uniform bump path.
+        let delimiter = resolve_delimiter(&namespace_client_properties);
+        Self {
+            namespace: namespace_client,
+            storage_options,
+            read_consistency_interval,
+            session,
+            uri: format!("namespace://{}", namespace_client_impl),
+            pushdown_operations: namespace_client_pushdown_operations,
+            ns_impl: namespace_client_impl,
+            ns_properties: namespace_client_properties,
+            new_table_config: NewTableConfig::default(),
+            freshness_baselines: Arc::new(Mutex::new(HashMap::new())),
+            delimiter,
+        }
+    }
+
+    pub(crate) fn with_uri(mut self, uri: impl Into<String>) -> Self {
+        self.uri = uri.into();
+        self
+    }
+
+    pub async fn connect(
+        ns_impl: &str,
+        ns_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+    ) -> Result<Self> {
+        Self::connect_with_new_table_config(
+            ns_impl,
+            ns_properties,
+            storage_options,
+            read_consistency_interval,
+            session,
+            pushdown_operations,
+            NewTableConfig::default(),
+        )
+        .await
+    }
+
+    pub(crate) async fn connect_with_new_table_config(
+        ns_impl: &str,
+        ns_properties: HashMap<String, String>,
+        storage_options: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Option<Arc<lance::session::Session>>,
+        pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
+        new_table_config: NewTableConfig,
+    ) -> Result<Self> {
+        let mut builder = ConnectBuilder::new(ns_impl);
+        for (key, value) in ns_properties.clone() {
+            builder = builder.property(key, value);
+        }
+        if let Some(ref sess) = session {
+            builder = builder.session(sess.clone());
+        }
+
+        // Install the read-freshness provider before building the client.
+        let freshness_baselines: FreshnessBaselines = Arc::new(Mutex::new(HashMap::new()));
+        builder = builder.context_provider(Arc::new(ReadFreshnessContextProvider::new(
+            freshness_baselines.clone(),
+            read_consistency_interval,
+        )));
+
+        let namespace = builder.connect().await.map_err(|e| Error::InvalidInput {
+            message: format!("Failed to connect to namespace: {:?}", e),
+        })?;
+
+        let delimiter = resolve_delimiter(&ns_properties);
+        Ok(Self {
+            namespace,
+            storage_options,
+            read_consistency_interval,
+            session,
+            uri: format!("namespace://{}", ns_impl),
+            pushdown_operations,
+            ns_impl: ns_impl.to_string(),
+            ns_properties,
+            new_table_config,
+            freshness_baselines,
+            delimiter,
+        })
+    }
+
+    /// Build a table's freshness handle, keyed to match the `object_id` the
+    /// namespace client sends on reads (table-id parts joined by the delimiter).
+    fn table_freshness(&self, namespace_path: &[String], name: &str) -> TableFreshness {
+        let mut parts = namespace_path.to_vec();
+        parts.push(name.to_string());
+        let key = parts.join(&self.delimiter);
+        TableFreshness::new(self.freshness_baselines.clone(), key)
+    }
+
+    fn apply_new_table_config(
+        &self,
+        params: &mut lance::dataset::WriteParams,
+        request: &DbCreateTableRequest,
+    ) -> Result<()> {
+        let overrides = take_request_creation_overrides(params)?;
+
+        params.data_storage_version = overrides
+            .data_storage_version
+            .or(params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
+
+        if let Some(enable_v2_manifest_paths) = overrides
+            .enable_v2_manifest_paths
+            .or(self.new_table_config.enable_v2_manifest_paths)
+        {
+            params.enable_v2_manifest_paths = enable_v2_manifest_paths;
+        }
+
+        let data_schema = request.data.schema();
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
+            .or(self.new_table_config.enable_stable_row_ids)
+        {
+            params.enable_stable_row_ids = enable_stable_row_ids;
+        }
+
+        ensure_blob_storage_version(data_schema.as_ref(), params);
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for LanceNamespaceDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LanceNamespaceDatabase")
+            .field("storage_options", &self.storage_options)
+            .field("read_consistency_interval", &self.read_consistency_interval)
+            .field("pushdown_operations", &self.pushdown_operations)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for LanceNamespaceDatabase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "LanceNamespaceDatabase")
+    }
+}
+
+#[async_trait]
+impl Database for LanceNamespaceDatabase {
+    fn uri(&self) -> &str {
+        &self.uri
+    }
+
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(interval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
+    }
+
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        Ok(self.namespace.list_namespaces(request).await?)
+    }
+
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        Ok(self.namespace.create_namespace(request).await?)
+    }
+
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        Ok(self.namespace.drop_namespace(request).await?)
+    }
+
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        Ok(self.namespace.describe_namespace(request).await?)
+    }
+
+    async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
+        if request.limit == Some(0) {
+            return Ok(Vec::new());
+        }
+
+        // Namespace tokens are opaque, and pages need not arrive in name order.
+        // Collect the listing before applying the name cursor and overall limit.
+        let mut names = Vec::new();
+        let mut page_token = None;
+        let mut seen_tokens = HashSet::new();
+        loop {
+            let response = self
+                .namespace
+                .list_tables(ListTablesRequest {
+                    id: Some(request.namespace_path.clone()),
+                    page_token,
+                    ..Default::default()
+                })
+                .await?;
+            names.extend(response.tables);
+            let Some(token) = response.page_token.filter(|token| !token.is_empty()) else {
+                break;
+            };
+            if !seen_tokens.insert(token.clone()) {
+                return Err(Error::Runtime {
+                    message: "Namespace table listing response repeated a page_token".into(),
+                });
+            }
+            page_token = Some(token);
+        }
+
+        names.sort();
+        if let Some(ref start_after) = request.start_after {
+            names.retain(|name| name > start_after);
+        }
+        if let Some(limit) = request.limit {
+            names.truncate(limit as usize);
+        }
+        Ok(names)
+    }
+
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        Ok(self.namespace.list_tables(request).await?)
+    }
+
+    async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Refuse a bad declaration before the namespace records a table.
+        crate::table::computed_columns::ensure_declarations_are_planned(
+            &request.data.arrow_schema(),
+        )?;
+        let mut table_id = request.namespace_path.clone();
+        table_id.push(request.name.clone());
+        let mut existing_table = None;
+
+        match request.mode {
+            CreateTableMode::Create => {}
+            CreateTableMode::Overwrite => {
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                existing_table = self.namespace.describe_table(describe_request).await.ok();
+            }
+            CreateTableMode::ExistOk(_) => {
+                let describe_request = DescribeTableRequest {
+                    id: Some(table_id.clone()),
+                    ..Default::default()
+                };
+                let describe_result = self.namespace.describe_table(describe_request).await;
+                if describe_result.is_ok() {
+                    let native_table = NativeTable::open_from_namespace(
+                        self.namespace.clone(),
+                        &request.name,
+                        request.namespace_path.clone(),
+                        None,
+                        None,
+                        self.read_consistency_interval,
+                        self.pushdown_operations.clone(),
+                        self.session.clone(),
+                    )
+                    .await?
+                    .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
+
+                    return Ok(Arc::new(native_table));
+                }
+            }
+        }
+
+        let mut table_id = request.namespace_path.clone();
+        table_id.push(request.name.clone());
+
+        let declare_request = DeclareTableRequest {
+            id: Some(table_id.clone()),
+            ..Default::default()
+        };
+
+        let (location, initial_storage_options, managed_versioning) = {
+            if let Some(response) = existing_table {
+                let loc = response.location.ok_or_else(|| Error::Runtime {
+                    message: "Table location is missing from describe_table response".to_string(),
+                })?;
+                let opts = response
+                    .storage_options
+                    .or_else(|| Some(self.storage_options.clone()))
+                    .filter(|o| !o.is_empty());
+                (loc, opts, response.managed_versioning)
+            } else {
+                match self.namespace.declare_table(declare_request).await {
+                    Ok(response) => {
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from declare_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e)
+                        if matches!(request.mode, CreateTableMode::Create)
+                            && is_table_already_exists_namespace_error(&e) =>
+                    {
+                        // A declare conflict can either mean (a) the table was previously
+                        // *declared* but never written (in which case we should proceed and
+                        // create it), or (b) the table is fully realized (in which case the
+                        // user is creating something that already exists and we should
+                        // surface TableAlreadyExists). Disambiguate by describing the table
+                        // and checking whether it has both a version and a schema.
+                        let response = self
+                            .namespace
+                            .describe_table(DescribeTableRequest {
+                                id: Some(table_id.clone()),
+                                ..Default::default()
+                            })
+                            .await
+                            .map_err(|describe_err| {
+                                map_namespace_lance_error(describe_err, &request.name)
+                            })?;
+
+                        if response.version.is_some() && response.schema.is_some() {
+                            return Err(Error::TableAlreadyExists {
+                                name: request.name.clone(),
+                            });
+                        }
+
+                        let loc = response.location.ok_or_else(|| Error::Runtime {
+                            message: "Table location is missing from describe_table response"
+                                .to_string(),
+                        })?;
+                        let opts = response
+                            .storage_options
+                            .or_else(|| Some(self.storage_options.clone()))
+                            .filter(|o: &HashMap<String, String>| !o.is_empty());
+                        (loc, opts, response.managed_versioning)
+                    }
+                    Err(e) => {
+                        return Err(map_namespace_lance_error(e, &request.name));
+                    }
+                }
+            }
+        };
+
+        // Build write params with storage options and commit handler
+        let mut params = request
+            .write_options
+            .lance_write_params
+            .clone()
+            .unwrap_or_default();
+        self.apply_new_table_config(&mut params, &request)?;
+
+        if matches!(request.mode, CreateTableMode::Overwrite) {
+            params.mode = WriteMode::Overwrite;
+        }
+
+        // Set up storage options if provided
+        if let Some(storage_opts) = initial_storage_options {
+            let store_params = params
+                .store_params
+                .get_or_insert_with(ObjectStoreParams::default);
+            store_params.storage_options_accessor = Some(Arc::new(
+                StorageOptionsAccessor::with_static_options(storage_opts),
+            ));
+        }
+
+        // Set up commit handler when managed_versioning is enabled
+        if managed_versioning == Some(true) {
+            let external_store = LanceNamespaceExternalManifestStore::for_table_uri(
+                self.namespace.clone(),
+                table_id.clone(),
+                &location,
+            )?;
+            let commit_handler: Arc<dyn CommitHandler> = Arc::new(ExternalManifestCommitHandler {
+                external_manifest_store: Arc::new(external_store),
+            });
+            params.commit_handler = Some(commit_handler);
+        }
+
+        let write_params = Some(params);
+
+        let native_table = NativeTable::create_from_namespace(
+            self.namespace.clone(),
+            &location,
+            &request.name,
+            request.namespace_path.clone(),
+            request.data,
+            None, // write_store_wrapper not used for namespace connections
+            write_params,
+            self.read_consistency_interval,
+            self.pushdown_operations.clone(),
+            self.session.clone(),
+        )
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
+
+        Ok(Arc::new(native_table))
+    }
+
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        let native_table = NativeTable::open_from_namespace(
+            self.namespace.clone(),
+            &request.name,
+            request.namespace_path.clone(),
+            None, // write_store_wrapper not used for namespace connections
+            request.lance_read_params,
+            self.read_consistency_interval,
+            self.pushdown_operations.clone(),
+            self.session.clone(),
+        )
+        .await?
+        .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
+
+        Ok(Arc::new(native_table))
+    }
+
+    async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "clone_table is not supported for namespace connections".to_string(),
+        })
+    }
+
+    async fn rename_table(
+        &self,
+        cur_name: &str,
+        new_name: &str,
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
+    ) -> Result<()> {
+        let mut cur_table_id = cur_namespace_path.to_vec();
+        cur_table_id.push(cur_name.to_string());
+
+        let new_namespace_id = if new_namespace_path.is_empty() {
+            None
+        } else {
+            Some(new_namespace_path.to_vec())
+        };
+
+        let rename_request = RenameTableRequest {
+            id: Some(cur_table_id),
+            new_table_name: new_name.to_string(),
+            new_namespace_id,
+            ..Default::default()
+        };
+        self.namespace
+            .rename_table(rename_request)
+            .await
+            .map_err(|e| Error::Runtime {
+                message: format!("Failed to rename table: {}", e),
+            })?;
+
+        Ok(())
+    }
+
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let mut table_id = namespace_path.to_vec();
+        table_id.push(name.to_string());
+
+        let drop_request = DropTableRequest {
+            id: Some(table_id),
+            ..Default::default()
+        };
+        self.namespace
+            .drop_table(drop_request)
+            .await
+            .map_err(|e| map_namespace_lance_error(e, name))?;
+
+        Ok(())
+    }
+
+    #[allow(deprecated)]
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
+        let tables = self
+            .table_names(TableNamesRequest {
+                namespace_path: namespace_path.to_vec(),
+                start_after: None,
+                limit: None,
+            })
+            .await?;
+
+        for table in tables {
+            self.drop_table(&table, namespace_path).await?;
+        }
+
+        Ok(())
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>> {
+        Ok(self.namespace.clone())
+    }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        Ok((self.ns_impl.clone(), self.ns_properties.clone()))
+    }
+}
+
+#[cfg(test)]
+#[cfg(not(windows))] // TODO: support windows for lance-namespace
+mod tests {
+    use super::*;
+    use crate::connect_namespace;
+    use crate::query::ExecutableQuery;
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use futures::TryStreamExt;
+    use tempfile::tempdir;
+
+    #[derive(Debug)]
+    struct ScriptedNamespace {
+        pages: Vec<ListTablesResponse>,
+        requests: Mutex<Vec<ListTablesRequest>>,
+    }
+
+    #[async_trait]
+    impl LanceNamespace for ScriptedNamespace {
+        fn namespace_id(&self) -> String {
+            "scripted".into()
+        }
+
+        async fn list_tables(
+            &self,
+            request: ListTablesRequest,
+        ) -> lance_core::Result<ListTablesResponse> {
+            let mut requests = self.requests.lock().unwrap();
+            let page = self.pages[requests.len()].clone();
+            requests.push(request);
+            Ok(page)
+        }
+    }
+
+    fn namespace_with_pages(
+        pages: Vec<ListTablesResponse>,
+    ) -> (LanceNamespaceDatabase, Arc<ScriptedNamespace>) {
+        let namespace = Arc::new(ScriptedNamespace {
+            pages,
+            requests: Mutex::new(Vec::new()),
+        });
+        let db = LanceNamespaceDatabase::from_namespace_client(
+            namespace.clone(),
+            "scripted".into(),
+            HashMap::new(),
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+        );
+        (db, namespace)
+    }
+
+    fn listing_page(names: &[&str], token: Option<&str>) -> ListTablesResponse {
+        ListTablesResponse {
+            tables: names.iter().map(|name| (*name).into()).collect(),
+            page_token: token.map(String::from),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_collects_namespace_pages() {
+        for namespace_path in [vec![], vec!["child".into()]] {
+            for (start_after, limit, expected) in [
+                (None, None, vec!["a", "b", "c", "d"]),
+                (Some("a".into()), Some(2), vec!["b", "c"]),
+            ] {
+                let (db, namespace) = namespace_with_pages(vec![
+                    listing_page(&["d", "b"], Some("opaque-1")),
+                    listing_page(&[], Some("opaque-2")),
+                    listing_page(&["c", "a"], None),
+                ]);
+                let names = db
+                    .table_names(TableNamesRequest {
+                        namespace_path: namespace_path.clone(),
+                        start_after,
+                        limit,
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(names, expected);
+
+                let requests = namespace.requests.lock().unwrap();
+                assert_eq!(requests.len(), 3);
+                for request in requests.iter() {
+                    assert_eq!(request.id.as_ref(), Some(&namespace_path));
+                    assert_eq!(request.limit, None);
+                }
+                assert_eq!(requests[0].page_token, None);
+                assert_eq!(requests[1].page_token.as_deref(), Some("opaque-1"));
+                assert_eq!(requests[2].page_token.as_deref(), Some("opaque-2"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_zero_limit_skips_namespace_request() {
+        let (db, namespace) = namespace_with_pages(vec![]);
+        assert!(
+            db.table_names(TableNamesRequest {
+                limit: Some(0),
+                ..Default::default()
+            })
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(namespace.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_stops_on_empty_namespace_token() {
+        let (db, namespace) = namespace_with_pages(vec![listing_page(&["a"], Some(""))]);
+        assert_eq!(
+            db.table_names(TableNamesRequest::default()).await.unwrap(),
+            vec!["a"]
+        );
+        assert_eq!(namespace.requests.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn test_table_names_rejects_namespace_token_cycle() {
+        let (db, namespace) = namespace_with_pages(vec![
+            listing_page(&["a"], Some("one")),
+            listing_page(&["b"], Some("two")),
+            listing_page(&["c"], Some("one")),
+        ]);
+        let error = db
+            .table_names(TableNamesRequest::default())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("repeated a page_token"));
+        assert_eq!(namespace.requests.lock().unwrap().len(), 3);
+    }
+
+    /// Helper function to create test data
+    fn create_test_data() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let id_array = Int32Array::from(vec![1, 2, 3, 4, 5]);
+        let name_array = StringArray::from(vec!["Alice", "Bob", "Charlie", "David", "Eve"]);
+
+        RecordBatch::try_new(schema, vec![Arc::new(id_array), Arc::new(name_array)]).unwrap()
+    }
+
+    /// The shared parse-and-sanitize boundary is wired into this path: the
+    /// request-level creation key must act as an override (the strip itself
+    /// is covered by the listing tests).
+    #[tokio::test]
+    async fn request_level_creation_keys_are_taken_as_overrides() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .unwrap();
+
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        let table = db
+            .create_table("t", create_test_data())
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .get()
+                .await
+                .unwrap()
+                .manifest
+                .uses_stable_row_ids(),
+            "the creation key must be honored as an override"
+        );
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 5);
+    }
+
+    /// Sanitation on this path: apply must strip the creation keys from the
+    /// store options while genuine options and the provider survive.
+    #[tokio::test]
+    async fn apply_new_table_config_sanitizes_request_store_options() {
+        use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+        use lance_io::object_store::StorageOptionsProvider;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        let tmp_dir = tempdir().unwrap();
+        let mut properties = HashMap::new();
+        properties.insert(
+            "root".to_string(),
+            tmp_dir.path().to_str().unwrap().to_string(),
+        );
+        let db = LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            properties,
+            HashMap::new(),
+            None,
+            None,
+            HashSet::new(),
+            NewTableConfig::default(),
+        )
+        .await
+        .unwrap();
+
+        let request = DbCreateTableRequest::new("t".to_string(), Box::new(create_test_data()));
+        let mut params = lance::dataset::WriteParams {
+            store_params: Some(ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        db.apply_new_table_config(&mut params, &request).unwrap();
+
+        assert!(params.enable_stable_row_ids);
+        let store_params = params.store_params.unwrap();
+        let options = store_params.storage_options().cloned().unwrap();
+        assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+        assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+        assert!(
+            store_params
+                .storage_options_accessor
+                .unwrap()
+                .has_provider()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_namespace_connection_simple() {
+        // Test that namespace connections work with simple connect_namespace(impl_type, properties)
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        // This should succeed with directory-based namespace
+        let result = connect_namespace("dir", properties).execute().await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_connection_with_storage_options() {
+        // Test namespace connections with storage options
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        // This should succeed with directory-based namespace and storage options
+        let result = connect_namespace("dir", properties)
+            .storage_option("timeout", "30s")
+            .execute()
+            .await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_namespace_connection_with_all_options() {
+        use crate::embeddings::MemoryRegistry;
+        use std::time::Duration;
+
+        // Test namespace connections with all configuration options
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let embedding_registry = Arc::new(MemoryRegistry::new());
+        let session = Arc::new(lance::session::Session::default());
+
+        // Test with all options set
+        let result = connect_namespace("dir", properties)
+            .storage_option("timeout", "30s")
+            .storage_options([("cache_size", "1gb"), ("region", "us-east-1")])
+            .read_consistency_interval(Duration::from_secs(5))
+            .embedding_registry(embedding_registry.clone())
+            .session(session.clone())
+            .execute()
+            .await;
+
+        assert!(result.is_ok());
+
+        let conn = result.unwrap();
+
+        // Verify embedding registry is set correctly
+        assert!(std::ptr::eq(
+            conn.embedding_registry() as *const _,
+            embedding_registry.as_ref() as *const _
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_connection_with_namespace_client_properties() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .namespace_client_property("table_version_tracking_enabled", "true")
+            .namespace_client_property("manifest_enabled", "true")
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let test_data = create_test_data();
+        conn.create_table("test_table", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(DescribeTableRequest {
+                id: Some(vec!["test_ns".into(), "test_table".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to describe table");
+
+        assert_eq!(describe.managed_versioning, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_basic() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        // Connect to namespace using DirectoryNamespace
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Test: Create a table in the child namespace
+        let test_data = create_test_data();
+        let table = conn
+            .create_table("test_table", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Verify: Table was created and can be queried
+        let results = table
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+
+        // Verify: Table namespace is correct
+        assert_eq!(table.namespace(), &["test_ns"]);
+        assert_eq!(table.name(), "test_table");
+        assert_eq!(table.id(), "test_ns$test_table");
+
+        // Verify: Table appears in table_names for the child namespace
+        let table_names = conn
+            .table_names()
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to list tables");
+        assert!(table_names.contains(&"test_table".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_branch_query_under_pushdown_stays_local() {
+        // With QueryTable pushdown enabled, a query on the main branch routes to
+        // the namespace server, but a branch handle must run locally: the
+        // server-side request carries no branch and would return main's rows.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .pushdown_operation(NamespaceClientPushdownOperation::QueryTable)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // main has 5 rows
+        let table = conn
+            .create_table("ref_test", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+        let main_version = table.version().await.unwrap();
+
+        // fork a branch off main, then add 5 more rows so it differs from main
+        let branch = table
+            .create_branch("exp", main_version)
+            .await
+            .expect("Failed to create branch");
+        branch
+            .add(create_test_data())
+            .execute()
+            .await
+            .expect("Failed to append to branch");
+
+        // the branch query must run locally and see the branch's 10 rows --
+        // not get routed to the server (which carries no branch) and see main's 5
+        let results = branch
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query branch")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+        let count: usize = results.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_describe_table() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        // Connect to namespace
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create a table in child namespace
+        let test_data = create_test_data();
+        let _table = conn
+            .create_table("describe_test", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Test: Open the table (which internally uses describe_table)
+        let opened_table = conn
+            .open_table("describe_test")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to open table");
+
+        // Verify: Can query the opened table
+        let results = opened_table
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+
+        // Verify schema matches
+        let schema = opened_table.schema().await.expect("Failed to get schema");
+        assert_eq!(schema.fields.len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+
+        // Verify namespace and id
+        assert_eq!(opened_table.namespace(), &["test_ns"]);
+        assert_eq!(opened_table.id(), "test_ns$describe_test");
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_overwrite_mode() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create initial table with 5 rows in child namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("overwrite_test", test_data1)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Create new data with 3 rows
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+        let id_array = Int32Array::from(vec![10, 20, 30]);
+        let name_array = StringArray::from(vec!["New1", "New2", "New3"]);
+        let test_data2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(id_array), Arc::new(name_array)],
+        )
+        .unwrap();
+
+        // Test: Overwrite the table
+        let table2 = conn
+            .create_table("overwrite_test", test_data2)
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::Overwrite)
+            .execute()
+            .await
+            .expect("Failed to overwrite table");
+
+        // Verify: Table has new data (3 rows instead of 5)
+        let results = table2
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 3);
+
+        // Verify the data is actually the new data
+        let id_col = results[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_col.value(0), 10);
+        assert_eq!(id_col.value(1), 20);
+        assert_eq!(id_col.value(2), 30);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_after_declare_conflict() {
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        let namespace_client = conn.namespace_client().await.unwrap();
+        namespace_client
+            .declare_table(DeclareTableRequest {
+                id: Some(vec!["test_ns".into(), "declared_test".into()]),
+                ..Default::default()
+            })
+            .await
+            .expect("Failed to declare table");
+
+        let test_data = create_test_data();
+        let table = conn
+            .create_table("declared_test", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table after declare conflict");
+
+        let results = table
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+        assert_eq!(table.namespace(), &["test_ns"]);
+        assert_eq!(table.id(), "test_ns$declared_test");
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_exist_ok_mode() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create initial table with test data in child namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("exist_ok_test", test_data1)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Try to create again with exist_ok mode
+        let test_data2 = create_test_data();
+        let table2 = conn
+            .create_table("exist_ok_test", test_data2)
+            .namespace(vec!["test_ns".into()])
+            .mode(CreateTableMode::exist_ok(|req| req))
+            .execute()
+            .await
+            .expect("Failed with exist_ok mode");
+
+        // Verify: Table still has original data (5 rows)
+        let results = table2
+            .query()
+            .execute()
+            .await
+            .expect("Failed to query table")
+            .try_collect::<Vec<_>>()
+            .await
+            .expect("Failed to collect results");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].num_rows(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_multiple_tables() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create first table in child namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("table1", test_data1)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create first table");
+
+        // Create second table in child namespace
+        let test_data2 = create_test_data();
+        let _table2 = conn
+            .create_table("table2", test_data2)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create second table");
+
+        // Verify: Both tables appear in table list for the child namespace
+        let table_names = conn
+            .table_names()
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to list tables");
+
+        assert!(table_names.contains(&"table1".to_string()));
+        assert!(table_names.contains(&"table2".to_string()));
+
+        // Verify: Can open both tables
+        let opened_table1 = conn
+            .open_table("table1")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to open table1");
+
+        let opened_table2 = conn
+            .open_table("table2")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to open table2");
+
+        // Verify both tables work
+        let count1 = opened_table1
+            .count_rows(None)
+            .await
+            .expect("Failed to count rows in table1");
+        assert_eq!(count1, 5);
+
+        let count2 = opened_table2
+            .count_rows(None)
+            .await
+            .expect("Failed to count rows in table2");
+        assert_eq!(count2, 5);
+    }
+
+    #[tokio::test]
+    async fn test_namespace_table_not_found() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Test: Try to open a non-existent table in the child namespace
+        let result = conn
+            .open_table("non_existent_table")
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await;
+
+        // Verify: Should return TableNotFound — not a generic Runtime/internal error
+        // (regression test for ENT-1235: open_table on missing table previously surfaced as
+        // a generic 500/Runtime error rather than TableNotFound).
+        match result {
+            Err(Error::TableNotFound { name, .. }) => {
+                assert_eq!(name, "non_existent_table");
+            }
+            Err(other) => panic!("Expected TableNotFound, got: {:?}", other),
+            Ok(_) => panic!("Expected open_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_open_table_not_found_at_root() {
+        // Same as above, but at the root namespace (no parent namespace creation).
+        // Covers the common code path used by `db.open_table("foo")` without a namespace.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        let result = conn.open_table("missing_at_root").execute().await;
+
+        match result {
+            Err(Error::TableNotFound { name, .. }) => {
+                assert_eq!(name, "missing_at_root");
+            }
+            Err(other) => panic!("Expected TableNotFound, got: {:?}", other),
+            Ok(_) => panic!("Expected open_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_already_exists() {
+        // Regression test for ENT-1235: create_table on an existing table (in default
+        // Create mode) should return TableAlreadyExists, not a generic Runtime/500 error.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create the table once.
+        conn.create_table("dup_table", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table the first time");
+
+        // Try to create it again with the default Create mode.
+        let result = conn
+            .create_table("dup_table", create_test_data())
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::TableAlreadyExists { name }) => {
+                assert_eq!(name, "dup_table");
+            }
+            Err(other) => panic!("Expected TableAlreadyExists, got: {:?}", other),
+            Ok(_) => panic!("Expected create_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_create_table_already_exists_at_root() {
+        // Same as above, but at the root namespace.
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        conn.create_table("dup_root", create_test_data())
+            .execute()
+            .await
+            .expect("Failed to create table the first time");
+
+        let result = conn
+            .create_table("dup_root", create_test_data())
+            .execute()
+            .await;
+
+        match result {
+            Err(Error::TableAlreadyExists { name }) => {
+                assert_eq!(name, "dup_root");
+            }
+            Err(other) => panic!("Expected TableAlreadyExists, got: {:?}", other),
+            Ok(_) => panic!("Expected create_table to fail, but it succeeded"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_namespace_drop_table() {
+        // Setup: Create a temporary directory for the namespace
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create a child namespace first
+        conn.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["test_ns".into()]),
+            ..Default::default()
+        })
+        .await
+        .expect("Failed to create namespace");
+
+        // Create a table in child namespace
+        let test_data = create_test_data();
+        let _table = conn
+            .create_table("drop_test", test_data)
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to create table");
+
+        // Verify table exists in child namespace
+        let table_names_before = conn
+            .table_names()
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to list tables");
+        assert!(table_names_before.contains(&"drop_test".to_string()));
+
+        // Test: Drop the table
+        conn.drop_table("drop_test", &["test_ns".into()])
+            .await
+            .expect("Failed to drop table");
+
+        // Verify: Table no longer exists
+        let table_names_after = conn
+            .table_names()
+            .namespace(vec!["test_ns".into()])
+            .execute()
+            .await
+            .expect("Failed to list tables");
+        assert!(!table_names_after.contains(&"drop_test".to_string()));
+
+        let error = conn
+            .drop_table("drop_test", &["test_ns".into()])
+            .await
+            .expect_err("dropping a missing table should fail");
+        assert!(
+            matches!(error, Error::TableNotFound { ref name, .. } if name == "drop_test"),
+            "expected TableNotFound, got: {error:?}"
+        );
+
+        // Verify: Cannot open dropped table
+        let open_result = conn.open_table("drop_test").execute().await;
+        assert!(open_result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_table_names_at_root() {
+        // Test that table_names at root (empty namespace) works correctly
+        // This is a regression test for a bug where empty namespace was converted to None
+        let tmp_dir = tempdir().unwrap();
+        let root_path = tmp_dir.path().to_str().unwrap().to_string();
+
+        let mut properties = HashMap::new();
+        properties.insert("root".to_string(), root_path);
+
+        let conn = connect_namespace("dir", properties)
+            .execute()
+            .await
+            .expect("Failed to connect to namespace");
+
+        // Create multiple tables at root namespace
+        let test_data1 = create_test_data();
+        let _table1 = conn
+            .create_table("table1", test_data1)
+            .execute()
+            .await
+            .expect("Failed to create table1 at root");
+
+        let test_data2 = create_test_data();
+        let _table2 = conn
+            .create_table("table2", test_data2)
+            .execute()
+            .await
+            .expect("Failed to create table2 at root");
+
+        // List tables at root using table_names (empty namespace means root)
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .expect("Failed to list tables at root");
+
+        assert!(table_names.contains(&"table1".to_string()));
+        assert!(table_names.contains(&"table2".to_string()));
+        assert_eq!(table_names.len(), 2);
+    }
+}

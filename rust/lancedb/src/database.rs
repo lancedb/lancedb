@@ -16,54 +16,39 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use arrow_array::RecordBatchReader;
-use async_trait::async_trait;
-use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
-use futures::stream;
+use arrow_array::RecordBatch;
 use lance::dataset::ReadParams;
-use lance_datafusion::utils::StreamingWriteSource;
+use lance_namespace::LanceNamespace;
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
 
-use crate::arrow::{SendableRecordBatchStream, SendableRecordBatchStreamExt};
+use crate::data::scannable::Scannable;
 use crate::error::Result;
-use crate::table::{BaseTable, TableDefinition, WriteOptions};
+use crate::job::Job;
+use crate::listing::{ListingOptions, ListingPage};
+use crate::materialized_view::CreateMaterializedViewRequest;
+use crate::secrets::SecretInfo;
+use crate::table::{BaseTable, WriteOptions};
+use crate::view::ViewDescription;
 
 pub mod listing;
+pub mod namespace;
+pub(crate) mod read_freshness;
 
 pub trait DatabaseOptions {
     fn serialize_into_map(&self, map: &mut HashMap<String, String>);
 }
 
-/// A request to list namespaces in the database
-#[derive(Clone, Debug, Default)]
-pub struct ListNamespacesRequest {
-    /// The parent namespace to list namespaces in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
-    /// If present, only return names that come lexicographically after the supplied value.
-    pub page_token: Option<String>,
-    /// The maximum number of namespace names to return
-    pub limit: Option<u32>,
-}
-
-/// A request to create a namespace
-#[derive(Clone, Debug)]
-pub struct CreateNamespaceRequest {
-    /// The namespace identifier to create
-    pub namespace: Vec<String>,
-}
-
-/// A request to drop a namespace
-#[derive(Clone, Debug)]
-pub struct DropNamespaceRequest {
-    /// The namespace identifier to drop
-    pub namespace: Vec<String>,
-}
-
-/// A request to list names of tables in the database
+/// A request to list names of tables in the database (deprecated, use ListTablesRequest)
 #[derive(Clone, Debug, Default)]
 pub struct TableNamesRequest {
-    /// The namespace to list tables in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to list tables in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     /// If present, only return names that come lexicographically after the supplied
     /// value.
     ///
@@ -75,21 +60,47 @@ pub struct TableNamesRequest {
 }
 
 /// A request to open a table
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct OpenTableRequest {
     pub name: String,
-    /// The namespace to open the table from. Empty list represents root namespace.
-    pub namespace: Vec<String>,
+    /// The namespace path to open the table from. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
     pub index_cache_size: Option<u32>,
     pub lance_read_params: Option<ReadParams>,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+    /// Whether managed versioning is enabled for this table.
+    /// When Some(true), the table will use namespace-managed commits instead of local commits.
+    /// When None and namespace_client is provided, the value will be fetched from the namespace.
+    pub managed_versioning: Option<bool>,
+}
+
+impl std::fmt::Debug for OpenTableRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OpenTableRequest")
+            .field("name", &self.name)
+            .field("namespace_path", &self.namespace_path)
+            .field("index_cache_size", &self.index_cache_size)
+            .field("lance_read_params", &self.lance_read_params)
+            .field("location", &self.location)
+            .field("namespace_client", &self.namespace_client)
+            .field("managed_versioning", &self.managed_versioning)
+            .finish()
+    }
 }
 
 pub type TableBuilderCallback = Box<dyn FnOnce(OpenTableRequest) -> OpenTableRequest + Send>;
 
 /// Describes what happens when creating a table and a table with
 /// the same name already exists
+#[derive(Default)]
 pub enum CreateTableMode {
     /// If the table already exists, an error is returned
+    #[default]
     Create,
     /// If the table already exists, it is opened.  Any provided data is
     /// ignored.  The function will be passed an OpenTableBuilder to customize
@@ -107,73 +118,202 @@ impl CreateTableMode {
     }
 }
 
-impl Default for CreateTableMode {
-    fn default() -> Self {
-        Self::Create
-    }
-}
-
-/// The data to start a table or a schema to create an empty table
-pub enum CreateTableData {
-    /// Creates a table using an iterator of data, the schema will be obtained from the data
-    Data(Box<dyn RecordBatchReader + Send>),
-    /// Creates a table using a stream of data, the schema will be obtained from the data
-    StreamingData(SendableRecordBatchStream),
-    /// Creates an empty table, the definition / schema must be provided separately
-    Empty(TableDefinition),
-}
-
-impl CreateTableData {
-    pub fn schema(&self) -> Arc<arrow_schema::Schema> {
-        match self {
-            Self::Data(reader) => reader.schema(),
-            Self::StreamingData(stream) => stream.schema(),
-            Self::Empty(definition) => definition.schema.clone(),
-        }
-    }
-}
-
-#[async_trait]
-impl StreamingWriteSource for CreateTableData {
-    fn arrow_schema(&self) -> Arc<arrow_schema::Schema> {
-        self.schema()
-    }
-    fn into_stream(self) -> datafusion_physical_plan::SendableRecordBatchStream {
-        match self {
-            Self::Data(reader) => reader.into_stream(),
-            Self::StreamingData(stream) => stream.into_df_stream(),
-            Self::Empty(table_definition) => {
-                let schema = table_definition.schema.clone();
-                Box::pin(RecordBatchStreamAdapter::new(schema, stream::empty()))
-            }
-        }
-    }
-}
-
 /// A request to create a table
 pub struct CreateTableRequest {
     /// The name of the new table
     pub name: String,
-    /// The namespace to create the table in. Empty list represents root namespace.
-    pub namespace: Vec<String>,
-    /// Initial data to write to the table, can be None to create an empty table
-    pub data: CreateTableData,
+    /// The namespace path to create the table in. Empty list represents root namespace.
+    pub namespace_path: Vec<String>,
+    /// Initial data to write to the table, can be empty.
+    pub data: Box<dyn Scannable>,
     /// The mode to use when creating the table
     pub mode: CreateTableMode,
     /// Options to use when writing data (only used if `data` is not None)
     pub write_options: WriteOptions,
+    /// Optional custom location for the table. If not provided, the database will
+    /// derive a location based on its URI and the table name.
+    pub location: Option<String>,
+    /// Optional namespace client for server-side query execution.
+    /// When set, queries will be executed on the namespace server instead of locally.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
 }
 
 impl CreateTableRequest {
-    pub fn new(name: String, data: CreateTableData) -> Self {
+    pub fn new(name: String, data: Box<dyn Scannable>) -> Self {
         Self {
             name,
-            namespace: vec![],
+            namespace_path: vec![],
             data,
             mode: CreateTableMode::default(),
             write_options: WriteOptions::default(),
+            location: None,
+            namespace_client: None,
         }
     }
+}
+
+/// Request to clone a table from a source table.
+///
+/// A shallow clone creates a new table that shares the underlying data files
+/// with the source table but has its own independent manifest. This allows
+/// both the source and cloned tables to evolve independently while initially
+/// sharing the same data, deletion, and index files.
+#[derive(Clone, Debug)]
+pub struct CloneTableRequest {
+    /// The name of the target table to create
+    pub target_table_name: String,
+    /// The namespace path for the target table. Empty list represents root namespace.
+    pub target_namespace_path: Vec<String>,
+    /// The URI of the source table to clone from.
+    pub source_uri: String,
+    /// Optional version of the source table to clone.
+    pub source_version: Option<u64>,
+    /// Optional tag of the source table to clone.
+    pub source_tag: Option<String>,
+    /// Whether to perform a shallow clone (true) or deep clone (false). Defaults to true.
+    /// Currently only shallow clone is supported.
+    pub is_shallow: bool,
+    /// Optional namespace client for managed versioning support.
+    /// When set, enables the commit handler to track table versions through the namespace.
+    pub namespace_client: Option<Arc<dyn LanceNamespace>>,
+}
+
+impl CloneTableRequest {
+    pub fn new(target_table_name: String, source_uri: String) -> Self {
+        Self {
+            target_table_name,
+            target_namespace_path: vec![],
+            source_uri,
+            source_version: None,
+            source_tag: None,
+            is_shallow: true,
+            namespace_client: None,
+        }
+    }
+}
+
+/// A request to start a SQL statement on a remote database.
+#[derive(Clone, Debug)]
+pub struct ExecuteQueryRequest {
+    /// The SQL text.
+    pub query: String,
+    /// The namespace unqualified table names resolve in. Empty is `public`,
+    /// the SQL name of the root namespace.
+    pub default_namespace_path: Vec<String>,
+    /// Values for the statement's placeholders, as a single-row batch.
+    ///
+    /// Column `i` binds `$<i + 1>`, and a column whose name is not a number
+    /// also binds `$<name>`. See
+    /// [`ExecuteQueryAsyncBuilder::parameters`](crate::connection::ExecuteQueryAsyncBuilder::parameters).
+    pub parameters: Option<RecordBatch>,
+}
+
+impl ExecuteQueryRequest {
+    pub fn new(query: impl Into<String>) -> Self {
+        Self {
+            query: query.into(),
+            default_namespace_path: vec!["public".to_string()],
+            parameters: None,
+        }
+    }
+}
+
+/// How long until a change is reflected from one Table instance to another
+///
+/// Tables are always internally consistent.  If a write method is called on
+/// a table instance it will be immediately visible in that same table instance.
+pub enum ReadConsistency {
+    /// Changes will not be automatically propagated until the checkout_latest
+    /// method is called on the target table
+    Manual,
+    /// Changes will be propagated automatically within the given duration
+    Eventual(Duration),
+    /// Changes are immediately visible in target tables
+    Strong,
+}
+
+/// A row from [`Database::list_jobs`]: one server-side job (index build,
+/// compaction, column refresh, ...).
+#[derive(Debug, Clone)]
+pub struct JobInfo {
+    /// The job id -- what [`Database::open_job`] and
+    /// [`Database::cancel_job`] accept.
+    pub job_id: String,
+    /// The table the job runs against, without URI or namespace.
+    pub table: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "finished", "failed", or "cancelled".
+    pub state: String,
+    /// When the job was created, in milliseconds since the epoch.
+    pub created_at_millis: i64,
+}
+
+/// The server-side record behind a [`crate::job::Job`] handle: lifecycle
+/// state plus the job-type-specific specification and result.
+#[derive(Debug, Clone)]
+pub struct JobDescription {
+    pub job_id: String,
+    pub job_type: String,
+    /// Lifecycle state: "running", "finished", "failed", or "cancelled".
+    pub state: String,
+    /// When the job was created, in milliseconds since the epoch.
+    pub creation_ms: i64,
+    /// The job-type-specific specification. Null when the server omits it.
+    pub spec: serde_json::Value,
+    /// The job-type-specific terminal result, for job types that define one.
+    /// `None` until the job succeeds, so a job that never terminates reports
+    /// its progress through [`crate::job::Job::events`] instead.
+    pub result: Option<serde_json::Value>,
+    /// Why the job failed, when the job is failed and the server reports a
+    /// reason.
+    pub failure: Option<crate::error::JobFailure>,
+}
+
+/// The server's answer to a pause request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseJobStatus {
+    /// The pause was accepted; workers drain and the job stays parked.
+    Pausing,
+    /// The job was already paused, so a repeated pause changed nothing.
+    AlreadyPaused,
+    /// The job is finalizing its results and cannot be parked right now.
+    /// The commit is the short tail of a long job; retry shortly.
+    Committing,
+}
+
+/// The server's answer to a resume request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeJobStatus {
+    /// The job re-entered the queue and will run again.
+    Resumed,
+    /// The pause's worker drain is not confirmed yet; retry shortly.
+    StillPausing,
+    /// The job was not paused, so there was nothing to resume.
+    NotPaused,
+}
+
+fn job_op_not_supported<T>(what: &str) -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: format!("{} is not supported by this database", what),
+    })
+}
+
+fn function_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Function catalog operations are not supported by this database".to_string(),
+    })
+}
+
+fn secret_catalog_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "Secret operations are not supported by this database".to_string(),
+    })
+}
+
+fn view_ops_not_supported<T>() -> Result<T> {
+    Err(crate::error::Error::NotSupported {
+        message: "View operations are not supported by this database".to_string(),
+    })
 }
 
 /// The `Database` trait defines the interface for database implementations.
@@ -183,16 +323,277 @@ impl CreateTableRequest {
 pub trait Database:
     Send + Sync + std::any::Any + std::fmt::Debug + std::fmt::Display + 'static
 {
+    /// Get the uri of the database
+    fn uri(&self) -> &str;
+    /// Get the read consistency of the database
+    async fn read_consistency(&self) -> Result<ReadConsistency>;
     /// List immediate child namespace names in the given namespace
-    async fn list_namespaces(&self, request: ListNamespacesRequest) -> Result<Vec<String>>;
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse>;
     /// Create a new namespace
-    async fn create_namespace(&self, request: CreateNamespaceRequest) -> Result<()>;
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse>;
     /// Drop a namespace
-    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<()>;
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse>;
+    /// Describe a namespace (get its properties)
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse>;
     /// List the names of tables in the database
+    ///
+    /// # Deprecated
+    /// Use `list_tables` instead for pagination support
+    #[deprecated(note = "Use list_tables instead")]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>>;
+    /// List tables in the database with pagination support
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse>;
     /// Create a table in the database
     async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Clone a table in the database.
+    ///
+    /// Creates a shallow clone of the source table, sharing underlying data files
+    /// but with an independent manifest. Both tables can evolve separately after cloning.
+    ///
+    /// See [`CloneTableRequest`] for detailed documentation and examples.
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
+    /// Submit a Function creation job that builds an image and registers it
+    /// in `namespace_path`.
+    async fn create_function_async(
+        &self,
+        _request: crate::function::FunctionRegistrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::job::Job<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
+    /// Create a materialized view through a remote catalog and return its
+    /// initial-population job. Local connections use the native declaration
+    /// path directly.
+    #[doc(hidden)]
+    async fn create_materialized_view_async(
+        &self,
+        _request: CreateMaterializedViewRequest,
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view creation")
+    }
+    /// Drop a materialized view through its resource endpoint and return its
+    /// cleanup job. Local connections validate the view and use table drop.
+    #[doc(hidden)]
+    async fn drop_materialized_view_async(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<Job> {
+        job_op_not_supported("remote materialized-view drop")
+    }
+    /// Fetch one page of materialized-view names in a namespace.
+    /// Local backends filter a page of table names, so an empty result may
+    /// still have a continuation token.
+    #[doc(hidden)]
+    async fn list_materialized_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let response = self
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path.to_vec()),
+                page_token: options.page_token,
+                limit: options.page_limit.map(|limit| limit as i32),
+                ..Default::default()
+            })
+            .await?;
+        let mut names = Vec::new();
+        for name in response.tables {
+            let Ok(table) = self
+                .open_table(OpenTableRequest {
+                    name: name.clone(),
+                    namespace_path: namespace_path.to_vec(),
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await
+            else {
+                continue;
+            };
+            let schema = table.schema().await?;
+            if crate::materialized_view::read_definition(schema.metadata())?.is_some() {
+                names.push(name);
+            }
+        }
+
+        Ok(ListingPage {
+            items: names,
+            page_token: response.page_token,
+        })
+    }
+    /// Look up one exact immutable Function version.
+    async fn get_function(
+        &self,
+        _name: &str,
+        _version: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::function::FunctionVersion> {
+        function_catalog_not_supported()
+    }
+    /// Fetch one page of published immutable Function versions in one namespace.
+    async fn list_functions(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<crate::function::FunctionVersion>> {
+        function_catalog_not_supported()
+    }
+    /// Remove the current Function name binding, retaining the object history.
+    async fn drop_function(
+        &self,
+        _name: &str,
+        _version: &str,
+        _namespace_path: &[String],
+    ) -> Result<bool> {
+        function_catalog_not_supported()
+    }
+    /// Start dropping a Function and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before returning an
+    /// already-finished job.
+    async fn drop_function_async(
+        &self,
+        name: &str,
+        version: &str,
+        namespace_path: &[String],
+    ) -> Result<(bool, crate::job::Job)> {
+        let dropped = self.drop_function(name, version, namespace_path).await?;
+        Ok((dropped, crate::job::Job::new_done()))
+    }
+    /// Create a named Secret in this database. Fails if the name is taken, so
+    /// a create can never silently become a rotation.
+    async fn create_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Replace the credential behind an existing Secret. Fails if it does not
+    /// exist. Every Function bound to it resolves the new value from its next
+    /// execution, with no new Function version.
+    async fn alter_secret(
+        &self,
+        _name: &str,
+        _value: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// Fetch one page of Secret names in this database.
+    ///
+    /// Names only. No API path returns a stored credential, by construction
+    /// rather than by policy.
+    async fn list_secrets(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a Secret. Functions bound to it fail at their next job, which is
+    /// the revocation path.
+    async fn drop_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+    /// What the database records about one Secret: its name and timestamps,
+    /// never its value.
+    async fn describe_secret(&self, _name: &str, _namespace_path: &[String]) -> Result<SecretInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Create a view from a defining query. The query is planned once, by the
+    /// database, so one that cannot be planned is refused now rather than at
+    /// the first read.
+    async fn create_view(
+        &self,
+        _name: &str,
+        _query: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// What the database records about one view: its defining query and the
+    /// schema that query resolved to.
+    async fn describe_view(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<ViewDescription> {
+        view_ops_not_supported()
+    }
+    /// Drop a view and wait for its definition to be deleted. Its sources are
+    /// untouched -- a view holds no rows of its own.
+    async fn drop_view(&self, _name: &str, _namespace_path: &[String]) -> Result<()> {
+        view_ops_not_supported()
+    }
+    /// Drop a view and return the job deleting its definition, without waiting.
+    #[doc(hidden)]
+    async fn drop_view_async(&self, _name: &str, _namespace_path: &[String]) -> Result<Job> {
+        view_ops_not_supported()
+    }
+    /// Fetch one page of view names in one namespace.
+    async fn list_views(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        view_ops_not_supported()
+    }
+    /// Open a job by id, returning a handle with its record already
+    /// populated. Fails with [`crate::Error::JobNotFound`] when the server has
+    /// no such job.
+    async fn open_job(&self, _job_id: &str) -> Result<crate::job::Job> {
+        job_op_not_supported("open_job")
+    }
+    /// Fetch one page of server-side jobs across the database's tables.
+    async fn list_jobs(&self, _options: ListingOptions) -> Result<ListingPage<JobInfo>> {
+        job_op_not_supported("list_jobs")
+    }
+    /// Request cancellation of a job by id. Returns true if the server
+    /// accepted the cancellation, false if no such job exists. Cancelling an
+    /// already-terminal job is a no-op success.
+    async fn cancel_job(&self, _job_id: &str) -> Result<bool> {
+        job_op_not_supported("cancel_job")
+    }
+    /// Pause a job by id. The job's workers drain and it stays parked until
+    /// resumed; see [`PauseJobStatus`] for the outcomes.
+    async fn pause_job(&self, _job_id: &str) -> Result<PauseJobStatus> {
+        job_op_not_supported("pause_job")
+    }
+    /// Resume a paused job by id. It re-enters the queue and its workers pick
+    /// their work back up from checkpoints; see [`ResumeJobStatus`].
+    async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
+        job_op_not_supported("resume_job")
+    }
+    /// Start executing a SQL statement on a remote database.
+    async fn execute_query_async(
+        &self,
+        _request: ExecuteQueryRequest,
+    ) -> Result<crate::sql::Query> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
+    }
+    /// Describe a submitted SQL query by its connection-scoped id.
+    async fn describe_query(&self, _query_id: uuid::Uuid) -> Result<crate::sql::QueryDescription> {
+        Err(crate::error::Error::NotSupported {
+            message: "SQL is not supported by this database".to_string(),
+        })
+    }
     /// Open a table in the database
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
     /// Rename a table in the database
@@ -200,12 +601,39 @@ pub trait Database:
         &self,
         cur_name: &str,
         new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()>;
     /// Drop a table in the database
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()>;
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()>;
+    /// Start dropping a table and return a handle to the cleanup job.
+    ///
+    /// Backends without asynchronous cleanup complete the drop before
+    /// returning an already-finished job.
+    async fn drop_table_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<crate::job::Job> {
+        self.drop_table(name, namespace_path).await?;
+        Ok(crate::job::Job::new_done())
+    }
     /// Drop all tables in the database
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()>;
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()>;
     fn as_any(&self) -> &dyn std::any::Any;
+
+    /// Get the equivalent namespace client of this database
+    /// For LanceNamespaceDatabase, it is the underlying LanceNamespace.
+    /// For ListingDatabase, it is the equivalent DirectoryNamespace.
+    /// For RemoteDatabase, it is the equivalent RestNamespace.
+    async fn namespace_client(&self) -> Result<Arc<dyn LanceNamespace>>;
+
+    /// Get the configuration for constructing an equivalent namespace client.
+    /// Returns (impl_type, properties) where:
+    /// - impl_type: "dir" for DirectoryNamespace, "rest" for RestNamespace
+    /// - properties: configuration properties for the namespace
+    ///
+    /// This is useful for Python bindings where we want to return a Python
+    /// namespace object rather than a Rust trait object.
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)>;
 }

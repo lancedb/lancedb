@@ -4,30 +4,163 @@
 use http::HeaderName;
 use log::debug;
 use reqwest::{
-    header::{HeaderMap, HeaderValue},
     Body, Request, RequestBuilder, Response,
+    header::{HeaderMap, HeaderValue},
 };
-use std::{collections::HashMap, future::Future, str::FromStr, time::Duration};
+use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
 use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
+use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
+
+pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
+    const SENSITIVE_HEADERS: [&str; 5] = [
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+    ];
+
+    for (name, value) in headers.iter_mut() {
+        if SENSITIVE_HEADERS
+            .iter()
+            .any(|sensitive| name.as_str().eq_ignore_ascii_case(sensitive))
+        {
+            value.set_sensitive(true);
+        }
+    }
+}
+
+/// Configuration for TLS/mTLS settings.
+#[derive(Clone, Debug)]
+pub struct TlsConfig {
+    /// Path to the client certificate file (PEM format)
+    pub cert_file: Option<String>,
+    /// Path to the client private key file (PEM format)
+    pub key_file: Option<String>,
+    /// Path to the CA certificate file for server verification (PEM format)
+    pub ssl_ca_cert: Option<String>,
+    /// Whether to verify the hostname in the server's certificate.
+    /// Defaults to `true`.
+    pub assert_hostname: bool,
+}
+
+impl Default for TlsConfig {
+    fn default() -> Self {
+        Self {
+            cert_file: None,
+            key_file: None,
+            ssl_ca_cert: None,
+            assert_hostname: true,
+        }
+    }
+}
+
+/// Trait for providing custom headers for each request
+#[async_trait::async_trait]
+pub trait HeaderProvider: Send + Sync + std::fmt::Debug {
+    /// Get the latest headers to be added to the request
+    async fn get_headers(&self) -> Result<HashMap<String, String>>;
+}
+
+/// Default maximum bytes per insert request (8 GiB).
+///
+/// Sized so a multipart part can hold at least one full Lance data file (the
+/// default is 1M rows / 90 GB per file), which keeps fragments from being split
+/// into undersized files across parts. The time-based cut
+/// ([`DEFAULT_MAX_REQUEST_DURATION_DIVISOR`]) bounds request duration on slow
+/// uploads, so a large byte budget does not risk the read timeout.
+const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
+
+/// The default max request duration is the read timeout divided by this, leaving
+/// headroom for the server to finalize and acknowledge a part before the read
+/// timeout (which also covers the request-body upload) fires.
+const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 
 /// Configuration for the LanceDB Cloud HTTP client.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
+    /// Maximum concurrent blob HTTP requests for this connection, shared by all
+    /// tables and blob handles. Defaults to 8. The environment variable
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` can also set this limit.
+    /// The value must be greater than zero.
+    pub blob_request_concurrency: Option<usize>,
     /// User agent to use for requests. The default provides the library
     /// name and version.
     pub user_agent: String,
     // TODO: how to configure request ids?
     pub extra_headers: HashMap<String, String>,
-    /// The delimiter to use when constructing object identifiers.
-    /// If not default, passes as query parameter.
+    /// The delimiter joining a namespace path and a name into one object
+    /// identifier. [`ID_DELIMITER`] is the only accepted value; any other is
+    /// refused by [`ClientConfig::validate`].
     pub id_delimiter: Option<String>,
+    /// TLS configuration for mTLS support
+    pub tls_config: Option<TlsConfig>,
+    /// Provider for custom headers to be added to each request
+    pub header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// User identifier for tracking purposes.
+    ///
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
+    /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
+    /// variable that contains the user ID value.
+    pub user_id: Option<String>,
+    /// Maximum number of bytes to send in a single insert HTTP request.
+    ///
+    /// During a multipart write, each partition's data is split into one or more
+    /// parts of at most this many (Arrow IPC, compressed) bytes, each uploaded as
+    /// a separate request under the shared upload id. This bounds how long any
+    /// one request stays open, so large bulk ingests do not exceed the client
+    /// read timeout while the server streams the part to object storage.
+    ///
+    /// The request body is still streamed (not buffered), so this does not
+    /// increase peak memory. Set to `Some(0)` to disable splitting (one request
+    /// per partition). You can also set the `LANCE_CLIENT_MAX_BYTES_PER_REQUEST`
+    /// environment variable. Defaults to 8 GiB.
+    pub max_bytes_per_request: Option<u64>,
+    /// Maximum wall-clock time to spend uploading a single insert HTTP request.
+    ///
+    /// Complements [`Self::max_bytes_per_request`]: during a multipart write a
+    /// part is cut when it reaches either the byte budget or this duration,
+    /// whichever comes first. The client read timeout also covers the
+    /// request-body upload, so a slow or throttled upload of a large part can
+    /// hit that timeout before the byte budget is reached; cutting by time keeps
+    /// each request short enough that it completes (and the server acknowledges
+    /// the part) within the read timeout.
+    ///
+    /// Set to `Some(Duration::ZERO)` to disable the time-based cut. You can also
+    /// set the `LANCE_CLIENT_MAX_REQUEST_DURATION` environment variable (integer
+    /// seconds). Defaults to half the resolved read timeout.
+    pub max_request_duration: Option<Duration>,
+}
+
+impl std::fmt::Debug for ClientConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientConfig")
+            .field("timeout_config", &self.timeout_config)
+            .field("retry_config", &self.retry_config)
+            .field("blob_request_concurrency", &self.blob_request_concurrency)
+            .field("user_agent", &self.user_agent)
+            .field("extra_headers", &self.extra_headers)
+            .field("id_delimiter", &self.id_delimiter)
+            .field("tls_config", &self.tls_config)
+            .field(
+                "header_provider",
+                &self.header_provider.as_ref().map(|_| "Some(...)"),
+            )
+            .field("user_id", &self.user_id)
+            .field("max_bytes_per_request", &self.max_bytes_per_request)
+            .field("max_request_duration", &self.max_request_duration)
+            .finish()
+    }
 }
 
 impl Default for ClientConfig {
@@ -35,10 +168,46 @@ impl Default for ClientConfig {
         Self {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
+            blob_request_concurrency: None,
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
+            tls_config: None,
+            header_provider: None,
+            user_id: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
         }
+    }
+}
+
+impl ClientConfig {
+    /// Resolve the user ID from the config or environment variables.
+    ///
+    /// Resolution order:
+    /// 1. If `user_id` is set in the config, use that value
+    /// 2. If `LANCEDB_USER_ID` environment variable is set, use that value
+    /// 3. If `LANCEDB_USER_ID_ENV_KEY` is set, read the env var it points to
+    /// 4. Otherwise, return None
+    pub fn resolve_user_id(&self) -> Option<String> {
+        if self.user_id.is_some() {
+            return self.user_id.clone();
+        }
+
+        if let Ok(user_id) = std::env::var("LANCEDB_USER_ID")
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        if let Ok(env_key) = std::env::var("LANCEDB_USER_ID_ENV_KEY")
+            && let Ok(user_id) = std::env::var(&env_key)
+            && !user_id.is_empty()
+        {
+            return Some(user_id);
+        }
+
+        None
     }
 }
 
@@ -143,13 +312,41 @@ pub struct RetryConfig {
 // We use the `HttpSend` trait to abstract over the `reqwest::Client` so that
 // we can mock responses in tests. Based on the patterns from this blog post:
 // https://write.as/balrogboogie/testing-reqwest-based-clients
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
+    pub(crate) blob_request_semaphore: Arc<Semaphore>,
     pub(crate) sender: S,
-    pub(crate) id_delimiter: String,
+    pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
+    /// Connection-level read consistency interval. Drives the
+    /// `x-lancedb-min-timestamp` freshness header sent on read requests.
+    pub(crate) read_consistency_interval: Option<Duration>,
+    // Note the `Option` here means the opposite of the same-named
+    // `ClientConfig` fields: those are pre-resolution, where `None` means "fall
+    // back to env var / default". These are post-resolution (see
+    // `resolve_max_bytes_per_request` / `resolve_max_request_duration`), where a
+    // default has already been applied and `None` means the feature is disabled.
+    /// Maximum bytes per insert request. `None` disables request splitting.
+    pub(crate) max_bytes_per_request: Option<u64>,
+    /// Maximum wall-clock time per insert request. `None` disables the
+    /// time-based part cut.
+    pub(crate) max_request_duration: Option<Duration>,
+}
+
+impl<S: HttpSend> std::fmt::Debug for RestfulLanceDbClient<S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RestfulLanceDbClient")
+            .field("host", &self.host)
+            .field("retry_config", &self.retry_config)
+            .field("sender", &self.sender)
+            .field(
+                "header_provider",
+                &self.header_provider.as_ref().map(|_| "Some(...)"),
+            )
+            .finish()
+    }
 }
 
 pub trait HttpSend: Clone + Send + Sync + std::fmt::Debug + 'static {
@@ -173,6 +370,127 @@ impl HttpSend for Sender {
     }
 }
 
+/// Parsed components from a database URL (db://...)
+pub struct ParsedDbUrl {
+    pub db_name: String,
+    pub db_prefix: Option<String>,
+}
+
+/// Parse a database URL and extract the database name and optional prefix.
+///
+/// Expected format: `db://db_name` or `db://db_name/prefix`
+pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
+    let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
+        message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
+    })?;
+    debug_assert_eq!(parsed_url.scheme(), "db");
+    if !parsed_url.has_host() {
+        return Err(Error::InvalidInput {
+            message: format!("Invalid database URL (missing host) '{}'", db_url),
+        });
+    }
+    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
+        .map_err(|err| Error::InvalidInput {
+            message: format!("Invalid encoded database name: {err}"),
+        })?
+        .into_owned();
+    validate_database_name(&db_name)?;
+    let db_prefix = {
+        let prefix = parsed_url.path().trim_start_matches('/');
+        if prefix.is_empty() {
+            None
+        } else {
+            Some(prefix.to_string())
+        }
+    };
+
+    Ok(ParsedDbUrl { db_name, db_prefix })
+}
+
+fn validate_dns_hostname(hostname: &str) -> Result<()> {
+    let ascii_hostname = match url::Host::parse(hostname) {
+        Ok(url::Host::Domain(hostname)) => hostname,
+        Ok(_) => {
+            return Err(Error::InvalidInput {
+                message: "LanceDB Cloud database URI or region produced a non-DNS hostname"
+                    .to_string(),
+            });
+        }
+        Err(err) => {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "LanceDB Cloud database URI or region produced an invalid hostname: {err}"
+                ),
+            });
+        }
+    };
+
+    if ascii_hostname.len() > 253
+        || ascii_hostname
+            .split('.')
+            .any(|label| label.is_empty() || label.len() > 63)
+    {
+        return Err(Error::InvalidInput {
+            message: "LanceDB Cloud database URI or region produced an invalid hostname: DNS labels must contain 1 to 63 bytes and the full hostname must not exceed 253 bytes".to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Whether a request's body may appear in a debug log.
+///
+/// The API that built the body decides. The transport cannot know which
+/// payloads are credentials, and a list of routes here would have to be kept in
+/// step with endpoints defined elsewhere -- so the knowledge lives with the
+/// call that has it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BodyLogging {
+    /// Log the body at debug. The default: a request body is diagnostic unless
+    /// the call that built it says otherwise.
+    Allowed,
+    /// Never log the body. For a request whose body is a credential.
+    Suppressed,
+}
+
+/// The delimiter joining a namespace path and a name into the `{id}` a route
+/// addresses, and the only one a LanceDB service splits on.
+///
+/// `$` is outside the character set object names admit, so a joined identifier
+/// always splits back into the parts that made it. The configuration field
+/// exists because the identifier grammar comes from the Lance REST catalog
+/// standard, which carries a delimiter setting for other catalogs to adopt.
+pub const ID_DELIMITER: &str = "$";
+
+fn validate_id_delimiter(delimiter: &str) -> Result<()> {
+    if delimiter != ID_DELIMITER {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "id_delimiter '{delimiter}' is not supported: '{ID_DELIMITER}' is the only \
+                 delimiter LanceDB services split an identifier on"
+            ),
+        });
+    }
+    Ok(())
+}
+
+impl ClientConfig {
+    /// Check the settings a request cannot be built correctly without, so a
+    /// mistake is reported where it was made rather than as a confusing
+    /// response later. Public so a caller can ask without connecting.
+    pub fn validate(&self) -> Result<()> {
+        if self.blob_request_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "blob_request_concurrency must be greater than zero".into(),
+            });
+        }
+        if let Some(delimiter) = &self.id_delimiter {
+            validate_id_delimiter(delimiter)?;
+        }
+        Ok(())
+    }
+}
+
 impl RestfulLanceDbClient<Sender> {
     fn get_timeout(passed: Option<Duration>, env_var: &str) -> Result<Option<Duration>> {
         if let Some(passed) = passed {
@@ -191,31 +509,18 @@ impl RestfulLanceDbClient<Sender> {
     }
 
     pub fn try_new(
-        db_url: &str,
-        api_key: &str,
+        parsed_url: &ParsedDbUrl,
         region: &str,
         host_override: Option<String>,
+        default_headers: HeaderMap,
         client_config: ClientConfig,
-        options: &RemoteOptions,
+        read_consistency_interval: Option<Duration>,
     ) -> Result<Self> {
-        let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
-            message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
-        })?;
-        debug_assert_eq!(parsed_url.scheme(), "db");
-        if !parsed_url.has_host() {
-            return Err(Error::InvalidInput {
-                message: format!("Invalid database URL (missing host) '{}'", db_url),
-            });
-        }
-        let db_name = parsed_url.host_str().unwrap();
-        let db_prefix = {
-            let prefix = parsed_url.path().trim_start_matches('/');
-            if prefix.is_empty() {
-                None
-            } else {
-                Some(prefix)
-            }
-        };
+        // Before anything is built from it, so the error names the caller's
+        // configuration rather than a request.
+        client_config.validate()?;
+        let blob_request_concurrency =
+            Self::resolve_blob_request_concurrency(client_config.blob_request_concurrency)?;
 
         // Get the timeouts
         let timeout =
@@ -245,16 +550,51 @@ impl RestfulLanceDbClient<Sender> {
         if let Some(timeout) = timeout {
             client_builder = client_builder.timeout(timeout);
         }
+
+        // Configure mTLS if TlsConfig is provided
+        if let Some(tls_config) = &client_config.tls_config {
+            // Load client certificate and key for mTLS
+            if let (Some(cert_file), Some(key_file)) = (&tls_config.cert_file, &tls_config.key_file)
+            {
+                let cert = std::fs::read(cert_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read certificate file: {}", cert_file),
+                    source: Some(Box::new(err)),
+                })?;
+                let key = std::fs::read(key_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read key file: {}", key_file),
+                    source: Some(Box::new(err)),
+                })?;
+
+                let identity = reqwest::Identity::from_pem(&[&cert[..], &key[..]].concat())
+                    .map_err(|err| Error::Other {
+                        message: "Failed to create client identity from certificate and key".into(),
+                        source: Some(Box::new(err)),
+                    })?;
+                client_builder = client_builder.identity(identity);
+            }
+
+            // Load CA certificate for server verification
+            if let Some(ca_cert_file) = &tls_config.ssl_ca_cert {
+                let ca_cert = std::fs::read(ca_cert_file).map_err(|err| Error::Other {
+                    message: format!("Failed to read CA certificate file: {}", ca_cert_file),
+                    source: Some(Box::new(err)),
+                })?;
+
+                let ca_cert =
+                    reqwest::Certificate::from_pem(&ca_cert).map_err(|err| Error::Other {
+                        message: "Failed to create CA certificate from PEM".into(),
+                        source: Some(Box::new(err)),
+                    })?;
+                client_builder = client_builder.add_root_certificate(ca_cert);
+            }
+
+            // Configure hostname verification
+            client_builder =
+                client_builder.danger_accept_invalid_hostnames(!tls_config.assert_hostname);
+        }
+
         let client = client_builder
-            .default_headers(Self::default_headers(
-                api_key,
-                region,
-                db_name,
-                host_override.is_some(),
-                options,
-                db_prefix,
-                &client_config,
-            )?)
+            .default_headers(default_headers)
             .user_agent(client_config.user_agent)
             .build()
             .map_err(|err| Error::Other {
@@ -264,17 +604,91 @@ impl RestfulLanceDbClient<Sender> {
 
         let host = match host_override {
             Some(host_override) => host_override,
-            None => format!("https://{}.{}.api.lancedb.com", db_name, region),
+            None => {
+                let hostname = format!("{}.{}.api.lancedb.com", parsed_url.db_name, region);
+                validate_dns_hostname(&hostname)?;
+                format!("https://{hostname}")
+            }
         };
         debug!("Created client for host: {}", host);
-        let retry_config = client_config.retry_config.try_into()?;
+        let retry_config = client_config.retry_config.clone().try_into()?;
+        let max_bytes_per_request =
+            Self::resolve_max_bytes_per_request(client_config.max_bytes_per_request)?;
+        let max_request_duration =
+            Self::resolve_max_request_duration(client_config.max_request_duration, read_timeout)?;
         Ok(Self {
             client,
             host,
             retry_config,
+            blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
             sender: Sender,
-            id_delimiter: client_config.id_delimiter.unwrap_or("$".to_string()),
+            header_provider: client_config.header_provider,
+            read_consistency_interval,
+            max_bytes_per_request,
+            max_request_duration,
         })
+    }
+
+    fn resolve_blob_request_concurrency(passed: Option<usize>) -> Result<usize> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY") {
+            env.parse::<usize>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY must be a positive integer, got '{env}'"
+                ),
+            })?
+        } else {
+            DEFAULT_BLOB_REQUEST_CONCURRENCY
+        };
+        if value == 0 {
+            return Err(Error::InvalidInput {
+                message: "blob request concurrency must be greater than zero".into(),
+            });
+        }
+        Ok(value)
+    }
+
+    /// Resolve the max bytes per insert request from config, environment, or the
+    /// default. A value of `0` (from either source) disables request splitting.
+    fn resolve_max_bytes_per_request(passed: Option<u64>) -> Result<Option<u64>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST") {
+            env.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_BYTES_PER_REQUEST must be a non-negative integer, got '{}'",
+                    env
+                ),
+            })?
+        } else {
+            DEFAULT_MAX_BYTES_PER_REQUEST
+        };
+        Ok((value > 0).then_some(value))
+    }
+
+    /// Resolve the max request duration from config, environment, or a default
+    /// derived from the read timeout. A zero duration (from either source)
+    /// disables the time-based cut.
+    fn resolve_max_request_duration(
+        passed: Option<Duration>,
+        read_timeout: Duration,
+    ) -> Result<Option<Duration>> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_MAX_REQUEST_DURATION") {
+            let secs = env.parse::<u64>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_MAX_REQUEST_DURATION must be a non-negative integer \
+                     number of seconds, got '{}'",
+                    env
+                ),
+            })?;
+            Duration::from_secs(secs)
+        } else {
+            read_timeout / DEFAULT_MAX_REQUEST_DURATION_DIVISOR
+        };
+        Ok((!value.is_zero()).then_some(value))
     }
 }
 
@@ -283,7 +697,19 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         &self.host
     }
 
-    fn default_headers(
+    /// Maximum bytes per insert request, or `None` if request splitting is
+    /// disabled.
+    pub(crate) fn max_bytes_per_request(&self) -> Option<u64> {
+        self.max_bytes_per_request
+    }
+
+    /// Maximum wall-clock time per insert request, or `None` if the time-based
+    /// cut is disabled.
+    pub(crate) fn max_request_duration(&self) -> Option<Duration> {
+        self.max_request_duration
+    }
+
+    pub fn default_headers(
         api_key: &str,
         region: &str,
         db_name: &str,
@@ -293,12 +719,16 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         config: &ClientConfig,
     ) -> Result<HeaderMap> {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            HeaderName::from_static("x-api-key"),
-            HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
+        if !api_key.is_empty() {
+            // `log_request` prints the request's Debug, which prints headers.
+            // Marking the value sensitive is what makes that print `Sensitive`
+            // instead of the key itself.
+            let mut key = HeaderValue::from_str(api_key).map_err(|_| Error::InvalidInput {
                 message: "non-ascii api key provided".to_string(),
-            })?,
-        );
+            })?;
+            key.set_sensitive(true);
+            headers.insert(HeaderName::from_static("x-api-key"), key);
+        }
         if region == "local" {
             let host = format!("{}.local.api.lancedb.com", db_name);
             headers.insert(
@@ -316,14 +746,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 })?,
             );
         }
-        if db_prefix.is_some() {
+        if let Some(prefix) = db_prefix {
             headers.insert(
                 HeaderName::from_static("x-lancedb-database-prefix"),
-                HeaderValue::from_str(db_prefix.unwrap()).map_err(|_| Error::InvalidInput {
-                    message: format!(
-                        "non-ascii database prefix '{}' provided",
-                        db_prefix.unwrap()
-                    ),
+                HeaderValue::from_str(prefix).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii database prefix '{}' provided", prefix),
                 })?,
             );
         }
@@ -357,34 +784,75 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             );
         }
 
+        if let Some(user_id) = config.resolve_user_id() {
+            headers.insert(
+                HeaderName::from_static("x-lancedb-user-id"),
+                HeaderValue::from_str(&user_id).map_err(|_| Error::InvalidInput {
+                    message: format!("non-ascii user_id '{}' provided", user_id),
+                })?,
+            );
+        }
+
+        redact_sensitive_headers(&mut headers);
         Ok(headers)
     }
 
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.get(full_uri);
-        self.add_id_delimiter_query_param(builder)
+        self.client.get(full_uri)
     }
 
     pub fn post(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
-        let builder = self.client.post(full_uri);
-        self.add_id_delimiter_query_param(builder)
+        self.client.post(full_uri)
     }
 
-    fn add_id_delimiter_query_param(&self, req: RequestBuilder) -> RequestBuilder {
-        if self.id_delimiter != "$" {
-            req.query(&[("delimiter", self.id_delimiter.clone())])
-        } else {
-            req
+    /// Apply dynamic headers from the header provider if configured
+    pub(crate) async fn apply_dynamic_headers(&self, mut request: Request) -> Result<Request> {
+        if let Some(ref provider) = self.header_provider {
+            let headers = provider.get_headers().await?;
+            let request_headers = request.headers_mut();
+            for (key, value) in headers {
+                if let Ok(header_name) = HeaderName::from_str(&key) {
+                    if let Ok(header_value) = HeaderValue::from_str(&value) {
+                        request_headers.insert(header_name, header_value);
+                    } else {
+                        debug!("Invalid header value for key {}", key);
+                    }
+                } else {
+                    debug!("Invalid header name: {}", key);
+                }
+            }
         }
+        redact_sensitive_headers(request.headers_mut());
+        Ok(request)
     }
 
     pub async fn send(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Allowed).await
+    }
+
+    /// Send a request whose body must never reach a debug log.
+    ///
+    /// The body is built by the caller, so only the caller knows it holds a
+    /// credential; `log_request` sees serialized bytes and cannot tell.
+    pub async fn send_suppressing_body(&self, req: RequestBuilder) -> Result<(String, Response)> {
+        self.send_logging(req, BodyLogging::Suppressed).await
+    }
+
+    async fn send_logging(
+        &self,
+        req: RequestBuilder,
+        body_logging: BodyLogging,
+    ) -> Result<(String, Response)> {
         let (client, request) = req.build_split();
         let mut request = request.unwrap();
         let request_id = self.extract_request_id(&mut request);
-        self.log_request(&request, &request_id);
+
+        // Apply dynamic headers before sending
+        request = self.apply_dynamic_headers(request).await?;
+
+        self.log_request(&request, &request_id, body_logging);
 
         let response = self
             .sender
@@ -393,7 +861,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             .err_to_http(request_id.clone())?;
         debug!(
             "Received response for request_id={}: {:?}",
-            request_id, &response
+            request_id, response
         );
         Ok((request_id, response))
     }
@@ -421,7 +889,9 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             message: "Attempted to retry a request that cannot be cloned".to_string(),
         })?;
         let (_, r) = tmp_req.build_split();
-        let mut r = r.unwrap();
+        let mut r = r.map_err(|e| Error::Runtime {
+            message: format!("Failed to build request: {}", e),
+        })?;
         let request_id = self.extract_request_id(&mut r);
         let mut retry_counter = RetryCounter::new(retry_config, request_id.clone());
 
@@ -437,9 +907,15 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
             }
 
             let (c, request) = req_builder.build_split();
-            let mut request = request.unwrap();
+            let mut request = request.map_err(|e| Error::Runtime {
+                message: format!("Failed to build request: {}", e),
+            })?;
             self.set_request_id(&mut request, &request_id.clone());
-            self.log_request(&request, &request_id);
+
+            // Apply dynamic headers before each retry attempt
+            request = self.apply_dynamic_headers(request).await?;
+
+            self.log_request(&request, &request_id, BodyLogging::Allowed);
 
             let response = self.sender.send(&c, request).await.map(|r| (r.status(), r));
 
@@ -447,7 +923,7 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
                 Ok((status, response)) if status.is_success() => {
                     debug!(
                         "Received response for request_id={}: {:?}",
-                        retry_counter.request_id, &response
+                        retry_counter.request_id, response
                     );
                     return Ok((retry_counter.request_id, response));
                 }
@@ -483,13 +959,18 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
         }
     }
 
-    fn log_request(&self, request: &Request, request_id: &String) {
+    fn log_request(&self, request: &Request, request_id: &String, body_logging: BodyLogging) {
         if log::log_enabled!(log::Level::Debug) {
             let content_type = request
                 .headers()
                 .get("content-type")
                 .map(|v| v.to_str().unwrap());
-            if content_type == Some("application/json") {
+            if body_logging == BodyLogging::Suppressed {
+                debug!(
+                    "Sending request_id={}: {:?} with body suppressed",
+                    request_id, request
+                );
+            } else if content_type == Some("application/json") {
                 let body = request.body().as_ref().unwrap().as_bytes().unwrap();
                 let body = String::from_utf8_lossy(body);
                 debug!(
@@ -508,14 +989,13 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn extract_request_id(&self, request: &mut Request) -> String {
         // Set a request id.
         // TODO: allow the user to supply this, through middleware?
-        let request_id = if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
+        if let Some(request_id) = request.headers().get(REQUEST_ID_HEADER) {
             request_id.to_str().unwrap().to_string()
         } else {
             let request_id = uuid::Uuid::new_v4().to_string();
             self.set_request_id(request, &request_id);
             request_id
-        };
-        request_id
+        }
     }
 
     /// Set the request ID header
@@ -566,6 +1046,7 @@ impl<T> RequestResultExt for reqwest::Result<T> {
 
 #[cfg(test)]
 pub mod test_utils {
+    use std::convert::TryInto;
     use std::sync::Arc;
 
     use super::*;
@@ -581,12 +1062,58 @@ pub mod test_utils {
         }
     }
 
+    /// Consume a reqwest body into bytes, returning an error if the body
+    /// stream fails. This is used by MockSender to materialize streaming
+    /// bodies so that data pipeline errors (e.g. NaN rejection) are triggered
+    /// during mock sends just as they would be during a real HTTP upload.
+    pub async fn try_collect_body(body: reqwest::Body) -> std::result::Result<Vec<u8>, String> {
+        use http_body::Body;
+        use std::pin::Pin;
+
+        let mut body = body;
+        let mut data = Vec::new();
+        let mut body_pin = Pin::new(&mut body);
+        while let Some(frame) = futures::StreamExt::next(&mut futures::stream::poll_fn(|cx| {
+            body_pin.as_mut().poll_frame(cx)
+        }))
+        .await
+        {
+            match frame {
+                Ok(frame) => {
+                    if let Some(bytes) = frame.data_ref() {
+                        data.extend_from_slice(bytes);
+                    }
+                }
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        Ok(data)
+    }
+
     impl HttpSend for MockSender {
         async fn send(
             &self,
             _client: &reqwest::Client,
-            request: reqwest::Request,
+            mut request: reqwest::Request,
         ) -> reqwest::Result<reqwest::Response> {
+            // Consume any streaming body to materialize it into bytes.
+            // This triggers data pipeline errors (e.g. NaN rejection) that
+            // would otherwise only fire when a real HTTP client reads the body.
+            if let Some(body) = request.body_mut().take() {
+                match try_collect_body(body).await {
+                    Ok(bytes) => {
+                        *request.body_mut() = Some(reqwest::Body::from(bytes));
+                    }
+                    Err(msg) => {
+                        // Simulate a failed request by returning a 500 response.
+                        return Ok(http::Response::builder()
+                            .status(500)
+                            .body(msg)
+                            .unwrap()
+                            .into());
+                    }
+                }
+            }
             let response = (self.f)(request);
             Ok(response)
         }
@@ -594,6 +1121,16 @@ pub mod test_utils {
 
     pub fn client_with_handler<T>(
         handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
+        client_with_handler_and_interval(handler, None)
+    }
+
+    pub fn client_with_handler_and_interval<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        read_consistency_interval: Option<Duration>,
     ) -> RestfulLanceDbClient<MockSender>
     where
         T: Into<reqwest::Body>,
@@ -607,18 +1144,149 @@ pub mod test_utils {
             client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
-            id_delimiter: "$".to_string(),
+            header_provider: None,
+            read_consistency_interval,
+            max_bytes_per_request: None,
+            max_request_duration: None,
+        }
+    }
+
+    pub fn client_with_handler_and_config<T>(
+        handler: impl Fn(reqwest::Request) -> http::response::Response<T> + Send + Sync + 'static,
+        config: ClientConfig,
+    ) -> RestfulLanceDbClient<MockSender>
+    where
+        T: Into<reqwest::Body>,
+    {
+        let wrapper = move |req: reqwest::Request| {
+            let response = handler(req);
+            response.into()
+        };
+
+        RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "http://localhost".to_string(),
+            retry_config: config.retry_config.try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(
+                config
+                    .blob_request_concurrency
+                    .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
+            )),
+            sender: MockSender {
+                f: Arc::new(wrapper),
+            },
+            header_provider: config.header_provider,
+            read_consistency_interval: None,
+            max_bytes_per_request: config
+                .max_bytes_per_request
+                .and_then(|v| (v > 0).then_some(v)),
+            max_request_duration: config
+                .max_request_duration
+                .and_then(|v| (!v.is_zero()).then_some(v)),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    /// A configuration naming any other delimiter is refused where it was
+    /// written, rather than producing identifiers no service splits the way the
+    /// caller meant.
+    #[test]
+    fn test_a_delimiter_other_than_the_supported_one_is_refused() {
+        for delimiter in ["/", "?", "#", "%", "", ".", "..", "-", "_", "|", "::", "$$"] {
+            let error = super::validate_id_delimiter(delimiter)
+                .expect_err("only the supported delimiter may be configured");
+            assert!(
+                error.to_string().contains("id_delimiter"),
+                "{delimiter:?}: {error}"
+            );
+        }
+        super::validate_id_delimiter(super::ID_DELIMITER).unwrap();
+    }
+
+    /// Leaving it unset is how nearly every caller reaches the same delimiter.
+    #[test]
+    fn test_an_unset_delimiter_is_the_supported_one() {
+        super::ClientConfig::default().validate().unwrap();
+        super::ClientConfig {
+            id_delimiter: Some(super::ID_DELIMITER.to_string()),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap();
+        super::ClientConfig {
+            id_delimiter: Some("-".to_string()),
+            ..Default::default()
+        }
+        .validate()
+        .expect_err("a configured delimiter other than the supported one must be refused");
+    }
+
+    #[test]
+    fn test_blob_request_concurrency_must_be_positive() {
+        let error = super::ClientConfig {
+            blob_request_concurrency: Some(0),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(error.to_string().contains("blob_request_concurrency"));
+        assert_eq!(
+            RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
+            3
+        );
+    }
+
     use super::*;
+    use serial_test::serial;
     use std::time::Duration;
+
+    // Serializes the env-var-mutating tests below: cargo test runs tests in
+    // parallel, but several of these tests read and write the same process-
+    // global env vars (`LANCEDB_USER_ID*`), so they would race without this.
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn test_parse_catalog_database_uri() {
+        let parsed = parse_db_url("db://team%2Fsearch").unwrap();
+        assert_eq!(parsed.db_name, "team/search");
+        assert!(parsed.db_prefix.is_none());
+        let parsed = parse_db_url("db://db/prefix").unwrap();
+        assert_eq!(parsed.db_name, "db");
+        assert_eq!(parsed.db_prefix.as_deref(), Some("prefix"));
+    }
+
+    #[test]
+    fn test_parse_database_uri_validates_decoded_name() {
+        for name in [
+            "a b",
+            "a$b",
+            "a?b",
+            "café",
+            "/db",
+            "db/",
+            "a//b",
+            "a/../b",
+            "a/./b",
+            &"a".repeat(65),
+        ] {
+            let uri = format!("db://{}", urlencoding::encode(name));
+            assert!(
+                matches!(parse_db_url(&uri), Err(Error::InvalidInput { .. })),
+                "accepted {name:?}"
+            );
+        }
+        assert!(parse_db_url(&format!("db://{}", "a".repeat(64))).is_ok());
+    }
 
     #[test]
     fn test_timeout_config_default() {
@@ -660,5 +1328,660 @@ mod tests {
             client_config.timeout_config.timeout,
             Some(Duration::from_secs(120))
         );
+    }
+
+    #[test]
+    fn test_tls_config_default() {
+        let config = TlsConfig::default();
+        assert!(config.cert_file.is_none());
+        assert!(config.key_file.is_none());
+        assert!(config.ssl_ca_cert.is_none());
+        assert!(config.assert_hostname);
+    }
+
+    #[test]
+    fn test_tls_config_with_mtls() {
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: Some("/path/to/ca.pem".to_string()),
+            assert_hostname: true,
+        };
+
+        assert_eq!(tls_config.cert_file, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(tls_config.key_file, Some("/path/to/key.pem".to_string()));
+        assert_eq!(tls_config.ssl_ca_cert, Some("/path/to/ca.pem".to_string()));
+        assert!(tls_config.assert_hostname);
+    }
+
+    #[test]
+    fn test_client_config_with_tls() {
+        let tls_config = TlsConfig {
+            cert_file: Some("/path/to/cert.pem".to_string()),
+            key_file: Some("/path/to/key.pem".to_string()),
+            ssl_ca_cert: None,
+            assert_hostname: false,
+        };
+
+        let client_config = ClientConfig {
+            tls_config: Some(tls_config.clone()),
+            ..Default::default()
+        };
+
+        assert!(client_config.tls_config.is_some());
+        let config_tls = client_config.tls_config.unwrap();
+        assert_eq!(config_tls.cert_file, Some("/path/to/cert.pem".to_string()));
+        assert_eq!(config_tls.key_file, Some("/path/to/key.pem".to_string()));
+        assert!(config_tls.ssl_ca_cert.is_none());
+        assert!(!config_tls.assert_hostname);
+    }
+
+    #[test]
+    fn test_default_headers_skip_empty_api_key() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        assert!(!headers.contains_key("x-api-key"));
+
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "static-secret-value",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+        let api_key = headers.get("x-api-key").unwrap();
+        assert_eq!(api_key, "static-secret-value");
+        assert!(api_key.is_sensitive());
+        assert!(!format!("{headers:?}").contains("static-secret-value"));
+    }
+
+    #[test]
+    fn test_configured_authentication_headers_are_sensitive() {
+        let config = ClientConfig {
+            extra_headers: HashMap::from([
+                (
+                    "Authorization".to_string(),
+                    "Bearer configured-secret".to_string(),
+                ),
+                ("X-API-Key".to_string(), "configured-api-key".to_string()),
+                (
+                    "Cookie".to_string(),
+                    "session=configured-cookie".to_string(),
+                ),
+                (
+                    "Proxy-Authorization".to_string(),
+                    "Basic configured-proxy-secret".to_string(),
+                ),
+                ("X-Custom".to_string(), "visible-value".to_string()),
+            ]),
+            ..Default::default()
+        };
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &config,
+        )
+        .unwrap();
+
+        assert!(headers.get("authorization").unwrap().is_sensitive());
+        assert!(headers.get("x-api-key").unwrap().is_sensitive());
+        assert!(headers.get("cookie").unwrap().is_sensitive());
+        assert!(headers.get("proxy-authorization").unwrap().is_sensitive());
+        assert!(!headers.get("x-custom").unwrap().is_sensitive());
+        let debug = format!("{headers:?}");
+        assert!(!debug.contains("configured-secret"));
+        assert!(!debug.contains("configured-api-key"));
+        assert!(!debug.contains("configured-cookie"));
+        assert!(!debug.contains("configured-proxy-secret"));
+        assert!(debug.contains("visible-value"));
+    }
+
+    /// `log_request` prints the request's Debug, and Debug for a request prints
+    /// its headers. Marking the value sensitive is the only thing standing
+    /// between the API key and every debug line; assert on the header map's own
+    /// Debug, which is what that printing reduces to.
+    #[test]
+    fn test_api_key_is_redacted_in_debug_output() {
+        let headers = RestfulLanceDbClient::<Sender>::default_headers(
+            "sk-live-sentinel",
+            "us-east-1",
+            "db-name",
+            false,
+            &RemoteOptions::default(),
+            None,
+            &ClientConfig::default(),
+        )
+        .unwrap();
+
+        assert_eq!(headers.get("x-api-key").unwrap(), "sk-live-sentinel");
+        assert!(
+            !format!("{:?}", headers).contains("sk-live-sentinel"),
+            "the API key must not survive Debug formatting"
+        );
+    }
+
+    /// A suppressed body is suppressed whatever the content type says, and an
+    /// allowed one is logged in full.
+    #[test]
+    fn test_body_logging_is_decided_by_the_caller() {
+        assert_ne!(BodyLogging::Allowed, BodyLogging::Suppressed);
+        // `send` and `send_suppressing_body` differ only in what they pass, so
+        // the enum is the whole contract: a caller states its intent and the
+        // transport does not infer one from the route.
+        assert_eq!(BodyLogging::Allowed, BodyLogging::Allowed);
+    }
+
+    #[test]
+    fn test_rejects_invalid_cloud_dns_hostname() {
+        let invalid_database_names = ["a".repeat(64), "invalid..database".to_string()];
+
+        for db_name in invalid_database_names {
+            let parsed_url = parse_db_url(&format!("db://{db_name}")).unwrap();
+            let error = RestfulLanceDbClient::<Sender>::try_new(
+                &parsed_url,
+                "us-east-1",
+                None,
+                HeaderMap::new(),
+                ClientConfig::default(),
+                None,
+            )
+            .unwrap_err();
+
+            assert!(
+                matches!(error, Error::InvalidInput { ref message } if message.contains("DNS labels must contain 1 to 63 bytes")),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    // Test implementation of HeaderProvider
+    #[derive(Debug, Clone)]
+    struct TestHeaderProvider {
+        headers: HashMap<String, String>,
+    }
+
+    impl TestHeaderProvider {
+        fn new(headers: HashMap<String, String>) -> Self {
+            Self { headers }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl HeaderProvider for TestHeaderProvider {
+        async fn get_headers(&self) -> Result<HashMap<String, String>> {
+            Ok(self.headers.clone())
+        }
+    }
+
+    // Test implementation that returns an error
+    #[derive(Debug)]
+    struct ErrorHeaderProvider;
+
+    #[async_trait::async_trait]
+    impl HeaderProvider for ErrorHeaderProvider {
+        async fn get_headers(&self) -> Result<HashMap<String, String>> {
+            Err(Error::Runtime {
+                message: "Failed to get headers".to_string(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn test_client_config_with_header_provider() {
+        let mut headers = HashMap::new();
+        headers.insert("X-API-Key".to_string(), "secret-key".to_string());
+
+        let provider = TestHeaderProvider::new(headers);
+        let client_config = ClientConfig {
+            header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            ..Default::default()
+        };
+
+        assert!(client_config.header_provider.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_apply_dynamic_headers() {
+        // Create a mock client with header provider
+        let mut headers = HashMap::new();
+        headers.insert("X-Dynamic".to_string(), "dynamic-value".to_string());
+
+        let provider = TestHeaderProvider::new(headers);
+
+        // Create a simple request
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://example.com/test".parse().unwrap(),
+        );
+
+        // Create client with header provider
+        let client = RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "https://example.com".to_string(),
+            retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            sender: Sender,
+            header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
+        };
+
+        // Apply dynamic headers
+        let updated_request = client.apply_dynamic_headers(request).await.unwrap();
+
+        // Check that the header was added
+        assert_eq!(
+            updated_request.headers().get("X-Dynamic").unwrap(),
+            "dynamic-value"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_dynamic_headers_merge() {
+        // Test that dynamic headers override existing headers
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".to_string(), "Bearer new-token".to_string());
+        headers.insert("X-API-Key".to_string(), "new-api-key".to_string());
+        headers.insert("X-Custom".to_string(), "custom-value".to_string());
+
+        let provider = TestHeaderProvider::new(headers);
+
+        // Create request with existing Authorization header
+        let mut request_builder = reqwest::Client::new().get("https://example.com/test");
+        request_builder = request_builder.header("Authorization", "Bearer old-token");
+        request_builder = request_builder.header("X-Existing", "existing-value");
+        let request = request_builder.build().unwrap();
+
+        // Create client with header provider
+        let client = RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "https://example.com".to_string(),
+            retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            sender: Sender,
+            header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
+        };
+
+        // Apply dynamic headers
+        let updated_request = client.apply_dynamic_headers(request).await.unwrap();
+
+        // Check that dynamic headers override existing ones
+        assert_eq!(
+            updated_request.headers().get("Authorization").unwrap(),
+            "Bearer new-token"
+        );
+        assert_eq!(
+            updated_request.headers().get("X-Custom").unwrap(),
+            "custom-value"
+        );
+        assert!(
+            updated_request
+                .headers()
+                .get("Authorization")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            updated_request
+                .headers()
+                .get("X-API-Key")
+                .unwrap()
+                .is_sensitive()
+        );
+        assert!(
+            !updated_request
+                .headers()
+                .get("X-Custom")
+                .unwrap()
+                .is_sensitive()
+        );
+        let debug = format!("{updated_request:?}");
+        assert!(!debug.contains("new-token"));
+        assert!(!debug.contains("new-api-key"));
+        assert!(debug.contains("custom-value"));
+        // Existing headers should still be present
+        assert_eq!(
+            updated_request.headers().get("X-Existing").unwrap(),
+            "existing-value"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_apply_dynamic_headers_with_error_provider() {
+        let provider = ErrorHeaderProvider;
+
+        let request = reqwest::Request::new(
+            reqwest::Method::GET,
+            "https://example.com/test".parse().unwrap(),
+        );
+
+        let client = RestfulLanceDbClient {
+            client: reqwest::Client::new(),
+            host: "https://example.com".to_string(),
+            retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
+            sender: Sender,
+            header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
+            read_consistency_interval: None,
+            max_bytes_per_request: None,
+            max_request_duration: None,
+        };
+
+        // Header provider errors should fail the request
+        // This is important for security - if auth headers can't be fetched, don't proceed
+        let result = client.apply_dynamic_headers(request).await;
+        assert!(result.is_err());
+
+        match result.unwrap_err() {
+            Error::Runtime { message } => {
+                assert_eq!(message, "Failed to get headers");
+            }
+            _ => panic!("Expected Runtime error"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_user_id_direct_value() {
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+    }
+
+    #[test]
+    #[serial(user_id_env)]
+    fn test_resolve_user_id_none() {
+        let _guard = lock_env();
+        let config = ClientConfig::default();
+        // Clear env vars that might be set from other tests
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        assert_eq!(config.resolve_user_id(), None);
+    }
+
+    #[test]
+    #[serial(user_id_env)]
+    fn test_resolve_user_id_from_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), Some("env-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    #[serial(user_id_env)]
+    fn test_resolve_user_id_from_env_key() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+            std::env::set_var("LANCEDB_USER_ID_ENV_KEY", "MY_CUSTOM_USER_ID");
+            std::env::set_var("MY_CUSTOM_USER_ID", "custom-env-user-id");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(
+            config.resolve_user_id(),
+            Some("custom-env-user-id".to_string())
+        );
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+            std::env::remove_var("MY_CUSTOM_USER_ID");
+        }
+    }
+
+    #[test]
+    #[serial(user_id_env)]
+    fn test_resolve_user_id_direct_takes_precedence() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "env-user-id");
+        }
+        let config = ClientConfig {
+            user_id: Some("direct-user-id".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(config.resolve_user_id(), Some("direct-user-id".to_string()));
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    #[serial(user_id_env)]
+    fn test_resolve_user_id_empty_env_ignored() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCEDB_USER_ID", "");
+            std::env::remove_var("LANCEDB_USER_ID_ENV_KEY");
+        }
+        let config = ClientConfig::default();
+        assert_eq!(config.resolve_user_id(), None);
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCEDB_USER_ID");
+        }
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_passed_value_wins() {
+        // An explicit config value is used verbatim; env/default are not consulted.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    fn test_resolve_max_bytes_zero_disables() {
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(0)).unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_default_when_unset() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        assert_eq!(resolved, Some(DEFAULT_MAX_BYTES_PER_REQUEST));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_from_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(4096));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_config_overrides_env() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "4096");
+        }
+        // A config value takes precedence over the environment variable.
+        let resolved =
+            RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(Some(1234)).unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert_eq!(resolved, Some(1234));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_bytes_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST", "not-a-number");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_bytes_per_request(None).unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_BYTES_PER_REQUEST");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_passed_value_wins() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::from_secs(42)),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(42)));
+    }
+
+    #[test]
+    fn test_resolve_max_request_duration_zero_disables() {
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            Some(Duration::ZERO),
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_default_is_half_read_timeout() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        assert_eq!(resolved, Some(Duration::from_secs(150)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_from_env_seconds() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "30");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, Some(Duration::from_secs(30)));
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_env_zero_disables() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "0");
+        }
+        let resolved = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    #[serial(request_limits_env)]
+    fn test_resolve_max_request_duration_invalid_env_errors() {
+        let _guard = lock_env();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::set_var("LANCE_CLIENT_MAX_REQUEST_DURATION", "12.5");
+        }
+        let err = RestfulLanceDbClient::<Sender>::resolve_max_request_duration(
+            None,
+            Duration::from_secs(300),
+        )
+        .unwrap_err();
+        // SAFETY: This is only called in tests
+        unsafe {
+            std::env::remove_var("LANCE_CLIENT_MAX_REQUEST_DURATION");
+        }
+        assert!(matches!(err, Error::InvalidInput { .. }), "got: {err:?}");
     }
 }

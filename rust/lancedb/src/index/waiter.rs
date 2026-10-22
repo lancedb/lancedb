@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::Error;
 use crate::error::Result;
 use crate::table::BaseTable;
-use crate::Error;
 use log::debug;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;

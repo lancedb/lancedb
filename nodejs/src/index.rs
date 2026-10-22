@@ -3,13 +3,17 @@
 
 use std::sync::Mutex;
 
-use lancedb::index::scalar::{BTreeIndexBuilder, FtsIndexBuilder};
+use lancedb::index::Index as LanceDbIndex;
+use lancedb::index::scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder};
 use lancedb::index::vector::{
     IvfFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+    IvfRqIndexBuilder,
 };
-use lancedb::index::Index as LanceDbIndex;
+use lancedb::tokenize as lancedb_tokenize;
 use napi_derive::napi;
 
+use crate::error::NapiErrorExt;
+use crate::table::FtsToken;
 use crate::util::parse_distance_type;
 
 #[napi]
@@ -27,6 +31,67 @@ impl Index {
                 "attempt to use an index more than once",
             ))
     }
+}
+
+#[napi(catch_unwind)]
+#[allow(dead_code, clippy::too_many_arguments)]
+pub fn tokenize(
+    query: String,
+    base_tokenizer: Option<String>,
+    language: Option<String>,
+    max_token_length: Option<u32>,
+    lower_case: Option<bool>,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
+    custom_stop_words: Option<Vec<String>>,
+    ascii_folding: Option<bool>,
+    ngram_min_length: Option<u32>,
+    ngram_max_length: Option<u32>,
+    prefix_only: Option<bool>,
+) -> napi::Result<Vec<FtsToken>> {
+    let mut opts = FtsIndexBuilder::default();
+    if let Some(base_tokenizer) = base_tokenizer {
+        opts = opts.base_tokenizer(base_tokenizer);
+    }
+    if let Some(language) = language {
+        opts = opts.language(&language).map_err(|_| {
+            napi::Error::from_reason(format!(
+                "LanceDB does not support the requested language: '{}'",
+                language
+            ))
+        })?;
+    }
+    if let Some(max_token_length) = max_token_length {
+        opts = opts.max_token_length(Some(max_token_length as usize));
+    }
+    if let Some(lower_case) = lower_case {
+        opts = opts.lower_case(lower_case);
+    }
+    if let Some(stem) = stem {
+        opts = opts.stem(stem);
+    }
+    if let Some(remove_stop_words) = remove_stop_words {
+        opts = opts.remove_stop_words(remove_stop_words);
+    }
+    opts = opts.custom_stop_words(custom_stop_words);
+    if let Some(ascii_folding) = ascii_folding {
+        opts = opts.ascii_folding(ascii_folding);
+    }
+    if let Some(ngram_min_length) = ngram_min_length {
+        opts = opts.ngram_min_length(ngram_min_length);
+    }
+    if let Some(ngram_max_length) = ngram_max_length {
+        opts = opts.ngram_max_length(ngram_max_length);
+    }
+    if let Some(prefix_only) = prefix_only {
+        opts = opts.ngram_prefix_only(prefix_only);
+    }
+
+    Ok(lancedb_tokenize(&query, &opts)
+        .default_error()?
+        .into_iter()
+        .map(FtsToken::from)
+        .collect())
 }
 
 #[napi]
@@ -62,6 +127,36 @@ impl Index {
         }
         Ok(Self {
             inner: Mutex::new(Some(LanceDbIndex::IvfPq(ivf_pq_builder))),
+        })
+    }
+
+    #[napi(factory)]
+    pub fn ivf_rq(
+        distance_type: Option<String>,
+        num_partitions: Option<u32>,
+        num_bits: Option<u32>,
+        max_iterations: Option<u32>,
+        sample_rate: Option<u32>,
+    ) -> napi::Result<Self> {
+        let mut ivf_rq_builder = IvfRqIndexBuilder::default();
+        if let Some(distance_type) = distance_type {
+            let distance_type = parse_distance_type(distance_type)?;
+            ivf_rq_builder = ivf_rq_builder.distance_type(distance_type);
+        }
+        if let Some(num_partitions) = num_partitions {
+            ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
+        }
+        if let Some(num_bits) = num_bits {
+            ivf_rq_builder = ivf_rq_builder.num_bits(num_bits);
+        }
+        if let Some(max_iterations) = max_iterations {
+            ivf_rq_builder = ivf_rq_builder.max_iterations(max_iterations);
+        }
+        if let Some(sample_rate) = sample_rate {
+            ivf_rq_builder = ivf_rq_builder.sample_rate(sample_rate);
+        }
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::IvfRq(ivf_rq_builder))),
         })
     }
 
@@ -113,6 +208,13 @@ impl Index {
     }
 
     #[napi(factory)]
+    pub fn fm() -> Self {
+        Self {
+            inner: Mutex::new(Some(LanceDbIndex::Fm(FmIndexBuilder::default()))),
+        }
+    }
+
+    #[napi(factory)]
     #[allow(clippy::too_many_arguments)]
     pub fn fts(
         with_position: Option<bool>,
@@ -122,11 +224,13 @@ impl Index {
         lower_case: Option<bool>,
         stem: Option<bool>,
         remove_stop_words: Option<bool>,
+        custom_stop_words: Option<Vec<String>>,
         ascii_folding: Option<bool>,
         ngram_min_length: Option<u32>,
         ngram_max_length: Option<u32>,
         prefix_only: Option<bool>,
-    ) -> Self {
+        block_size: Option<u32>,
+    ) -> napi::Result<Self> {
         let mut opts = FtsIndexBuilder::default();
         if let Some(with_position) = with_position {
             opts = opts.with_position(with_position);
@@ -135,7 +239,12 @@ impl Index {
             opts = opts.base_tokenizer(base_tokenizer);
         }
         if let Some(language) = language {
-            opts = opts.language(&language).unwrap();
+            opts = opts.language(&language).map_err(|_| {
+                napi::Error::from_reason(format!(
+                    "LanceDB does not support the requested language: '{}'",
+                    language
+                ))
+            })?;
         }
         if let Some(max_token_length) = max_token_length {
             opts = opts.max_token_length(Some(max_token_length as usize));
@@ -149,6 +258,7 @@ impl Index {
         if let Some(remove_stop_words) = remove_stop_words {
             opts = opts.remove_stop_words(remove_stop_words);
         }
+        opts = opts.custom_stop_words(custom_stop_words);
         if let Some(ascii_folding) = ascii_folding {
             opts = opts.ascii_folding(ascii_folding);
         }
@@ -161,10 +271,15 @@ impl Index {
         if let Some(prefix_only) = prefix_only {
             opts = opts.ngram_prefix_only(prefix_only);
         }
-
-        Self {
-            inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
+        if let Some(block_size) = block_size {
+            opts = opts
+                .block_size(block_size as usize)
+                .map_err(|err| napi::Error::from_reason(err.to_string()))?;
         }
+
+        Ok(Self {
+            inner: Mutex::new(Some(LanceDbIndex::FTS(opts))),
+        })
     }
 
     #[napi(factory)]

@@ -27,6 +27,9 @@ class LanceDBClientError(RuntimeError):
         self.request_id = request_id
         self.status_code = status_code
 
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (self.__class__, (str(self), self.request_id, self.status_code))
+
 
 class HttpError(LanceDBClientError):
     """An error that occurred during an HTTP request.
@@ -50,9 +53,9 @@ class RetryError(LanceDBClientError):
     """An error that occurs when the client has exceeded the maximum number of retries.
 
     The retry strategy can be adjusted by setting the
-    [retry_config](lancedb.remote.ClientConfig.retry_config) in the client
+    [retry_config][lancedb.remote.ClientConfig.retry_config] in the client
     configuration. This is passed in the `client_config` argument of
-    [connect](lancedb.connect) and [connect_async](lancedb.connect_async).
+    [connect][lancedb.connect] and [connect_async][lancedb.connect_async].
 
     The __cause__ attribute of this exception will be the last exception that
     caused the retry to fail. It will be an
@@ -101,3 +104,19 @@ class RetryError(LanceDBClientError):
         self.max_request_failures = max_request_failures
         self.max_connect_failures = max_connect_failures
         self.max_read_failures = max_read_failures
+
+    def __reduce__(self) -> tuple[type, tuple]:
+        return (
+            self.__class__,
+            (
+                str(self),
+                self.request_id,
+                self.request_failures,
+                self.connect_failures,
+                self.read_failures,
+                self.max_request_failures,
+                self.max_connect_failures,
+                self.max_read_failures,
+                self.status_code,
+            ),
+        )

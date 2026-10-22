@@ -1,0 +1,93 @@
+name: Codex Update Lance Dependency
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag name from Lance (e.g. `v7.2.0-beta.1`). If omitted, the newest release is resolved automatically — stable releases are preferred over pre-releases — and the run is skipped if it is not newer than the version currently pinned in Cargo.toml."
+        required: false
+        default: ""
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag name from Lance (e.g. `v7.2.0-beta.1`). Leave empty to resolve the newest release automatically — stable releases are preferred over pre-releases — and skip the run if it is not newer than the version currently pinned in Cargo.toml."
+        required: false
+        default: ""
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show inputs
+        run: |
+          echo "tag = ${{ inputs.tag || 'latest' }}"
+
+      - name: Checkout Repo LanceDB
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler libssl-dev
+
+      - name: Install cargo-info
+        run: cargo install cargo-info
+
+      - name: Install Python dependencies
+        run: python3 -m pip install --upgrade pip packaging
+
+      - name: Configure git user
+        run: |
+          git config user.name "lancedb automation"
+          git config user.email "robot@lancedb.com"
+
+      - name: Run Codex to update Lance dependency
+        env:
+          TAG: ${{ inputs.tag }}
+          GITHUB_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.ROBOT_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.CODEX_TOKEN }}
+        run: |
+          set -euo pipefail
+          TARGET_TAG="${TAG:-latest}"
+
+          cat <<EOF >/tmp/codex-prompt.txt
+          You are running inside the lancedb repository on a GitHub Actions runner.
+
+          Use \$lancedb-update-lance-dependency with target "${TARGET_TAG}".
+
+          Constraints:
+          - Use env "GH_TOKEN" for GitHub operations.
+          - Do not merge the pull request.
+          - Do not force-push.
+          - Do not create a duplicate pull request if an open PR already exists for the target Lance version.
+          - If any command fails, diagnose and fix the root cause instead of aborting.
+          - After creating the PR, display the PR URL, "git status --short", and a concise summary of the commands run and their results.
+          EOF
+
+          printenv OPENAI_API_KEY | codex login --with-api-key
+          codex --config shell_environment_policy.ignore_default_excludes=true exec --dangerously-bypass-approvals-and-sandbox "$(cat /tmp/codex-prompt.txt)"

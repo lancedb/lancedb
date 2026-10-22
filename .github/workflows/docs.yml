@@ -24,6 +24,7 @@ env:
   # according to: https://matklad.github.io/2021/09/04/fast-rust-builds.html
   # CI builds are faster with incremental disabled.
   CARGO_INCREMENTAL: "0"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
 
 jobs:
   # Single deploy job since we're just deploying
@@ -34,13 +35,13 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Install dependencies needed for ubuntu
         run: |
           sudo apt install -y protobuf-compiler libssl-dev
           rustup update && rustup default
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.10"
           cache: "pip"
@@ -49,15 +50,14 @@ jobs:
       - name: Build Python
         working-directory: python
         run: |
-          python -m pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .
-          python -m pip install --extra-index-url https://pypi.fury.io/lancedb/ -r ../docs/requirements.txt
+          python -m pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .
+          python -m pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -r ../docs/requirements.txt
       - name: Set up node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: 24
       - name: Install node dependencies
-        working-directory: node
+        working-directory: nodejs
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
@@ -66,7 +66,7 @@ jobs:
         run: |
           PYTHONPATH=. mkdocs build
       - name: Setup Pages
-        uses: actions/configure-pages@v2
+        uses: actions/configure-pages@v5
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:

@@ -8,9 +8,9 @@ use arrow_array::{Array, ArrayRef, FixedSizeListArray, Float32Array};
 use arrow_data::ArrayData;
 use arrow_schema::DataType;
 use async_openai::{
+    Client,
     config::OpenAIConfig,
     types::{CreateEmbeddingRequest, Embedding, EmbeddingInput, EncodingFormat},
-    Client,
 };
 use tokio::{runtime::Handle, task};
 
@@ -144,11 +144,11 @@ impl EmbeddingFunction for OpenAIEmbeddingFunction {
         "openai"
     }
 
-    fn source_type(&self) -> Result<Cow<DataType>> {
+    fn source_type(&self) -> Result<Cow<'_, DataType>> {
         Ok(Cow::Owned(DataType::Utf8))
     }
 
-    fn dest_type(&self) -> Result<Cow<DataType>> {
+    fn dest_type(&self) -> Result<Cow<'_, DataType>> {
         let n_dims = self.model.ndims();
         Ok(Cow::Owned(DataType::new_fixed_size_list(
             DataType::Float32,

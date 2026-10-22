@@ -3,19 +3,25 @@
 
 use std::collections::HashMap;
 
-use arrow_ipc::writer::FileWriter;
-use lancedb::ipc::ipc_file_to_batches;
+use chrono::{DateTime, Utc};
+
+use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 use lancedb::table::{
-    AddDataMode, ColumnAlteration as LanceColumnAlteration, Duration, NewColumnTransform,
-    OptimizeAction, OptimizeOptions, Table as LanceDbTable,
+    AddDataMode, ColumnAlteration as LanceColumnAlteration,
+    FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
+    NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use napi::Env;
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
 use crate::query::{Query, TakeQuery, VectorQuery};
+use crate::util::schema_to_buffer;
 
 #[napi]
 pub struct Table {
@@ -26,7 +32,7 @@ pub struct Table {
 }
 
 impl Table {
-    fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
+    pub(crate) fn inner_ref(&self) -> napi::Result<&LanceDbTable> {
         self.inner
             .as_ref()
             .ok_or_else(|| napi::Error::from_reason(format!("Table {} is closed", self.name)))
@@ -64,20 +70,33 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn schema(&self) -> napi::Result<Buffer> {
         let schema = self.inner_ref()?.schema().await.default_error()?;
-        let mut writer = FileWriter::try_new(vec![], &schema)
-            .map_err(|e| napi::Error::from_reason(format!("Failed to create IPC file: {}", e)))?;
-        writer
-            .finish()
-            .map_err(|e| napi::Error::from_reason(format!("Failed to finish IPC file: {}", e)))?;
-        Ok(Buffer::from(writer.into_inner().map_err(|e| {
-            napi::Error::from_reason(format!("Failed to get IPC file: {}", e))
-        })?))
+        schema_to_buffer(&schema)
     }
 
-    #[napi(catch_unwind)]
-    pub async fn add(&self, buf: Buffer, mode: String) -> napi::Result<AddResult> {
+    #[napi(
+        catch_unwind,
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
+    )]
+    pub async fn add(
+        &self,
+        buf: Buffer,
+        mode: String,
+        progress_callback: Option<ProgressFn>,
+        allow_external_blob_outside_bases: Option<bool>,
+    ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
+        let batches = batches
+            .into_iter()
+            .map(|batch| {
+                batch.map_err(|e| {
+                    napi::Error::from_reason(format!(
+                        "Failed to read record batch from IPC file: {}",
+                        e
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
         let mut op = self.inner_ref()?.add(batches);
 
         op = if mode == "append" {
@@ -87,6 +106,22 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        op = op
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases.unwrap_or(false));
+
+        if let Some(tsfn) = progress_callback {
+            op = op.progress(move |p| {
+                // NonBlocking: dispatch onto the JS event loop without
+                // blocking the writer thread.  With napi-rs's default
+                // unbounded queue, events are not dropped — a slow JS
+                // callback will just queue them.
+                tsfn.call(
+                    WriteProgressInfo::from(p),
+                    ThreadsafeFunctionCallMode::NonBlocking,
+                );
+            });
+        }
 
         let res = op.execute().await.default_error()?;
         Ok(res.into())
@@ -140,6 +175,39 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn create_index_async(
+        &self,
+        index: Option<&Index>,
+        column: String,
+        replace: Option<bool>,
+        wait_timeout_s: Option<i64>,
+        name: Option<String>,
+        train: Option<bool>,
+    ) -> napi::Result<crate::job::Job> {
+        let lancedb_index = if let Some(index) = index {
+            index.consume()?
+        } else {
+            lancedb::index::Index::Auto
+        };
+        let mut builder = self.inner_ref()?.create_index(&[column], lancedb_index);
+        if let Some(replace) = replace {
+            builder = builder.replace(replace);
+        }
+        if let Some(timeout) = wait_timeout_s {
+            builder =
+                builder.wait_timeout(std::time::Duration::from_secs(timeout.try_into().unwrap()));
+        }
+        if let Some(name) = name {
+            builder = builder.name(name);
+        }
+        if let Some(train) = train {
+            builder = builder.train(train);
+        }
+        let job = builder.execute_async().await.default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .drop_index(&index_name)
@@ -151,6 +219,14 @@ impl Table {
     pub async fn prewarm_index(&self, index_name: String) -> napi::Result<()> {
         self.inner_ref()?
             .prewarm_index(&index_name)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn prewarm_data(&self, columns: Option<Vec<String>>) -> napi::Result<()> {
+        self.inner_ref()?
+            .prewarm_data(columns)
             .await
             .default_error()
     }
@@ -171,6 +247,19 @@ impl Table {
     pub async fn stats(&self) -> Result<TableStatistics> {
         let stats = self.inner_ref()?.stats().await.default_error()?;
         Ok(stats.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn initial_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        Ok(self.inner_ref()?.initial_storage_options().await)
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn latest_storage_options(&self) -> napi::Result<Option<HashMap<String, String>>> {
+        self.inner_ref()?
+            .latest_storage_options()
+            .await
+            .default_error()
     }
 
     #[napi(catch_unwind)]
@@ -195,6 +284,13 @@ impl Table {
         Ok(Query::new(self.inner_ref()?.query()))
     }
 
+    /// Return a read-only table handle pinned to the current query revision.
+    #[napi(catch_unwind)]
+    pub async fn query_snapshot(&self) -> napi::Result<Self> {
+        let snapshot = self.inner_ref()?.query_snapshot().await.default_error()?;
+        Ok(Self::new(snapshot))
+    }
+
     #[napi(catch_unwind)]
     pub fn take_offsets(&self, offsets: Vec<i64>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
@@ -215,22 +311,74 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub fn take_row_ids(&self, row_ids: Vec<i64>) -> napi::Result<TakeQuery> {
+    pub fn take_row_ids(&self, row_ids: Vec<BigInt>) -> napi::Result<TakeQuery> {
         Ok(TakeQuery::new(
             self.inner_ref()?.take_row_ids(
                 row_ids
                     .into_iter()
-                    .map(|o| {
-                        u64::try_from(o).map_err(|e| {
-                            napi::Error::from_reason(format!(
-                                "Failed to convert row id to u64: {}",
-                                e
+                    .map(|id| {
+                        let (negative, value, lossless) = id.get_u64();
+                        if negative {
+                            Err(napi::Error::from_reason(
+                                "Row id cannot be negative".to_string(),
                             ))
-                        })
+                        } else if !lossless {
+                            Err(napi::Error::from_reason(
+                                "Row id is too large to fit in u64".to_string(),
+                            ))
+                        } else {
+                            Ok(value)
+                        }
                     })
                     .collect::<Result<Vec<_>>>()?,
             ),
         ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn blob_columns(&self) -> napi::Result<Vec<String>> {
+        self.inner_ref()?.blob_columns().await.default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blobs<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        row_ids: Vec<BigInt>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(copy_blob_buffers(array))
+        })
+    }
+
+    #[napi(catch_unwind)]
+    pub fn fetch_blob_files<'env>(
+        &self,
+        env: &'env Env,
+        column: String,
+        row_ids: Vec<BigInt>,
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<BlobFile>>>> {
+        let row_ids = parse_row_ids(row_ids)?;
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let files = table
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(files
+                .into_iter()
+                .map(|file| file.map(BlobFile::new))
+                .collect())
+        })
     }
 
     #[napi(catch_unwind)]
@@ -250,7 +398,118 @@ impl Table {
         let transforms = NewColumnTransform::SqlExpressions(transforms);
         let res = self
             .inner_ref()?
-            .add_columns(transforms, None)
+            .add_columns()
+            .transform(transforms)
+            .execute()
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_computed_columns(
+        &self,
+        columns: Vec<AddColumnsSql>,
+    ) -> napi::Result<AddColumnsResult> {
+        let table = self.inner_ref()?;
+        let mut builder = table.add_columns();
+        for column in columns {
+            builder = builder.computed(column.name, column.value_sql);
+        }
+        let res = builder.execute().await.default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_column(&self, column: String) -> napi::Result<RefreshColumnResult> {
+        let res = self
+            .inner_ref()?
+            .refresh_column(column)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_column_async(&self, column: String) -> napi::Result<crate::job::Job> {
+        let job = self
+            .inner_ref()?
+            .refresh_column_async(column)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn function_errors(
+        &self,
+        options: Option<FunctionErrorsOptions>,
+    ) -> napi::Result<FunctionErrors> {
+        let options = options.unwrap_or_default();
+        let limit = options
+            .limit
+            .map(|limit| {
+                usize::try_from(limit)
+                    .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))
+            })
+            .transpose()?;
+        let request = lancedb::function::FunctionErrorsRequest {
+            job_id: options.job_id,
+            column: options.column,
+            limit,
+        };
+        let errors = self
+            .inner_ref()?
+            .function_errors(request)
+            .await
+            .default_error()?;
+        Ok(errors.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn refresh_materialized_view(
+        &self,
+        source_version: Option<i64>,
+    ) -> napi::Result<RefreshMaterializedViewResult> {
+        let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
+            .await
+            .default_error()?;
+        let mut builder = view.refresh();
+        if let Some(version) = source_version {
+            let version = u64::try_from(version).map_err(|_| {
+                napi::Error::from_reason("sourceVersion must be a non-negative integer")
+            })?;
+            builder = builder.source_version(version);
+        }
+        let result = builder.execute().await.default_error()?;
+        Ok(result.into())
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn materialized_view_definition(&self) -> napi::Result<String> {
+        let inner = self.inner_ref()?.clone();
+        let view = lancedb::MaterializedView::from_table(inner)
+            .await
+            .default_error()?;
+        Ok(lancedb::materialized_view::definition_metadata_from_sql(
+            view.definition_sql(),
+        ))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn add_columns_with_schema(
+        &self,
+        schema_buf: Buffer,
+    ) -> napi::Result<AddColumnsResult> {
+        let schema = ipc_file_to_schema(schema_buf.to_vec())
+            .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC schema: {}", e)))?;
+
+        let transforms = NewColumnTransform::AllNulls(schema);
+        let res = self
+            .inner_ref()?
+            .add_columns()
+            .transform(transforms)
+            .execute()
             .await
             .default_error()?;
         Ok(res.into())
@@ -286,6 +545,23 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn update_field_metadata(
+        &self,
+        updates: Vec<FieldMetadataUpdate>,
+    ) -> napi::Result<UpdateFieldMetadataResult> {
+        let updates = updates
+            .into_iter()
+            .map(LanceFieldMetadataUpdate::from)
+            .collect::<Vec<_>>();
+        let res = self
+            .inner_ref()?
+            .update_field_metadata(&updates)
+            .await
+            .default_error()?;
+        Ok(res.into())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn drop_columns(&self, columns: Vec<String>) -> napi::Result<DropColumnsResult> {
         let col_refs = columns.iter().map(String::as_str).collect::<Vec<_>>();
         let res = self
@@ -297,12 +573,79 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn set_unenforced_primary_key(&self, columns: Vec<String>) -> napi::Result<()> {
+        self.inner_ref()?
+            .set_unenforced_primary_key(columns)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "enableRTE")]
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::RTEWriteSpec::try_from(spec)?;
+        self.inner_ref()?
+            .enable_rte(native_spec)
+            .await
+            .default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "disableRTE")]
+    pub async fn disable_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.disable_rte().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "getRTESpec")]
+    pub async fn get_rte_spec(&self) -> napi::Result<Option<RTEWriteSpec>> {
+        let spec = self.inner_ref()?.get_rte_spec().await.default_error()?;
+        Ok(spec.map(RTEWriteSpec::from))
+    }
+
+    #[napi(catch_unwind, js_name = "closeRTEWriters")]
+    pub async fn close_rte_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_rte_writers().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "flushRTE")]
+    pub async fn flush_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_rte().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "compactRTE")]
+    pub async fn compact_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_rte().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "checkpointRTE")]
+    pub async fn checkpoint_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_rte().await.default_error()
+    }
+
+    #[napi(catch_unwind, js_name = "getRTEStats")]
+    pub async fn get_rte_stats(
+        &self,
+        include_sstable_rows: bool,
+    ) -> napi::Result<Option<RTEStats>> {
+        let stats = self
+            .inner_ref()?
+            .get_rte_stats(include_sstable_rows)
+            .await
+            .default_error()?;
+        Ok(stats.map(RTEStats::from))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn version(&self) -> napi::Result<i64> {
         self.inner_ref()?
             .version()
             .await
             .map(|val| val as i64)
             .default_error()
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn checkout_current(&self) -> napi::Result<Self> {
+        let table = self.inner_ref()?.checkout_current().await.default_error()?;
+        Ok(Self::new(table))
     }
 
     #[napi(catch_unwind)]
@@ -361,24 +704,35 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn branches(&self) -> napi::Result<Branches> {
+        Ok(Branches {
+            inner: self.inner_ref()?.clone(),
+        })
+    }
+
+    /// The branch this handle is scoped to, or `null` for the main branch.
+    #[napi]
+    pub fn current_branch(&self) -> napi::Result<Option<String>> {
+        Ok(self.inner_ref()?.current_branch())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn optimize(
         &self,
-        older_than_ms: Option<i64>,
+        before_timestamp_ms: Option<i64>,
         delete_unverified: Option<bool>,
     ) -> napi::Result<OptimizeStats> {
         let inner = self.inner_ref()?;
 
-        let older_than = if let Some(ms) = older_than_ms {
-            if ms == i64::MIN {
-                return Err(napi::Error::from_reason(format!(
-                    "older_than_ms can not be {}",
-                    i32::MIN,
-                )));
-            }
-            Duration::try_milliseconds(ms)
-        } else {
-            None
-        };
+        let before_timestamp = before_timestamp_ms
+            .map(|ms| {
+                DateTime::from_timestamp_millis(ms).ok_or_else(|| {
+                    napi::Error::from_reason(format!(
+                        "cleanupOlderThan timestamp is out of range: {ms}"
+                    ))
+                })
+            })
+            .transpose()?;
 
         let compaction_stats = inner
             .optimize(OptimizeAction::Compact {
@@ -389,16 +743,22 @@ impl Table {
             .default_error()?
             .compaction
             .unwrap();
-        let prune_stats = inner
-            .optimize(OptimizeAction::Prune {
-                older_than,
-                delete_unverified,
-                error_if_tagged_old_versions: None,
-            })
-            .await
-            .default_error()?
-            .prune
-            .unwrap();
+        let prune_stats = if let Some(before_timestamp) = before_timestamp {
+            inner
+                .optimize_prune_before(before_timestamp, delete_unverified, None)
+                .await
+        } else {
+            inner
+                .optimize(OptimizeAction::Prune {
+                    older_than: None,
+                    delete_unverified,
+                    error_if_tagged_old_versions: None,
+                })
+                .await
+        }
+        .default_error()?
+        .prune
+        .unwrap();
         inner
             .optimize(lancedb::table::OptimizeAction::Index(
                 OptimizeOptions::default(),
@@ -432,6 +792,27 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
+    pub async fn tokenize(
+        &self,
+        query: String,
+        column: Option<String>,
+        index_name: Option<String>,
+    ) -> napi::Result<Vec<FtsToken>> {
+        let table = self.inner_ref()?;
+        let tokens = match (column.as_deref(), index_name.as_deref()) {
+            (Some(_), Some(_)) | (None, None) => {
+                return Err(napi::Error::from_reason(
+                    "Specify exactly one of 'column' or 'indexName'",
+                ));
+            }
+            (Some(column), None) => table.tokenize_with_column(&query, column).await,
+            (None, Some(index_name)) => table.tokenize(&query, index_name).await,
+        }
+        .default_error()?;
+        Ok(tokens.into_iter().map(FtsToken::from).collect())
+    }
+
+    #[napi(catch_unwind)]
     pub async fn index_stats(&self, index_name: String) -> napi::Result<Option<IndexStatistics>> {
         let tbl = self.inner_ref()?;
         let stats = tbl.index_stats(&index_name).await.default_error()?;
@@ -448,7 +829,10 @@ impl Table {
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .uses_v2_manifest_paths()
             .await
             .default_error()
@@ -458,7 +842,10 @@ impl Table {
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .migrate_manifest_paths_v2()
             .await
             .default_error()
@@ -477,6 +864,43 @@ pub struct IndexConfig {
     /// Currently this is always an array of size 1. In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// `undefined` for remote tables, which do not yet surface this.
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `undefined` for remote tables.
+    pub type_url: Option<String>,
+    /// When the index was created.
+    ///
+    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// `undefined` for remote tables.
+    pub num_indexed_rows: Option<i64>,
+    /// The number of rows not yet covered by this index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_unindexed_rows: Option<i64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `undefined` for remote tables or indices without size tracking.
+    pub size_bytes: Option<i64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `undefined` for remote tables.
+    pub num_segments: Option<i32>,
+    /// The on-disk index format version.
+    ///
+    /// `undefined` for remote tables.
+    pub index_version: Option<i32>,
+    /// Index-type-specific details parsed as a JavaScript object.
+    ///
+    /// Falls back to a raw string if JSON parsing fails. `undefined` for
+    /// remote tables or when details are unavailable.
+    pub index_details: Option<serde_json::Value>,
 }
 
 impl From<lancedb::index::IndexConfig> for IndexConfig {
@@ -486,6 +910,256 @@ impl From<lancedb::index::IndexConfig> for IndexConfig {
             index_type,
             columns: value.columns,
             name: value.name,
+            index_uuid: value.index_uuid,
+            type_url: value.type_url,
+            created_at: value.created_at,
+            num_indexed_rows: value.num_indexed_rows.map(|n| n as i64),
+            num_unindexed_rows: value.num_unindexed_rows.map(|n| n as i64),
+            size_bytes: value.size_bytes.map(|n| n as i64),
+            num_segments: value.num_segments.map(|n| n as i32),
+            index_version: value.index_version,
+            index_details: value
+                .index_details
+                .and_then(|s| serde_json::from_str(&s).ok()),
+        }
+    }
+}
+
+#[napi(object)]
+/// A token produced by the tokenizer configured on a full-text search index.
+pub struct FtsToken {
+    /// The token text after the index tokenizer has applied its filters.
+    pub text: String,
+    /// The token position used by full-text query matching.
+    pub position: u32,
+}
+
+impl From<LanceDbFtsToken> for FtsToken {
+    fn from(token: LanceDbFtsToken) -> Self {
+        Self {
+            text: token.text,
+            position: token.position,
+        }
+    }
+}
+
+/// Specification enabling the realtime engine (RTE), which routes
+/// `mergeInsert` through Lance's MemWAL LSM-style write path.
+///
+/// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
+/// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
+/// `column` is required.
+#[napi(object, js_name = "RTEWriteSpec")]
+#[derive(Clone, Debug)]
+pub struct RTEWriteSpec {
+    /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
+    pub spec_type: String,
+    /// Bucket and identity variants: the sharding column.
+    pub column: Option<String>,
+    /// Bucket variant: the number of buckets, in `[1, 1024]`.
+    pub num_buckets: Option<u32>,
+    /// Indexes the RTE keeps up to date. Omitted resolves every
+    /// maintainable index on install; an empty array means none.
+    pub maintained_indexes: Option<Vec<String>>,
+    /// Default `ShardWriter` configuration recorded in the MemWAL index.
+    pub writer_config_defaults: Option<HashMap<String, String>>,
+}
+
+impl TryFrom<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
+    type Error = napi::Error;
+
+    fn try_from(value: RTEWriteSpec) -> napi::Result<Self> {
+        let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
+        let spec = match value.spec_type.as_str() {
+            "bucket" => {
+                let column = value.column.ok_or_else(|| {
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `column`")
+                })?;
+                let num_buckets = value.num_buckets.ok_or_else(|| {
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `numBuckets`")
+                })?;
+                Self::bucket(column, num_buckets)
+            }
+            "identity" => {
+                let column = value.column.ok_or_else(|| {
+                    napi::Error::from_reason("RTEWriteSpec identity requires `column`")
+                })?;
+                Self::identity(column)
+            }
+            "unsharded" => Self::unsharded(),
+            other => {
+                return Err(napi::Error::from_reason(format!(
+                    "RTEWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    other
+                )));
+            }
+        };
+        Ok(spec
+            .with_maintained_indexes(value.maintained_indexes)
+            .with_writer_config_defaults(writer_config_defaults))
+    }
+}
+
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(spec: lancedb::table::RTEWriteSpec) -> Self {
+        use lancedb::table::RTEWriteSpec as Native;
+        match spec {
+            Native::Bucket {
+                column,
+                num_buckets,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "bucket".to_string(),
+                column: Some(column),
+                num_buckets: Some(num_buckets),
+                maintained_indexes,
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Identity {
+                column,
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "identity".to_string(),
+                column: Some(column),
+                num_buckets: None,
+                maintained_indexes,
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+            Native::Unsharded {
+                maintained_indexes,
+                writer_config_defaults,
+            } => Self {
+                spec_type: "unsharded".to_string(),
+                column: None,
+                num_buckets: None,
+                maintained_indexes,
+                writer_config_defaults: Some(writer_config_defaults),
+            },
+        }
+    }
+}
+
+/// One SSTable.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct SsTableStats {
+    /// The generation number. Increases as memtables are frozen into SSTables.
+    pub generation: i64,
+    /// On-disk size of the SSTable.
+    pub bytes: i64,
+    /// Present only when `includeSstableRows` was requested. Off by default
+    /// because each count opens an uncached Lance dataset.
+    pub rows: Option<i64>,
+}
+
+impl From<lancedb::table::SsTableStats> for SsTableStats {
+    fn from(g: lancedb::table::SsTableStats) -> Self {
+        Self {
+            generation: g.generation as i64,
+            bytes: g.bytes as i64,
+            rows: g.rows.map(|r| r as i64),
+        }
+    }
+}
+
+/// One in-memory memtable.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct MemtableStats {
+    /// The generation this memtable will become once frozen.
+    pub generation: i64,
+    /// Rows currently buffered.
+    pub rows: i64,
+    /// Estimated in-memory size.
+    pub bytes: i64,
+    /// Record batches currently buffered.
+    pub batches: i64,
+    /// Names of the indexes this memtable carries. An absent name is the whole
+    /// answer to "why is my fresh-tier search on that column brute-force".
+    pub indexes: Vec<String>,
+}
+
+impl From<lancedb::table::MemtableStats> for MemtableStats {
+    fn from(m: lancedb::table::MemtableStats) -> Self {
+        Self {
+            generation: m.generation as i64,
+            rows: m.rows as i64,
+            bytes: m.bytes as i64,
+            batches: m.batches as i64,
+            indexes: m.indexes,
+        }
+    }
+}
+
+/// Live state of one table shard. A table is N table shards on one node; flattening to a
+/// single number hides the one hot table shard that is usually why someone opened
+/// this endpoint.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct TableShardStats {
+    /// The id of this table shard.
+    pub shard_id: String,
+    /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
+    pub status: String,
+    /// Epoch of the writer that currently owns the shard.
+    pub writer_epoch: i64,
+    /// Version of the shard manifest these numbers were read from.
+    pub manifest_version: i64,
+    /// The generation the active memtable will become.
+    pub current_generation: i64,
+    /// WAL position replay resumes from.
+    pub replay_after_wal_entry_position: i64,
+    /// Highest WAL position the writer has seen. The difference against
+    /// `replayAfterWalEntryPosition` is the WAL lag.
+    pub wal_entry_position_last_seen: i64,
+    /// SSTables not yet merged into the base table.
+    pub sstables: Vec<SsTableStats>,
+    /// Whether a pass owns this table shard's compaction latch right now. Says *a*
+    /// driver is running, not *whose*, and the latch is held from dispatch —
+    /// including while the pass queues for a pod-wide compactor permit. Read it
+    /// as "do not pile on", never as "mine is progressing".
+    pub compacting: bool,
+    /// Oldest first, active last. Absent for a `"Sealed"` table shard, whose
+    /// in-memory state is torn down.
+    pub memtables: Option<Vec<MemtableStats>>,
+}
+
+impl From<lancedb::table::TableShardStats> for TableShardStats {
+    fn from(b: lancedb::table::TableShardStats) -> Self {
+        Self {
+            shard_id: b.shard_id,
+            status: b.status,
+            writer_epoch: b.writer_epoch as i64,
+            manifest_version: b.manifest_version as i64,
+            current_generation: b.current_generation as i64,
+            replay_after_wal_entry_position: b.replay_after_wal_entry_position as i64,
+            wal_entry_position_last_seen: b.wal_entry_position_last_seen as i64,
+            sstables: b.sstables.into_iter().map(Into::into).collect(),
+            compacting: b.compacting,
+            memtables: b
+                .memtables
+                .map(|ms| ms.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
+/// Live per-table-shard RTE state, as returned by `Table#getRTEStats`.
+///
+/// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
+/// the caller's to compute.
+#[napi(object, js_name = "RTEStats")]
+#[derive(Clone, Debug)]
+pub struct RTEStats {
+    /// One entry per table shard backing this table.
+    pub table_shards: Vec<TableShardStats>,
+}
+
+impl From<lancedb::table::RTEStats> for RTEStats {
+    fn from(stats: lancedb::table::RTEStats) -> Self {
+        Self {
+            table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -524,6 +1198,44 @@ pub struct OptimizeStats {
     pub prune: RemovalStats,
 }
 
+/// Progress snapshot for a write operation, delivered to the JS callback
+/// passed to `Table.add`.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct WriteProgressInfo {
+    /// Number of rows written so far.
+    pub output_rows: i64,
+    /// Number of bytes written so far.
+    pub output_bytes: i64,
+    /// Total rows expected, if the input source reports it.
+    /// Always set on the final callback (where `done` is `true`).
+    pub total_rows: Option<i64>,
+    /// Wall-clock seconds since monitoring started.
+    pub elapsed_seconds: f64,
+    /// Number of parallel write tasks currently in flight.
+    pub active_tasks: i64,
+    /// Total number of parallel write tasks (the write parallelism).
+    pub total_tasks: i64,
+    /// `true` for the final callback; `false` otherwise.
+    pub done: bool,
+}
+
+impl From<&lancedb::table::write_progress::WriteProgress> for WriteProgressInfo {
+    fn from(p: &lancedb::table::write_progress::WriteProgress) -> Self {
+        Self {
+            output_rows: p.output_rows() as i64,
+            output_bytes: p.output_bytes() as i64,
+            total_rows: p.total_rows().map(|n| n as i64),
+            elapsed_seconds: p.elapsed().as_secs_f64(),
+            active_tasks: p.active_tasks() as i64,
+            total_tasks: p.total_tasks() as i64,
+            done: p.done(),
+        }
+    }
+}
+
+type ProgressFn = ThreadsafeFunction<WriteProgressInfo, (), WriteProgressInfo, Status, false>;
+
 ///  A definition of a column alteration. The alteration changes the column at
 /// `path` to have the new name `name`, to be nullable if `nullable` is true,
 /// and to have the data type `data_type`. At least one of `rename` or `nullable`
@@ -550,6 +1262,29 @@ pub struct ColumnAlteration {
     pub data_type: Option<String>,
     /// Set the new nullability. Note that a nullable column cannot be made non-nullable.
     pub nullable: Option<bool>,
+}
+
+/// A per-field metadata update, addressed by dot-path. Merges into the field's
+/// existing metadata by default; a `null` value deletes a key, and `replace`
+/// swaps the field's entire metadata map.
+#[napi(object)]
+pub struct FieldMetadataUpdate {
+    /// Dot-separated path to the field (e.g. "embedding" or "a.b.c").
+    pub path: String,
+    /// Metadata keys to set; a `null` value deletes that key.
+    pub metadata: HashMap<String, Option<String>>,
+    /// If true, replace the field's entire metadata map instead of merging.
+    pub replace: Option<bool>,
+}
+
+impl From<FieldMetadataUpdate> for LanceFieldMetadataUpdate {
+    fn from(js: FieldMetadataUpdate) -> Self {
+        Self {
+            path: js.path,
+            metadata: js.metadata,
+            replace: js.replace.unwrap_or(false),
+        }
+    }
 }
 
 impl TryFrom<ColumnAlteration> for LanceColumnAlteration {
@@ -602,9 +1337,6 @@ pub struct IndexStatistics {
     pub distance_type: Option<String>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
-    /// The KMeans loss value of the index,
-    /// it is only present for vector indices.
-    pub loss: Option<f64>,
 }
 impl From<lancedb::index::IndexStatistics> for IndexStatistics {
     fn from(value: lancedb::index::IndexStatistics) -> Self {
@@ -614,18 +1346,30 @@ impl From<lancedb::index::IndexStatistics> for IndexStatistics {
             index_type: value.index_type.to_string(),
             distance_type: value.distance_type.map(|d| d.to_string()),
             num_indices: value.num_indices,
-            loss: value.loss,
         }
     }
 }
 
 #[napi(object)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests.
     pub total_bytes: i64,
 
     /// The number of rows in the table
     pub num_rows: i64,
+
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// These rows are not included in `numRows`, but still occupy space on disk
+    /// until the table is compacted, so a large value here indicates that the
+    /// table should be optimized. Fragments in which every row was deleted are
+    /// dropped outright, so their rows are not counted here.
+    ///
+    /// Absent (`undefined`) when the backend does not report deletion counts.
+    pub num_deleted_rows: Option<i64>,
 
     /// The number of indices in the table
     pub num_indices: i64,
@@ -675,6 +1419,7 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
         Self {
             total_bytes: v.total_bytes as i64,
             num_rows: v.num_rows as i64,
+            num_deleted_rows: v.num_deleted_rows.map(|n| n as i64),
             num_indices: v.num_indices as i64,
             fragment_stats: FragmentStatistics {
                 num_fragments: v.fragment_stats.num_fragments as i64,
@@ -730,12 +1475,14 @@ impl From<lancedb::table::AddResult> for AddResult {
 
 #[napi(object)]
 pub struct DeleteResult {
+    pub num_deleted_rows: i64,
     pub version: i64,
 }
 
 impl From<lancedb::table::DeleteResult> for DeleteResult {
     fn from(value: lancedb::table::DeleteResult) -> Self {
         Self {
+            num_deleted_rows: value.num_deleted_rows as i64,
             version: value.version as i64,
         }
     }
@@ -747,6 +1494,8 @@ pub struct MergeResult {
     pub num_inserted_rows: i64,
     pub num_updated_rows: i64,
     pub num_deleted_rows: i64,
+    pub num_attempts: i64,
+    pub num_rows: i64,
 }
 
 impl From<lancedb::table::MergeResult> for MergeResult {
@@ -756,6 +1505,8 @@ impl From<lancedb::table::MergeResult> for MergeResult {
             num_inserted_rows: value.num_inserted_rows as i64,
             num_updated_rows: value.num_updated_rows as i64,
             num_deleted_rows: value.num_deleted_rows as i64,
+            num_attempts: value.num_attempts as i64,
+            num_rows: value.num_rows as i64,
         }
     }
 }
@@ -763,6 +1514,135 @@ impl From<lancedb::table::MergeResult> for MergeResult {
 #[napi(object)]
 pub struct AddColumnsResult {
     pub version: i64,
+}
+
+#[napi(object)]
+pub struct RefreshColumnResult {
+    pub rows_filled: i64,
+    pub version: i64,
+}
+
+/// Which per-row Function errors to list; every filter is optional.
+#[napi(object)]
+#[derive(Clone, Debug, Default)]
+pub struct FunctionErrorsOptions {
+    /// Only errors recorded by this job.
+    pub job_id: Option<String>,
+    /// Only errors on this column.
+    pub column: Option<String>,
+    /// At most this many records (server default 10000, cap 100000).
+    pub limit: Option<i64>,
+}
+
+/// One row a Function refresh skipped, as the server recorded it.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorRecord {
+    pub job_id: String,
+    pub fragment_id: i64,
+    /// The row's offset within the fragment; absent when the fragment's
+    /// detail was capped.
+    pub row_offset: Option<i64>,
+    pub column: String,
+    pub function: String,
+    pub function_version: String,
+    pub table_version: i64,
+    pub error_type: String,
+    pub error_message: String,
+    pub created_at_millis: i64,
+}
+
+impl From<lancedb::function::FunctionErrorRecord> for FunctionErrorRecord {
+    fn from(record: lancedb::function::FunctionErrorRecord) -> Self {
+        Self {
+            job_id: record.job_id,
+            fragment_id: record.fragment_id as i64,
+            row_offset: record.row_offset.map(i64::from),
+            column: record.column,
+            function: record.function,
+            function_version: record.function_version,
+            table_version: record.table_version as i64,
+            error_type: record.error_type,
+            error_message: record.error_message,
+            created_at_millis: record.created_at_millis,
+        }
+    }
+}
+
+/// A fragment whose per-row error detail was capped: `rowsSkipped` rows
+/// failed, of which only `rowsRecorded` have a record of their own.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrorFragment {
+    pub job_id: String,
+    pub fragment_id: i64,
+    pub rows_skipped: i64,
+    pub rows_recorded: i64,
+}
+
+impl From<lancedb::function::FunctionErrorFragment> for FunctionErrorFragment {
+    fn from(fragment: lancedb::function::FunctionErrorFragment) -> Self {
+        Self {
+            job_id: fragment.job_id,
+            fragment_id: fragment.fragment_id as i64,
+            rows_skipped: fragment.rows_skipped as i64,
+            rows_recorded: fragment.rows_recorded as i64,
+        }
+    }
+}
+
+/// A table's per-row Function errors.
+#[napi(object)]
+#[derive(Clone, Debug)]
+pub struct FunctionErrors {
+    /// The recorded rows, newest job first.
+    pub records: Vec<FunctionErrorRecord>,
+    /// Fragments whose detail was capped.
+    pub fragments: Vec<FunctionErrorFragment>,
+    /// Whether the listing stopped at its limit.
+    pub truncated: bool,
+}
+
+impl From<lancedb::function::FunctionErrors> for FunctionErrors {
+    fn from(errors: lancedb::function::FunctionErrors) -> Self {
+        Self {
+            records: errors.records.into_iter().map(Into::into).collect(),
+            fragments: errors.fragments.into_iter().map(Into::into).collect(),
+            truncated: errors.truncated,
+        }
+    }
+}
+
+#[napi(object)]
+pub struct RefreshMaterializedViewResult {
+    /// How the view was brought up to date: "rebuild".
+    pub mode: String,
+    pub rows_written: i64,
+    pub source_version: i64,
+    pub version: i64,
+}
+
+impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
+    fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
+        let mode = match value.mode {
+            lancedb::RefreshMode::Rebuild => "rebuild",
+        };
+        Self {
+            mode: mode.to_string(),
+            rows_written: value.rows_written as i64,
+            source_version: value.source_version as i64,
+            version: value.version as i64,
+        }
+    }
+}
+
+impl From<lancedb::table::RefreshColumnResult> for RefreshColumnResult {
+    fn from(value: lancedb::table::RefreshColumnResult) -> Self {
+        Self {
+            rows_filled: value.rows_filled as i64,
+            version: value.version as i64,
+        }
+    }
 }
 
 impl From<lancedb::table::AddColumnsResult> for AddColumnsResult {
@@ -787,6 +1667,19 @@ impl From<lancedb::table::AlterColumnsResult> for AlterColumnsResult {
 }
 
 #[napi(object)]
+pub struct UpdateFieldMetadataResult {
+    pub version: i64,
+}
+
+impl From<lancedb::table::UpdateFieldMetadataResult> for UpdateFieldMetadataResult {
+    fn from(value: lancedb::table::UpdateFieldMetadataResult) -> Self {
+        Self {
+            version: value.version as i64,
+        }
+    }
+}
+
+#[napi(object)]
 pub struct DropColumnsResult {
     pub version: i64,
 }
@@ -802,6 +1695,13 @@ impl From<lancedb::table::DropColumnsResult> for DropColumnsResult {
 #[napi]
 pub struct TagContents {
     pub version: i64,
+    pub manifest_size: i64,
+}
+
+#[napi]
+pub struct BranchContents {
+    pub parent_branch: Option<String>,
+    pub parent_version: i64,
     pub manifest_size: i64,
 }
 
@@ -871,5 +1771,101 @@ impl Tags {
             .update(tag.as_str(), version as u64)
             .await
             .default_error()
+    }
+}
+
+#[napi]
+pub struct Branches {
+    inner: LanceDbTable,
+}
+
+#[napi]
+impl Branches {
+    #[napi]
+    pub async fn list(&self) -> napi::Result<HashMap<String, BranchContents>> {
+        let branches = self.inner.list_branches().await.default_error()?;
+        let result = branches
+            .into_iter()
+            .map(|(k, v)| {
+                (
+                    k,
+                    BranchContents {
+                        parent_branch: v.parent_branch,
+                        parent_version: v.parent_version as i64,
+                        manifest_size: v.manifest_size as i64,
+                    },
+                )
+            })
+            .collect();
+        Ok(result)
+    }
+
+    #[napi]
+    pub async fn create(
+        &self,
+        name: String,
+        from_ref: Option<String>,
+        from_version: Option<i64>,
+    ) -> napi::Result<Table> {
+        let from_ref = from_ref.filter(|b| b != "main");
+        let from_version = from_version
+            .map(|v| {
+                u64::try_from(v).map_err(|_| {
+                    napi::Error::from_reason("from_version must be a non-negative integer")
+                })
+            })
+            .transpose()?;
+        let from = Ref::Version(from_ref, from_version);
+        let table = self
+            .inner
+            .create_branch(&name, from)
+            .await
+            .default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn checkout(&self, name: String, version: Option<i64>) -> napi::Result<Table> {
+        let version = version
+            .map(|v| {
+                u64::try_from(v)
+                    .map_err(|_| napi::Error::from_reason("version must be a non-negative integer"))
+            })
+            .transpose()?;
+        let table = self
+            .inner
+            .checkout_branch(&name, version)
+            .await
+            .default_error()?;
+        Ok(Table::new(table))
+    }
+
+    #[napi]
+    pub async fn delete(&self, name: String) -> napi::Result<()> {
+        self.inner.delete_branch(&name).await.default_error()
+    }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn diff(&self, from_branch: String) -> napi::Result<serde_json::Value> {
+        let diff = self.inner.diff_branch(&from_branch).await.default_error()?;
+        serde_json::to_value(diff).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize branch diff: {err}"))
+        })
+    }
+
+    #[napi(ts_return_type = "Promise<Record<string, unknown>>")]
+    pub async fn cherry_pick(
+        &self,
+        from_branch: String,
+        dry_run: Option<bool>,
+    ) -> napi::Result<serde_json::Value> {
+        let result = self
+            .inner
+            .cherry_pick(&from_branch, dry_run.unwrap_or(false))
+            .await
+            .default_error()?;
+        serde_json::to_value(result).map_err(|err| {
+            napi::Error::from_reason(format!("failed to serialize cherry-pick result: {err}"))
+        })
     }
 }

@@ -1,5 +1,5 @@
 [tool.bumpversion]
-current_version = "0.21.4-beta.1"
+current_version = "0.41.0-beta.13"
 parse = """(?x)
     (?P<major>0|[1-9]\\d*)\\.
     (?P<minor>0|[1-9]\\d*)\\.
@@ -23,6 +23,8 @@ allow_dirty = true
 commit = true
 message = "Bump version: {current_version} → {new_version}"
 commit_args = ""
+# bump-my-version >=1.4.0 rejects pre_commit_hooks containing shell syntax unless opted in.
+allow_shell_hooks = true
 
 # Java maven files
 pre_commit_hooks = [
@@ -72,3 +74,16 @@ search = "\nversion = \"{current_version}\""
 filename = "nodejs/Cargo.toml"
 replace = "\nversion = \"{new_version}\""
 search = "\nversion = \"{current_version}\""
+
+# The Python package takes its version from here (pyproject.toml declares
+# `dynamic = ["version"]`, so maturin reads it out of the crate manifest).
+[[tool.bumpversion.files]]
+filename = "python/Cargo.toml"
+replace = "\nversion = \"{new_version}\""
+search = "\nversion = \"{current_version}\""
+
+# Java documentation
+[[tool.bumpversion.files]]
+filename = "docs/src/java/java.md"
+replace = "<version>{new_version}</version>"
+search = "<version>{current_version}</version>"

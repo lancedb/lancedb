@@ -2,10 +2,10 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use pyo3::{
+    PyErr, PyResult, Python,
     exceptions::{PyIOError, PyNotImplementedError, PyOSError, PyRuntimeError, PyValueError},
     intern,
     types::{PyAnyMethods, PyNone},
-    PyErr, PyResult, Python,
 };
 
 use lancedb::error::Error as LanceError;
@@ -29,7 +29,10 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 LanceError::InvalidInput { .. }
                 | LanceError::InvalidTableName { .. }
                 | LanceError::TableNotFound { .. }
+                | LanceError::NotAMaterializedView { .. }
                 | LanceError::Schema { .. }
+                | LanceError::DatabaseNotFound { .. }
+                | LanceError::DatabaseAlreadyExists { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
                 LanceError::ObjectStore { .. } => Err(PyIOError::new_err(err.to_string())),
@@ -40,7 +43,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     request_id,
                     source,
                     status_code,
-                } => Python::with_gil(|py| {
+                } => Python::attach(|py| {
                     let message = err.to_string();
                     let http_err_cls = py
                         .import(intern!(py, "lancedb.remote.errors"))?
@@ -75,7 +78,7 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     max_read_failures,
                     source,
                     status_code,
-                } => Python::with_gil(|py| {
+                } => Python::attach(|py| {
                     let cause_err = http_from_rust_error(
                         py,
                         source.as_ref(),
@@ -101,6 +104,24 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
 
                     err.setattr(intern!(py, "__cause__"), cause_err)?;
                     Err(PyErr::from_value(err))
+                }),
+                LanceError::JobFailed { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobFailedError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                }),
+                LanceError::JobCancelled { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobCancelledError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                }),
+                LanceError::JobNotFound { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobNotFoundError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                 }),
                 _ => self.runtime_error(),
             },

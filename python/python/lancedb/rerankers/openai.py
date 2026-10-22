@@ -43,6 +43,9 @@ class OpenaiReranker(Reranker):
         self.column = column
         self.api_key = api_key
 
+    def __str__(self):
+        return f"OpenaiReranker(model_name={self.model_name})"
+
     def _rerank(self, result_set: pa.Table, query: str):
         result_set = self._handle_empty_results(result_set)
         if len(result_set) == 0:

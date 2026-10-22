@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Pydantic (v1 / v2) adapter for LanceDB"""
+"""Pydantic adapter for LanceDB."""
 
 from __future__ import annotations
 
@@ -10,12 +10,10 @@ import sys
 import types
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
-    Dict,
-    Generator,
     List,
     Type,
     Union,
@@ -23,17 +21,9 @@ from typing import (
     GenericAlias,
 )
 
-import numpy as np
 import pyarrow as pa
 import pydantic
-from packaging.version import Version
-
-PYDANTIC_VERSION = Version(pydantic.__version__)
-try:
-    from pydantic_core import CoreSchema, core_schema
-except ImportError:
-    if PYDANTIC_VERSION.major >= 2:
-        raise
+from pydantic_core import CoreSchema, core_schema
 
 if TYPE_CHECKING:
     from pydantic.fields import FieldInfo
@@ -98,6 +88,17 @@ def Vector(
     ...     pa.field("url", pa.utf8(), False),
     ...     pa.field("embeddings", pa.list_(pa.float32(), 768))
     ... ])
+
+    Notes
+    -----
+    ``Vector`` creates a type dynamically, so calls such as ``Vector(768)`` are
+    not valid static type annotations. For an embedding field, use the standard
+    ``list[float]`` annotation when running mypy; ``VectorField`` supplies the
+    fixed dimension to LanceDB::
+
+        class MyModel(LanceModel):
+            text: str = embeddings.SourceField()
+            vector: list[float] = embeddings.VectorField()
     """
 
     # TODO: make a public parameterized type.
@@ -130,26 +131,16 @@ def Vector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range, np.ndarray)) or len(v) != dim:
-                raise TypeError("A list of numbers or numpy.ndarray is needed")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {"type": "number"}
-                field_schema["maxItems"] = dim
-                field_schema["minItems"] = dim
-
     return FixedSizeList
+
+
+def _raise_bare_vector_error(*_args):
+    raise TypeError("Vector must be parameterized with a dimension, e.g. Vector(128).")
+
+
+# Pydantic otherwise inspects the bare factory as a field type and produces
+# misleading errors about its internal annotations.
+setattr(Vector, "__get_pydantic_core_schema__", _raise_bare_vector_error)
 
 
 def MultiVector(
@@ -222,31 +213,6 @@ def MultiVector(
                 ),
             )
 
-        @classmethod
-        def __get_validators__(cls) -> Generator[Callable, None, None]:
-            yield cls.validate
-
-        # For pydantic v1
-        @classmethod
-        def validate(cls, v):
-            if not isinstance(v, (list, range)):
-                raise TypeError("A list of vectors is needed")
-            for vec in v:
-                if not isinstance(vec, (list, range, np.ndarray)) or len(vec) != dim:
-                    raise TypeError(f"Each vector must be a list of {dim} numbers")
-            return cls(v)
-
-        if PYDANTIC_VERSION.major < 2:
-
-            @classmethod
-            def __modify_schema__(cls, field_schema: Dict[str, Any]):
-                field_schema["items"] = {
-                    "type": "array",
-                    "items": {"type": "number"},
-                    "minItems": dim,
-                    "maxItems": dim,
-                }
-
     return MultiVectorList
 
 
@@ -274,82 +240,152 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
-        child = py_type.__args__[0]
-        return pa.list_(_py_type_to_arrow_type(child, field))
+        # A bare, unparameterised ``typing.List`` / ``typing.Tuple`` matches this
+        # branch (its ``__origin__`` is ``list`` / ``tuple``) but has no
+        # ``__args__``, so we cannot infer the element type. Raise a clear
+        # ``TypeError`` instead of crashing with an opaque ``AttributeError``.
+        args = getattr(py_type, "__args__", None)
+        if not args:
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. Specify the element type, e.g. List[int] instead "
+                "of a bare List."
+            )
+        child = args[0]
+        return _pydantic_list_child_to_arrow(child, field)
     raise TypeError(
         f"Converting Pydantic type to Arrow Type: unsupported type {py_type}."
     )
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field) for name, field in model.__fields__.items()
-        ]
-
-else:
-
-    def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
-        return [
-            _pydantic_to_field(name, field)
-            for name, field in model.model_fields.items()
-        ]
+def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
+    return [
+        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+    ]
 
 
 def _pydantic_type_to_arrow_type(tp: Any, field: FieldInfo) -> pa.DataType:
+    def _safe_issubclass(candidate: Any, base: type) -> bool:
+        try:
+            return issubclass(candidate, base)
+        except TypeError:
+            return False
+
     if inspect.isclass(tp):
-        if issubclass(tp, pydantic.BaseModel):
+        if _safe_issubclass(tp, pydantic.BaseModel):
             # Struct
             fields = _pydantic_model_to_fields(tp)
             return pa.struct(fields)
-        if issubclass(tp, FixedSizeListMixin):
+        if _safe_issubclass(tp, FixedSizeListMixin):
             if getattr(tp, "is_multi_vector", lambda: False)():
                 return pa.list_(pa.list_(tp.value_arrow_type(), tp.dim()))
             # For regular Vector
             return pa.list_(tp.value_arrow_type(), tp.dim())
+        if _safe_issubclass(tp, Enum):
+            # Map Enum to the Arrow type of its value.
+            # For string-valued enums, use dictionary encoding for efficiency.
+            # For integer enums, use the native type.
+            # Fall back to utf8 for mixed-type or empty enums.
+            value_types = {type(m.value) for m in tp}
+            if len(value_types) == 1:
+                value_type = value_types.pop()
+                if value_type is str:
+                    # Use dictionary encoding for string enums
+                    return pa.dictionary(pa.int32(), pa.utf8())
+                return _py_type_to_arrow_type(value_type, field)
+            return pa.utf8()
     return _py_type_to_arrow_type(tp, field)
+
+
+def _pydantic_list_child_to_arrow(child: Any, field: FieldInfo) -> pa.DataType:
+    unwrapped = _unwrap_optional_annotation(child)
+    if unwrapped is not None:
+        return pa.list_(
+            pa.field("item", _pydantic_type_to_arrow_type(unwrapped, field), True)
+        )
+    return pa.list_(_pydantic_type_to_arrow_type(child, field))
+
+
+def _unwrap_optional_annotation(annotation: Any) -> Any | None:
+    if isinstance(annotation, (_GenericAlias, GenericAlias)):
+        origin = annotation.__origin__
+        args = annotation.__args__
+        if origin == Union:
+            non_none = [arg for arg in args if arg is not type(None)]
+            if len(non_none) == 1 and len(non_none) != len(args):
+                return non_none[0]
+    elif sys.version_info >= (3, 10) and isinstance(annotation, types.UnionType):
+        args = annotation.__args__
+        non_none = [arg for arg in args if arg is not type(None)]
+        if len(non_none) == 1 and len(non_none) != len(args):
+            return non_none[0]
+    return None
 
 
 def _pydantic_to_arrow_type(field: FieldInfo) -> pa.DataType:
     """Convert a Pydantic FieldInfo to Arrow DataType"""
+    embedding_vector_type = _embedding_vector_to_arrow_type(field)
+    if embedding_vector_type is not None:
+        return embedding_vector_type
+
+    unwrapped = _unwrap_optional_annotation(field.annotation)
+    if unwrapped is not None:
+        return _pydantic_type_to_arrow_type(unwrapped, field)
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
 
         if origin is list:
             child = args[0]
-            return pa.list_(_py_type_to_arrow_type(child, field))
-        elif origin == Union:
-            if len(args) == 2 and args[1] is type(None):
-                return _pydantic_type_to_arrow_type(args[0], field)
-    elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
-        args = field.annotation.__args__
-        if len(args) == 2:
-            for typ in args:
-                if typ is type(None):
-                    continue
-                return _py_type_to_arrow_type(typ, field)
+            return _pydantic_list_child_to_arrow(child, field)
     return _pydantic_type_to_arrow_type(field.annotation, field)
+
+
+def _embedding_vector_to_arrow_type(field: FieldInfo) -> pa.DataType | None:
+    """Infer a fixed-size vector type from ``VectorField`` metadata."""
+    if not _is_embedding_vector_annotation(field):
+        return None
+
+    function = get_extras(field, "vector_column_for")
+    return pa.list_(pa.float32(), function.ndims())
+
+
+def _is_embedding_vector_annotation(field: FieldInfo) -> bool:
+    if get_extras(field, "vector_column_for") is None:
+        return False
+
+    annotation = _unwrap_optional_annotation(field.annotation)
+    if annotation is None:
+        annotation = field.annotation
+
+    origin = getattr(annotation, "__origin__", None)
+    args = getattr(annotation, "__args__", ())
+    return origin is list and args == (float,)
 
 
 def is_nullable(field: FieldInfo) -> bool:
     """Check if a Pydantic FieldInfo is nullable."""
+    if _is_embedding_vector_annotation(field):
+        return True
+    if _unwrap_optional_annotation(field.annotation) is not None:
+        return True
     if isinstance(field.annotation, (_GenericAlias, GenericAlias)):
         origin = field.annotation.__origin__
         args = field.annotation.__args__
         if origin == Union:
-            if len(args) == 2 and args[1] is type(None):
+            if any(typ is type(None) for typ in args):
                 return True
     elif sys.version_info >= (3, 10) and isinstance(field.annotation, types.UnionType):
         args = field.annotation.__args__
         for typ in args:
             if typ is type(None):
                 return True
-    elif inspect.isclass(field.annotation) and issubclass(
-        field.annotation, FixedSizeListMixin
-    ):
-        return field.annotation.nullable()
+    elif inspect.isclass(field.annotation):
+        try:
+            if issubclass(field.annotation, FixedSizeListMixin):
+                return field.annotation.nullable()
+        except TypeError:
+            return False
     return False
 
 
@@ -446,8 +482,6 @@ class LanceModel(pydantic.BaseModel):
 
     @classmethod
     def safe_get_fields(cls):
-        if PYDANTIC_VERSION.major < 2:
-            return cls.__fields__
         return cls.model_fields
 
     @classmethod
@@ -485,23 +519,9 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
     """
     Get the extra metadata from a Pydantic FieldInfo.
     """
-    if PYDANTIC_VERSION.major >= 2:
-        return (field_info.json_schema_extra or {}).get(key)
-    return (field_info.field_info.extra or {}).get("json_schema_extra", {}).get(key)
+    return (field_info.json_schema_extra or {}).get(key)
 
 
-if PYDANTIC_VERSION.major < 2:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.dict()
-
-else:
-
-    def model_to_dict(model: pydantic.BaseModel) -> Dict[str, Any]:
-        """
-        Convert a Pydantic model to a dictionary.
-        """
-        return model.model_dump()
+def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
+    """Convert a Pydantic model to a dictionary."""
+    return model.model_dump()

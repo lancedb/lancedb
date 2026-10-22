@@ -25,20 +25,25 @@
 //!
 //! ## Crate Features
 //!
-//! ### Experimental Features
-//!
-//! These features are not enabled by default.  They are experimental or in-development features that
-//! are not yet ready to be released.
-//!
-//! - `remote` - Enable remote client to connect to LanceDB cloud.  This is not yet fully implemented
-//!   and should not be enabled.
+//! - `aws` - Enable AWS S3 object store support.
+//! - `dynamodb` - Enable DynamoDB manifest store support.
+//! - `azure` - Enable Azure Blob Storage object store support.
+//! - `gcs` - Enable Google Cloud Storage object store support.
+//! - `oss` - Enable Alibaba Cloud OSS object store support.
+//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
+//! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
+//! - `metrics` - Publish LanceDB's internal metrics through the
+//!   [`metrics`](https://docs.rs/metrics) crate facade and re-export that crate.
+//!   Install any `metrics`-compatible recorder to collect them.
+//! - `metrics-otel` - Add a pull-based adapter (the `metrics_otel` module) over
+//!   the `metrics` facade for bridging metrics into OpenTelemetry or similar.
 //!
 //! ### Quick Start
 //!
 //! #### Connect to a database.
 //!
 //! ```rust
-//! # use arrow_schema::{Field, Schema};
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb").execute().await.unwrap();
 //! # });
@@ -50,17 +55,15 @@
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
 //!
-//! You can also use [`ConnectOptions`] to configure the connection to the database.
+//! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
 //! ```rust
-//! use object_store::aws::AwsCredential;
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! let db = lancedb::connect("data/sample-lancedb")
-//!     .aws_creds(AwsCredential {
-//!         key_id: "some_key".to_string(),
-//!         secret_key: "some_secret".to_string(),
-//!         token: None,
-//!     })
+//!     .storage_options([
+//!         ("aws_access_key_id", "some_key"),
+//!         ("aws_secret_access_key", "some_secret"),
+//!     ])
 //!     .execute()
 //!     .await
 //!     .unwrap();
@@ -71,11 +74,14 @@
 //! It treats [`FixedSizeList<Float16/Float32>`](https://docs.rs/arrow/latest/arrow/array/struct.FixedSizeListArray.html)
 //! columns as vector columns.
 //!
-//! For more details, please refer to [LanceDB documentation](https://lancedb.github.io/lancedb/).
+//! For more details, please refer to the [LanceDB documentation](https://docs.lancedb.com).
 //!
 //! #### Create a table
 //!
-//! To create a Table, you need to provide a [`arrow_schema::Schema`] and a [`arrow_array::RecordBatch`] stream.
+//! To create a Table, you need to provide an [`arrow_array::RecordBatch`]. The
+//! schema of the `RecordBatch` determines the schema of the table.
+//!
+//! Vector columns should be represented as `FixedSizeList<Float16/Float32>` data type.
 //!
 //! ```rust
 //! # use std::sync::Arc;
@@ -86,34 +92,29 @@
 //! # tokio::runtime::Runtime::new().unwrap().block_on(async {
 //! # let tmpdir = tempfile::tempdir().unwrap();
 //! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
+//! let ndims = 128;
 //! let schema = Arc::new(Schema::new(vec![
 //!     Field::new("id", DataType::Int32, false),
 //!     Field::new(
 //!         "vector",
-//!         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), 128),
+//!         DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), ndims),
 //!         true,
 //!     ),
 //! ]));
-//! // Create a RecordBatch stream.
-//! let batches = RecordBatchIterator::new(
-//!     vec![RecordBatch::try_new(
+//! let data = RecordBatch::try_new(
 //!         schema.clone(),
 //!         vec![
 //!             Arc::new(Int32Array::from_iter_values(0..256)),
 //!             Arc::new(
 //!                 FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//!                     (0..256).map(|_| Some(vec![Some(1.0); 128])),
-//!                     128,
+//!                     (0..256).map(|_| Some(vec![Some(1.0); ndims as usize])),
+//!                     ndims,
 //!                 ),
 //!             ),
 //!         ],
 //!     )
-//!     .unwrap()]
-//!     .into_iter()
-//!     .map(Ok),
-//!     schema.clone(),
-//! );
-//! db.create_table("my_table", Box::new(batches))
+//!     .unwrap();
+//! db.create_table("my_table", data)
 //!     .execute()
 //!     .await
 //!     .unwrap();
@@ -152,79 +153,97 @@
 //! #### Open table and search
 //!
 //! ```rust
-//! # use std::sync::Arc;
 //! # use futures::TryStreamExt;
-//! # use arrow_schema::{DataType, Schema, Field};
-//! # use arrow_array::{RecordBatch, RecordBatchIterator};
-//! # use arrow_array::{FixedSizeListArray, Float32Array, Int32Array, types::Float32Type};
 //! # use lancedb::query::{ExecutableQuery, QueryBase};
-//! # tokio::runtime::Runtime::new().unwrap().block_on(async {
-//! # let tmpdir = tempfile::tempdir().unwrap();
-//! # let db = lancedb::connect(tmpdir.path().to_str().unwrap()).execute().await.unwrap();
-//! # let schema = Arc::new(Schema::new(vec![
-//! #  Field::new("id", DataType::Int32, false),
-//! #  Field::new("vector", DataType::FixedSizeList(
-//! #    Arc::new(Field::new("item", DataType::Float32, true)), 128), true),
-//! # ]));
-//! # let batches = RecordBatchIterator::new(vec![
-//! #    RecordBatch::try_new(schema.clone(),
-//! #       vec![
-//! #           Arc::new(Int32Array::from_iter_values(0..10)),
-//! #           Arc::new(FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-//! #               (0..10).map(|_| Some(vec![Some(1.0); 128])), 128)),
-//! #       ]).unwrap()
-//! #   ].into_iter().map(Ok),
-//! #    schema.clone());
-//! # db.create_table("my_table", Box::new(batches)).execute().await.unwrap();
-//! # let table = db.open_table("my_table").execute().await.unwrap();
+//! # async fn example(table: &lancedb::Table) -> lancedb::Result<()> {
 //! let results = table
 //!     .query()
-//!     .nearest_to(&[1.0; 128])
-//!     .unwrap()
+//!     .nearest_to(&[1.0; 128])?
 //!     .execute()
-//!     .await
-//!     .unwrap()
+//!     .await?
 //!     .try_collect::<Vec<_>>()
-//!     .await
-//!     .unwrap();
-//! # });
+//!     .await?;
+//! #   Ok(())
+//! # }
 //! ```
 
+// The RTE read path (`table::query::lsm`) deepens the `create_plan` future's
+// type graph enough to overflow the default trait-recursion limit while evaluating
+// auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
+#![recursion_limit = "256"]
+
 pub mod arrow;
+pub mod authz;
+pub mod blob;
 pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
+pub mod dataloader;
 pub mod embeddings;
 pub mod error;
+pub mod expr;
+pub mod function;
 pub mod index;
 pub mod io;
 pub mod ipc;
+pub mod job;
+pub mod listing;
+pub mod materialized_view;
+#[cfg(feature = "metrics-otel")]
+pub mod metrics_otel;
 #[cfg(feature = "polars")]
 mod polars_arrow_convertors;
 pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod rerankers;
+pub mod secrets;
+pub mod sql;
 pub mod table;
+#[cfg(test)]
+pub mod test_utils;
 pub mod utils;
+pub mod view;
 
-use std::fmt::Display;
+use std::{fmt::Display, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-pub use connection::Connection;
-pub use error::{Error, Result};
+pub use blob::{BlobRangeRequest, blob, is_blob};
+pub use connection::{ConnectNamespaceBuilder, Connection};
+pub use error::{Error, JobFailure, Result};
+pub use function::FunctionVersion;
+pub use job::Job;
+use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
-pub use table::Table;
+pub use materialized_view::{
+    MaterializedView, MaterializedViewDefinition, RefreshMaterializedViewResult, RefreshMode,
+};
+/// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
+/// the `metrics` feature to publish LanceDB's internal metrics; install any
+/// `metrics`-compatible recorder to collect them. See also [`metrics_otel`] for
+/// a built-in pull-based adapter.
+#[cfg(feature = "metrics")]
+pub use metrics;
+pub use table::{FtsToken, Table};
 
-#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+/// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
+///
+/// This does not require a table or FTS index. The tokenizer options are the
+/// same [`index::scalar::FtsIndexBuilder`] values used when creating an FTS index.
+pub fn tokenize(query: &str, params: &index::scalar::FtsIndexBuilder) -> Result<Vec<FtsToken>> {
+    table::tokenize(query, params)
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[non_exhaustive]
 #[serde(rename_all = "lowercase")]
 pub enum DistanceType {
     /// Euclidean distance. This is a very common distance metric that
     /// accounts for both magnitude and direction when determining the distance
     /// between vectors. l2 distance has a range of [0, ∞).
+    #[default]
     L2,
     /// Cosine distance.  Cosine distance is a distance metric
     /// calculated from the cosine similarity between two vectors. Cosine
@@ -244,12 +263,6 @@ pub enum DistanceType {
     /// Hamming distance. Hamming distance is a distance metric that measures
     /// the number of positions at which the corresponding elements are different.
     Hamming,
-}
-
-impl Default for DistanceType {
-    fn default() -> Self {
-        Self::L2
-    }
 }
 
 impl From<DistanceType> for LanceDistanceType {
@@ -288,9 +301,96 @@ impl Display for DistanceType {
     }
 }
 
+/// Controls the speed / accuracy tradeoff for approximate vector search.
+///
+/// This currently only affects RQ-quantized vector indexes, such as IVF_RQ.
+/// Other index types ignore this setting.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[non_exhaustive]
+#[serde(rename_all = "lowercase")]
+pub enum ApproxMode {
+    /// Prefer lower query latency, which can reduce recall.
+    Fast,
+    /// Use the default balance between query latency and recall.
+    #[default]
+    Normal,
+    /// Prefer higher recall, which can increase query latency.
+    Accurate,
+}
+
+impl From<ApproxMode> for LanceApproxMode {
+    fn from(value: ApproxMode) -> Self {
+        match value {
+            ApproxMode::Fast => Self::Fast,
+            ApproxMode::Normal => Self::Normal,
+            ApproxMode::Accurate => Self::Accurate,
+        }
+    }
+}
+
+impl From<LanceApproxMode> for ApproxMode {
+    fn from(value: LanceApproxMode) -> Self {
+        match value {
+            LanceApproxMode::Fast => Self::Fast,
+            LanceApproxMode::Normal => Self::Normal,
+            LanceApproxMode::Accurate => Self::Accurate,
+        }
+    }
+}
+
+impl TryFrom<&str> for ApproxMode {
+    type Error = Error;
+
+    fn try_from(value: &str) -> std::prelude::v1::Result<Self, Self::Error> {
+        Self::from_str(value)
+    }
+}
+
+impl FromStr for ApproxMode {
+    type Err = Error;
+
+    fn from_str(value: &str) -> std::prelude::v1::Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "fast" => Ok(Self::Fast),
+            "normal" => Ok(Self::Normal),
+            "accurate" => Ok(Self::Accurate),
+            _ => Err(Error::InvalidInput {
+                message: format!(
+                    "approx_mode must be one of 'fast', 'normal', or 'accurate', got '{}'",
+                    value
+                ),
+            }),
+        }
+    }
+}
+
+impl Display for ApproxMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Fast => write!(f, "fast"),
+            Self::Normal => write!(f, "normal"),
+            Self::Accurate => write!(f, "accurate"),
+        }
+    }
+}
+
 /// Connect to a database
 pub use connection::connect;
+/// Connect to a namespace-backed database
+pub use connection::connect_namespace;
 
 /// Re-export Lance Session and ObjectStoreRegistry for custom session creation
 pub use lance::session::Session;
 pub use lance_io::object_store::ObjectStoreRegistry;
+
+/// Re-export DataFusion so consumers can build the `Expr` values that public
+/// query/merge APIs (e.g. [`query::QueryBase::only_if_expr`]) accept without
+/// declaring their own (potentially mismatched) direct `datafusion` dependency.
+/// See <https://github.com/lancedb/lancedb/issues/3575>.
+pub use datafusion;
+
+/// Connect to a remote catalog through its HTTP(S) root namespace endpoint.
+#[cfg(feature = "remote")]
+pub fn connect_catalog(endpoint: impl Into<String>) -> catalog::ConnectCatalogBuilder {
+    catalog::ConnectCatalogBuilder::new(endpoint)
+}

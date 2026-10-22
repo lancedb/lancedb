@@ -2,15 +2,25 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import ctypes
+import gc
+import json
 import os
+import sys
+import threading
+import warnings
+import weakref
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
+from decimal import Decimal, localcontext
 from time import sleep
 from typing import List
 from unittest.mock import patch
 
 import lancedb
+from lancedb import table as table_module
 from lancedb.dependencies import _PANDAS_AVAILABLE
-from lancedb.index import HnswPq, HnswSq, IvfPq
+from lancedb.index import BTree, FTS, HnswFlat, HnswPq, HnswSq, IvfPq
 import numpy as np
 import polars as pl
 import pyarrow as pa
@@ -19,9 +29,66 @@ import pytest
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.embeddings import EmbeddingFunctionConfig, EmbeddingFunctionRegistry
+from lancedb.expr import col, lit
 from lancedb.pydantic import LanceModel, Vector
 from lancedb.table import LanceTable
 from pydantic import BaseModel
+
+
+def _blob_test_data():
+    return pa.table(
+        {
+            "id": pa.array([1, 2], pa.int64()),
+            "blob": pa.array([b"hello", b"world"], pa.large_binary()),
+        },
+        schema=pa.schema(
+            [
+                pa.field("id", pa.int64()),
+                pa.field(
+                    "blob", pa.large_binary(), metadata={"lance-encoding:blob": "true"}
+                ),
+            ]
+        ),
+    )
+
+
+def _blob_v2_table(db: DBConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = db.create_table(name, schema=schema)
+    table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+async def _blob_v2_table_async(db: AsyncConnection, name: str):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
+    table = await db.create_table(name, schema=schema)
+    await table.add([{"id": 1, "blob": b"hello"}, {"id": 2, "blob": b"world"}])
+    return table
+
+
+# Legacy v1 blob columns are only writable at file version <= 2.1.
+LEGACY_BLOB_STORAGE_OPTIONS = {"new_table_data_storage_version": "2.1"}
+
+
+def _blob_table(db: DBConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
+    return _blob_v2_table(db, name)
+
+
+async def _blob_table_async(db: AsyncConnection, name: str, blob_schema: str):
+    if blob_schema == "v1":
+        return await db.create_table(
+            name, data=_blob_test_data(), storage_options=LEGACY_BLOB_STORAGE_OPTIONS
+        )
+    return await _blob_v2_table_async(db, name)
+
+
+def _assert_lazy_blob(value, expected: bytes):
+    assert hasattr(value, "readall")
+    assert value.readall() == expected
 
 
 def test_basic(mem_db: DBConnection):
@@ -32,7 +99,7 @@ def test_basic(mem_db: DBConnection):
     table = mem_db.create_table("test", data=data)
 
     assert table.name == "test"
-    assert "LanceTable(name='test', version=1, _conn=LanceDBConnection(" in repr(table)
+    assert "LanceTable(name='test', _conn=LanceDBConnection(" in repr(table)
     expected_schema = pa.schema(
         {
             "vector": pa.list_(pa.float32(), 2),
@@ -44,6 +111,191 @@ def test_basic(mem_db: DBConnection):
 
     expected_data = pa.Table.from_pylist(data, schema=expected_schema)
     assert table.to_arrow() == expected_data
+
+
+@pytest.mark.parametrize("enable_v2", [False, True])
+def test_migrate_v2_manifest_paths(tmp_path, enable_v2):
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_enable_v2_manifest_paths": str(enable_v2).lower()},
+    )
+    table = db.create_table("calls", [{"id": 1, "vector": [1.0, 1.0]}])
+    table.add([{"id": 2, "vector": [2.0, 2.0]}])
+    expected_data = table.to_arrow()
+    expected_versions = table.list_versions()
+    assert table.uses_v2_manifest_paths() == enable_v2
+
+    # Migration is also safe to repeat on a table already using v2 paths.
+    for _ in range(2):
+        table.migrate_v2_manifest_paths()
+        assert table.uses_v2_manifest_paths()
+        reopened = db.open_table("calls")
+        assert reopened.uses_v2_manifest_paths()
+        assert reopened.to_arrow() == expected_data
+        assert reopened.list_versions() == expected_versions
+
+    manifests = list((tmp_path / "calls.lance" / "_versions").glob("*.manifest"))
+    assert len(manifests) == len(expected_versions)
+    assert all(len(path.stem) == 20 and path.stem.isdigit() for path in manifests)
+
+
+def test_search_preserves_nulls_from_sliced_arrow_table(mem_db: DBConnection):
+    data = pa.table(
+        {
+            "id": [0, 1, 2, 3, 4],
+            "score_cn": [None, 22, None, 5, 8],
+            "score_mt": [None, 42, None, 5, 8],
+            "vector": [
+                [20, 19, -1, -1],
+                [41, 38, 22, 42],
+                [10, 10, -1, -1],
+                [5, 5, 5, 5],
+                [8, 8, 8, 8],
+            ],
+        }
+    ).slice(1)
+
+    table = mem_db.create_table("sliced_nullable", data=data)
+    result = table.search([41, 38, 22, 42]).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+    assert result["score_cn"].to_pylist() == [22]
+    assert result["score_mt"].to_pylist() == [42]
+
+
+def test_table_to_pandas_default_matches_arrow(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_old_call", data=data)
+
+    expected = data.to_pandas()
+    pd.testing.assert_frame_equal(table.to_pandas(), expected)
+
+
+def test_table_to_pandas_invalid_blob_mode_non_blob_table(tmp_db: DBConnection):
+    data = pa.table({"id": [1, 2], "text": ["one", "two"]})
+    table = tmp_db.create_table("test_to_pandas_invalid_blob_mode", data=data)
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
+def test_table_to_pandas_blob_modes(tmp_db: DBConnection, blob_mode):
+    pytest.importorskip("lance")
+    table = tmp_db.create_table(
+        f"test_to_pandas_blob_{blob_mode}",
+        _blob_test_data(),
+        storage_options=LEGACY_BLOB_STORAGE_OPTIONS,
+    )
+
+    df = table.to_pandas(blob_mode=blob_mode)
+
+    if blob_mode == "lazy":
+        _assert_lazy_blob(df["blob"].iloc[0], b"hello")
+        _assert_lazy_blob(df["blob"].iloc[1], b"world")
+    elif blob_mode == "bytes":
+        assert df["blob"].tolist() == [b"hello", b"world"]
+    else:
+        first = df["blob"].iloc[0]
+        assert first != b"hello"
+        assert not hasattr(first, "readall")
+
+
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+def test_table_to_pandas_blob_bytes(tmp_db: DBConnection, blob_schema):
+    pytest.importorskip("lance")
+    table = _blob_table(tmp_db, f"test_to_pandas_blob_{blob_schema}_bytes", blob_schema)
+
+    df = table.to_pandas(blob_mode="bytes")
+
+    assert list(df.columns) == ["id", "blob"]
+    assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
+
+
+def test_table_to_pandas_kwargs(tmp_db: DBConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = tmp_db.create_table("test_to_pandas_kwargs", data=data)
+
+    df = table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blob_schema", ["v1", "v2"])
+async def test_async_table_to_pandas_blob_bytes(
+    tmp_db_async: AsyncConnection, blob_schema
+):
+    pytest.importorskip("lance")
+    table = await _blob_table_async(
+        tmp_db_async, f"test_async_to_pandas_blob_{blob_schema}_bytes", blob_schema
+    )
+
+    df = await table.to_pandas(blob_mode="bytes")
+
+    assert list(df.columns) == ["id", "blob"]
+    assert df["blob"].tolist() == [b"hello", b"world"]
+    assert "_rowid" not in df.columns
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_invalid_blob_mode_non_blob_table(
+    tmp_db_async: AsyncConnection,
+):
+    table = await tmp_db_async.create_table(
+        "test_async_to_pandas_invalid_blob_mode",
+        data=pa.table({"id": [1, 2], "text": ["one", "two"]}),
+    )
+
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        await table.to_pandas(blob_mode="invalid")
+
+
+@pytest.mark.asyncio
+async def test_async_table_to_pandas_kwargs(tmp_db_async: AsyncConnection):
+    pd = pytest.importorskip("pandas")
+    data = pa.table({"id": pa.array([1, 2], pa.int64())})
+    table = await tmp_db_async.create_table("test_async_to_pandas_kwargs", data=data)
+
+    df = await table.to_pandas(types_mapper=pd.ArrowDtype)
+
+    assert str(df["id"].dtype) == "int64[pyarrow]"
+
+
+def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
+    data = [{"vector": [0, 300]}]
+
+    table = mem_db.create_table(
+        "int_vector_overflow", data=data, mode="overwrite", exist_ok=True
+    )
+
+    vector_field = table.schema.field("vector")
+    assert vector_field.type == pa.list_(pa.float32(), 2)
+
+    vector_column = table.to_arrow().column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[0.0, 300.0]]
+
+
+@pytest.mark.asyncio
+async def test_create_table_async_infers_large_int_vectors(
+    mem_db_async: AsyncConnection,
+):
+    data = [{"vector": [256, 257]}]
+
+    table = await mem_db_async.create_table(
+        "int_vector_overflow_async", data=data, mode="overwrite", exist_ok=True
+    )
+
+    schema = await table.schema()
+    assert schema.field("vector").type == pa.list_(pa.float32(), 2)
+
+    vector_column = (await table.to_arrow()).column("vector")
+    assert vector_column.type == pa.list_(pa.float32(), 2)
+    assert vector_column.to_pylist() == [[256.0, 257.0]]
 
 
 def test_input_data_type(mem_db: DBConnection, tmp_path):
@@ -125,6 +377,21 @@ async def test_update_async(mem_db_async: AsyncConnection):
     assert await table.count_rows("id == 10") == 1
 
 
+@pytest.mark.asyncio
+async def test_update_expr_filter_literals_async(mem_db_async: AsyncConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = await mem_db_async.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = await table.update({"result": value}, where=col("field") == value)
+        assert update_res.rows_updated == 1
+
+    assert (await table.to_arrow())["result"].to_pylist() == values
+
+
 def test_create_table(mem_db: DBConnection):
     schema = pa.schema(
         {
@@ -161,6 +428,16 @@ def test_create_table(mem_db: DBConnection):
         assert expected == tbl
 
 
+def test_create_table_rejects_single_dictionary(mem_db: DBConnection):
+    data = {"vector": [3.1, 4.1], "item": "foo", "price": 10.0}
+    with pytest.raises(ValueError) as excep_info:
+        mem_db.create_table("test", data=data)
+    assert (
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
+    )
+
+
 def test_empty_table(mem_db: DBConnection):
     schema = pa.schema(
         [
@@ -190,8 +467,8 @@ def test_add_dictionary(mem_db: DBConnection):
     with pytest.raises(ValueError) as excep_info:
         tbl.add(data=data)
     assert (
-        str(excep_info.value)
-        == "Cannot add a single dictionary to a table. Use a list."
+        str(excep_info.value) == "Cannot create or add rows from a single dictionary. "
+        "Use a list of dictionaries instead."
     )
 
 
@@ -239,6 +516,61 @@ def test_add(mem_db: DBConnection):
         ],
     )
     _add(table, schema)
+
+
+def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
+    """Regression test for https://github.com/lancedb/lancedb/issues/2512."""
+    schema = pa.schema([pa.field("x", pa.int64())])
+    table = mem_db.create_table("test_add_releases_arrow_buffers", schema=schema)
+
+    class BufferOwner:
+        def __init__(self, size: int):
+            self.memory = ctypes.create_string_buffer(size)
+
+    owner_refs = []
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        for _ in range(3):
+            size = 8 * 1024
+            owner = BufferOwner(size)
+            arrow_buffer = pa.foreign_buffer(
+                ctypes.addressof(owner.memory), size, owner
+            )
+            array = pa.Array.from_buffers(pa.int64(), 1024, [None, arrow_buffer])
+            batch = pa.RecordBatch.from_arrays([array], schema=schema)
+            owner_refs.append(weakref.ref(owner))
+
+            table.add(batch)
+            del batch, array, arrow_buffer, owner
+
+        assert all(owner_ref() is None for owner_ref in owner_refs)
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+
+def test_add_write_parallelism(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = mem_db.create_table("test", schema=schema)
+
+    data = pa.table({"id": list(range(1000))}, schema=schema)
+    table.add(data, write_parallelism=4)
+    assert len(table) == 1000
+
+    # invalid parallelism is rejected
+    with pytest.raises(ValueError, match="write_parallelism"):
+        table.add(data, write_parallelism=0)
+
+
+@pytest.mark.asyncio
+async def test_add_write_parallelism_async(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = await mem_db_async.create_table("test", schema=schema)
+
+    data = pa.table({"id": list(range(1000))}, schema=schema)
+    await table.add(data, write_parallelism=4)
+    assert await table.count_rows() == 1000
 
 
 def test_add_struct(mem_db: DBConnection):
@@ -292,6 +624,24 @@ def test_add_struct(mem_db: DBConnection):
     data = [{"s_list": [{"b": 1, "a": 2}, {"b": 4}]}]
     table = mem_db.create_table("test2", schema=schema)
     table.add(data)
+
+    struct_type = pa.struct(
+        [
+            ("b", pa.int64()),
+            ("a", pa.int64()),
+        ]
+    )
+    expected = pa.table(
+        {
+            "s_list": [
+                [
+                    pa.scalar({"b": 1, "a": 2}, type=struct_type),
+                    pa.scalar({"b": 4, "a": None}, type=struct_type),
+                ]
+            ],
+        }
+    )
+    assert table.to_arrow() == expected
 
 
 def test_add_subschema(mem_db: DBConnection):
@@ -476,6 +826,132 @@ async def test_add_async(mem_db_async: AsyncConnection):
     assert await table.count_rows() == 3
 
 
+def test_add_overwrite_infers_vector_schema(mem_db: DBConnection):
+    """Overwrite should infer vector columns the same way create_table does.
+
+    Regression test for https://github.com/lancedb/lancedb/issues/3183
+    """
+    table = mem_db.create_table(
+        "test_overwrite_vec",
+        data=[
+            {"vector": [1.0, 2.0, 3.0, 4.0], "item": "foo"},
+            {"vector": [5.0, 6.0, 7.0, 8.0], "item": "bar"},
+        ],
+    )
+    # create_table infers vector as fixed_size_list<float32, 4>
+    original_type = table.schema.field("vector").type
+    assert pa.types.is_fixed_size_list(original_type)
+
+    # overwrite with plain Python lists (PyArrow infers list<double>)
+    table.add(
+        [
+            {"vector": [10.0, 20.0, 30.0, 40.0], "item": "baz"},
+        ],
+        mode="overwrite",
+    )
+    # overwrite should infer vector column the same way as create_table
+    new_type = table.schema.field("vector").type
+    assert pa.types.is_fixed_size_list(new_type), (
+        f"Expected fixed_size_list after overwrite, got {new_type}"
+    )
+
+
+def test_add_progress_callback(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    updates = []
+    table.add([{"id": 3}, {"id": 4}], progress=lambda p: updates.append(dict(p)))
+
+    assert len(table) == 4
+    # The done callback always fires, so we should always get at least one.
+    assert len(updates) >= 1, "expected at least one progress callback"
+    for p in updates:
+        assert "output_rows" in p
+        assert "output_bytes" in p
+        assert "total_rows" in p
+        assert "elapsed_seconds" in p
+        assert "active_tasks" in p
+        assert "total_tasks" in p
+        assert "done" in p
+    # The last callback should have done=True.
+    assert updates[-1]["done"] is True
+
+
+def test_add_progress_tqdm_like(mem_db: DBConnection):
+    """Test that a tqdm-like object gets total set and update() called."""
+
+    class FakeBar:
+        def __init__(self):
+            self.total = None
+            self.n = 0
+            self.postfix = None
+
+        def update(self, n):
+            self.n += n
+
+        def set_postfix_str(self, s):
+            self.postfix = s
+
+        def refresh(self):
+            pass
+
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    bar = FakeBar()
+    table.add([{"id": 3}, {"id": 4}], progress=bar)
+
+    assert len(table) == 4
+    # Postfix should contain throughput and worker count
+    if bar.postfix is not None:
+        assert "MB/s" in bar.postfix
+        assert "workers" in bar.postfix
+
+
+def test_add_progress_bool(mem_db: DBConnection):
+    """Test that progress=True creates and closes a tqdm bar automatically."""
+    table = mem_db.create_table(
+        "test",
+        data=[{"id": 1}, {"id": 2}],
+    )
+
+    table.add([{"id": 3}, {"id": 4}], progress=True)
+    assert len(table) == 4
+
+    # progress=False should be the same as None
+    table.add([{"id": 5}], progress=False)
+    assert len(table) == 5
+
+
+@pytest.mark.asyncio
+async def test_add_progress_callback_async(mem_db_async: AsyncConnection):
+    """Progress callbacks work through the async path too."""
+    table = await mem_db_async.create_table("test", data=[{"id": 1}, {"id": 2}])
+
+    updates = []
+    await table.add([{"id": 3}, {"id": 4}], progress=lambda p: updates.append(dict(p)))
+
+    assert await table.count_rows() == 4
+    assert len(updates) >= 1
+    assert updates[-1]["done"] is True
+
+
+def test_add_progress_callback_error(mem_db: DBConnection):
+    """A failing callback must not prevent the write from succeeding."""
+    table = mem_db.create_table("test", data=[{"id": 1}, {"id": 2}])
+
+    def bad_callback(p):
+        raise RuntimeError("boom")
+
+    table.add([{"id": 3}, {"id": 4}], progress=bad_callback)
+    assert len(table) == 4
+
+
 def test_polars(mem_db: DBConnection):
     data = {
         "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -509,11 +985,69 @@ def test_polars(mem_db: DBConnection):
 
     # enter table to polars dataframe
     result = table.to_polars()
+    assert isinstance(result, pl.LazyFrame)
     assert np.allclose(result.collect()["vector"].to_list(), data["vector"])
 
     # make sure filtering isn't broken
     filtered_result = result.filter(pl.col("item").is_in(["foo", "bar"])).collect()
     assert len(filtered_result) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_versions_timestamp_precision():
+    # 2026-10-03T01:03:49.274Z in nanoseconds. Float math turns .274000 into
+    # .273999, so make sure the conversion is exact.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = table_module.AsyncTable(FakeInner())
+    versions = await table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_list_versions_timestamp_precision_sync(mem_db: DBConnection):
+    # The sync LanceTable.list_versions delegates to AsyncTable.list_versions,
+    # which is the path the parity report hit.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = mem_db.create_table("ts_precision", data=[{"id": 1}])
+    table._table = table_module.AsyncTable(FakeInner())
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_list_versions_timestamp_precision_remote():
+    # RemoteTable.list_versions also delegates to AsyncTable.list_versions.
+    from lancedb.remote.table import RemoteTable
+
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        def name(self):
+            return "ts_precision"
+
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = RemoteTable(table_module.AsyncTable(FakeInner()), "dev")
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
 
 
 def test_versioning(mem_db: DBConnection):
@@ -645,6 +1179,412 @@ async def test_async_tags(mem_db_async: AsyncConnection):
     )
 
 
+def test_branches(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert table.count_rows() == 2
+
+    # fork an isolated, writable branch from main
+    branch = table.branches.create("exp")
+    assert branch.count_rows() == 2
+    branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    # writes on the branch do not touch main
+    assert branch.count_rows() == 3
+    assert table.count_rows() == 2
+
+    # the branch is listed, with main (None) as its parent
+    branches = table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    # from_ref="main" is equivalent to the default
+    table.branches.create("exp2", from_ref="main")
+    assert table.branches.list()["exp2"]["parent_branch"] is None
+
+    # checkout returns a handle scoped to the branch's latest
+    checked_out = table.branches.checkout("exp")
+    assert checked_out.count_rows() == 3
+
+    # delete removes it
+    table.branches.delete("exp")
+    table.branches.delete("exp2")
+    assert "exp" not in table.branches.list()
+
+
+def test_branch_handle_tracks_concurrent_writes(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+    table = db.create_table("t", [{"id": 1}])
+
+    # two independent handles on the same branch
+    writer = table.branches.create("exp")
+    reader = db.open_table("t", branch="exp")
+    assert reader.count_rows() == 1
+
+    # a concurrent write on the branch is visible to the other handle
+    writer.add([{"id": 2}])
+    assert reader.count_rows() == 2
+    # main is unaffected
+    assert table.count_rows() == 1
+
+
+def test_branch_name_validation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}])
+
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.create("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.checkout("")
+    with pytest.raises(ValueError, match="non-empty"):
+        table.branches.delete("")
+
+
+def test_branches_preserve_namespace(tmp_path):
+    pytest.importorskip(
+        "lance"
+    )  # namespace_path routes through lance's DirectoryNamespace
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    assert table.namespace == ["ns1"]
+
+    branch = table.branches.create("exp")
+    assert branch.namespace == ["ns1"]
+    assert branch.id == table.id
+
+    # opening the branch directly also preserves namespace identity
+    opened = db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert opened.namespace == ["ns1"]
+
+
+def test_open_table_with_branch(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    table.branches.create("exp").add([{"i": 2}])
+
+    # open_table(branch=...) returns a handle scoped to the branch
+    assert db.open_table("t", branch="exp").count_rows() == 2
+    # opening without branch still tracks main
+    assert db.open_table("t").count_rows() == 1
+
+
+def test_open_table_with_branch_version(tmp_path):
+    db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = db.create_table("t", [{"i": 0}])
+    main_v1 = t.version
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert db.open_table("t", branch="exp").count_rows() == 3
+    assert db.open_table("t").count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert old_main.count_rows() == 1
+    shared_on_main = db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch (a distinct
+    # resolution path, on the branch's manifests)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 3  # exp HEAD, not main's 4
+    pinned.add([{"i": 3}])
+    assert pinned.count_rows() == 4  # writable again
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    table = await db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
+    branch = await table.branches.create("exp")
+    await branch.add([{"id": 2}])
+
+    # open_table(branch=...) on the async namespace connection must work
+    opened = await db.open_table("t", namespace_path=["ns1"], branch="exp")
+    assert await opened.count_rows() == 2
+
+
+def test_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db.create_namespace(["ns1"])
+    t = db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = t.branches.create("exp")
+    exp.add([{"i": 1}])
+    exp_v2 = exp.version
+    exp.add([{"i": 2}])
+    t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == t.version, "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = db.open_table("t", namespace_path=["ns1"], branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert pinned.count_rows("i = 100") == 0  # main's divergent rows are invisible
+    assert db.open_table("t", namespace_path=["ns1"], branch="exp").count_rows() == 3
+
+
+def test_namespace_root_table_to_lance_uses_namespace_client(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    table = db.create_table("t", [{"i": 0}])
+
+    assert table._namespace_client is None
+    assert table.to_lance().count_rows() == 1
+    assert table._namespace_client is not None
+
+
+@pytest.mark.asyncio
+async def test_async_namespace_open_table_with_branch_version(tmp_path):
+    pytest.importorskip("lance")  # "dir" impl is lance.namespace.DirectoryNamespace
+    db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    await db.create_namespace(["ns1"])
+    t = await db.create_table("t", [{"i": 0}], namespace_path=["ns1"])
+
+    # fork "exp", then advance exp AND main past the fork so they diverge while
+    # sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open_table(branch=, version=) on the async namespace connection reads the
+    # branch's data at that version, not main's
+    pinned = await db.open_table(
+        "t", namespace_path=["ns1"], branch="exp", version=exp_v2
+    )
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+    assert (
+        await (
+            await db.open_table("t", namespace_path=["ns1"], branch="exp")
+        ).count_rows()
+        == 3
+    )
+
+
+def test_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"i": 1}])
+    branch = table.branches.create("exp")
+    branch.add([{"i": 2}])  # branch: 2 rows, main: 1 row
+
+    assert branch.to_lance().count_rows() == 2
+    assert table.to_lance().count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance()
+
+    assert dataset.count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_branch_to_lance_targets_branch(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    branch = await table.branches.create("exp")
+    await branch.add([{"i": 2}])
+
+    assert (await branch.to_lance()).count_rows() == 2
+    assert (await table.to_lance()).count_rows() == 1
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_targets_checked_out_version(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+    version = await table.version()
+    await table.add([{"i": 2}])
+    checked_out = await db.open_table("t", version=version)
+
+    assert (await checked_out.to_lance()).count_rows() == 1
+    assert (await table.to_lance()).count_rows() == 2
+
+
+@pytest.mark.asyncio
+async def test_async_to_lance_forwards_dataset_options(tmp_path):
+    pytest.importorskip("lance")
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("t", [{"i": 1}])
+
+    dataset = await table.to_lance(default_scan_options={"with_row_id": True})
+
+    assert "_rowid" in dataset.schema.names
+
+
+@pytest.mark.asyncio
+async def test_async_branches(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+        ],
+    )
+    assert await table.count_rows() == 2
+
+    branch = await table.branches.create("exp")
+    assert await branch.count_rows() == 2
+    await branch.add(data=[{"vector": [10.0, 11.0], "item": "baz", "price": 30.0}])
+
+    assert await branch.count_rows() == 3
+    assert await table.count_rows() == 2
+
+    branches = await table.branches.list()
+    assert "exp" in branches
+    assert branches["exp"]["parent_branch"] is None
+
+    await table.branches.create("exp2", from_ref="main")
+    assert (await table.branches.list())["exp2"]["parent_branch"] is None
+
+    checked_out = await table.branches.checkout("exp")
+    assert await checked_out.count_rows() == 3
+
+    await table.branches.delete("exp")
+    await table.branches.delete("exp2")
+    assert "exp" not in await table.branches.list()
+
+
+@pytest.mark.asyncio
+async def test_async_open_table_with_branch_version(tmp_path):
+    db = await lancedb.connect_async(tmp_path, read_consistency_interval=timedelta(0))
+
+    # main: a single fork-point row
+    t = await db.create_table("t", [{"i": 0}])
+    main_v1 = await t.version()
+
+    # fork "exp", then advance exp AND main independently past the fork so they
+    # diverge while sharing version numbers
+    exp = await t.branches.create("exp")
+    await exp.add([{"i": 1}])  # exp: {0, 1}
+    exp_v2 = await exp.version()
+    await exp.add([{"i": 2}])  # exp HEAD: {0, 1, 2}
+    await t.add([{"i": 100}, {"i": 101}, {"i": 102}])  # main HEAD: {0, 100, 101, 102}
+    assert exp_v2 == await t.version(), "branch and main must share the version number"
+
+    # open exp at the shared version: the data must be exp's, not main's. count
+    # alone cannot prove this (main@v2 also exists), so assert provenance by
+    # content.
+    pinned = await db.open_table("t", branch="exp", version=exp_v2)
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 2  # not exp HEAD (3), not main@v2 (4)
+    assert await pinned.count_rows("i = 1") == 1  # exp's post-fork row is visible
+    assert await pinned.count_rows("i = 100") == 0  # main's rows are invisible
+
+    # the same coordinate is reachable directly via branches.checkout(name, version)
+    pinned_direct = await t.branches.checkout("exp", exp_v2)
+    assert pinned_direct.current_branch() == "exp"
+    assert await pinned_direct.count_rows() == 2
+
+    # the HEADs are unaffected
+    assert await (await db.open_table("t", branch="exp")).count_rows() == 3
+    assert await (await db.open_table("t")).count_rows() == 4
+
+    # version-only (no branch) time-travels main itself: its fork-point version
+    # holds only main's first row, and the shared version number resolves to
+    # main's data, not the branch's ("opens main at the version")
+    old_main = await db.open_table("t", version=main_v1)
+    assert old_main.current_branch() is None
+    assert await old_main.count_rows() == 1
+    shared_on_main = await db.open_table("t", version=exp_v2)
+    assert shared_on_main.current_branch() is None
+    assert await shared_on_main.count_rows() == 4
+
+    # detached head: writing to a pinned version is rejected
+    with pytest.raises((ValueError, RuntimeError), match="cannot be modified"):
+        await pinned.add([{"i": 9}])
+
+    # a nonexistent version is rejected -- on main, and on a branch
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", version=9999)
+    with pytest.raises((ValueError, RuntimeError)):
+        await db.open_table("t", branch="exp", version=9999)
+
+    # checkout_latest re-attaches the pinned handle to the BRANCH's HEAD
+    # (writable again), not main's HEAD, and not staying pinned
+    await pinned.checkout_latest()
+    assert pinned.current_branch() == "exp"
+    assert await pinned.count_rows() == 3  # exp HEAD, not main's 4
+    await pinned.add([{"i": 3}])
+    assert await pinned.count_rows() == 4  # writable again
+
+
+def test_create_index_async_returns_done_job(mem_db: DBConnection):
+    table = mem_db.create_table("job_test", [{"id": i} for i in range(10)])
+    job = table.create_index_async("id", config=BTree())
+    assert job.id is None
+    assert job.wait() is None
+    assert len(table.list_indices()) == 1
+    job.cancel()
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
@@ -671,7 +1611,61 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         num_bits=4,
     )
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # Test with target_partition_size
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+        target_partition_size=8192,
+    )
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # target_partition_size has a default value,
+    # so `num_partitions` and `target_partition_size` are not required
+    table.create_index(
+        metric="l2",
+        num_sub_vectors=96,
+        vector_column_name="vector",
+        replace=True,
+        index_cache_size=256,
+        num_bits=4,
+    )
+    expected_config = IvfPq(
+        distance_type="l2",
+        num_sub_vectors=96,
+        num_bits=4,
+    )
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -682,7 +1676,12 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
     )
     expected_config = HnswPq(distance_type="dot")
     mock_create_index.assert_called_with(
-        "my_vector", replace=False, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=False,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
     table.create_index(
@@ -697,7 +1696,32 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
     )
     mock_create_index.assert_called_with(
-        "my_vector", replace=True, config=expected_config, name=None, train=True
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    table.create_index(
+        vector_column_name="my_vector",
+        metric="cosine",
+        index_type="IVF_HNSW_FLAT",
+        sample_rate=0.1,
+        m=29,
+        ef_construction=10,
+    )
+    expected_config = HnswFlat(
+        distance_type="cosine", sample_rate=0.1, m=29, ef_construction=10
+    )
+    mock_create_index.assert_called_with(
+        "my_vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=True,
     )
 
 
@@ -721,6 +1745,7 @@ def test_create_index_name_and_train_parameters(
         "vector",
         replace=True,
         config=expected_config,
+        wait_timeout=None,
         name="my_custom_index",
         train=True,
     )
@@ -728,17 +1753,86 @@ def test_create_index_name_and_train_parameters(
     # Test with train=False
     table.create_index(vector_column_name="vector", train=False)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name=None, train=False
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name=None,
+        train=False,
     )
 
     # Test with both name and train
     table.create_index(vector_column_name="vector", name="my_index_name", train=True)
     mock_create_index.assert_called_with(
-        "vector", replace=True, config=expected_config, name="my_index_name", train=True
+        "vector",
+        replace=True,
+        config=expected_config,
+        wait_timeout=None,
+        name="my_index_name",
+        train=True,
     )
 
 
-def test_add_with_nans(mem_db: DBConnection):
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_legacy_emits_deprecation_warning(
+    mock_create_index, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        "test",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+
+    with pytest.warns(DeprecationWarning, match="create_index"):
+        table.create_index(metric="l2", num_partitions=8, vector_column_name="vector")
+
+
+@patch("lancedb.table.AsyncTable.create_index")
+def test_create_index_new_api(mock_create_index, mem_db: DBConnection):
+    table = mem_db.create_table(
+        "test",
+        data=[
+            {"vector": [3.1, 4.1], "category": "a", "text": "hello world"},
+            {"vector": [5.9, 26.5], "category": "b", "text": "goodbye"},
+        ],
+    )
+
+    # Vector index via new API should not warn
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        table.create_index("vector", config=IvfPq(distance_type="l2"))
+    mock_create_index.assert_called_with(
+        "vector",
+        replace=True,
+        config=IvfPq(distance_type="l2"),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # Scalar index via new API
+    table.create_index("category", config=BTree())
+    mock_create_index.assert_called_with(
+        "category",
+        replace=True,
+        config=BTree(),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+    # FTS index via new API
+    table.create_index("text", config=FTS(with_position=True))
+    mock_create_index.assert_called_with(
+        "text",
+        replace=True,
+        config=FTS(with_position=True),
+        wait_timeout=None,
+        name=None,
+        train=True,
+    )
+
+
+def test_create_with_nans(mem_db: DBConnection):
     # by default we raise an error on bad input vectors
     bad_data = [
         {"vector": [np.nan], "item": "bar", "price": 20.0},
@@ -770,16 +1864,394 @@ def test_add_with_nans(mem_db: DBConnection):
         "fill_test",
         data=[
             {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [2.1, 4.1], "item": "foo", "price": 9.0},
             {"vector": [np.nan], "item": "bar", "price": 20.0},
-            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, 5.0], "item": "bar", "price": 21.0},
+            {"vector": [5], "item": "bar", "price": 22.0},
         ],
         on_bad_vectors="fill",
         fill_value=0.0,
     )
-    assert len(table) == 3
+    assert len(table) == 5
     arrow_tbl = table.search().where("item == 'bar'").to_arrow()
-    v = arrow_tbl["vector"].to_pylist()[0]
-    assert np.allclose(v, np.array([0.0, 0.0]))
+    filled_vectors = {
+        row["price"]: row["vector"]
+        for row in arrow_tbl.select(["price", "vector"]).to_pylist()
+    }
+    assert np.allclose(filled_vectors[20.0], np.array([0.0, 0.0]))
+    assert np.allclose(filled_vectors[21.0], np.array([0.0, 5.0]))
+    assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
+
+
+def test_add_with_nans(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 2), nullable=True),
+            pa.field("item", pa.string(), nullable=True),
+            pa.field("price", pa.float64(), nullable=False),
+        ],
+    )
+    table = mem_db.create_table("test", schema=schema)
+    # by default we raise an error on bad input vectors
+    bad_data = [
+        {"vector": [np.nan], "item": "bar", "price": 20.0},
+        {"vector": [5], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        {"vector": [np.nan, 5.0], "item": "bar", "price": 20.0},
+    ]
+    for row in bad_data:
+        with pytest.raises(ValueError):
+            table.add(
+                data=[row],
+            )
+
+    table.add(
+        [
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [2.1, 4.1], "item": "foo", "price": 9.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [5], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, np.nan], "item": "bar", "price": 20.0},
+        ],
+        on_bad_vectors="drop",
+    )
+    assert len(table) == 2
+    table.delete("true")
+
+    # We can fill bad input with some value
+    table.add(
+        data=[
+            {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+            {"vector": [np.nan], "item": "bar", "price": 20.0},
+            {"vector": [np.nan, 5.0], "item": "bar", "price": 21.0},
+            {"vector": [5], "item": "bar", "price": 22.0},
+        ],
+        on_bad_vectors="fill",
+        fill_value=0.0,
+    )
+    assert len(table) == 4
+    arrow_tbl = table.search().where("item == 'bar'").to_arrow()
+    filled_vectors = {
+        row["price"]: row["vector"]
+        for row in arrow_tbl.select(["price", "vector"]).to_pylist()
+    }
+    assert np.allclose(filled_vectors[20.0], np.array([0.0, 0.0]))
+    assert np.allclose(filled_vectors[21.0], np.array([0.0, 5.0]))
+    assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
+
+
+def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
+    class Schema(LanceModel):
+        text: str
+        embedding: Vector(16)
+
+    table = mem_db.create_table("test_empty_embeddings", schema=Schema)
+    table.add(
+        [
+            {"text": "hello", "embedding": []},
+            {"text": "bar", "embedding": [0.1] * 16},
+        ],
+        on_bad_vectors="drop",
+    )
+
+    data = table.to_arrow()
+    assert data["text"].to_pylist() == ["bar"]
+    assert np.allclose(data["embedding"].to_pylist()[0], np.array([0.1] * 16))
+
+
+def test_add_nullable_fixed_size_list_with_none(mem_db: DBConnection):
+    """Regression test for issue #2340."""
+    table = mem_db.create_table(
+        "test_nullable_fixed_size_list",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field("feature", pa.list_(pa.float32(), 256)),
+                pa.field("tags", pa.list_(pa.string())),
+            ]
+        ),
+    )
+
+    table.add([{"id": "1", "feature": None, "tags": ["tag1", "tag2"]}])
+
+    result = table.to_arrow()
+    assert result.to_pylist() == [
+        {"id": "1", "feature": None, "tags": ["tag1", "tag2"]}
+    ]
+
+
+def test_add_nullable_struct_with_none(mem_db: DBConnection):
+    """Regression test for issue #2654: a nullable struct column whose
+    first batch contains only None values must not crash in
+    _align_field_types with AttributeError: 'pyarrow.lib.DataType'
+    object has no attribute 'fields'.
+
+    PyArrow infers an all-None struct column as `null` (not `struct`),
+    so the type-alignment path needs to handle the case where the
+    source field type is null and use the target type directly.
+    """
+    # Use the v2.1 file format so that nullable structs are supported.
+    table = mem_db.create_table(
+        "test_nullable_struct",
+        schema=pa.schema(
+            [
+                pa.field("id", pa.string()),
+                pa.field(
+                    "data",
+                    pa.struct([pa.field("x", pa.float32())]),
+                    nullable=True,
+                ),
+            ]
+        ),
+        storage_options=dict(new_table_data_storage_version="2.1"),
+    )
+
+    # Adding a row with a non-null struct should work.
+    table.add([{"id": "1", "data": {"x": 1.0}}])
+
+    # Adding a row with None for the nullable struct field should also
+    # work — this is what used to crash.
+    table.add([{"id": "2", "data": None}])
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("id").to_pylist() == ["1", "2"]
+    assert result.column("data").to_pylist() == [{"x": 1.0}, None]
+
+
+def test_read_mostly_null_list_v2_2_page_boundary(tmp_path):
+    # Regression test for #3194. This row/value count crosses a v2.2 structural
+    # encoding page boundary where Lance 3.0.0 sliced repetition/definition
+    # levels by row offset and decoded child arrays at different lengths.
+    num_rows = 64_885
+    num_values = 217
+    list_type = pa.list_(pa.float32())
+    source = pa.table(
+        {
+            "id": np.arange(num_rows, dtype=np.int64),
+            "coords": pa.array(
+                [[1.0, 2.0, 3.0, 4.0]] * num_values + [None] * (num_rows - num_values),
+                type=list_type,
+            ),
+        }
+    )
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+    table = db.create_table("test_sparse_nullable_list", data=source)
+
+    result = table.search().select(["id", "coords"]).limit(num_rows).to_arrow()
+
+    assert result.equals(source)
+
+
+def test_add_with_integer_embeddings_preserves_casting(mem_db: DBConnection):
+    class Schema(LanceModel):
+        text: str
+        embedding: Vector(4)
+
+    table = mem_db.create_table("test_integer_embeddings", schema=Schema)
+    table.add(
+        [{"text": "foo", "embedding": [1, 2, 3, 4]}],
+        on_bad_vectors="drop",
+    )
+
+    assert table.to_arrow()["embedding"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+def test_on_bad_vectors_does_not_handle_non_vector_fixed_size_lists(
+    mem_db: DBConnection,
+):
+    schema = pa.schema(
+        [
+            pa.field("vector", pa.list_(pa.float32(), 4)),
+            pa.field("bbox", pa.list_(pa.float32(), 4)),
+        ]
+    )
+    table = mem_db.create_table("test_bbox_schema", schema=schema)
+
+    with pytest.raises(RuntimeError, match="FixedSizeListType"):
+        table.add(
+            [{"vector": [1.0, 2.0, 3.0, 4.0], "bbox": [0.0, 1.0]}],
+            on_bad_vectors="drop",
+        )
+
+
+def test_on_bad_vectors_does_not_handle_custom_named_fixed_size_lists(
+    mem_db: DBConnection,
+):
+    schema = pa.schema([pa.field("features", pa.list_(pa.float32(), 16))])
+    table = mem_db.create_table("test_custom_named_fixed_size_vector", schema=schema)
+
+    with pytest.raises(RuntimeError, match="FixedSizeListType"):
+        table.add(
+            [
+                {"features": []},
+                {"features": [0.1] * 16},
+            ],
+            on_bad_vectors="drop",
+        )
+
+
+def test_on_bad_vectors_with_schema_list_vector_still_sanitizes(mem_db: DBConnection):
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32()))])
+    table = mem_db.create_table("test_schema_list_vector", schema=schema)
+    table.add(
+        [
+            {"vector": [1.0, 2.0]},
+            {"vector": [3.0]},
+            {"vector": [4.0, 5.0]},
+        ],
+        on_bad_vectors="drop",
+    )
+
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0], [4.0, 5.0]]
+
+
+def test_on_bad_vectors_handles_typed_custom_fixed_vectors_for_list_schema(
+    mem_db: DBConnection,
+):
+    schema = pa.schema([pa.field("vec", pa.list_(pa.float32()))])
+    table = mem_db.create_table("test_typed_custom_fixed_vector", schema=schema)
+    data = pa.table(
+        {
+            "vec": pa.array(
+                [[float("nan")] * 16, [1.0] * 16],
+                type=pa.list_(pa.float32(), 16),
+            )
+        }
+    )
+
+    table.add(data, on_bad_vectors="drop")
+
+    assert table.to_arrow()["vec"].to_pylist() == [[1.0] * 16]
+
+
+def test_on_bad_vectors_fill_preserves_arrow_nested_vector_type(mem_db: DBConnection):
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32()))])
+    table = mem_db.create_table("test_fill_arrow_nested_type", schema=schema)
+    data = pa.table(
+        {
+            "vector": pa.array(
+                [[1.0, 2.0], [float("nan"), 3.0]],
+                type=pa.list_(pa.float32(), 2),
+            )
+        }
+    )
+
+    table.add(
+        data,
+        on_bad_vectors="fill",
+        fill_value=0.0,
+    )
+
+    vector = table.to_arrow()["vector"]
+    assert vector.type == pa.list_(pa.float32())
+    assert vector.to_pylist() == [[1.0, 2.0], [0.0, 3.0]]
+
+
+@pytest.mark.parametrize(
+    ("table_name", "batch1", "expected"),
+    [
+        (
+            "test_schema_list_vector_empty_prefix",
+            pa.record_batch({"vector": [[], []]}),
+            [[], [], [1.0, 2.0], [3.0, 4.0]],
+        ),
+        (
+            "test_schema_list_vector_all_bad_prefix",
+            pa.record_batch({"vector": [[float("nan")] * 3, [float("nan")] * 3]}),
+            [[1.0, 2.0], [3.0, 4.0]],
+        ),
+    ],
+)
+def test_on_bad_vectors_with_schema_list_vector_ignores_invalid_prefix_batches(
+    mem_db: DBConnection,
+    table_name: str,
+    batch1: pa.RecordBatch,
+    expected: list,
+):
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32()))])
+    table = mem_db.create_table(table_name, schema=schema)
+    batch2 = pa.record_batch({"vector": [[1.0, 2.0], [3.0, 4.0]]})
+    reader = pa.RecordBatchReader.from_batches(batch1.schema, [batch1, batch2])
+
+    table.add(reader, on_bad_vectors="drop")
+
+    assert table.to_arrow()["vector"].to_pylist() == expected
+
+
+def test_on_bad_vectors_with_multiple_vectors_locks_dim_after_final_drop(
+    mem_db: DBConnection,
+):
+    registry = EmbeddingFunctionRegistry.get_instance()
+    func = MockTextEmbeddingFunction.create()
+    metadata = registry.get_table_metadata(
+        [
+            EmbeddingFunctionConfig(
+                source_column="text1", vector_column="vec1", function=func
+            ),
+            EmbeddingFunctionConfig(
+                source_column="text2", vector_column="vec2", function=func
+            ),
+        ]
+    )
+    schema = pa.schema(
+        [
+            pa.field("vec1", pa.list_(pa.float32())),
+            pa.field("vec2", pa.list_(pa.float32())),
+        ],
+        metadata=metadata,
+    )
+    table = mem_db.create_table("test_multi_vector_dim_lock", schema=schema)
+    batch1 = pa.record_batch(
+        {
+            "vec1": [[1.0, 2.0, 3.0], [10.0, 11.0]],
+            "vec2": [[float("nan"), 0.0], [5.0, 6.0]],
+        }
+    )
+    batch2 = pa.record_batch(
+        {
+            "vec1": [[20.0, 21.0], [30.0, 31.0]],
+            "vec2": [[7.0, 8.0], [9.0, 10.0]],
+        }
+    )
+    reader = pa.RecordBatchReader.from_batches(batch1.schema, [batch1, batch2])
+
+    table.add(reader, on_bad_vectors="drop")
+
+    data = table.to_arrow()
+    assert data["vec1"].to_pylist() == [[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]]
+    assert data["vec2"].to_pylist() == [[5.0, 6.0], [7.0, 8.0], [9.0, 10.0]]
+
+
+def test_on_bad_vectors_does_not_handle_non_vector_list_columns(mem_db: DBConnection):
+    schema = pa.schema([pa.field("embedding_history", pa.list_(pa.float32()))])
+    table = mem_db.create_table("test_non_vector_list_schema", schema=schema)
+    table.add(
+        [
+            {"embedding_history": [1.0, 2.0]},
+            {"embedding_history": [3.0]},
+        ],
+        on_bad_vectors="drop",
+    )
+
+    assert table.to_arrow()["embedding_history"].to_pylist() == [
+        [1.0, 2.0],
+        [3.0],
+    ]
+
+
+def test_on_bad_vectors_all_null_schema_vector_batches_do_not_crash(
+    mem_db: DBConnection,
+):
+    schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 2), nullable=True)])
+    table = mem_db.create_table("test_all_null_vector_batch", schema=schema)
+
+    table.add([{"vector": None}], on_bad_vectors="drop")
+
+    assert table.to_arrow()["vector"].to_pylist() == [None]
 
 
 def test_restore(mem_db: DBConnection):
@@ -859,6 +2331,45 @@ def test_merge(tmp_db: DBConnection, tmp_path):
     table.merge(other_dataset, left_on="id")
 
 
+@pytest.mark.parametrize("storage_version", ["legacy", "stable"])
+def test_search_after_merge(tmp_path, storage_version):
+    pytest.importorskip("lance")
+    pd = pytest.importorskip("pandas")
+
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_data_storage_version": storage_version},
+    )
+    rng = np.random.default_rng(42)
+    row_count = 512
+    vectors = rng.standard_normal((row_count, 8)).astype(np.float32)
+    table = db.create_table(
+        "search_after_merge",
+        data=pd.DataFrame(
+            {
+                "id": [str(i) for i in range(row_count)],
+                "vector": list(vectors),
+            }
+        ),
+    )
+    table.create_index("vector", config=IvfPq(num_partitions=1, num_sub_vectors=2))
+
+    links = pd.DataFrame(
+        {
+            "id": [str(i) for i in range(row_count // 2)],
+            "link": [f"https://example.com/{i}" for i in range(row_count // 2)],
+        }
+    )
+    table.merge(links, left_on="id")
+
+    query = table.search(vectors[-1]).refine_factor(50).limit(10)
+    assert "ANN" in query.explain_plan(verbose=True)
+
+    result = query.to_arrow()
+    links_by_id = dict(zip(result["id"].to_pylist(), result["link"].to_pylist()))
+    assert links_by_id[str(row_count - 1)] is None
+
+
 def test_delete(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -872,6 +2383,59 @@ def test_delete(mem_db: DBConnection):
     assert table.version == 2
     assert len(table) == 1
     assert table.to_arrow()["id"].to_pylist() == [1]
+
+
+def test_concurrent_deletes_are_thread_safe(mem_db: DBConnection):
+    num_workers = 8
+    table = mem_db.create_table(
+        "my_table", data=[{"id": row_id} for row_id in range(num_workers)]
+    )
+    barrier = threading.Barrier(num_workers)
+
+    def delete(row_id: int):
+        barrier.wait()
+        return table.delete(f"id = {row_id}")
+
+    with ThreadPoolExecutor(max_workers=num_workers) as pool:
+        results = list(pool.map(delete, range(num_workers)))
+
+    assert all(result.num_deleted_rows == 1 for result in results)
+    assert sorted(result.version for result in results) == list(
+        range(2, num_workers + 2)
+    )
+    assert table.count_rows() == 0
+
+
+def test_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert len(table) == 3
+    delete_res = table.delete(col("id") == lit(0))
+    assert delete_res.version == 2
+    assert len(table) == 2
+    assert sorted(table.to_arrow()["id"].to_pylist()) == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_delete_expr_async(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table(
+        "my_table",
+        data=[
+            {"vector": [1.1, 0.9], "id": 0},
+            {"vector": [1.2, 1.9], "id": 1},
+            {"vector": [1.3, 2.9], "id": 2},
+        ],
+    )
+    assert await table.count_rows() == 3
+    await table.delete(col("id") == lit(0))
+    assert await table.count_rows() == 2
+    assert sorted((await table.to_arrow())["id"].to_pylist()) == [1, 2]
 
 
 def test_update(mem_db: DBConnection):
@@ -890,6 +2454,207 @@ def test_update(mem_db: DBConnection):
     v = table.to_arrow()["vector"].combine_chunks()
     v = v.values.to_numpy().reshape(2, 2)
     assert np.allclose(v, np.array([[1.2, 1.9], [1.1, 1.1]]))
+
+
+def test_update_expr_filter_literals(mem_db: DBConnection):
+    values = ["5", "4.66e-84", "it's"]
+    table = mem_db.create_table(
+        "update_expr_literals",
+        data=[{"field": value, "result": "original"} for value in values],
+    )
+
+    for value in values:
+        update_res = table.update(where=col("field") == value, values={"result": value})
+        assert update_res.rows_updated == 1
+
+    assert table.to_arrow()["result"].to_pylist() == values
+
+
+def test_update_expr_filter_preserves_typed_semantics(mem_db: DBConnection):
+    low = Decimal("1.234567890123456789")
+    high = Decimal("1.234567890123456790")
+    decimal_schema = pa.schema(
+        [("val", pa.decimal128(19, 18)), ("result", pa.string())]
+    )
+    decimal_table = mem_db.create_table(
+        "update_expr_decimal",
+        pa.table(
+            {"val": [low, high], "result": ["old", "old"]},
+            schema=decimal_schema,
+        ),
+    )
+    predicate = col("val") < lit(high)
+    assert decimal_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    keyword_table = mem_db.create_table(
+        "update_expr_keyword", [{"null": 1, "result": "old"}]
+    )
+    predicate = col("null") == 1
+    assert keyword_table.search().where(predicate).to_arrow().num_rows == 1
+    result = keyword_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    empty_in_table = mem_db.create_table(
+        "update_expr_empty_in", [{"id": 1, "result": "old"}]
+    )
+    predicate = col("id").isin([])
+    assert empty_in_table.search().where(predicate).to_arrow().num_rows == 0
+    result = empty_in_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+    marker = "__lancedb_binary_placeholder_0__"
+    binary_schema = pa.schema(
+        [("payload", pa.binary()), ("text", pa.string()), ("result", pa.string())]
+    )
+    binary_table = mem_db.create_table(
+        "update_expr_binary",
+        pa.table(
+            {
+                "payload": [b"\x01", b"\x02"],
+                "text": ["other", marker],
+                "result": ["old", "old"],
+            },
+            schema=binary_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) | (col("text") == marker)
+    assert binary_table.search().where(predicate).to_arrow().num_rows == 2
+    result = binary_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    nonfinite_table = mem_db.create_table(
+        "update_expr_nonfinite",
+        [{"x": 1.0, "result": "old"}, {"x": 2.0, "result": "old"}],
+    )
+    predicate = col("x") < float("inf")
+    assert nonfinite_table.search().where(predicate).to_arrow().num_rows == 2
+    result = nonfinite_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 2
+
+    float16_table = mem_db.create_table(
+        "update_expr_float16",
+        [{"x": 1.0, "result": "old"}, {"x": 3.0, "result": "old"}],
+    )
+    predicate = col("x").cast(pa.float16()) < 2.0
+    assert float16_table.search().where(predicate).to_arrow().num_rows == 1
+    result = float16_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    string_cast_table = mem_db.create_table(
+        "update_expr_string_cast",
+        [{"x": 1, "result": "old"}, {"x": 2, "result": "old"}],
+    )
+    predicate = col("x").cast("string") == "1"
+    assert string_cast_table.search().where(predicate).to_arrow().num_rows == 1
+    result = string_cast_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    quoted_identifier_schema = pa.schema(
+        [("payload", pa.binary()), ("odd'name", pa.int64()), ("result", pa.string())]
+    )
+    quoted_identifier_table = mem_db.create_table(
+        "update_expr_quoted_identifier",
+        pa.table(
+            {"payload": [b"\x01"], "odd'name": [1], "result": ["old"]},
+            schema=quoted_identifier_schema,
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")) & (col("odd'name") == 1)
+    assert quoted_identifier_table.search().where(predicate).to_arrow().num_rows == 1
+    result = quoted_identifier_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    decimal256_schema = pa.schema(
+        [("val", pa.decimal256(40, 2)), ("result", pa.string())]
+    )
+    decimal256_table = mem_db.create_table(
+        "update_expr_decimal256",
+        pa.table(
+            {
+                "val": [Decimal("1.00"), Decimal("3.00")],
+                "result": ["old", "old"],
+            },
+            schema=decimal256_schema,
+        ),
+    )
+    predicate = col("val") < lit(Decimal("2.00")).cast(pa.decimal256(40, 2))
+    assert decimal256_table.search().where(predicate).to_arrow().num_rows == 1
+    result = decimal256_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 1
+
+    binary_empty_table = mem_db.create_table(
+        "update_expr_binary_empty",
+        pa.table(
+            {"payload": [b"\x01", b"\x02"], "result": ["old", "old"]},
+            schema=pa.schema([("payload", pa.binary()), ("result", pa.string())]),
+        ),
+    )
+    predicate = (col("payload") == lit(b"\x01")).isin([])
+    assert binary_empty_table.search().where(predicate).to_arrow().num_rows == 0
+    assert predicate.to_sql() == "false"
+    result = binary_empty_table.update(where=predicate, values={"result": "new"})
+    assert result.rows_updated == 0
+
+
+def test_update_with_arrow_scalar(mem_db: DBConnection):
+    schema = pa.schema({"id": pa.int64(), "vector": pa.list_(pa.float32(), 4)})
+    table = mem_db.create_table("my_table", schema=schema)
+    table.add([{"id": 1, "vector": [1.0, 2.0, 3.0, 4.0]}])
+
+    value = table.search().select(["vector"]).limit(1).to_arrow()["vector"][0]
+    assert isinstance(value, pa.FixedSizeListScalar)
+
+    result = table.update(where="id == 1", values={"vector": value})
+
+    assert result.rows_updated == 1
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.parametrize("use_arrow_scalar", [False, True])
+@pytest.mark.parametrize(
+    "decimal_type, value",
+    [
+        (pa.decimal128(10, 2), "9.99"),
+        (pa.decimal128(10, 2), "-9.99"),
+        (pa.decimal128(10, 2), "0.00"),
+        (pa.decimal128(10, 2), "1.23E+5"),
+        (pa.decimal128(38, 18), "1E-18"),
+        (pa.decimal128(38, 18), "12345678901234567.123456789012345678"),
+        (pa.decimal128(38, 18), "12345678901234567890.123456789012345678"),
+        (pa.decimal128(38, 18), "-12345678901234567890.123456789012345678"),
+        (
+            pa.decimal256(76, 38),
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+        (
+            pa.decimal256(76, 38),
+            "-12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+    ],
+)
+def test_update_decimal(mem_db: DBConnection, decimal_type, value, use_arrow_scalar):
+    expected = Decimal(value)
+    table = mem_db.create_table(
+        "my_table",
+        pa.table(
+            {
+                "id": [1, 2],
+                "price": pa.array([Decimal("1"), expected], type=decimal_type),
+            }
+        ),
+    )
+    update = table.to_arrow()["price"][1] if use_arrow_scalar else expected
+    with localcontext() as context:
+        context.prec = 6
+        result = table.update(where="id = 1", values={"price": update})
+    assert result.rows_updated == 1
+    actual = table.to_arrow()
+    assert actual.schema.field("price").type == decimal_type
+    assert actual["price"].to_pylist() == [expected, expected]
 
 
 def test_update_types(mem_db: DBConnection):
@@ -1059,6 +2824,159 @@ def test_merge_insert(mem_db: DBConnection):
         )
 
 
+def test_merge_insert_composite_key(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table(
+            {
+                "shard": ["a", "a", "b"],
+                "id": [1, 2, 1],
+                "val": ["x", "y", "z"],
+            }
+        ),
+    )
+
+    # ("a", 1) matches an existing row and updates it. ("b", 2) agrees with an
+    # existing row on each key column separately but on neither pair, so it is
+    # an insert.
+    new_data = pa.table({"shard": ["a", "b"], "id": [1, 2], "val": ["X", "W"]})
+    res = (
+        table.merge_insert(["shard", "id"])
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+    assert res.num_updated_rows == 1
+    assert res.num_inserted_rows == 1
+
+    expected = pa.table(
+        {
+            "shard": ["a", "a", "b", "b"],
+            "id": [1, 2, 1, 2],
+            "val": ["X", "y", "z", "W"],
+        }
+    )
+    assert table.to_arrow().sort_by([("shard", "ascending"), ("id", "ascending")]) == (
+        expected
+    )
+
+
+def test_merge_insert_nullable_pandas_into_pydantic_schema(mem_db: DBConnection):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2366
+    pd = pytest.importorskip("pandas")
+
+    class Document(LanceModel):
+        id: int
+        title: str
+        content: str
+
+    table = mem_db.create_table("documents", schema=Document)
+    table.add(
+        pd.DataFrame(
+            {
+                "title": ["Old title", "Unchanged"],
+                "id": [2, 3],
+                "content": ["Old content", "Keep this"],
+            }
+        )
+    )
+
+    # Pandas produces nullable Arrow fields, in an order that differs from the
+    # non-nullable Pydantic schema. This is valid as long as the data has no nulls.
+    new_data = pd.DataFrame(
+        {
+            "title": ["Inserted", "Updated"],
+            "id": [1, 2],
+            "content": ["New row", "New content"],
+        }
+    )
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(new_data)
+    )
+
+    assert result.num_inserted_rows == 1
+    assert result.num_updated_rows == 1
+    expected = pa.Table.from_pylist(
+        [
+            {"id": 1, "title": "Inserted", "content": "New row"},
+            {"id": 2, "title": "Updated", "content": "New content"},
+            {"id": 3, "title": "Unchanged", "content": "Keep this"},
+        ],
+        schema=Document.to_arrow_schema(),
+    )
+    assert table.to_arrow().sort_by("id") == expected
+
+
+def test_merge_insert_by_source_delete_expr(mem_db: DBConnection):
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+    assert merge_insert_res.num_inserted_rows == 1
+    assert merge_insert_res.num_updated_rows == 1
+    assert merge_insert_res.num_deleted_rows == 1
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
+def test_merge_insert_by_source_delete_reconfigure(mem_db: DBConnection):
+    # Calling when_not_matched_by_source_delete() again with no condition must
+    # widen the delete to unconditional, not keep the earlier condition around.
+    table = mem_db.create_table(
+        "my_table",
+        data=pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]}),
+    )
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    merge_insert_res = (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete("a > 2")
+        .when_not_matched_by_source_delete()
+        .execute(new_data)
+    )
+    assert merge_insert_res.num_deleted_rows == 2
+
+    expected = pa.table({"a": [2, 4], "b": ["x", "z"]})
+    assert table.to_arrow().sort_by("a") == expected
+
+
+@pytest.mark.asyncio
+async def test_merge_insert_by_source_delete_expr_async(
+    mem_db_async: AsyncConnection,
+):
+    data = pa.table({"a": [1, 2, 3], "b": ["a", "b", "c"]})
+    table = await mem_db_async.create_table("some_table", data=data)
+    new_data = pa.table({"a": [2, 4], "b": ["x", "z"]})
+
+    # replace-range, limiting the source-absent delete with an Expr condition
+    await (
+        table.merge_insert("a")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .when_not_matched_by_source_delete(col("a") > lit(2))
+        .execute(new_data)
+    )
+
+    expected = pa.table({"a": [1, 2, 4], "b": ["a", "x", "z"]})
+    assert (await table.to_arrow()).sort_by("a") == expected
+
+
 # We vary the data format because there are slight differences in how
 # subschemas are handled in different formats
 @pytest.mark.parametrize(
@@ -1090,6 +3008,36 @@ def test_merge_insert_subschema(mem_db: DBConnection, data_format):
         {"id": [0, 1, 2, 3], "a": [1.0, 2.0, 3.0, None], "c": ["x", "x", "y", "y"]}
     )
     assert table.to_arrow().sort_by("id") == expected
+
+
+def test_repeated_partial_merge_insert_with_scalar_index(mem_db: DBConnection):
+    def make_batch(start: int) -> pa.Table:
+        return pa.table(
+            {
+                "id": [f"id-{i:04}" for i in range(start, start + 100)],
+                "category": ["A"] * 100,
+                "value_a": [float(i) for i in range(start, start + 100)],
+                "value_b": [float(i) / 10 for i in range(100)],
+            }
+        )
+
+    table = mem_db.create_table("my_table", data=make_batch(0))
+    table.add(make_batch(100))
+    table.add(make_batch(200))
+    table.create_index("id", config=BTree())
+
+    ids = [f"id-{i:04}" for i in range(100, 200)]
+    for value in (999.0, 888.0):
+        result = (
+            table.merge_insert("id")
+            .when_matched_update_all()
+            .execute(pa.table({"id": ids, "value_a": [value] * 100}))
+        )
+        assert result.num_updated_rows == 100
+
+    actual = table.to_arrow().sort_by("id")
+    assert actual.num_rows == 300
+    assert actual["value_a"].to_pylist()[100:200] == [888.0] * 100
 
 
 @pytest.mark.asyncio
@@ -1161,6 +3109,443 @@ async def test_merge_insert_async(mem_db_async: AsyncConnection):
     assert (await table.to_arrow()).sort_by("a") == expected
 
 
+def _json_arrow_table(schema, rows):
+    json_type = schema.field("j").type
+    json_values = pa.ExtensionArray.from_storage(
+        json_type,
+        pa.array([value for _, value in rows], type=json_type.storage_type),
+    )
+    return pa.Table.from_arrays(
+        [pa.array([row_id for row_id, _ in rows]), json_values], schema=schema
+    )
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_merge_insert_encodes_json(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+
+    table = await mem_db_async.create_table("json_merge", schema=schema)
+    await table.add(_json_arrow_table(schema, [("a", '{"k": 1}'), ("b", '{"k": 9}')]))
+
+    await (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .execute(_json_arrow_table(schema, [("a", '{"k": 2}')]))
+    )
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": '{"k":2}'},
+        {"id": "b", "j": '{"k":9}'},
+    ]
+    filtered = await table.query().where("json_extract(j, '$.k') = '2'").to_list()
+    assert filtered == [{"id": "a", "j": '{"k":2}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_sanitization_encodes_json(mem_db_async: AsyncConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+
+    table = await mem_db_async.create_table("json_add", schema=schema)
+    await table.add(
+        _json_arrow_table(schema, [("c", '{"k": 3}')]), on_bad_vectors="fill"
+    )
+
+    rows = await table.query().where("json_extract(j, '$.k') = '3'").to_list()
+    assert rows == [{"id": "c", "j": '{"k":3}'}]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_add", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.search().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_merge_insert_python_objects_to_json_column(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("payload", pa.json_()),
+            pa.field("metadata", pa.struct([("label", pa.string())])),
+            pa.field("tags", pa.list_(pa.string())),
+        ]
+    )
+    table = mem_db.create_table("json_python_objects_merge", schema=schema)
+    table.add(
+        [
+            {
+                "id": 1,
+                "payload": {"old": True},
+                "metadata": {"label": "old"},
+                "tags": ["old"],
+            }
+        ]
+    )
+
+    table.merge_insert(
+        "id"
+    ).when_matched_update_all().when_not_matched_insert_all().execute(
+        [
+            {
+                "id": 1,
+                "payload": {"foo": "bar", "count": 2},
+                "metadata": {"label": "dict"},
+                "tags": ["a", "b"],
+            },
+            {
+                "id": 2,
+                "payload": {
+                    "name": "alice",
+                    "tags": ["x", "y"],
+                    "nested": {"enabled": True},
+                },
+                "metadata": {"label": "nested"},
+                "tags": ["c"],
+            },
+            {
+                "id": 3,
+                "payload": ["x", "y", "z"],
+                "metadata": {"label": "list"},
+                "tags": ["d", "e"],
+            },
+            {
+                "id": 4,
+                "payload": '{"foo": "bar"}',
+                "metadata": {"label": "string"},
+                "tags": ["f"],
+            },
+            {
+                "id": 5,
+                "payload": None,
+                "metadata": {"label": "null"},
+                "tags": ["g"],
+            },
+        ]
+    )
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert json.loads(rows[1]["payload"]) == {"foo": "bar", "count": 2}
+    assert json.loads(rows[2]["payload"]) == {
+        "name": "alice",
+        "tags": ["x", "y"],
+        "nested": {"enabled": True},
+    }
+    assert json.loads(rows[3]["payload"]) == ["x", "y", "z"]
+    assert json.loads(rows[4]["payload"]) == {"foo": "bar"}
+    assert rows[5]["payload"] is None
+    assert rows[1]["metadata"] == {"label": "dict"}
+    assert rows[1]["tags"] == ["a", "b"]
+
+    matched = table.search().where("json_extract(payload, '$.count') = '2'").to_list()
+    assert [row["id"] for row in matched] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_python_objects_to_nested_json_fields(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field(
+                "info",
+                pa.struct([pa.field("payload", pa.json_())]),
+            ),
+            pa.field("documents", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = mem_db.create_table("nested_json_python_objects_add", schema=schema)
+
+    table.add(
+        [
+            {
+                "id": 1,
+                "info": {"payload": {"kind": "struct", "value": 1}},
+                "documents": [{"kind": "list", "value": 2}],
+            }
+        ]
+    )
+
+    row = table.to_arrow().to_pylist()[0]
+    assert json.loads(row["info"]["payload"]) == {"kind": "struct", "value": 1}
+    assert json.loads(row["documents"][0]) == {"kind": "list", "value": 2}
+    assert [
+        row["id"]
+        for row in table.search()
+        .where("json_extract(info.payload, '$.value') = '1'")
+        .to_list()
+    ] == [1]
+    assert [
+        row["id"]
+        for row in table.search()
+        .where("json_extract(documents[1], '$.value') = '2'")
+        .to_list()
+    ] == [1]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_json_serialization_plan_skips_non_json_branches():
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("vector", pa.list_(pa.float32(), 3)),
+            pa.field("payload", pa.json_()),
+            pa.field(
+                "metadata",
+                pa.struct(
+                    [
+                        pa.field("label", pa.string()),
+                        pa.field("payload", pa.json_()),
+                    ]
+                ),
+            ),
+            pa.field(
+                "documents",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("title", pa.string()),
+                            pa.field("payload", pa.json_()),
+                        ]
+                    )
+                ),
+            ),
+        ]
+    )
+
+    plans = table_module._json_serialization_plans(schema)
+
+    assert set(plans) == {"payload", "metadata", "documents"}
+    metadata_children = plans["metadata"].children
+    assert metadata_children is not None
+    assert set(metadata_children) == {"payload"}
+    documents_item = plans["documents"].item
+    assert documents_item is not None
+    assert documents_item.children is not None
+    assert set(documents_item.children) == {"payload"}
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_all_null_json_batch(mem_db_async: AsyncConnection):
+    """A batch of dicts whose json values are all None infers as pa.null(), which used
+    to fail with a `json` vs `large_binary` schema mismatch. A row-at-a-time insert of
+    an optional json column always looks like this."""
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = await mem_db_async.create_table("json_nulls", schema=schema)
+
+    await table.add([{"id": "a", "j": None}])
+    assert await table.count_rows() == 1
+
+    # ... and again once real JSON has been written.
+    await table.add(_json_arrow_table(schema, [("b", '{"k": 9}')]))
+    await table.add([{"id": "c", "j": None}])
+
+    rows = sorted(await table.query().to_list(), key=lambda row: row["id"])
+    assert rows == [
+        {"id": "a", "j": None},
+        {"id": "b", "j": '{"k":9}'},
+        {"id": "c", "j": None},
+    ]
+
+    # The nulls must not disturb reads of the column.
+    filtered = await table.query().where("json_extract(j, '$.k') = '9'").to_list()
+    assert filtered == [{"id": "b", "j": '{"k":9}'}]
+    assert len(await table.query().where("j IS NULL").to_list()) == 2
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+def test_add_all_null_json_batch_sync(mem_db: DBConnection):
+    schema = pa.schema([pa.field("id", pa.string()), pa.field("j", pa.json_())])
+    table = mem_db.create_table("json_nulls_sync", schema=schema)
+
+    table.add([{"id": "a", "j": None}])
+
+    assert table.count_rows() == 1
+    assert table.to_arrow()["j"].to_pylist() == [None]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ([None], [None]),
+        ([None, '{"k": 1}'], [None, '{"k":1}']),
+        (['{"k": 2}'], ['{"k":2}']),
+    ],
+)
+async def test_add_list_of_dicts_to_json_column(
+    mem_db_async: AsyncConnection, values, expected
+):
+    schema = pa.schema([pa.field("id", pa.int64()), pa.field("value", pa.json_())])
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": idx, "value": value} for idx, value in enumerate(values)])
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert [row["value"] for row in rows] == expected
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_nested_json_column(
+    mem_db_async: AsyncConnection,
+):
+    json_field = pa.field("value", pa.json_())
+    info_field = pa.field("info", pa.struct([json_field]))
+    info = pa.StructArray.from_arrays(
+        [pa.array(['{"seed": 0}'], type=pa.json_())], fields=[json_field]
+    )
+    seed = pa.Table.from_arrays(
+        [pa.array([0], type=pa.int64()), info],
+        schema=pa.schema([pa.field("id", pa.int64()), info_field]),
+    )
+    table = await mem_db_async.create_table("nested_json_list_add", data=seed)
+
+    await table.add([{"id": 1, "info": {"value": '{"k": 1}'}}])
+    await table.add([{"id": 2, "info": {"value": '{"k": 2}'}}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 0, "info": {"value": '{"seed":0}'}},
+        {"id": 1, "info": {"value": '{"k":1}'}},
+        {"id": 2, "info": {"value": '{"k":2}'}},
+    ]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_list_of_dicts_to_json_list_column(mem_db_async: AsyncConnection):
+    """JSON inside a list must be JSONB-encoded, not stored as the raw text.
+
+    Storing raw text appends without error but leaves the column unreadable, so the
+    round trip is checked with a filter as well as by value.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("docs", pa.list_(pa.field("item", pa.json_()))),
+        ]
+    )
+    table = await mem_db_async.create_table("json_list_add", schema=schema)
+
+    await table.add([{"id": 1, "docs": ['{"k": 1}', '{"k": 2}']}])
+    await table.add([{"id": 2, "docs": ['{"k": 3}']}], on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "docs": ['{"k":1}', '{"k":2}']},
+        {"id": 2, "docs": ['{"k":3}']},
+    ]
+
+    matched = await table.query().where("json_extract(docs[1], '$.k') = 3").to_arrow()
+    assert matched.column("id").to_pylist() == [2]
+
+
+@pytest.mark.skipif(not hasattr(pa, "json_"), reason="requires PyArrow JSON type")
+@pytest.mark.asyncio
+async def test_add_map_of_json_values(mem_db_async: AsyncConnection):
+    """JSON in a map's values needs the same encoding a list's items do."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("m", pa.map_(pa.string(), pa.json_())),
+        ]
+    )
+    table = await mem_db_async.create_table(
+        "json_map_add",
+        schema=schema,
+        storage_options={"new_table_data_storage_version": "2.2"},
+    )
+
+    def batch(row_id: int, text: str) -> pa.Table:
+        return pa.table(
+            {
+                "id": pa.array([row_id], type=pa.int64()),
+                "m": pa.array([[("k", text)]], type=pa.map_(pa.string(), pa.string())),
+            }
+        )
+
+    await table.add(batch(1, '{"x": 1}'))
+    await table.add(batch(2, '{"x": 2}'), on_bad_vectors="fill")
+
+    rows = (await table.to_arrow()).sort_by("id").to_pylist()
+    assert rows == [
+        {"id": 1, "m": [("k", '{"x":1}')]},
+        {"id": 2, "m": [("k", '{"x":2}')]},
+    ]
+
+    matched = (
+        await table.query()
+        .where("json_extract(element_at(m, 'k')[1], '$.x') = '2'")
+        .to_arrow()
+    )
+    assert matched.column("id").to_pylist() == [2]
+
+
 def test_create_with_embedding_function(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
@@ -1188,15 +3573,40 @@ def test_create_with_embedding_function(mem_db: DBConnection):
     assert actual == expected
 
 
+def test_create_f16_table_from_arrow_data(mem_db: DBConnection):
+    dimension = 32
+    num_rows = 512
+    values = pa.array(
+        np.random.default_rng(42)
+        .standard_normal(num_rows * dimension)
+        .astype(np.float16)
+    )
+    df = pa.table(
+        {
+            "text": [f"s-{i}" for i in range(num_rows)],
+            "vector": pa.FixedSizeListArray.from_arrays(values, dimension),
+        }
+    )
+    table = mem_db.create_table("f16_tbl", data=df)
+    assert table.schema.field("vector").type == pa.list_(pa.float16(), dimension)
+    table.create_index(num_partitions=2, num_sub_vectors=2)
+
+    query = df["vector"][2].as_py()
+    expected = table.search(query).limit(2).to_arrow()
+
+    assert "s-2" in expected["text"].to_pylist()
+
+
 def test_create_f16_table(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
         vector: Vector(32, value_type=pa.float16())
 
+    rng = np.random.default_rng(42)
     df = pa.table(
         {
             "text": [f"s-{i}" for i in range(512)],
-            "vector": [np.random.randn(32).astype(np.float16) for _ in range(512)],
+            "vector": [rng.standard_normal(32).astype(np.float16) for _ in range(512)],
         }
     )
     table = mem_db.create_table(
@@ -1274,8 +3684,9 @@ def test_create_scalar_index(mem_db: DBConnection):
         "my_table",
         data=test_data,
     )
-    # Test with default name
-    table.create_scalar_index("x")
+    # Test with default name; confirm DeprecationWarning fires
+    with pytest.warns(DeprecationWarning, match="create_scalar_index"):
+        table.create_scalar_index("x")
     indices = table.list_indices()
     assert len(indices) == 1
     scalar_index = indices[0]
@@ -1303,6 +3714,148 @@ def test_create_scalar_index(mem_db: DBConnection):
     assert scalar_index.name == "custom_y_index"
 
 
+def test_create_index_nested_field_paths(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("rowId", pa.int32()),
+            pa.field("row-id", pa.int32()),
+            pa.field("userId", pa.int32()),
+            pa.field("metadata", pa.struct([pa.field("user_id", pa.int32())])),
+            pa.field("MetaData", pa.struct([pa.field("userId", pa.int32())])),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+            pa.field("payload", pa.struct([pa.field("text", pa.string())])),
+            pa.field("meta-data", pa.struct([pa.field("user-id", pa.int32())])),
+            pa.field("literal", pa.struct([pa.field("a.b", pa.int32())])),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "rowId": i,
+                "row-id": i,
+                "userId": i,
+                "metadata": {"user_id": i},
+                "MetaData": {"userId": i},
+                "image": {"embedding": [float(i), float(i + 1)]},
+                "payload": {"text": f"document {i}"},
+                "meta-data": {"user-id": i},
+                "literal": {"a.b": i},
+            }
+            for i in range(256)
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_index_paths", data=data)
+
+    table.create_scalar_index("rowId", name="row_id_idx")
+    table.create_scalar_index("`row-id`", name="row_dash_id_idx")
+    table.create_scalar_index("userId", name="top_user_id_idx")
+    table.create_scalar_index("metadata.user_id", name="metadata_user_id_idx")
+    table.create_scalar_index("MetaData.userId", name="mixed_case_metadata_user_id_idx")
+    table.create_scalar_index("`meta-data`.`user-id`", name="escaped_names_idx")
+    table.create_scalar_index("literal.`a.b`", name="literal_dot_idx")
+    table.create_index(
+        vector_column_name="image.embedding",
+        num_partitions=1,
+        num_sub_vectors=1,
+        name="image_embedding_idx",
+    )
+    table.create_fts_index("payload.text", with_position=False, name="payload_text_idx")
+
+    indices = sorted(table.list_indices(), key=lambda idx: idx.name)
+    assert [(idx.name, idx.index_type, idx.columns) for idx in indices] == [
+        ("escaped_names_idx", "BTree", ["`meta-data`.`user-id`"]),
+        ("image_embedding_idx", "IvfPq", ["image.embedding"]),
+        ("literal_dot_idx", "BTree", ["literal.`a.b`"]),
+        ("metadata_user_id_idx", "BTree", ["metadata.user_id"]),
+        ("mixed_case_metadata_user_id_idx", "BTree", ["MetaData.userId"]),
+        ("payload_text_idx", "FTS", ["payload.text"]),
+        ("row_dash_id_idx", "BTree", ["`row-id`"]),
+        ("row_id_idx", "BTree", ["rowId"]),
+        ("top_user_id_idx", "BTree", ["userId"]),
+    ]
+    for index in indices:
+        stats = table.index_stats(index.name)
+        assert stats is not None
+        assert stats.num_indexed_rows == 256
+
+    vector_results = (
+        table.search([0.0, 1.0], vector_column_name="image.embedding")
+        .limit(1)
+        .to_list()
+    )
+    assert len(vector_results) == 1
+    assert vector_results[0]["metadata"]["user_id"] == 0
+
+    default_vector_results = table.search([0.0, 1.0]).limit(1).to_list()
+    assert len(default_vector_results) == 1
+    assert default_vector_results[0]["metadata"]["user_id"] == 0
+
+    filtered_results = table.search().where("metadata.user_id = 42").limit(1).to_list()
+    assert len(filtered_results) == 1
+    assert filtered_results[0]["metadata"]["user_id"] == 42
+
+    escaped_results = table.search().where("`row-id` = 43").limit(1).to_list()
+    assert len(escaped_results) == 1
+    assert escaped_results[0]["row-id"] == 43
+
+    fts_results = table.search("document 44", query_type="fts").limit(1).to_list()
+    assert len(fts_results) == 1
+    assert fts_results[0]["payload"]["text"] == "document 44"
+
+
+def test_index_config_fields(mem_db: DBConnection):
+    """Test that IndexConfig exposes the new rich metadata fields."""
+    vec_array = pa.array(
+        [[float(i), float(i + 1)] for i in range(300)], pa.list_(pa.float32(), 2)
+    )
+    data = pa.Table.from_pydict({"x": list(range(300)), "vector": vec_array})
+    table = mem_db.create_table("index_config_fields", data=data)
+    table.create_scalar_index("x", index_type="BTREE")
+    table.create_index(
+        vector_column_name="vector",
+        num_partitions=1,
+        num_sub_vectors=1,
+    )
+
+    indices = {idx.name: idx for idx in table.list_indices()}
+
+    scalar_idx = indices["x_idx"]
+    assert scalar_idx.index_uuid is not None
+    assert isinstance(scalar_idx.index_uuid, str)
+    assert scalar_idx.num_indexed_rows is not None
+    assert scalar_idx.num_indexed_rows == 300
+    assert scalar_idx.num_unindexed_rows is not None
+    assert scalar_idx.num_unindexed_rows == 0
+    assert scalar_idx.num_segments is not None
+    assert scalar_idx.num_segments >= 1
+    assert scalar_idx.size_bytes is not None
+    assert scalar_idx.size_bytes > 0
+    assert scalar_idx.created_at is not None
+    from datetime import datetime, timezone
+
+    assert isinstance(scalar_idx.created_at, datetime)
+    assert scalar_idx.created_at.tzinfo == timezone.utc
+
+    # __getitem__ compatibility
+    assert scalar_idx["index_uuid"] == scalar_idx.index_uuid
+    assert scalar_idx["num_indexed_rows"] == scalar_idx.num_indexed_rows
+    assert scalar_idx["created_at"] == scalar_idx.created_at
+
+    # index_details is parsed from JSON into a Python object
+    assert scalar_idx.index_details is not None
+    assert isinstance(scalar_idx.index_details, dict)
+    assert scalar_idx["index_details"] == scalar_idx.index_details
+
+    vector_idx = indices["vector_idx"]
+    assert vector_idx.index_uuid is not None
+    assert vector_idx.num_indexed_rows == 300
+    assert isinstance(vector_idx.index_details, dict)
+
+
 def test_empty_query(mem_db: DBConnection):
     table = mem_db.create_table(
         "my_table",
@@ -1318,12 +3871,30 @@ def test_empty_query(mem_db: DBConnection):
     # None is the same as default
     df = table.search().select(["id"]).limit(None).to_arrow()
     assert df.num_rows == 100
-    # invalid limist is the same as None, wihch is the same as default
+    # invalid limist is the same as None, which is the same as default
     df = table.search().select(["id"]).limit(-1).to_arrow()
     assert df.num_rows == 100
     # valid limit should work
     df = table.search().select(["id"]).limit(42).to_arrow()
     assert df.num_rows == 42
+
+
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+@pytest.mark.parametrize("multiple_vector_columns", [False, True])
+def test_search_empty_vector(
+    mem_db, query, vector_column_name, query_type, multiple_vector_columns
+):
+    fields = [pa.field("vector", pa.list_(pa.float32(), 8))]
+    if multiple_vector_columns:
+        fields.append(pa.field("vec2", pa.list_(pa.float32(), 4)))
+    table = mem_db.create_table("empty_vector_query", schema=pa.schema(fields))
+
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        table.search(
+            query, vector_column_name=vector_column_name, query_type=query_type
+        ).limit(3).to_arrow()
 
 
 def test_search_with_schema_inf_single_vector(mem_db: DBConnection):
@@ -1375,6 +3946,94 @@ def test_search_with_schema_inf_multiple_vector(mem_db: DBConnection):
     q = np.random.randn(10)
     with pytest.raises(ValueError):
         table.search(q).limit(1).to_arrow()
+
+
+def test_search_infers_single_nested_vector(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {"id": 0, "image": {"embedding": [0.0, 1.0]}},
+            {"id": 1, "image": {"embedding": [10.0, 11.0]}},
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_default_search", data=data)
+
+    result = table.search([0.0, 1.0]).limit(1).to_list()
+    assert result[0]["id"] == 0
+
+
+def test_search_nested_vector_multiple_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field(
+                "image",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+            pa.field(
+                "text",
+                pa.struct([pa.field("embedding", pa.list_(pa.float32(), 2))]),
+            ),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [
+            {
+                "image": {"embedding": [0.0, 1.0]},
+                "text": {"embedding": [2.0, 3.0]},
+            }
+        ],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_multiple_candidates", data=data)
+
+    with pytest.raises(ValueError, match="image.embedding.*text.embedding"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_nested_vector_no_candidates(mem_db: DBConnection):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int32()),
+            pa.field("metadata", pa.struct([pa.field("label", pa.string())])),
+        ]
+    )
+    data = pa.Table.from_pylist(
+        [{"id": 0, "metadata": {"label": "cat"}}],
+        schema=schema,
+    )
+    table = mem_db.create_table("nested_vector_no_candidates", data=data)
+
+    with pytest.raises(ValueError, match="no vector column"):
+        table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_single_vector_column_wrong_query_dim(mem_db: DBConnection):
+    """A query vector whose dimension doesn't match the (only) vector column
+    must still resolve that column, surfacing a dimension-mismatch error from
+    query execution rather than a misleading "no vector column" error."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+        ]
+    )
+    table = mem_db.create_table(
+        "wrong_query_dim",
+        data=[{"id": 1, "vector_col": [0.1] * 32}],
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="dim"):
+        table.search([0.01] * 120).limit(1).to_arrow()
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
@@ -1448,14 +4107,13 @@ def setup_hybrid_search_table(db: DBConnection, embedding_func):
     table.add([{"text": p} for p in phrases])
 
     # Create a fts index
-    table.create_fts_index("text")
+    table.create_fts_index("text", with_position=True)
 
     return table, MyTable, emb
 
 
 def test_hybrid_search(tmp_db: DBConnection):
     # This test uses an FTS index
-    pytest.importorskip("lancedb.fts")
     pytest.importorskip("lance")
 
     table, MyTable, emb = setup_hybrid_search_table(tmp_db, "test")
@@ -1526,7 +4184,6 @@ def test_hybrid_search(tmp_db: DBConnection):
 
 def test_hybrid_search_metric_type(tmp_db: DBConnection):
     # This test uses an FTS index
-    pytest.importorskip("lancedb.fts")
     pytest.importorskip("lance")
 
     # Need to use nonnorm as the embedding function so l2 and dot results
@@ -1548,15 +4205,19 @@ def test_hybrid_search_metric_type(tmp_db: DBConnection):
 @pytest.mark.parametrize(
     "consistency_interval", [None, timedelta(seconds=0), timedelta(seconds=0.1)]
 )
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "TODO: directory namespace is not supported on Windows yet; "
+        "re-enable after that is fixed."
+    ),
+)
 def test_consistency(tmp_path, consistency_interval):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"id": 0}])
 
     db2 = lancedb.connect(tmp_path, read_consistency_interval=consistency_interval)
     table2 = db2.open_table("my_table")
-    if consistency_interval is not None:
-        assert "read_consistency_interval=datetime.timedelta(" in repr(db2)
-        assert "read_consistency_interval=datetime.timedelta(" in repr(table2)
     assert table2.version == table.version
 
     table.add([{"id": 1}])
@@ -1568,7 +4229,6 @@ def test_consistency(tmp_path, consistency_interval):
     elif consistency_interval == timedelta(seconds=0):
         assert table2.version == table.version
     else:
-        # (consistency_interval == timedelta(seconds=0.1)
         assert table2.version == table.version - 1
         sleep(0.1)
         assert table2.version == table.version
@@ -1650,19 +4310,104 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     )
 
 
-def test_alter_columns(mem_db: DBConnection):
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+def test_alter_columns(mem_db: DBConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = mem_db.create_table("my_table", data=data)
-    alter_columns_res = table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert table.to_arrow().column_names == ["new_id"]
 
 
+INVALID_COLUMN_ALTERATIONS = [
+    (({"path": "id"},), "One of rename, nullable or data_type"),
+    (
+        ({"path": "id", "nulable": False},),  # spellchecker:disable-line
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+    ),
+    (
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+        ),
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+    ),
+    (
+        ({"path": "id", "rename": "new_id"}, {"path": "id"}),
+        "One of rename, nullable or data_type",
+    ),
+]
+
+
+def test_alter_columns_nullable_false(mem_db: DBConnection):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    result = table.alter_columns({"path": "id", "nullable": False})
+    assert result.version == 2
+    assert not table.schema.field("id").nullable
+
+
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+def test_alter_columns_rejects_invalid(mem_db: DBConnection, alterations, match):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = table.version
+    initial_schema = table.schema
+
+    with pytest.raises(ValueError, match=match):
+        table.alter_columns(*alterations)
+
+    assert table.version == initial_version
+    assert table.schema == initial_schema
+
+
 @pytest.mark.asyncio
-async def test_alter_columns_async(mem_db_async: AsyncConnection):
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+async def test_alter_columns_rejects_invalid_async(
+    mem_db_async: AsyncConnection, alterations, match
+):
+    table = await mem_db_async.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = await table.version()
+    initial_schema = await table.schema()
+
+    with pytest.raises(ValueError, match=match):
+        await table.alter_columns(*alterations)
+
+    assert await table.version() == initial_version
+    assert await table.schema() == initial_schema
+
+
+def test_update_field_metadata(mem_db: DBConnection):
+    data = pa.table({"id": [0, 1], "category": ["a", "b"]})
+    table = mem_db.create_table("my_table", data=data)
+
+    res = table.update_field_metadata(
+        {"path": "category", "metadata": {"unit": "label", "pii": "false"}}
+    )
+    assert res.version == 2
+    # Arrow field metadata is bytes-keyed
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"pii": b"false",
+    }
+
+    # merge: add a key, delete one via None, keep the rest
+    table.update_field_metadata(
+        {"path": "category", "metadata": {"source": "import", "pii": None}}
+    )
+    assert table.schema.field("category").metadata == {
+        b"unit": b"label",
+        b"source": b"import",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+async def test_alter_columns_async(mem_db_async: AsyncConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    alter_columns_res = await table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = await table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert (await table.to_arrow()).column_names == ["new_id"]
     alter_columns_res = await table.alter_columns(
@@ -1789,7 +4534,8 @@ async def test_optimize(mem_db_async: AsyncConnection):
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
-    stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
     assert stats.prune.bytes_removed > 0
     assert stats.prune.old_versions_removed == 3
 
@@ -1808,14 +4554,42 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
         ],
     )
     version = await table.version()
-    path = tmp_path / "test.lance" / "_versions" / f"{version - 1}.manifest"
+    assert version == 2
+
+    # By removing a manifest file, we make the data files we just inserted unverified
+    version_name = 18446744073709551615 - (version - 1)
+    path = tmp_path / "test.lance" / "_versions" / f"{version_name:020}.manifest"
     os.remove(path)
+
     stats = await table.optimize(delete_unverified=False)
     assert stats.prune.old_versions_removed == 0
-    stats = await table.optimize(
-        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
-    )
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(
+            cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+        )
     assert stats.prune.old_versions_removed == 2
+
+
+@pytest.mark.asyncio
+async def test_optimize_warns_on_zero_cleanup(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": [1]}])
+    with pytest.warns(UserWarning, match="concurrent"):
+        await table.optimize(cleanup_older_than=timedelta(0))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        await table.optimize(cleanup_older_than=timedelta(days=1))
+        await table.optimize()
+
+
+def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"x": [1]}])
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("default")
+        table.optimize(cleanup_older_than=timedelta(0))
+        table.optimize(cleanup_older_than=timedelta(0))
+    assert [w.filename for w in seen] == [__file__, __file__]
+    assert all("concurrent" in str(w.message) for w in seen)
 
 
 def test_replace_field_metadata(tmp_path):
@@ -1832,27 +4606,45 @@ def test_stats(mem_db: DBConnection):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    assert len(table) == 2
+    table.add([{"text": "baz", "id": 1}])
+    assert len(table) == 3
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        "total_bytes": 38,
-        "num_rows": 2,
+        # Full on-disk size of the data files, footer and metadata included:
+        # 637 bytes for the two-row fragment plus 415 for the one-row fragment.
+        "total_bytes": 1052,
+        "num_rows": 3,
+        "num_deleted_rows": 0,
         "num_indices": 0,
         "fragment_stats": {
-            "num_fragments": 1,
-            "num_small_fragments": 1,
+            "num_fragments": 2,
+            "num_small_fragments": 2,
             "lengths": {
-                "min": 2,
+                "min": 1,
                 "max": 2,
-                "mean": 2,
-                "p25": 2,
+                "mean": 1,
+                "p25": 1,
                 "p50": 2,
                 "p75": 2,
                 "p99": 2,
             },
         },
     }
+
+    # Both rows with id = 1 are deleted, but that empties the second fragment,
+    # which is dropped outright rather than kept with a deletion file, so only
+    # the row marked in the surviving fragment is counted.
+    table.delete("id = 1")
+    # Index files count toward total_bytes too (only deletion files and
+    # manifests are excluded).
+    table.create_index("id", config=BTree())
+    stats_with_index = table.stats()
+    assert stats_with_index["num_indices"] == 1
+    assert stats_with_index["total_bytes"] > stats["total_bytes"]
+    assert stats_with_index["num_rows"] == 1
+    assert stats_with_index["num_deleted_rows"] == 1
+    assert stats_with_index["fragment_stats"]["num_fragments"] == 1
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -1877,8 +4669,8 @@ def test_create_table_empty_list_no_schema_error(mem_db: DBConnection):
         mem_db.create_table("test_empty_no_schema", data=[])
 
 
-def test_add_table_with_empty_embeddings(tmp_path):
-    """Test exact scenario from issue #1968
+def test_create_table_without_data_with_vector_schema(tmp_path):
+    """Test exact scenario from issue #1968.
 
     Regression test for issue #1968:
     https://github.com/lancedb/lancedb/issues/1968
@@ -1890,8 +4682,240 @@ def test_add_table_with_empty_embeddings(tmp_path):
         embedding: Vector(16)
 
     table = db.create_table("test", schema=MySchema)
+    assert table.count_rows() == 0
+    assert table.schema == MySchema.to_arrow_schema()
+
     table.add(
         [{"text": "bar", "embedding": [0.1] * 16}],
         on_bad_vectors="drop",
     )
     assert table.count_rows() == 1
+
+
+def test_table_uri(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("my_table", data=[{"x": 0}])
+    assert table.uri == str(tmp_path / "my_table.lance")
+
+
+def test_sanitize_data_metadata_not_stripped():
+    """Regression test: dict.update() returns None, so assigning its result
+    would silently replace metadata with None, causing with_metadata(None)
+    to strip all schema metadata from the target schema."""
+    from lancedb.table import _sanitize_data
+
+    schema = pa.schema(
+        [pa.field("x", pa.int64())],
+        metadata={b"existing_key": b"existing_value"},
+    )
+    batch = pa.record_batch([pa.array([1, 2, 3])], schema=schema)
+
+    # Use a different field type so the reader and target schemas differ,
+    # forcing _cast_to_target_schema to rebuild the schema with the
+    # target's metadata (instead of taking the fast-path).
+    target_schema = pa.schema(
+        [pa.field("x", pa.int32())],
+        metadata={b"existing_key": b"existing_value"},
+    )
+
+    reader = pa.RecordBatchReader.from_batches(schema, [batch])
+    metadata = {b"new_key": b"new_value"}
+    result = _sanitize_data(reader, target_schema=target_schema, metadata=metadata)
+
+    result_schema = result.schema
+    assert result_schema.metadata is not None
+    assert result_schema.metadata[b"existing_key"] == b"existing_value"
+    assert result_schema.metadata[b"new_key"] == b"new_value"
+
+
+@pytest.mark.asyncio
+async def test_async_search_runs_embedding_on_dedicated_executor(
+    mem_db_async: AsyncConnection,
+):
+    # Regression test for #3310: AsyncTable.search() must run the (potentially
+    # blocking) query-embedding call on the dedicated embedding executor, not
+    # asyncio's default executor -- which is shared with other blocking I/O and
+    # can be starved by a slow embedding call under concurrent load.
+    func = MockTextEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    table = await mem_db_async.create_table("embed_executor", schema=Schema)
+    await table.add([{"text": "hello world"}])
+
+    captured_threads: List[str] = []
+    original = MockTextEmbeddingFunction.generate_embeddings
+
+    def record_thread(self, texts):
+        captured_threads.append(threading.current_thread().name)
+        return original(self, texts)
+
+    # Patch only around the search so we capture the query-embedding call, not
+    # the add-time source-embedding call.
+    with patch.object(MockTextEmbeddingFunction, "generate_embeddings", record_thread):
+        await (await table.search("a query string")).limit(1).to_list()
+
+    assert captured_threads, "search did not invoke the embedding function"
+    assert all(name.startswith("lancedb-embedding") for name in captured_threads), (
+        f"embedding ran off the dedicated executor: {captured_threads}"
+    )
+
+
+def test_computed_column_declare_and_refresh(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed", [{"x": 1}, {"x": 2}])
+
+    table.add_columns(computed={"doubled": "x * 2"})
+    assert table.to_arrow()["doubled"].to_pylist() == [None, None]
+
+    result = table.refresh_column("doubled")
+    assert result.rows_filled == 2
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    table.add([{"x": 5}])
+    assert table.refresh_column("doubled").rows_filled == 1
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4, 10]
+
+
+def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_mixed", [{"x": 1}])
+    with pytest.raises(ValueError):
+        table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
+
+
+def test_computed_column_blob_projection_inherits_semantics(tmp_path):
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_column_blob", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"hello"},
+            {"id": 2, "image": b""},
+            {"id": 3, "image": None},
+        ]
+    )
+
+    table.add_columns(computed={"image_copy": "image", "second_copy": "image_copy"})
+    assert table.refresh_column("image_copy").rows_filled == 2
+    assert table.refresh_column("second_copy").rows_filled == 2
+    assert table.blob_columns() == ["image", "image_copy", "second_copy"]
+
+    hits = table.search().with_row_id(True).limit(10).to_arrow()
+    rows = sorted(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    copied = table.fetch_blobs("second_copy", [row_id for _, row_id in rows])
+    assert copied.to_pylist() == [b"hello", b"", None]
+
+
+@pytest.mark.asyncio
+async def test_computed_column_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_async", [{"x": 3}])
+
+    await table.add_columns(computed={"tripled": "x * 3"})
+    await table.refresh_column("tripled")
+
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+def test_function_errors_are_remote_only(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", [{"x": 1}])
+    with pytest.raises(NotImplementedError, match="LanceDB Cloud and Enterprise"):
+        table.function_errors()
+
+
+def test_refresh_column_async_returns_job(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
+    table.add_columns(computed={"doubled": "x * 2"})
+
+    job = table.refresh_column_async("doubled")
+    assert job.id is None  # in-process jobs have no server id
+    result = job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 2
+    assert result.rows_failed == 0
+    assert result.rows_remaining == 0
+    assert result.source_version == 2
+    # The fill lands at 3; the stamp recording its inputs is published at 4.
+    assert result.published_version == 4
+    assert job.status() == "finished"
+    assert sorted(table.to_arrow()["doubled"].to_pylist()) == [2, 4]
+
+    no_op = table.refresh_column_async("doubled").wait()
+    assert no_op.rows_assigned == 0
+    assert no_op.source_version == 4
+    assert no_op.published_version is None
+
+    # Bad input raises at the call, not through the job.
+    with pytest.raises(Exception, match="not a computed column"):
+        table.refresh_column_async("x")
+
+
+@pytest.mark.asyncio
+async def test_refresh_column_async_job_async_table(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("computed_job_async", [{"x": 3}])
+    await table.add_columns(computed={"tripled": "x * 3"})
+
+    job = await table.refresh_column_async("tripled")
+    result = await job.wait()
+    assert isinstance(result, lancedb.RefreshColumnResult)
+    assert result.rows_assigned == 1
+    assert result.source_version == 2
+    assert result.published_version == 4
+    assert await job.status() == "finished"
+    assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.parametrize("interval", [None, 300])
+def test_computed_auto_refresh_options(tmp_path, interval):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("refresh_options", [{"x": 1}])
+    before = table.version
+    table.add_columns(
+        computed={"doubled": "x * 2", "tripled": "x * 3"},
+        auto_refresh_enabled=False,
+        auto_refresh_interval_seconds=interval,
+    )
+    assert table.version == before + 1
+    for column in ("doubled", "tripled"):
+        metadata = table.schema.field(column).metadata
+        assert metadata[b"computed_column.auto_refresh_enabled"] == b"false"
+        if interval is None:
+            assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+        else:
+            assert metadata[b"computed_column.auto_refresh_interval_seconds"] == b"300"
+    table.refresh_column("doubled")
+    assert table.to_arrow()["doubled"].to_pylist() == [2]
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "300", 2**64])
+def test_computed_auto_refresh_rejects_invalid_interval(tmp_path, value):
+    table = lancedb.connect(tmp_path).create_table("invalid_options", [{"x": 1}])
+    with pytest.raises(ValueError, match="auto_refresh_interval_seconds"):
+        table.add_columns(
+            computed={"doubled": "x * 2"}, auto_refresh_interval_seconds=value
+        )
+    assert table.schema.names == ["x"]
+
+
+def test_auto_refresh_options_require_computed_columns(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_kind", [{"x": 1}])
+    with pytest.raises(ValueError, match="require computed"):
+        table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("server_interval", [{"x": 1}])
+    before = await table.version()
+    await table.add_columns(computed={"doubled": "x * 2"})
+    assert await table.version() == before + 1
+    metadata = (await table.schema()).field("doubled").metadata
+    assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
+    assert b"computed_column.auto_refresh_interval_seconds" not in metadata

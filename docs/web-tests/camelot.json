@@ -1,0 +1,66 @@
+[
+  {
+    "id": 1,
+    "name": "King Arthur",
+    "role": "King of Camelot",
+    "description": "The legendary ruler of Camelot, wielder of Excalibur, and leader of the Knights of the Round Table.",
+    "vector": [0.72, -0.28, 0.60, 0.86],
+    "stats": { "strength": 2, "courage": 5, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 2,
+    "name": "Merlin",
+    "role": "Wizard and Advisor",
+    "description": "A powerful wizard and prophet who mentors Arthur and shapes the destiny of Camelot through magic and foresight.",
+    "vector": [0.05, 0.88, 0.62, 0.85],
+    "stats": { "strength": 2, "courage": 4, "magic": 5, "wisdom": 5 }
+  },
+  {
+    "id": 3,
+    "name": "Queen Guinevere",
+    "role": "Queen of Camelot",
+    "description": "Arthur's queen, admired for her grace and diplomacy, whose romances and loyalties influence Camelot's fate.",
+    "vector": [0.22, -0.22, 0.42, 0.82],
+    "stats": { "strength": 1, "courage": 3, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 4,
+    "name": "Sir Lancelot",
+    "role": "Knight of the Round Table",
+    "description": "Arthur's most skilled knight, famed for unmatched combat prowess and his tragic love for Queen Guinevere.",
+    "vector": [0.86, -0.35, 0.38, 0.55],
+    "stats": { "strength": 5, "courage": 5, "magic": 1, "wisdom": 3 }
+  },
+  {
+    "id": 5,
+    "name": "Sir Gawain",
+    "role": "Knight of the Round Table",
+    "description": "A noble and honorable knight known for his courtesy and his encounter with the Green Knight.",
+    "vector": [0.82, -0.32, 0.52, 0.60],
+    "stats": { "strength": 4, "courage": 5, "magic": 1, "wisdom": 4 }
+  },
+  {
+    "id": 6,
+    "name": "Sir Galahad",
+    "role": "Knight of the Round Table",
+    "description": "The purest and most virtuous knight, chosen to achieve the Holy Grail due to his unwavering spiritual purity.",
+    "vector": [0.80, -0.20, 0.70, 0.78],
+    "stats": { "strength": 4, "courage": 5, "magic": 2, "wisdom": 5 }
+  },
+  {
+    "id": 7,
+    "name": "Sir Percival",
+    "role": "Knight of the Round Table",
+    "description": "A loyal and innocent knight whose bravery and sincerity make him one of the key seekers of the Holy Grail.",
+    "vector": [0.78, -0.36, 0.48, 0.52],
+    "stats": { "strength": 4, "courage": 4, "magic": 1, "wisdom": 3 }
+  },
+  {
+    "id": 8,
+    "name": "Mordred",
+    "role": "Traitor Knight",
+    "description": "Arthur's treacherous son or nephew who ultimately rebels against him, leading to Camelot's downfall.",
+    "vector": [0.68, -0.30, -0.65, 0.20],
+    "stats": { "strength": 4, "courage": 2, "magic": 1, "wisdom": 2 }
+  }
+]

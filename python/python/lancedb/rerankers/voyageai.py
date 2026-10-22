@@ -21,6 +21,8 @@ class VoyageAIReranker(Reranker):
     ----------
     model_name : str, default "rerank-english-v2.0"
         The name of the cross encoder model to use. Available voyageai models are:
+        - rerank-2.5
+        - rerank-2.5-lite
         - rerank-2
         - rerank-2-lite
     column : str, default "text"
@@ -49,6 +51,9 @@ class VoyageAIReranker(Reranker):
         self.top_n = top_n
         self.api_key = api_key
         self.truncation = truncation
+
+    def __str__(self):
+        return f"VoyageAIReranker(model_name={self.model_name})"
 
     @cached_property
     def _client(self):

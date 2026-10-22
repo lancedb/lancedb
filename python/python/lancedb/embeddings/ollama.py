@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from functools import cached_property
-from typing import TYPE_CHECKING, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, List, Optional, Sequence, Union
 
 import numpy as np
 
@@ -12,6 +12,9 @@ from .registry import register
 
 if TYPE_CHECKING:
     import ollama
+
+
+DEFAULT_OLLAMA_HOST = "http://localhost:11434"
 
 
 @register("ollama")
@@ -24,10 +27,24 @@ class OllamaEmbeddings(TextEmbeddingFunction):
     """
 
     name: str = "nomic-embed-text"
-    host: str = "http://localhost:11434"
+    host: str = DEFAULT_OLLAMA_HOST
     options: Optional[dict] = None  # type = ollama.Options
     keep_alive: Optional[Union[float, str]] = None
     ollama_client_kwargs: Optional[dict] = {}
+
+    def endpoints(self) -> List[str]:
+        urls = []
+        if self.host.rstrip("/") != DEFAULT_OLLAMA_HOST:
+            urls.append(self.host)
+        # These kwargs go to the underlying httpx client, where a proxy would
+        # see every request.
+        for key in ("proxy", "proxies"):
+            proxy = (self.ollama_client_kwargs or {}).get(key)
+            if isinstance(proxy, str):
+                urls.append(proxy)
+            elif isinstance(proxy, dict):
+                urls.extend(v for v in proxy.values() if isinstance(v, str))
+        return urls
 
     def ndims(self) -> int:
         return len(self.generate_embeddings(["foo"])[0])
@@ -55,6 +72,16 @@ class OllamaEmbeddings(TextEmbeddingFunction):
         # TODO retry, rate limit, token limit
         embeddings = self._compute_embedding(texts)
         return list(embeddings)
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = super().__getstate__()
+        state["__dict__"] = {
+            k: v for k, v in state["__dict__"].items() if k != "_ollama_client"
+        }
+        return state
+
+    def __setstate__(self, state: dict[str, Any]) -> None:
+        super().__setstate__(state)
 
     @cached_property
     def _ollama_client(self) -> "ollama.Client":

@@ -51,13 +51,19 @@ addQueryVector(vector): VectorQuery
 ### analyzePlan()
 
 ```ts
-analyzePlan(): Promise<string>
+analyzePlan(distributedMetrics?): Promise<string>
 ```
 
 Executes the query and returns the physical query plan annotated with runtime metrics.
 
 This is useful for debugging and performance analysis, as it shows how the query was executed
 and includes metrics such as elapsed time, rows processed, and I/O statistics.
+
+#### Parameters
+
+* **distributedMetrics?**: [`AnalyzePlanDistributedMetrics`](../type-aliases/AnalyzePlanDistributedMetrics.md)
+    How distributed worker metrics are displayed for remote query plans.
+    Defaults to `"aggregate"`.
 
 #### Returns
 
@@ -221,7 +227,7 @@ also increase the latency of your query. The default value is 1.5*limit.
 ### execute()
 
 ```ts
-protected execute(options?): RecordBatchIterator
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
 ```
 
 Execute the query and return the results as an
@@ -232,7 +238,7 @@ Execute the query and return the results as an
 
 #### Returns
 
-[`RecordBatchIterator`](RecordBatchIterator.md)
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
 
 #### See
 
@@ -441,6 +447,8 @@ nprobes(nprobes): VectorQuery
 
 Set the number of partitions to search (probe)
 
+The number of probes must be greater than 0.
+
 This argument is only used when the vector column has an IVF PQ index.
 If there is no index then this value is ignored.
 
@@ -452,17 +460,16 @@ exhaustiely searched to find matches.  This parameter controls how many
 partitions should be searched.
 
 Increasing this value will increase the recall of your query but will
-also increase the latency of your query.  The default value is 20.  This
-default is good for many cases but the best value to use will depend on
-your data and the recall that you need to achieve.
+also increase the latency of your query. If this method is not called,
+Lance's adaptive probe defaults are used.
 
 For best results we recommend tuning this parameter with a benchmark against
 your actual data to find the smallest possible value that will still give
 you the desired recall.
 
-For more fine grained control over behavior when you have a very narrow filter
-you can use `minimumNprobes` and `maximumNprobes`.  This method sets both
-the minimum and maximum to the same value.
+The value is retained as `nprobes` through client and server request
+construction. Lance sets both probe bounds to this value. Explicit minimum
+or maximum settings can override their respective bounds.
 
 #### Parameters
 
@@ -495,6 +502,53 @@ This is useful for pagination.
 #### Inherited from
 
 `StandardQueryBase.offset`
+
+***
+
+### orderBy()
+
+```ts
+orderBy(ordering): this
+```
+
+Sort the results by the specified column(s).
+
+#### Parameters
+
+* **ordering**: [`ColumnOrdering`](../interfaces/ColumnOrdering.md) \| [`ColumnOrdering`](../interfaces/ColumnOrdering.md)[]
+
+#### Returns
+
+`this`
+
+This query builder.
+
+#### Inherited from
+
+`StandardQueryBase.orderBy`
+
+***
+
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+`StandardQueryBase.outputSchema`
 
 ***
 
@@ -592,6 +646,38 @@ rerank(reranker): VectorQuery
 
 ***
 
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The RTE LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
+
+***
+
 ### select()
 
 ```ts
@@ -620,7 +706,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -687,9 +773,47 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 `StandardQueryBase.toArrow`
+
+***
+
+### useRTE()
+
+```ts
+useRTE(enable): this
+```
+
+Control RTE read routing for this query.
+
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
+they also return data written via the `mergeInsert` LSM path that has not yet
+been compacted into the base table (the active/frozen in-memory memtables and
+the SSTables), deduplicated by primary key; a table without a spec
+reads the base table.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `true` forces the LSM scanner and errors if the table has no
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
+    even when a spec is present.
+    Note: the LSM scanner does not support every query shape (e.g. reranking,
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.useRTE`
 
 ***
 
@@ -720,6 +844,9 @@ x > 5 OR y = 'test'
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
+
+Calling this multiple times combines the filters with a logical AND rather
+than replacing the previous filter.
 ```
 
 #### Inherited from

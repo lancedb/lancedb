@@ -10,36 +10,327 @@ through a namespace abstraction.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional, Union
-import os
+import sys
+from typing import Any, Dict, Iterable, List, Optional, Union
+from uuid import UUID
 
-from lancedb.db import DBConnection
-from lancedb.table import LanceTable, Table
-from lancedb.util import validate_table_name
-from lancedb.common import validate_schema
-from lancedb.table import sanitize_create_table
-from overrides import override
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from overrides import override
 
-from lance_namespace import LanceNamespace, connect as namespace_connect
-from lance_namespace_urllib3_client.models import (
-    ListTablesRequest,
-    DescribeTableRequest,
-    CreateTableRequest,
-    DropTableRequest,
-    ListNamespacesRequest,
-    CreateNamespaceRequest,
-    DropNamespaceRequest,
-    JsonArrowSchema,
-    JsonArrowField,
-    JsonArrowDataType,
-)
+from lancedb.query import Query
 
-import pyarrow as pa
 from datetime import timedelta
-from lancedb.pydantic import LanceModel
+import pyarrow as pa
+
+from lance_namespace_urllib3_client.models.json_arrow_data_type import JsonArrowDataType
+from lance_namespace_urllib3_client.models.json_arrow_field import JsonArrowField
+from lance_namespace_urllib3_client.models.json_arrow_schema import JsonArrowSchema
+from lance_namespace_urllib3_client.models.query_table_request import QueryTableRequest
+from lance_namespace_urllib3_client.models.query_table_request_columns import (
+    QueryTableRequestColumns,
+)
+from lance_namespace_urllib3_client.models.query_table_request_full_text_query import (
+    QueryTableRequestFullTextQuery,
+)
+from lance_namespace_urllib3_client.models.query_table_request_vector import (
+    QueryTableRequestVector,
+)
+from lance_namespace_urllib3_client.models.string_fts_query import StringFtsQuery
+from lance_namespace.errors import (
+    NamespaceNotEmptyError,
+    NamespaceNotFoundError,
+    TableNotFoundError,
+)
+from lancedb._lancedb import (
+    connect_namespace as _connect_namespace,
+    connect_namespace_client as _connect_namespace_client,
+)
+from lancedb.background_loop import LOOP
+from lancedb.arrow import AsyncRecordBatchReader
+from lancedb.db import AsyncConnection, DBConnection
+from lancedb.job import AsyncJob, Job
+from lancedb.listing import AsyncListing, Listing
+from lancedb.sql import AsyncQuery as AsyncSqlQuery
+from lancedb.sql import QueryDescription, QueryParameters
+from lance_namespace import (
+    LanceNamespace,
+    connect as namespace_connect,
+    CreateNamespaceResponse,
+    DescribeNamespaceResponse,
+    DropNamespaceResponse,
+    ListNamespacesResponse,
+    ListTablesResponse,
+    NamespaceExistsRequest,
+    TableExistsRequest,
+)
+from lancedb.materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewSource,
+    SelectArg,
+)
+from lancedb.table import AsyncTable, LanceTable, Table
+from lancedb.util import validate_table_name
 from lancedb.common import DATA
+from lancedb.pydantic import LanceModel
 from lancedb.embeddings import EmbeddingFunctionConfig
 from ._lancedb import Session
+
+
+_MAX_QUERY_K = 2**31 - 1
+
+
+def _query_to_namespace_request(
+    table_id: List[str],
+    query: "Query",
+) -> QueryTableRequest:
+    """
+    Convert a LanceDB Query object to a QueryTableRequest for server-side query.
+
+    Parameters
+    ----------
+    table_id : List[str]
+        The table identifier (namespace path + table name)
+    query : Query
+        The LanceDB Query object to convert
+
+    Returns
+    -------
+    QueryTableRequest
+        The namespace QueryTableRequest
+    """
+    from lancedb.query import Query
+
+    if not isinstance(query, Query):
+        raise TypeError(f"Expected Query, got {type(query)}")
+    if query.search_effort is not None:
+        raise ValueError(
+            "namespace QueryTable does not support search_effort; "
+            "execute the query locally"
+        )
+
+    vector_request = None
+    if query.vector is not None:
+        if isinstance(query.vector, pa.Array):
+            vector_list = query.vector.to_pylist()
+        elif (
+            isinstance(query.vector, list)
+            and query.vector
+            and isinstance(query.vector[0], pa.Array)
+        ):
+            vector_list = [v.to_pylist() for v in query.vector]
+        else:
+            vector_list = query.vector
+
+        if (
+            isinstance(vector_list, list)
+            and vector_list
+            and isinstance(vector_list[0], list)
+        ):
+            vector_request = QueryTableRequestVector(multi_vector=vector_list)
+        else:
+            vector_request = QueryTableRequestVector(single_vector=vector_list)
+
+    columns_request = None
+    if query.columns is not None:
+        if isinstance(query.columns, dict):
+            columns_request = QueryTableRequestColumns(column_aliases=query.columns)
+        else:
+            columns_request = QueryTableRequestColumns(column_names=query.columns)
+
+    full_text_query_request = None
+    if query.full_text_query is not None:
+        fts_query = query.full_text_query
+        if isinstance(fts_query, str):
+            full_text_query_request = QueryTableRequestFullTextQuery(
+                string_query=StringFtsQuery(query=fts_query)
+            )
+        elif hasattr(fts_query, "query"):
+            full_text_query_request = QueryTableRequestFullTextQuery(
+                string_query=StringFtsQuery(
+                    query=fts_query.query,
+                    columns=fts_query.columns
+                    if hasattr(fts_query, "columns")
+                    else None,
+                )
+            )
+
+    prefilter = None
+    if query.postfilter is not None:
+        prefilter = not query.postfilter
+
+    if query.limit is not None:
+        k = query.limit
+    elif query.vector is None and query.full_text_query is None:
+        # limit k to max i32 value to avoid client overflows
+        k = _MAX_QUERY_K
+    else:
+        k = 10
+
+    # Build request kwargs, only including non-None values for optional fields
+    # that Pydantic doesn't accept as None
+    kwargs: dict = {
+        "id": table_id,
+        "k": k,
+        # vector is required in the model but can be empty for non-vector queries
+        "vector": vector_request
+        if vector_request is not None
+        else QueryTableRequestVector(),
+    }
+    if query.vector_column is not None:
+        kwargs["vector_column"] = query.vector_column
+    if query.filter is not None:
+        kwargs["filter"] = query.filter
+    if prefilter is not None:
+        kwargs["prefilter"] = prefilter
+    if full_text_query_request is not None:
+        kwargs["full_text_query"] = full_text_query_request
+    if columns_request is not None:
+        kwargs["columns"] = columns_request
+    if query.offset is not None:
+        kwargs["offset"] = query.offset
+    if query.with_row_id is not None:
+        kwargs["with_row_id"] = query.with_row_id
+    if query.ef is not None:
+        kwargs["ef"] = query.ef
+    if query.nprobes is not None:
+        kwargs["nprobes"] = query.nprobes
+    if query.minimum_nprobes is not None:
+        kwargs["minimum_nprobes"] = query.minimum_nprobes
+    if query.maximum_nprobes is not None:
+        kwargs["maximum_nprobes"] = query.maximum_nprobes
+    if query.refine_factor is not None:
+        kwargs["refine_factor"] = query.refine_factor
+    if query.lower_bound is not None:
+        kwargs["lower_bound"] = query.lower_bound
+    if query.upper_bound is not None:
+        kwargs["upper_bound"] = query.upper_bound
+    if query.bypass_vector_index is not None:
+        kwargs["bypass_vector_index"] = query.bypass_vector_index
+    if query.fast_search is not None:
+        kwargs["fast_search"] = query.fast_search
+    if query.distance_type is not None:
+        kwargs["distance_type"] = query.distance_type
+
+    if kwargs.get("maximum_nprobes") == 0:
+        # The generated 0.13 model rejects LanceDB's unbounded sentinel;
+        # model_copy preserves direct wire pass-through to the Lance receiver.
+        maximum_nprobes = kwargs.pop("maximum_nprobes")
+        return QueryTableRequest(**kwargs).model_copy(
+            update={"maximum_nprobes": maximum_nprobes}
+        )
+    return QueryTableRequest(**kwargs)
+
+
+def _execute_server_side_query(
+    namespace_client: LanceNamespace,
+    table_id: List[str],
+    query: "Query",
+) -> pa.RecordBatchReader:
+    """
+    Execute a query on the namespace server and return results as RecordBatchReader.
+
+    Parameters
+    ----------
+    namespace_client : LanceNamespace
+        The namespace client to use
+    table_id : List[str]
+        The table identifier (namespace path + table name)
+    query : Query
+        The LanceDB Query object
+
+    Returns
+    -------
+    pa.RecordBatchReader
+        The query results as a RecordBatchReader
+    """
+    request = _query_to_namespace_request(table_id, query)
+    ipc_bytes = namespace_client.query_table(request)
+    return _arrow_ipc_to_record_batch_reader(ipc_bytes)
+
+
+def _data_to_arrow_ipc(
+    data: Optional["DATA"],
+    schema: Optional[Union[pa.Schema, LanceModel]],
+    embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+    on_bad_vectors: str = "error",
+    fill_value: float = 0.0,
+) -> bytes:
+    """
+    Convert data to Arrow IPC format (file format) for server-side create_table.
+
+    If data is None but schema is provided, creates an empty IPC stream with
+    just the schema in the header (zero batches). This is used to create
+    empty tables with just a schema.
+
+    Returns the serialized Arrow IPC bytes.
+    """
+    from lancedb.embeddings import EmbeddingFunctionRegistry
+    from lancedb.table import _sanitize_data
+
+    if isinstance(schema, type) and issubclass(schema, LanceModel):
+        schema = schema.to_arrow_schema()
+
+    # Get embedding metadata (same pattern as db.py create_table)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    if embedding_functions:
+        metadata = registry.get_table_metadata(embedding_functions)
+    elif schema is not None:
+        metadata = schema.metadata
+    else:
+        metadata = None
+
+    # Handle schema-only table creation (no data)
+    if data is None:
+        if schema is None:
+            raise ValueError(
+                "Either data or schema is required for server-side create_table"
+            )
+        # Create empty IPC stream with just the schema in the header
+        if metadata:
+            schema = schema.with_metadata(metadata)
+        sink = pa.BufferOutputStream()
+        with pa.ipc.new_stream(sink, schema) as writer:
+            pass  # No batches to write, just schema in header
+        return sink.getvalue().to_pybytes()
+
+    reader = _sanitize_data(
+        data,
+        target_schema=schema,
+        metadata=metadata,
+        on_bad_vectors=on_bad_vectors,
+        fill_value=fill_value,
+    )
+
+    sink = pa.BufferOutputStream()
+    with pa.ipc.new_stream(sink, reader.schema) as writer:
+        for batch in reader:
+            writer.write_batch(batch)
+
+    return sink.getvalue().to_pybytes()
+
+
+def _arrow_ipc_to_record_batch_reader(ipc_bytes: bytes) -> pa.RecordBatchReader:
+    """
+    Convert Arrow IPC bytes to a RecordBatchReader.
+    """
+    buf = pa.py_buffer(ipc_bytes)
+    reader = pa.ipc.open_file(buf)
+    batches = [reader.get_batch(i) for i in range(reader.num_record_batches)]
+    return pa.RecordBatchReader.from_batches(reader.schema, batches)
+
+
+def _normalize_create_table_mode(mode: str) -> str:
+    """Normalize create table mode string for namespace API."""
+    mode_lower = mode.lower()
+    if mode_lower == "create":
+        return "Create"
+    elif mode_lower == "overwrite":
+        return "Overwrite"
+    else:
+        raise ValueError(f"Invalid mode: {mode}. Must be 'create' or 'overwrite'")
 
 
 def _convert_pyarrow_type_to_json(arrow_type: pa.DataType) -> JsonArrowDataType:
@@ -96,7 +387,31 @@ def _convert_pyarrow_schema_to_json(schema: pa.Schema) -> JsonArrowSchema:
         )
         fields.append(json_field)
 
-    return JsonArrowSchema(fields=fields, metadata=schema.metadata)
+    # decode binary metadata to strings for JSON
+    meta = None
+    if schema.metadata:
+        meta = {
+            k.decode("utf-8"): v.decode("utf-8") for k, v in schema.metadata.items()
+        }
+
+    return JsonArrowSchema(fields=fields, metadata=meta)
+
+
+def _builds_namespace_natively(
+    namespace_client_impl: Optional[str],
+    namespace_client_properties: Optional[Dict[str, str]],
+) -> bool:
+    """Whether ``connect_namespace_client`` builds the namespace client natively
+    in Rust (installing the read-freshness context provider) rather than wrapping
+    the pre-built Python client.
+
+    Must mirror Rust ``build_namespace_natively`` in ``python/src/connection.rs``.
+    """
+    return namespace_client_impl == "rest" and bool(namespace_client_properties)
+
+
+def _supports_native_namespace(namespace_client_impl: str) -> bool:
+    return namespace_client_impl in {"dir", "rest"}
 
 
 class LanceNamespaceDBConnection(DBConnection):
@@ -109,19 +424,23 @@ class LanceNamespaceDBConnection(DBConnection):
 
     def __init__(
         self,
-        namespace: LanceNamespace,
+        namespace_client: Optional[LanceNamespace] = None,
         *,
         read_consistency_interval: Optional[timedelta] = None,
         storage_options: Optional[Dict[str, str]] = None,
         session: Optional[Session] = None,
+        namespace_client_pushdown_operations: Optional[List[str]] = None,
+        namespace_client_impl: Optional[str] = None,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
+        _inner: Optional[AsyncConnection] = None,
     ):
         """
         Initialize a namespace-based LanceDB connection.
 
         Parameters
         ----------
-        namespace : LanceNamespace
-            The namespace instance to use for table management
+        namespace_client : LanceNamespace
+            The namespace client to use for table management
         read_consistency_interval : Optional[timedelta]
             The interval at which to check for updates to the table from other
             processes. If None, then consistency is not checked.
@@ -129,22 +448,122 @@ class LanceNamespaceDBConnection(DBConnection):
             Additional options for the storage backend
         session : Optional[Session]
             A session to use for this connection
+        namespace_client_pushdown_operations : Optional[List[str]]
+            List of namespace operations to push down to the namespace server.
+            Supported values:
+
+            - "QueryTable": Execute queries on the namespace server via
+              namespace.query_table() instead of locally.
+            - "CreateTable": Execute table creation on the namespace server via
+              namespace.create_table() instead of using declare_table + local write.
+
+            Default is None (no pushdown, all operations run locally).
+        namespace_client_impl : Optional[str]
+            The namespace implementation name used to create this connection.
+            Stored for serialization purposes.
+        namespace_client_properties : Optional[Dict[str, str]]
+            The namespace properties used to create this connection.
+            Stored for serialization purposes.
         """
-        self._ns = namespace
+        self._namespace_client = namespace_client
         self.read_consistency_interval = read_consistency_interval
         self.storage_options = storage_options or {}
         self.session = session
+        self._namespace_client_pushdown_operations = set(
+            namespace_client_pushdown_operations or []
+        )
+        self._namespace_client_impl = namespace_client_impl
+        self._namespace_client_properties = namespace_client_properties
+        # When the namespace connection or client is built natively in Rust, the
+        # underlying Rust table performs QueryTable pushdown through the
+        # read-freshness context provider, which the pure-Python ``query_table``
+        # path bypasses.
+        self._route_pushdown_to_rust = _inner is not None or _builds_namespace_natively(
+            namespace_client_impl, namespace_client_properties
+        )
+        if _inner is not None:
+            self._inner = _inner
+        else:
+            if namespace_client is None:
+                raise ValueError("namespace_client is required without a native _inner")
+            self._inner = AsyncConnection(
+                _connect_namespace_client(
+                    namespace_client,
+                    read_consistency_interval=(
+                        read_consistency_interval.total_seconds()
+                        if read_consistency_interval is not None
+                        else None
+                    ),
+                    storage_options=self.storage_options or None,
+                    session=session,
+                    namespace_client_pushdown_operations=(
+                        list(self._namespace_client_pushdown_operations)
+                    ),
+                    namespace_client_impl=namespace_client_impl,
+                    namespace_client_properties=namespace_client_properties,
+                )
+            )
+        self._uri = self._inner.uri
+
+    @override
+    def is_open(self) -> bool:
+        return self._inner.is_open()
+
+    @override
+    def close(self) -> None:
+        self._inner.close()
+
+    @override
+    def serialize(self) -> str:
+        import json
+
+        return json.dumps(
+            {
+                "connection_type": "namespace",
+                "namespace_client_impl": self._namespace_client_impl,
+                "namespace_client_properties": self._namespace_client_properties,
+                "namespace_client_pushdown_operations": sorted(
+                    self._namespace_client_pushdown_operations
+                ),
+                "storage_options": self.storage_options or None,
+                "read_consistency_interval_seconds": (
+                    self.read_consistency_interval.total_seconds()
+                    if self.read_consistency_interval
+                    else None
+                ),
+            }
+        )
 
     @override
     def table_names(
         self,
-        namespace: List[str] = [],
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
+        *,
+        namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
-        request = ListTablesRequest(id=namespace, page_token=page_token, limit=limit)
-        response = self._ns.list_tables(request)
-        return response.tables if response.tables else []
+        """
+        List table names in the database.
+
+        If limit is None, return all table names; zero returns an empty list.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
+        """
+        import warnings
+
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if namespace_path is None:
+            namespace_path = []
+        return LOOP.run(
+            self._inner.table_names(
+                namespace_path=namespace_path, start_after=page_token, limit=limit
+            )
+        )
 
     @override
     def create_table(
@@ -158,56 +577,39 @@ class LanceNamespaceDBConnection(DBConnection):
         fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         data_storage_version: Optional[str] = None,
         enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
+        if namespace_path is None:
+            namespace_path = []
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
-
-        # TODO: support passing data
-        if data is not None:
-            raise ValueError(
-                "create_table currently only supports creating empty tables (data=None)"
+        async_table = LOOP.run(
+            self._inner.create_table(
+                name,
+                data,
+                schema=schema,
+                mode=mode,
+                exist_ok=exist_ok,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
+                embedding_functions=embedding_functions,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
             )
-
-        # Prepare schema
-        metadata = None
-        if embedding_functions is not None:
-            from lancedb.embeddings.registry import EmbeddingFunctionRegistry
-
-            registry = EmbeddingFunctionRegistry.get_instance()
-            metadata = registry.get_table_metadata(embedding_functions)
-
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
         )
-        validate_schema(schema)
 
-        # Convert PyArrow schema to JsonArrowSchema
-        json_schema = _convert_pyarrow_schema_to_json(schema)
-
-        # Create table request with namespace
-        table_id = (namespace or []) + [name]
-        request = CreateTableRequest(id=table_id, var_schema=json_schema)
-
-        # Create empty Arrow IPC stream bytes
-        import pyarrow.ipc as ipc
-        import io
-
-        empty_table = pa.Table.from_arrays(
-            [pa.array([], type=field.type) for field in schema], schema=schema
-        )
-        buffer = io.BytesIO()
-        with ipc.new_stream(buffer, schema) as writer:
-            writer.write_table(empty_table)
-        request_data = buffer.getvalue()
-
-        self._ns.create_table(request, request_data)
-        return self.open_table(
-            name, namespace=namespace, storage_options=storage_options
+        return LanceTable(
+            self,
+            name,
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+            _async=async_table,
         )
 
     @override
@@ -215,44 +617,195 @@ class LanceNamespaceDBConnection(DBConnection):
         self,
         name: str,
         *,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
     ) -> Table:
-        table_id = (namespace or []) + [name]
-        request = DescribeTableRequest(id=table_id)
-        response = self._ns.describe_table(request)
+        if namespace_path is None:
+            namespace_path = []
+        try:
+            async_table = LOOP.run(
+                self._inner.open_table(
+                    name,
+                    namespace_path=namespace_path,
+                    storage_options=storage_options,
+                    index_cache_size=index_cache_size,
+                )
+            )
+        except (RuntimeError, ValueError) as e:
+            if "Table not found" in str(e) or "was not found" in str(e):
+                table_id = namespace_path + [name]
+                raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
+            raise
 
-        merged_storage_options = dict()
-        if storage_options:
-            merged_storage_options.update(storage_options)
-        if response.storage_options:
-            merged_storage_options.update(response.storage_options)
+        tbl = LanceTable(
+            self,
+            name,
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+            _async=async_table,
+        )
+        if branch is not None:
+            tbl = tbl.branches.checkout(branch, version)
+        elif version is not None:
+            tbl.checkout(version)
+        return tbl
 
-        return self._lance_table_from_uri(
-            response.location,
-            storage_options=merged_storage_options,
-            index_cache_size=index_cache_size,
+    @override
+    def create_materialized_view(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> "MaterializedView":
+        """Define a materialized view over a table in the root namespace.
+        See
+        [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
+        """
+        return MaterializedView(
+            self.open_table(
+                LOOP.run(
+                    self._inner.create_materialized_view(
+                        name,
+                        source,
+                        select=select,
+                        where=where,
+                        limit=limit,
+                        with_no_data=with_no_data,
+                        auto_refresh_enabled=auto_refresh_enabled,
+                        auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+                    )
+                ).name
+            )
         )
 
     @override
-    def drop_table(self, name: str, namespace: Optional[List[str]] = None):
-        # Use namespace drop_table directly
-        table_id = (namespace or []) + [name]
-        request = DropTableRequest(id=table_id)
-        self._ns.drop_table(request)
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._inner.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
+        return Job(job)
+
+    @override
+    def open_materialized_view(self, name: str) -> "MaterializedView":
+        """Open the materialized view named ``name``."""
+        view = MaterializedView(self.open_table(name))
+        view.definition
+        return view
+
+    @override
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(
+            self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(
+                self._inner.drop_materialized_view_async(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._inner.drop_table(name, namespace_path=namespace_path))
+
+    @override
+    def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        job = LOOP.run(
+            self._inner.drop_table_async(name, namespace_path=namespace_path)
+        )
+        return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
 
     @override
     def rename_table(
         self,
         cur_name: str,
         new_name: str,
-        cur_namespace: Optional[List[str]] = None,
-        new_namespace: Optional[List[str]] = None,
+        cur_namespace_path: Optional[List[str]] = None,
+        new_namespace_path: Optional[List[str]] = None,
     ):
-        raise NotImplementedError(
-            "rename_table is not supported for namespace connections"
-        )
+        if cur_namespace_path is None:
+            cur_namespace_path = []
+        if new_namespace_path is None:
+            new_namespace_path = []
+        try:
+            LOOP.run(
+                self._inner.rename_table(
+                    cur_name,
+                    new_name,
+                    cur_namespace_path=cur_namespace_path,
+                    new_namespace_path=new_namespace_path,
+                )
+            )
+        except RuntimeError as e:
+            if "rename_table not implemented" in str(e):
+                raise NotImplementedError("rename_table not implemented") from e
+            raise
 
     @override
     def drop_database(self):
@@ -261,120 +814,891 @@ class LanceNamespaceDBConnection(DBConnection):
         )
 
     @override
-    def drop_all_tables(self, namespace: Optional[List[str]] = None):
-        for table_name in self.table_names(namespace=namespace):
-            self.drop_table(table_name, namespace=namespace)
+    def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(self._inner.drop_all_tables(namespace_path=namespace_path))
 
     @override
     def list_namespaces(
         self,
-        namespace: List[str] = [],
+        namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
-        limit: int = 10,
-    ) -> Iterable[str]:
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
         """
         List child namespaces under the given namespace.
 
         Parameters
         ----------
-        namespace : Optional[List[str]]
-            The parent namespace to list children from.
+        namespace_path : Optional[List[str]]
+            The parent namespace path to list children from.
             If None, lists root-level namespaces.
         page_token : Optional[str]
-            Pagination token for listing results.
-        limit : int
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
             Maximum number of namespaces to return.
 
         Returns
         -------
-        Iterable[str]
-            Names of child namespaces.
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
         """
-        request = ListNamespacesRequest(
-            id=namespace, page_token=page_token, limit=limit
+        if namespace_path is None:
+            namespace_path = []
+        return LOOP.run(
+            self._inner.list_namespaces(
+                namespace_path=namespace_path, page_token=page_token, limit=limit
+            )
         )
-        response = self._ns.list_namespaces(request)
-        return response.namespaces if response.namespaces else []
 
     @override
-    def create_namespace(self, namespace: List[str]) -> None:
+    def create_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
         """
         Create a new namespace.
 
         Parameters
         ----------
-        namespace : List[str]
+        namespace_path : List[str]
             The namespace path to create.
+        mode : str, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists). Case insensitive.
+        properties : Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
         """
-        request = CreateNamespaceRequest(id=namespace)
-        self._ns.create_namespace(request)
+        return LOOP.run(
+            self._inner.create_namespace(
+                namespace_path=namespace_path,
+                mode=mode,
+                properties=properties,
+            )
+        )
 
     @override
-    def drop_namespace(self, namespace: List[str]) -> None:
+    def drop_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse:
         """
         Drop a namespace.
 
         Parameters
         ----------
-        namespace : List[str]
+        namespace_path : List[str]
             The namespace path to drop.
+        mode : str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior : str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
         """
-        request = DropNamespaceRequest(id=namespace)
-        self._ns.drop_namespace(request)
+        try:
+            return LOOP.run(
+                self._inner.drop_namespace(
+                    namespace_path=namespace_path,
+                    mode=mode,
+                    behavior=behavior,
+                )
+            )
+        except RuntimeError as e:
+            if "Namespace not empty" in str(e):
+                raise NamespaceNotEmptyError(str(e)) from e
+            raise
+
+    @override
+    def describe_namespace(
+        self, namespace_path: List[str]
+    ) -> DescribeNamespaceResponse:
+        """
+        Describe a namespace.
+
+        Parameters
+        ----------
+        namespace_path : List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        return LOOP.run(self._inner.describe_namespace(namespace_path))
+
+    @override
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """
+        Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id : List[str]
+            The namespace identifier to check.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
+        """
+        request = NamespaceExistsRequest(id=namespace_id)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
+
+    @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        """
+        Check if a table exists.
+
+        Parameters
+        ----------
+        table_id : List[str]
+            The table identifier to check (full path including namespace
+            segments and table name).
+
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
+        """
+        request = TableExistsRequest(id=table_id)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
+
+    @override
+    def list_tables(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """
+        List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace_path : List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token : str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return LOOP.run(
+            self._inner.list_tables(
+                namespace_path=namespace_path, page_token=page_token, limit=limit
+            )
+        )
 
     def _lance_table_from_uri(
         self,
+        name: str,
         table_uri: str,
         *,
+        namespace_path: Optional[List[str]] = None,
         storage_options: Optional[Dict[str, str]] = None,
         index_cache_size: Optional[int] = None,
+        namespace_client: Optional[Any] = None,
+        managed_versioning: Optional[bool] = None,
     ) -> LanceTable:
-        # Extract the base path and table name from the URI
-        if table_uri.endswith(".lance"):
-            base_path = os.path.dirname(table_uri)
-            table_name = os.path.basename(table_uri)[:-6]  # Remove .lance
+        # Open a table directly from the namespace-resolved physical location.
+        #
+        # Open the table through the Rust namespace-backed connection.  The Rust
+        # layer keeps the logical namespace path and namespace client intact.
+        if namespace_path is None:
+            namespace_path = []
+
+        async_table = LOOP.run(
+            self._inner.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+                location=None,
+                namespace_client=namespace_client,
+                managed_versioning=managed_versioning,
+            )
+        )
+
+        return LanceTable(
+            self,
+            name,
+            namespace_path=namespace_path,
+            location=table_uri,
+            namespace_client=namespace_client,
+            managed_versioning=managed_versioning,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+            _async=async_table,
+        )
+
+    @override
+    def namespace_client(self) -> LanceNamespace:
+        """Get the namespace client for this connection.
+
+        For namespace connections, this returns the backing namespace client
+        that was provided during construction.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        if self._namespace_client is None:
+            if (
+                self._namespace_client_impl is None
+                or self._namespace_client_properties is None
+            ):
+                raise ValueError(
+                    "Cannot construct a Python namespace client without "
+                    "namespace implementation properties"
+                )
+            self._namespace_client = namespace_connect(
+                self._namespace_client_impl, self._namespace_client_properties
+            )
+        return self._namespace_client
+
+
+class AsyncLanceNamespaceDBConnection:
+    """
+    An async LanceDB connection that uses a namespace for table management.
+
+    This connection delegates table URI resolution to a lance_namespace instance,
+    while providing async methods for all operations.
+    """
+
+    def __init__(
+        self,
+        namespace_client: Optional[LanceNamespace] = None,
+        *,
+        read_consistency_interval: Optional[timedelta] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        session: Optional[Session] = None,
+        namespace_client_pushdown_operations: Optional[List[str]] = None,
+        namespace_client_impl: Optional[str] = None,
+        namespace_client_properties: Optional[Dict[str, str]] = None,
+        _inner: Optional[AsyncConnection] = None,
+    ):
+        """
+        Initialize an async namespace-based LanceDB connection.
+
+        Parameters
+        ----------
+        namespace_client : LanceNamespace
+            The namespace client to use for table management
+        read_consistency_interval : Optional[timedelta]
+            The interval at which to check for updates to the table from other
+            processes. If None, then consistency is not checked.
+        storage_options : Optional[Dict[str, str]]
+            Additional options for the storage backend
+        session : Optional[Session]
+            A session to use for this connection
+        namespace_client_pushdown_operations : Optional[List[str]]
+            List of namespace operations to push down to the namespace server.
+            Supported values:
+
+            - "QueryTable": Execute queries on the namespace server via
+              namespace.query_table() instead of locally.
+            - "CreateTable": Execute table creation on the namespace server via
+              namespace.create_table() instead of using declare_table + local write.
+
+            Default is None (no pushdown, all operations run locally).
+        namespace_client_impl : Optional[str]
+            The namespace implementation name used to create this connection.
+            Required (with ``namespace_client_properties``) for the Rust client to
+            be built natively and install the read-freshness provider.
+        namespace_client_properties : Optional[Dict[str, str]]
+            The namespace properties used to create this connection.
+        """
+        self._namespace_client = namespace_client
+        self.read_consistency_interval = read_consistency_interval
+        self.storage_options = storage_options or {}
+        self.session = session
+        self._namespace_client_pushdown_operations = set(
+            namespace_client_pushdown_operations or []
+        )
+        self._namespace_client_impl = namespace_client_impl
+        self._namespace_client_properties = namespace_client_properties
+        # See LanceNamespaceDBConnection: when Rust owns the namespace
+        # connection/client, its table performs QueryTable pushdown through the
+        # read-freshness provider, so defer to it rather than the urllib3 client
+        # path (which omits x-lancedb-min-timestamp).
+        self._route_pushdown_to_rust = _inner is not None or _builds_namespace_natively(
+            namespace_client_impl, namespace_client_properties
+        )
+        if _inner is not None:
+            self._inner = _inner
         else:
-            raise ValueError(f"Invalid table URI: {table_uri}")
+            if namespace_client is None:
+                raise ValueError("namespace_client is required without a native _inner")
+            self._inner = AsyncConnection(
+                _connect_namespace_client(
+                    namespace_client,
+                    read_consistency_interval=(
+                        read_consistency_interval.total_seconds()
+                        if read_consistency_interval is not None
+                        else None
+                    ),
+                    storage_options=self.storage_options or None,
+                    session=session,
+                    namespace_client_pushdown_operations=(
+                        list(self._namespace_client_pushdown_operations)
+                    ),
+                    namespace_client_impl=namespace_client_impl,
+                    namespace_client_properties=namespace_client_properties,
+                )
+            )
 
-        from lancedb.db import LanceDBConnection
+    async def table_names(
+        self,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> Iterable[str]:
+        """
+        List table names in the namespace.
 
-        temp_conn = LanceDBConnection(
-            base_path,
-            read_consistency_interval=self.read_consistency_interval,
-            storage_options={**self.storage_options, **(storage_options or {})},
-            session=self.session,
+        If limit is None, return all table names; zero returns an empty list.
+
+        .. deprecated::
+            Use :meth:`list_tables` instead, which provides proper pagination support.
+        """
+        import warnings
+
+        warnings.warn(
+            "table_names() is deprecated, use list_tables() instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.table_names(
+            namespace_path=namespace_path, start_after=page_token, limit=limit
         )
 
-        # Open the table using the temporary connection
-        return LanceTable.open(
-            temp_conn,
-            table_name,
+    async def create_table(
+        self,
+        name: str,
+        data: Optional[DATA] = None,
+        schema: Optional[Union[pa.Schema, LanceModel]] = None,
+        mode: str = "create",
+        exist_ok: bool = False,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
+        embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
+    ) -> AsyncTable:
+        """Create a new table in the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        if mode.lower() not in ["create", "overwrite"]:
+            raise ValueError("mode must be either 'create' or 'overwrite'")
+        validate_table_name(name)
+        table = await self._inner.create_table(
+            name,
+            data,
+            schema=schema,
+            mode=mode,
+            exist_ok=exist_ok,
+            on_bad_vectors=on_bad_vectors,
+            fill_value=fill_value,
+            namespace_path=namespace_path,
+            embedding_functions=embedding_functions,
             storage_options=storage_options,
-            index_cache_size=index_cache_size,
         )
+        return table._set_namespace_context(
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+        )
+
+    async def open_table(
+        self,
+        name: str,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        index_cache_size: Optional[int] = None,
+        branch: Optional[str] = None,
+        version: Optional[int] = None,
+    ) -> AsyncTable:
+        """Open an existing table from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        try:
+            table = await self._inner.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
+            )
+        except (RuntimeError, ValueError) as e:
+            if "Table not found" in str(e) or "was not found" in str(e):
+                table_id = namespace_path + [name]
+                raise TableNotFoundError(f"Table not found: {'$'.join(table_id)}")
+            raise
+        # "main" is the default branch, so treat it as no branch (mirrors the
+        # sync remote path); the version still applies.
+        if branch is not None and branch != "main":
+            table = await table.branches.checkout(branch, version)
+        elif version is not None:
+            await table.checkout(version)
+        return table._set_namespace_context(
+            namespace_path=namespace_path,
+            namespace_client=self._namespace_client,
+            pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
+        )
+
+    async def create_materialized_view(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> "AsyncMaterializedView":
+        """Define a materialized view over a table in the root namespace."""
+        view = await self._inner.create_materialized_view(
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+        )
+        # Reopen through the namespace so the view's table carries the
+        # namespace client and pushdown configuration a bare inner table lacks.
+        return AsyncMaterializedView(await self.open_table(view.name))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job."""
+        return await self._inner.create_materialized_view_async(
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+        )
+
+    async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
+        """Open the materialized view named ``name``."""
+        view = AsyncMaterializedView(await self.open_table(name))
+        await view.definition()
+        return view
+
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
+
+    async def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_materialized_view_async(
+            name, namespace_path=namespace_path
+        )
+
+    async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
+        """Drop a table from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_table(name, namespace_path=namespace_path)
+
+    async def drop_table_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob:
+        """Start dropping a table and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_table_async(name, namespace_path=namespace_path)
+
+    async def rename_table(
+        self,
+        cur_name: str,
+        new_name: str,
+        cur_namespace_path: Optional[List[str]] = None,
+        new_namespace_path: Optional[List[str]] = None,
+    ):
+        """Rename a table in the namespace."""
+        if cur_namespace_path is None:
+            cur_namespace_path = []
+        if new_namespace_path is None:
+            new_namespace_path = []
+        try:
+            await self._inner.rename_table(
+                cur_name,
+                new_name,
+                cur_namespace_path=cur_namespace_path,
+                new_namespace_path=new_namespace_path,
+            )
+        except RuntimeError as e:
+            if "rename_table not implemented" in str(e):
+                raise NotImplementedError("rename_table not implemented") from e
+            raise
+
+    async def drop_database(self):
+        """Deprecated method."""
+        raise NotImplementedError(
+            "drop_database is deprecated, use drop_all_tables instead"
+        )
+
+    async def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
+        """Drop all tables in the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_all_tables(namespace_path=namespace_path)
+
+    async def list_namespaces(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListNamespacesResponse:
+        """
+        List child namespaces under the given namespace.
+
+        Parameters
+        ----------
+        namespace_path : Optional[List[str]]
+            The parent namespace path to list children from.
+            If None, lists root-level namespaces.
+        page_token : Optional[str]
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
+            Maximum number of namespaces to return.
+
+        Returns
+        -------
+        ListNamespacesResponse
+            Response containing namespace names and optional page_token for pagination.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.list_namespaces(
+            namespace_path=namespace_path, page_token=page_token, limit=limit
+        )
+
+    async def create_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        properties: Optional[Dict[str, str]] = None,
+    ) -> CreateNamespaceResponse:
+        """
+        Create a new namespace.
+
+        Parameters
+        ----------
+        namespace_path : List[str]
+            The namespace path to create.
+        mode : str, optional
+            Creation mode - "create" (fail if exists), "exist_ok" (skip if exists),
+            or "overwrite" (replace if exists). Case insensitive.
+        properties : Dict[str, str], optional
+            Properties to set on the namespace.
+
+        Returns
+        -------
+        CreateNamespaceResponse
+            Response containing the properties of the created namespace.
+        """
+        return await self._inner.create_namespace(
+            namespace_path=namespace_path,
+            mode=mode,
+            properties=properties,
+        )
+
+    async def drop_namespace(
+        self,
+        namespace_path: List[str],
+        mode: Optional[str] = None,
+        behavior: Optional[str] = None,
+    ) -> DropNamespaceResponse:
+        """
+        Drop a namespace.
+
+        Parameters
+        ----------
+        namespace_path : List[str]
+            The namespace path to drop.
+        mode : str, optional
+            Whether to skip if not exists ("SKIP") or fail ("FAIL"). Case insensitive.
+        behavior : str, optional
+            Whether to restrict drop if not empty ("RESTRICT") or cascade ("CASCADE").
+            Case insensitive.
+
+        Returns
+        -------
+        DropNamespaceResponse
+            Response containing properties and transaction_id if applicable.
+        """
+        try:
+            return await self._inner.drop_namespace(
+                namespace_path=namespace_path,
+                mode=mode,
+                behavior=behavior,
+            )
+        except RuntimeError as e:
+            if "Namespace not empty" in str(e):
+                raise NamespaceNotEmptyError(str(e)) from e
+            raise
+
+    async def describe_namespace(
+        self, namespace_path: List[str]
+    ) -> DescribeNamespaceResponse:
+        """
+        Describe a namespace.
+
+        Parameters
+        ----------
+        namespace_path : List[str]
+            The namespace identifier to describe.
+
+        Returns
+        -------
+        DescribeNamespaceResponse
+            Response containing the namespace properties.
+        """
+        return await self._inner.describe_namespace(namespace_path)
+
+    async def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """
+        Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id : List[str]
+            The namespace identifier to check.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False otherwise.
+        """
+        request = NamespaceExistsRequest(id=namespace_id)
+        try:
+            self._namespace_client.namespace_exists(request)
+            return True
+        except NamespaceNotFoundError:
+            return False
+
+    async def table_exists(self, table_id: List[str]) -> bool:
+        """
+        Check if a table exists.
+
+        Parameters
+        ----------
+        table_id : List[str]
+            The table identifier to check (full path including namespace
+            segments and table name).
+
+        Returns
+        -------
+        bool
+            True if the table exists, False otherwise.
+        """
+        request = TableExistsRequest(id=table_id)
+        try:
+            self._namespace_client.table_exists(request)
+            return True
+        except TableNotFoundError:
+            return False
+
+    async def list_tables(
+        self,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> ListTablesResponse:
+        """
+        List all tables in this database with pagination support.
+
+        Parameters
+        ----------
+        namespace_path : List[str], optional
+            The namespace to list tables in.
+            None or empty list represents root namespace.
+        page_token : str, optional
+            Token for pagination. Use the token from a previous response
+            to get the next page of results.
+        limit : int, optional
+            The maximum number of results to return.
+
+        Returns
+        -------
+        ListTablesResponse
+            Response containing table names and optional page_token for pagination.
+        """
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.list_tables(
+            namespace_path=namespace_path, page_token=page_token, limit=limit
+        )
+
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL when supported by the underlying connection."""
+        return await self._inner.execute_query(
+            query,
+            default_namespace_path=default_namespace_path,
+            parameters=parameters,
+        )
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL when supported by the underlying connection.
+
+        Namespace-backed local connections do not support SQL.
+        """
+        return await self._inner.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+            parameters=parameters,
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query when supported."""
+        return await self._inner.describe_query(query_id)
+
+    async def namespace_client(self) -> LanceNamespace:
+        """Get the namespace client for this connection.
+
+        For namespace connections, this returns the backing namespace client
+        that was provided during construction.
+
+        Returns
+        -------
+        LanceNamespace
+            The namespace client for this connection.
+        """
+        if self._namespace_client is None:
+            if (
+                self._namespace_client_impl is None
+                or self._namespace_client_properties is None
+            ):
+                raise ValueError(
+                    "Cannot construct a Python namespace client without "
+                    "namespace implementation properties"
+                )
+            self._namespace_client = namespace_connect(
+                self._namespace_client_impl, self._namespace_client_properties
+            )
+        return self._namespace_client
 
 
 def connect_namespace(
-    impl: str,
-    properties: Dict[str, str],
+    namespace_client_impl: str,
+    namespace_client_properties: Dict[str, str],
     *,
     read_consistency_interval: Optional[timedelta] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
 ) -> LanceNamespaceDBConnection:
     """
     Connect to a LanceDB database through a namespace.
 
     Parameters
     ----------
-    impl : str
-        The namespace implementation to use. For examples:
+    namespace_client_impl : str
+        The namespace client implementation to use. For examples:
+
         - "dir" for DirectoryNamespace
         - "rest" for REST-based namespace
         - Full module path for custom implementations
-    properties : Dict[str, str]
-        Configuration properties for the namespace implementation.
-        Different namespace implemenation has different config properties.
+    namespace_client_properties : Dict[str, str]
+        Configuration properties for the namespace client implementation.
+        Different namespace implementations have different config properties.
         For example, use DirectoryNamespace with {"root": "/path/to/directory"}
     read_consistency_interval : Optional[timedelta]
         The interval at which to check for updates to the table from other
@@ -383,18 +1707,159 @@ def connect_namespace(
         Additional options for the storage backend
     session : Optional[Session]
         A session to use for this connection
+    namespace_client_pushdown_operations : Optional[List[str]]
+        List of namespace operations to push down to the namespace server.
+        Supported values:
+
+        - "QueryTable": Execute queries on the namespace server via
+          namespace.query_table() instead of locally.
+        - "CreateTable": Execute table creation on the namespace server via
+          namespace.create_table() instead of using declare_table + local write.
+
+        Default is None (no pushdown, all operations run locally).
 
     Returns
     -------
     LanceNamespaceDBConnection
         A namespace-based connection to LanceDB
     """
-    namespace = namespace_connect(impl, properties)
+    if _supports_native_namespace(namespace_client_impl):
+        inner = AsyncConnection(
+            _connect_namespace(
+                namespace_client_impl,
+                namespace_client_properties,
+                read_consistency_interval=(
+                    read_consistency_interval.total_seconds()
+                    if read_consistency_interval is not None
+                    else None
+                ),
+                storage_options=storage_options,
+                session=session,
+                namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+            )
+        )
+        return LanceNamespaceDBConnection(
+            namespace_client=None,
+            read_consistency_interval=read_consistency_interval,
+            storage_options=storage_options,
+            session=session,
+            namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+            namespace_client_impl=namespace_client_impl,
+            namespace_client_properties=namespace_client_properties,
+            _inner=inner,
+        )
 
-    # Return the namespace-based connection
+    namespace_client = namespace_connect(
+        namespace_client_impl, namespace_client_properties
+    )
+
     return LanceNamespaceDBConnection(
-        namespace,
+        namespace_client=namespace_client,
         read_consistency_interval=read_consistency_interval,
         storage_options=storage_options,
         session=session,
+        namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        namespace_client_impl=namespace_client_impl,
+        namespace_client_properties=namespace_client_properties,
+    )
+
+
+def connect_namespace_async(
+    namespace_client_impl: str,
+    namespace_client_properties: Dict[str, str],
+    *,
+    read_consistency_interval: Optional[timedelta] = None,
+    storage_options: Optional[Dict[str, str]] = None,
+    session: Optional[Session] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
+) -> AsyncLanceNamespaceDBConnection:
+    """
+    Connect to a LanceDB database through a namespace (returns async connection).
+
+    This function is synchronous but returns an AsyncLanceNamespaceDBConnection
+    that provides async methods for all database operations.
+
+    Parameters
+    ----------
+    namespace_client_impl : str
+        The namespace client implementation to use. For examples:
+
+        - "dir" for DirectoryNamespace
+        - "rest" for REST-based namespace
+        - Full module path for custom implementations
+    namespace_client_properties : Dict[str, str]
+        Configuration properties for the namespace client implementation.
+        Different namespace implementations have different config properties.
+        For example, use DirectoryNamespace with {"root": "/path/to/directory"}
+    read_consistency_interval : Optional[timedelta]
+        The interval at which to check for updates to the table from other
+        processes. If None, then consistency is not checked.
+    storage_options : Optional[Dict[str, str]]
+        Additional options for the storage backend
+    session : Optional[Session]
+        A session to use for this connection
+    namespace_client_pushdown_operations : Optional[List[str]]
+        List of namespace operations to push down to the namespace server.
+        Supported values:
+
+        - "QueryTable": Execute queries on the namespace server via
+          namespace.query_table() instead of locally.
+        - "CreateTable": Execute table creation on the namespace server via
+          namespace.create_table() instead of using declare_table + local write.
+
+        Default is None (no pushdown, all operations run locally).
+
+    Returns
+    -------
+    AsyncLanceNamespaceDBConnection
+        An async namespace-based connection to LanceDB
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> # This function is sync, but returns an async connection
+    >>> db = lancedb.connect_namespace_async("dir", {"root": "/path/to/db"})
+    >>> # Use async methods on the connection
+    >>> async def use_db():
+    ...     tables = await db.table_names()
+    ...     table = await db.create_table("my_table", schema=schema)
+    """
+    if _supports_native_namespace(namespace_client_impl):
+        inner = AsyncConnection(
+            _connect_namespace(
+                namespace_client_impl,
+                namespace_client_properties,
+                read_consistency_interval=(
+                    read_consistency_interval.total_seconds()
+                    if read_consistency_interval is not None
+                    else None
+                ),
+                storage_options=storage_options,
+                session=session,
+                namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+            )
+        )
+        return AsyncLanceNamespaceDBConnection(
+            namespace_client=None,
+            read_consistency_interval=read_consistency_interval,
+            storage_options=storage_options,
+            session=session,
+            namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+            namespace_client_impl=namespace_client_impl,
+            namespace_client_properties=namespace_client_properties,
+            _inner=inner,
+        )
+
+    namespace_client = namespace_connect(
+        namespace_client_impl, namespace_client_properties
+    )
+
+    return AsyncLanceNamespaceDBConnection(
+        namespace_client=namespace_client,
+        read_consistency_interval=read_consistency_interval,
+        storage_options=storage_options,
+        session=session,
+        namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        namespace_client_impl=namespace_client_impl,
+        namespace_client_properties=namespace_client_properties,
     )

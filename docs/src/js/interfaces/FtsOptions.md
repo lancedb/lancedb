@@ -23,7 +23,7 @@ whether to remove punctuation
 ### baseTokenizer?
 
 ```ts
-optional baseTokenizer: "raw" | "simple" | "whitespace" | "ngram";
+optional baseTokenizer: BaseTokenizer;
 ```
 
 The tokenizer to use when building the index.
@@ -36,6 +36,40 @@ The following tokenizers are available:
 "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
 
 "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+
+"code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
+
+"icu" - ICU dictionary-based word segmentation.
+
+"icu/split" - ICU segmentation with simple-style delimiter splitting.
+
+***
+
+### blockSize?
+
+```ts
+optional blockSize: 128 | 256;
+```
+
+Number of documents per compressed posting block.
+
+The default is 128. Supported values are 128 and 256. A value of 256 uses
+the experimental FTS V3 format and may introduce breaking changes.
+
+***
+
+### customStopWords?
+
+```ts
+optional customStopWords: string[];
+```
+
+Custom stop words that replace the built-in list for `language`.
+
+This option only affects tokenization when `removeStopWords` is true.
+
+`undefined` keeps the built-in language list. An empty array explicitly
+replaces it with no stop words.
 
 ***
 

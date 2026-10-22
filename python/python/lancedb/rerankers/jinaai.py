@@ -45,6 +45,9 @@ class JinaReranker(Reranker):
         self.top_n = top_n
         self.api_key = api_key
 
+    def __str__(self):
+        return f"JinaReranker(model_name={self.model_name})"
+
     @cached_property
     def _client(self):
         import requests

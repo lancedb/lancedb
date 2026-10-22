@@ -12,10 +12,10 @@ use arrow_schema::Schema;
 use crate::{Error, Result};
 
 /// Convert a Arrow IPC file to a batch reader
-pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<impl RecordBatchReader> {
+pub fn ipc_file_to_batches(buf: Vec<u8>) -> Result<Box<dyn RecordBatchReader + Send>> {
     let buf_reader = Cursor::new(buf);
     let reader = FileReader::try_new(buf_reader, None)?;
-    Ok(reader)
+    Ok(Box::new(reader))
 }
 
 /// Convert record batches to Arrow IPC file

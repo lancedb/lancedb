@@ -5,12 +5,14 @@
 import binascii
 import functools
 import importlib
+import math
 import os
 import pathlib
 import warnings
 from datetime import date, datetime
+from decimal import Decimal
 from functools import singledispatch
-from typing import Tuple, Union, Optional, Any
+from typing import Tuple, Union, Optional, Any, List
 from urllib.parse import urlparse
 
 import numpy as np
@@ -177,7 +179,10 @@ def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
                 continue
             else:
                 break
-    elif isinstance(flatten, int):
+    # `bool` is a subclass of `int`, so guard against it explicitly: `flatten=False`
+    # (and `None`) must mean "do not flatten" rather than falling into the integer
+    # branch and raising on the `flatten <= 0` check.
+    elif isinstance(flatten, int) and not isinstance(flatten, bool):
         if flatten <= 0:
             raise ValueError(
                 "Please specify a positive integer for flatten or the boolean "
@@ -189,7 +194,33 @@ def flatten_columns(tbl: pa.Table, flatten: Optional[Union[int, bool]] = None):
     return tbl
 
 
-def inf_vector_column_query(schema: pa.Schema) -> str:
+def _format_field_path(path: List[str]) -> str:
+    def format_segment(segment: str) -> str:
+        if all(char.isalnum() or char == "_" for char in segment):
+            return segment
+        return f"`{segment.replace('`', '``')}`"
+
+    return ".".join(format_segment(segment) for segment in path)
+
+
+def _iter_vector_columns(
+    field: pa.Field, path: List[str], dim: Optional[int] = None
+) -> List[str]:
+    field_path = [*path, field.name]
+    if is_vector_column(field.type):
+        vector_dim = infer_vector_column_dim(field.type)
+        if dim is None or vector_dim == dim:
+            return [_format_field_path(field_path)]
+        return []
+    if pa.types.is_struct(field.type):
+        columns = []
+        for idx in range(field.type.num_fields):
+            columns.extend(_iter_vector_columns(field.type.field(idx), field_path, dim))
+        return columns
+    return []
+
+
+def inf_vector_column_query(schema: pa.Schema, dim: Optional[int] = None) -> str:
     """
     Get the vector column name
 
@@ -202,26 +233,34 @@ def inf_vector_column_query(schema: pa.Schema) -> str:
     -------
     str: the vector column name.
     """
-    vector_col_name = ""
-    vector_col_count = 0
-    for field_name in schema.names:
-        field = schema.field(field_name)
-        if is_vector_column(field.type):
-            vector_col_count += 1
-            if vector_col_count > 1:
-                raise ValueError(
-                    "Schema has more than one vector column. "
-                    "Please specify the vector column name "
-                    "for vector search"
-                )
-            elif vector_col_count == 1:
-                vector_col_name = field_name
-    if vector_col_count == 0:
+    vector_col_names = []
+    for field in schema:
+        vector_col_names.extend(_iter_vector_columns(field, [], dim))
+
+    if len(vector_col_names) == 0 and dim is not None:
+        # The query's dimension matched no column. If the schema is
+        # unambiguous without that filter, the single vector column is still
+        # the right one to search: a dimension mismatch is a query-execution
+        # error, not a missing-column error.
+        unfiltered = []
+        for field in schema:
+            unfiltered.extend(_iter_vector_columns(field, []))
+        if len(unfiltered) == 1:
+            return unfiltered[0]
+        vector_col_names = unfiltered
+
+    if len(vector_col_names) > 1:
+        raise ValueError(
+            "Schema has more than one vector column. "
+            "Please specify the vector column name "
+            f"for vector search. Candidates: {vector_col_names}"
+        )
+    if len(vector_col_names) == 0:
         raise ValueError(
             "There is no vector column in the data. "
             "Please specify the vector column name for vector search"
         )
-    return vector_col_name
+    return vector_col_names[0]
 
 
 def is_vector_column(data_type: pa.DataType) -> bool:
@@ -247,12 +286,46 @@ def is_vector_column(data_type: pa.DataType) -> bool:
     return False
 
 
+def infer_vector_column_dim(data_type: pa.DataType) -> Optional[int]:
+    if pa.types.is_fixed_size_list(data_type):
+        return data_type.list_size
+    if pa.types.is_list(data_type):
+        return infer_vector_column_dim(data_type.value_type)
+    return None
+
+
+def _validate_query_vector(query: Any) -> None:
+    """Reject empty vector inputs before vector-column inference or execution."""
+    if (isinstance(query, list) and not query) or (
+        isinstance(query, np.ndarray) and query.size == 0
+    ):
+        raise ValueError("Query vector must not be empty")
+
+
+def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
+    if query is None:
+        return None
+    if isinstance(query, np.ndarray):
+        if query.ndim == 0:
+            return None
+        return query.shape[-1]
+    if isinstance(query, list) and query:
+        first = query[0]
+        if isinstance(first, (list, tuple, np.ndarray)):
+            return len(first)
+        return len(query)
+    return None
+
+
 def infer_vector_column_name(
     schema: pa.Schema,
     query_type: str,
     query: Optional[Any],  # inferred later in query builder
     vector_column_name: Optional[str],
 ):
+    if query_type != "fts":
+        _validate_query_vector(query)
+
     if vector_column_name is not None:
         return vector_column_name
 
@@ -260,11 +333,19 @@ def infer_vector_column_name(
         # FTS queries do not require a vector column
         return None
 
-    if query is not None or query_type == "hybrid":
-        try:
-            vector_column_name = inf_vector_column_query(schema)
-        except Exception as e:
-            raise e
+    if query is None and query_type != "hybrid":
+        # No vector search was requested (e.g. a plain scan), so there's
+        # nothing to infer.
+        return None
+
+    vector_column_name = inf_vector_column_query(schema, dim=_query_vector_dim(query))
+
+    if vector_column_name is None:
+        raise ValueError(
+            "No vector column found in the schema. Please specify the "
+            "vector column name explicitly via the `vector_column_name` "
+            "parameter."
+        )
 
     return vector_column_name
 
@@ -296,7 +377,22 @@ def _(value: int):
 
 @value_to_sql.register(float)
 def _(value: float):
+    # str() gives "nan" / "inf", which SQL would read as column names.
+    if math.isnan(value):
+        return "CAST('NaN' AS DOUBLE)"
+    if math.isinf(value):
+        return (
+            "CAST('Infinity' AS DOUBLE)" if value > 0 else "CAST('-Infinity' AS DOUBLE)"
+        )
     return str(value)
+
+
+@value_to_sql.register(Decimal)
+def _(value: Decimal):
+    if not value.is_finite():
+        raise ValueError("Non-finite Decimal values cannot be converted to SQL")
+    # Quote exact decimal text so the target-column cast avoids float rounding.
+    return value_to_sql(format(value, "f"))
 
 
 @value_to_sql.register(bool)
@@ -324,9 +420,45 @@ def _(value: list):
     return "[" + ", ".join(map(value_to_sql, value)) + "]"
 
 
+@value_to_sql.register(dict)
+def _(value: dict):
+    # https://datafusion.apache.org/user-guide/sql/scalar_functions.html#named-struct
+    # Render the field name through value_to_sql(str(...)) as well so that keys
+    # containing characters meaningful in SQL (e.g. a single quote) are escaped
+    # the same way string values are. A bare f"'{k}'" would emit invalid SQL for
+    # a key like "it's".
+    return (
+        "named_struct("
+        + ", ".join(
+            f"{value_to_sql(str(k))}, {value_to_sql(v)}" for k, v in value.items()
+        )
+        + ")"
+    )
+
+
+@value_to_sql.register(pa.Scalar)
+def _(value: pa.Scalar):
+    return value_to_sql(value.as_py())
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
+
+
+@value_to_sql.register(np.bool_)
+def _(value: np.bool_):
+    return value_to_sql(bool(value))
+
+
+@value_to_sql.register(np.integer)
+def _(value: np.integer):
+    return value_to_sql(int(value))
+
+
+@value_to_sql.register(np.floating)
+def _(value: np.floating):
+    return value_to_sql(float(value))
 
 
 def deprecated(func):
@@ -366,3 +498,110 @@ def add_note(base_exception: BaseException, note: str):
         )
     else:
         raise ValueError("Cannot add note to exception")
+
+
+def tbl_to_tensor(tbl: pa.Table):
+    """
+    Convert a PyArrow Table to a PyTorch Tensor.
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.
+
+    Fails if torch is not installed.
+    Fails if any column is more than one chunk.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    tbl : pa.Table or pa.RecordBatch
+        The table or record batch to convert to a tensor.
+
+    Returns
+    -------
+    torch.Tensor: The tensor containing the columns of the table.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+
+    def to_tensor(col: pa.ChunkedArray):
+        if col.num_chunks > 1:
+            raise Exception("Single batch was too large to fit into a one-chunk table")
+        return torch.from_dlpack(col.chunk(0))
+
+    return torch.stack([to_tensor(tbl.column(i)) for i in range(tbl.num_columns)])
+
+
+def batch_to_tensor(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a PyTorch Tensor.
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert to a tensor.
+
+    Returns
+    -------
+    torch.Tensor: The tensor containing the columns of the record batch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    return torch.stack([torch.from_dlpack(col) for col in batch.columns])
+
+
+def batch_to_tensor_rows(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a list of PyTorch Tensor, one per row
+
+    Each column is converted to a tensor (using zero-copy via DLPack)
+    and the columns are then stacked into a single tensor.  The 2D tensor
+    is then converted to a list of tensors, one per row
+
+    Fails if torch or numpy is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    numpy = attempt_import_or_raise("numpy", "numpy")
+    columns = [col.to_numpy(zero_copy_only=False) for col in batch.columns]
+    stacked = torch.tensor(numpy.column_stack(columns))
+    rows = list(stacked.unbind(dim=0))
+    return rows
+
+
+def batch_to_tensor_dict(batch: pa.RecordBatch):
+    """
+    Convert a PyArrow RecordBatch to a list of per-row dicts of PyTorch Tensors.
+
+    Each column is first converted to a 1-D tensor (zero-copy via DLPack), then
+    sliced per row. The result is a list whose length is ``batch.num_rows`` and
+    whose items are dicts keyed by column name. This shape composes directly
+    with PyTorch's default ``DataLoader`` collate, which stacks the per-row
+    dicts back into a dict of batched tensors.
+
+    Fails if torch is not installed.
+    Fails if a column's data type is not supported by PyTorch.
+
+    Parameters
+    ----------
+    batch : pa.RecordBatch
+        The record batch to convert.
+
+    Returns
+    -------
+    list[dict[str, torch.Tensor]]
+        One per-row dict per row in the batch. Each dict maps column name to a
+        0-D tensor view into the column.
+    """
+    torch = attempt_import_or_raise("torch", "torch")
+    tensors = {
+        name: torch.from_dlpack(col)
+        for name, col in zip(batch.schema.names, batch.columns)
+    }
+    return [
+        {name: tensor[i] for name, tensor in tensors.items()}
+        for i in range(batch.num_rows)
+    ]

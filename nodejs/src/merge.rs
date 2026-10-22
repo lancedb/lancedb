@@ -3,7 +3,7 @@
 
 use std::time::Duration;
 
-use lancedb::{arrow::IntoArrow, ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
+use lancedb::{ipc::ipc_file_to_batches, table::merge::MergeInsertBuilder};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -43,13 +43,32 @@ impl NativeMergeInsertBuilder {
         self.inner.timeout(Duration::from_millis(timeout as u64));
     }
 
+    #[napi]
+    pub fn use_index(&self, use_index: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.use_index(use_index);
+        this
+    }
+
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&self, enable: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.use_rte(enable);
+        this
+    }
+
+    #[napi]
+    pub fn validate_single_shard(&self, validate_single_shard: bool) -> Self {
+        let mut this = self.clone();
+        this.inner.validate_single_shard(validate_single_shard);
+        this
+    }
+
     #[napi(catch_unwind)]
     pub async fn execute(&self, buf: Buffer) -> napi::Result<MergeResult> {
-        let data = ipc_file_to_batches(buf.to_vec())
-            .and_then(IntoArrow::into_arrow)
-            .map_err(|e| {
-                napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
-            })?;
+        let data = ipc_file_to_batches(buf.to_vec()).map_err(|e| {
+            napi::Error::from_reason(format!("Failed to read IPC file: {}", convert_error(&e)))
+        })?;
 
         let this = self.clone();
 

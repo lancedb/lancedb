@@ -6,8 +6,20 @@ on:
       - main
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - python/**
+      - rust/**
       - .github/workflows/python.yml
+      - .github/workflows/build_linux_wheel/**
+      - .github/workflows/build_mac_wheel/**
+      - .github/workflows/build_windows_wheel/**
+      - .github/actions/setup-protoc/**
+      - .github/workflows/run_tests/**
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -17,6 +29,8 @@ env:
   # Color output for pytest is off by default.
   PYTEST_ADDOPTS: "--color=yes"
   FORCE_COLOR: "1"
+  PIP_EXTRA_INDEX_URL: "https://pypi.fury.io/lance-format/ https://pypi.fury.io/lancedb/"
+  RUST_BACKTRACE: "1"
 
 jobs:
   lint:
@@ -28,14 +42,14 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install ruff
         run: |
           pip install ruff==0.9.9
@@ -46,21 +60,21 @@ jobs:
 
   type-check:
     name: "Type Check"
-    timeout-minutes: 30
-    runs-on: "ubuntu-22.04"
+    timeout-minutes: 60
+    runs-on: ubuntu-2404-8x-x64
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
       - name: Install protobuf compiler
         run: |
           sudo apt update
@@ -75,33 +89,38 @@ jobs:
 
   doctest:
     name: "Doctest"
-    timeout-minutes: 30
-    runs-on: "ubuntu-24.04"
+    timeout-minutes: 60
+    runs-on: ubuntu-2404-8x-x64
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
           cache: "pip"
       - name: Install protobuf
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler
+      # `pip install -e .` builds the extension with maturin, which is most of
+      # this job's ~33 minutes. It had no Rust cache, so every dependency was
+      # recompiled from scratch on every run.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: python
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install
         run: |
-          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
-          pip install tantivy
+          pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
           pip install mlx
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
@@ -110,14 +129,14 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        python-minor-version: ["9", "12"]
+        python-minor-version: ["10", "13"]
     runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -126,51 +145,50 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: 3.${{ matrix.python-minor-version }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: python
       - uses: ./.github/workflows/build_linux_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
       - name: Test without pylance or pandas
         run: |
           pip uninstall -y pylance pandas
-          pytest -vv python/tests/test_table.py
+          pytest -vv python/tests/test_table.py python/tests/test_namespace_no_pylance.py
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
   platform:
-    name: "Mac: ${{ matrix.config.name }}"
+    name: "Mac"
     timeout-minutes: 30
-    strategy:
-      matrix:
-        config:
-          - name: x86
-            runner: macos-13
-          - name: Arm
-            runner: macos-14
-    runs-on: "${{ matrix.config.runner }}"
+    runs-on: macos-14
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
+      # maturin runs cargo natively on macOS (docker is Linux-only), so the host
+      # target dir is cacheable. This job had no Rust cache.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: python
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_mac_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
@@ -189,31 +207,39 @@ jobs:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: "3.12"
+          python-version: "3.13"
+      # maturin runs cargo natively on Windows (docker is Linux-only), so the
+      # host target dir is cacheable. This job had no Rust cache at all and so
+      # rebuilt every dependency from scratch on every run.
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: python
+          # Restore everywhere, but only save from main. The repo sits at
+          # GitHub's cache cap, so per-PR saves just evict main's entries.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_windows_wheel
+        with:
+          args: --profile ci
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
-  pydantic1x:
-    timeout-minutes: 30
+  min-deps:
+    name: "Minimum dependencies"
+    timeout-minutes: 60
     runs-on: "ubuntu-24.04"
     defaults:
       run:
         shell: bash
         working-directory: python
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -222,14 +248,20 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: 3.9
+          python-version: "3.10"
+      # As with Doctest, `pip install -e .` compiles the extension and this job
+      # had no Rust cache, which is most of its ~37 minutes.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install lancedb
         run: |
-          pip install "pydantic<2"
-          pip install pyarrow==16
-          pip install --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
-          pip install tantivy
+          pip install "pydantic==2.7.4" "pyarrow==16"
+          pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests]
       - name: Run tests
         run: pytest -m "not slow and not s3_test" -x -v --durations=30 python/tests

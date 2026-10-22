@@ -2,20 +2,83 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use lancedb::database::CreateTableMode;
+use lancedb::database::{CreateTableMode, Database};
 use napi::bindgen_prelude::*;
 use napi_derive::*;
 
-use crate::error::NapiErrorExt;
-use crate::table::Table;
+use crate::ConnectNamespaceOptions;
 use crate::ConnectionOptions;
-use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection};
+use crate::error::NapiErrorExt;
+use crate::header::JsHeaderProvider;
+use crate::table::Table;
+use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
+
+use lance_namespace::models::{
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
+    ListTablesRequest,
+};
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
 #[napi]
 pub struct Connection {
     inner: Option<LanceDBConnection>,
+}
+
+#[napi(object)]
+pub struct DescribeNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+}
+
+#[napi(object)]
+pub struct ListNamespacesResponse {
+    pub namespaces: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
+pub struct ListTablesResponse {
+    pub tables: Vec<String>,
+    pub page_token: Option<String>,
+}
+
+#[napi(object)]
+pub struct CreateNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+    pub transaction_id: Option<String>,
+}
+
+#[napi(object)]
+pub struct DropNamespaceResponse {
+    pub properties: Option<HashMap<String, String>>,
+    pub transaction_id: Option<Vec<String>>,
+}
+
+/// What a database records about one view.
+#[napi(object)]
+pub struct ViewDescription {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub query: String,
+    pub default_database: String,
+    pub default_namespace_path: Vec<String>,
+    /// The view's schema as an empty Arrow IPC file, the way a table reports
+    /// its own.
+    pub schema: Buffer,
+}
+
+impl ViewDescription {
+    fn from_inner(view: lancedb::view::ViewDescription) -> napi::Result<Self> {
+        Ok(Self {
+            name: view.name,
+            namespace_path: view.namespace_path,
+            query: view.query,
+            default_database: view.default_database,
+            default_namespace_path: view.default_namespace_path,
+            schema: crate::util::schema_to_buffer(&view.schema)?,
+        })
+    }
 }
 
 impl Connection {
@@ -39,13 +102,21 @@ impl Connection {
             _ => Err(napi::Error::from_reason(format!("Invalid mode {}", mode))),
         }
     }
+
+    pub fn database(&self) -> napi::Result<Arc<dyn Database>> {
+        Ok(self.get_inner()?.database().clone())
+    }
 }
 
 #[napi]
 impl Connection {
     /// Create a new Connection instance from the given URI.
     #[napi(factory)]
-    pub async fn new(uri: String, options: ConnectionOptions) -> napi::Result<Self> {
+    pub async fn new(
+        uri: String,
+        options: ConnectionOptions,
+        header_provider: Option<&JsHeaderProvider>,
+    ) -> napi::Result<Self> {
         let mut builder = ConnectBuilder::new(&uri);
         if let Some(interval) = options.read_consistency_interval {
             builder =
@@ -56,9 +127,29 @@ impl Connection {
                 builder = builder.storage_option(key, value);
             }
         }
+        if let Some(manifest_enabled) = options.manifest_enabled {
+            builder = builder.manifest_enabled(manifest_enabled);
+        }
+        if let Some(namespace_client_properties) = options.namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
+        }
 
+        // Create client config, optionally with header provider
         let client_config = options.client_config.unwrap_or_default();
-        builder = builder.client_config(client_config.into());
+        let mut rust_config: lancedb::remote::ClientConfig = client_config.into();
+
+        if let Some(provider) = header_provider {
+            rust_config.header_provider =
+                Some(Arc::new(provider.clone()) as Arc<dyn lancedb::remote::HeaderProvider>);
+        }
+
+        builder = builder.client_config(rust_config);
+
+        if let Some(oauth_config) = options.oauth_config {
+            let config: lancedb::remote::oauth::OAuthConfig =
+                oauth_config.try_into().default_error()?;
+            builder = builder.oauth_config(config);
+        }
 
         if let Some(api_key) = options.api_key {
             builder = builder.api_key(&api_key);
@@ -74,6 +165,39 @@ impl Connection {
             builder = builder.host_override(&host_override);
         }
 
+        if let Some(session) = options.session {
+            builder = builder.session(session.inner.clone());
+        }
+
+        Ok(Self::inner_new(builder.execute().await.default_error()?))
+    }
+
+    /// Create a new Connection instance backed by a namespace implementation.
+    #[napi(factory)]
+    pub async fn new_with_namespace(
+        impl_name: String,
+        properties: HashMap<String, String>,
+        options: ConnectNamespaceOptions,
+    ) -> napi::Result<Self> {
+        if impl_name.is_empty() {
+            return Err(napi::Error::from_reason(
+                "implName must be a non-empty string",
+            ));
+        }
+
+        let mut builder = connect_namespace(&impl_name, properties);
+        if let Some(interval) = options.read_consistency_interval {
+            builder =
+                builder.read_consistency_interval(std::time::Duration::from_secs_f64(interval));
+        }
+        if let Some(storage_options) = options.storage_options {
+            for (key, value) in storage_options {
+                builder = builder.storage_option(key, value);
+            }
+        }
+        if let Some(namespace_client_properties) = options.namespace_client_properties {
+            builder = builder.namespace_client_properties(namespace_client_properties);
+        }
         if let Some(session) = options.session {
             builder = builder.session(session.inner.clone());
         }
@@ -100,12 +224,12 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn table_names(
         &self,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         start_after: Option<String>,
         limit: Option<u32>,
     ) -> napi::Result<Vec<String>> {
         let mut op = self.get_inner()?.table_names();
-        op = op.namespace(namespace);
+        op = op.namespace(namespace_path.unwrap_or_default());
         if let Some(start_after) = start_after {
             op = op.start_after(start_after);
         }
@@ -113,6 +237,33 @@ impl Connection {
             op = op.limit(limit);
         }
         op.execute().await.default_error()
+    }
+
+    /// List a page of tables in the database.
+    #[napi(catch_unwind)]
+    pub async fn list_tables(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListTablesResponse> {
+        let request = ListTablesRequest {
+            // The root namespace is an empty path, not an absent one: a namespace-backed
+            // database rejects a request that names no namespace.
+            id: Some(namespace_path.unwrap_or_default()),
+            page_token,
+            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
+            ..Default::default()
+        };
+        let response = self
+            .get_inner()?
+            .list_tables(request)
+            .await
+            .default_error()?;
+        Ok(ListTablesResponse {
+            tables: response.tables,
+            page_token: response.page_token,
+        })
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -127,7 +278,7 @@ impl Connection {
         name: String,
         buf: Buffer,
         mode: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let batches = ipc_file_to_batches(buf.to_vec())
@@ -135,7 +286,7 @@ impl Connection {
         let mode = Self::parse_create_mode_str(&mode)?;
         let mut builder = self.get_inner()?.create_table(&name, batches).mode(mode);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -152,7 +303,7 @@ impl Connection {
         name: String,
         schema_buf: Buffer,
         mode: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
     ) -> napi::Result<Table> {
         let schema = ipc_file_to_schema(schema_buf.to_vec()).map_err(|e| {
@@ -164,7 +315,7 @@ impl Connection {
             .create_empty_table(&name, schema)
             .mode(mode);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -176,16 +327,182 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
+    pub async fn create_materialized_view(
+        &self,
+        name: String,
+        source: String,
+        projections: Option<Vec<Vec<String>>>,
+        filter: Option<String>,
+        limit: Option<i64>,
+        with_no_data: bool,
+    ) -> napi::Result<Table> {
+        let mut builder = self.get_inner()?.create_materialized_view(name, source);
+        if let Some(projections) = projections {
+            let mut pairs = Vec::with_capacity(projections.len());
+            for pair in projections {
+                let [output, expression]: [String; 2] = pair.try_into().map_err(|_| {
+                    napi::Error::from_reason("each projection must be an [output, expression] pair")
+                })?;
+                pairs.push((output, expression));
+            }
+            builder = builder.select(pairs);
+        }
+        if let Some(filter) = filter {
+            builder = builder.only_if(filter);
+        }
+        if let Some(limit) = limit {
+            let limit = u64::try_from(limit)
+                .map_err(|_| napi::Error::from_reason("limit must be a non-negative integer"))?;
+            builder = builder.limit(limit);
+        }
+        builder = builder.with_no_data(with_no_data);
+        let view = builder.execute().await.default_error()?;
+        Ok(Table::new(view.table().clone()))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn open_materialized_view(&self, name: String) -> napi::Result<Table> {
+        let view = self
+            .get_inner()?
+            .open_materialized_view(&name)
+            .await
+            .default_error()?;
+        Ok(Table::new(view.table().clone()))
+    }
+
+    #[napi(catch_unwind)]
+    pub fn list_materialized_views(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?
+                .list_materialized_views(crate::listing::options(page_token, page_limit)),
+        ))
+    }
+
+    /// Drop a materialized view.
+    #[napi(catch_unwind)]
+    pub async fn drop_materialized_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .drop_materialized_view(&name, &ns)
+            .await
+            .default_error()
+    }
+
+    /// Create a view: a named query planned on every read.
+    #[napi(catch_unwind)]
+    pub async fn create_view(
+        &self,
+        name: String,
+        query: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .create_view(&name, &query, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// What the database records about one view.
+    #[napi(catch_unwind)]
+    pub async fn describe_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .describe_view(&name, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// Drop a view and wait for its definition to be deleted. The tables it
+    /// reads are untouched.
+    #[napi(catch_unwind)]
+    pub async fn drop_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .drop_view(&name, &ns)
+            .await
+            .default_error()
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    #[napi(catch_unwind)]
+    pub async fn drop_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    /// The names of the views in one namespace.
+    #[napi(catch_unwind)]
+    pub fn list_views(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    #[napi(catch_unwind)]
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_materialized_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
     pub async fn open_table(
         &self,
         name: String,
-        namespace: Vec<String>,
+        namespace_path: Option<Vec<String>>,
         storage_options: Option<HashMap<String, String>>,
         index_cache_size: Option<u32>,
     ) -> napi::Result<Table> {
         let mut builder = self.get_inner()?.open_table(&name);
 
-        builder = builder.namespace(namespace);
+        builder = builder.namespace(namespace_path.unwrap_or_default());
 
         if let Some(storage_options) = storage_options {
             for (key, value) in storage_options {
@@ -199,19 +516,273 @@ impl Connection {
         Ok(Table::new(tbl))
     }
 
+    #[napi(catch_unwind)]
+    pub async fn clone_table(
+        &self,
+        target_table_name: String,
+        source_uri: String,
+        target_namespace_path: Option<Vec<String>>,
+        source_version: Option<i64>,
+        source_tag: Option<String>,
+        is_shallow: bool,
+    ) -> napi::Result<Table> {
+        let mut builder = self
+            .get_inner()?
+            .clone_table(&target_table_name, &source_uri);
+
+        builder = builder.target_namespace(target_namespace_path.unwrap_or_default());
+
+        if let Some(version) = source_version {
+            builder = builder.source_version(version as u64);
+        }
+
+        if let Some(tag) = source_tag {
+            builder = builder.source_tag(tag);
+        }
+
+        builder = builder.is_shallow(is_shallow);
+
+        let tbl = builder.execute().await.default_error()?;
+        Ok(Table::new(tbl))
+    }
+
     /// Drop table with the name. Or raise an error if the table does not exist.
     #[napi(catch_unwind)]
-    pub async fn drop_table(&self, name: String, namespace: Vec<String>) -> napi::Result<()> {
+    pub async fn drop_table(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
         self.get_inner()?
-            .drop_table(&name, &namespace)
+            .drop_table(&name, &ns)
             .await
             .default_error()
     }
 
+    /// Start dropping a table and return its cleanup job.
     #[napi(catch_unwind)]
-    pub async fn drop_all_tables(&self, namespace: Vec<String>) -> napi::Result<()> {
+    pub async fn drop_table_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_table_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    #[napi(catch_unwind)]
+    pub async fn drop_all_tables(&self, namespace_path: Option<Vec<String>>) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?.drop_all_tables(&ns).await.default_error()
+    }
+
+    /// Open a server-side job by id, returning a handle with its record
+    /// already populated. Rejects when the server has no such job.
+    ///
+    /// The returned handle answers for its own state, specification, result,
+    /// failure and event history, so there is no separate connection-level
+    /// call for any of them.
+    #[napi(catch_unwind)]
+    pub async fn open_job(&self, job_id: String) -> napi::Result<crate::job::Job> {
+        let job = self.get_inner()?.open_job(&job_id).await.default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    /// List server-side jobs across the database's tables.
+    #[napi(catch_unwind)]
+    pub fn list_jobs(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::JobListing> {
+        Ok(crate::listing::JobListing::new(
+            self.get_inner()?
+                .list_jobs(crate::listing::options(page_token, page_limit)),
+        ))
+    }
+
+    /// Request cancellation of a server-side job by id. Returns true if the
+    /// server accepted the cancellation, false if no such job exists.
+    #[napi(catch_unwind)]
+    pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
+        self.get_inner()?.cancel_job(&job_id).await.default_error()
+    }
+
+    /// Pause a server-side job by id: its workers drain and it stays parked
+    /// until resumed. Returns "pausing", "already_paused", or "committing".
+    #[napi(catch_unwind)]
+    pub async fn pause_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self.get_inner()?.pause_job(&job_id).await.default_error()?;
+        Ok(match status {
+            lancedb::database::PauseJobStatus::Pausing => "pausing".to_string(),
+            lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused".to_string(),
+            lancedb::database::PauseJobStatus::Committing => "committing".to_string(),
+        })
+    }
+
+    /// Resume a paused server-side job by id. Returns "resumed",
+    /// "still_pausing", or "not_paused".
+    #[napi(catch_unwind)]
+    pub async fn resume_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self
+            .get_inner()?
+            .resume_job(&job_id)
+            .await
+            .default_error()?;
+        Ok(match status {
+            lancedb::database::ResumeJobStatus::Resumed => "resumed".to_string(),
+            lancedb::database::ResumeJobStatus::StillPausing => "still_pausing".to_string(),
+            lancedb::database::ResumeJobStatus::NotPaused => "not_paused".to_string(),
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// Describe a namespace and return its properties.
+    pub async fn describe_namespace(
+        &self,
+        namespace_path: Vec<String>,
+    ) -> napi::Result<DescribeNamespaceResponse> {
+        let req = DescribeNamespaceRequest {
+            id: Some(namespace_path),
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .describe_namespace(req)
+            .await
+            .default_error()?;
+        Ok(DescribeNamespaceResponse {
+            properties: resp.properties,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// List child namespaces under the given namespace path
+    pub async fn list_namespaces(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        limit: Option<u32>,
+    ) -> napi::Result<ListNamespacesResponse> {
+        let req = ListNamespacesRequest {
+            id: namespace_path,
+            page_token,
+            limit: limit.map(|l| l as i32),
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .list_namespaces(req)
+            .await
+            .default_error()?;
+        Ok(ListNamespacesResponse {
+            namespaces: resp.namespaces,
+            page_token: resp.page_token,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// Create a new namespace with optional properties.
+    pub async fn create_namespace(
+        &self,
+        namespace_path: Vec<String>,
+        mode: Option<String>,
+        properties: Option<HashMap<String, String>>,
+    ) -> napi::Result<CreateNamespaceResponse> {
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "create" => Ok("Create".to_string()),
+                "exist_ok" => Ok("ExistOk".to_string()),
+                "overwrite" => Ok("Overwrite".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'create', 'exist_ok', 'overwrite'",
+                    m
+                ))),
+            })
+            .transpose()?;
+        let req = CreateNamespaceRequest {
+            id: Some(namespace_path),
+            mode: mode_str,
+            properties,
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .create_namespace(req)
+            .await
+            .default_error()?;
+        Ok(CreateNamespaceResponse {
+            properties: resp.properties,
+            transaction_id: resp.transaction_id,
+        })
+    }
+
+    #[napi(catch_unwind)]
+    /// Drop a namespace.
+    pub async fn drop_namespace(
+        &self,
+        namespace_path: Vec<String>,
+        mode: Option<String>,
+        behavior: Option<String>,
+    ) -> napi::Result<DropNamespaceResponse> {
+        let mode_str = mode
+            .map(|m| match m.to_lowercase().as_str() {
+                "skip" => Ok("Skip".to_string()),
+                "fail" => Ok("Fail".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid mode '{}': expected one of 'skip', 'fail'",
+                    m
+                ))),
+            })
+            .transpose()?;
+        let behavior_str = behavior
+            .map(|b| match b.to_lowercase().as_str() {
+                "restrict" => Ok("Restrict".to_string()),
+                "cascade" => Ok("Cascade".to_string()),
+                _ => Err(napi::Error::from_reason(format!(
+                    "Invalid behavior '{}': expected one of 'restrict', 'cascade'",
+                    b
+                ))),
+            })
+            .transpose()?;
+        let req = DropNamespaceRequest {
+            id: Some(namespace_path),
+            mode: mode_str,
+            behavior: behavior_str,
+            ..Default::default()
+        };
+        let resp = self
+            .get_inner()?
+            .drop_namespace(req)
+            .await
+            .default_error()?;
+        Ok(DropNamespaceResponse {
+            properties: resp.properties,
+            transaction_id: resp.transaction_id,
+        })
+    }
+
+    /// Rename a table. `current_namespace_path` and `new_namespace_path` default to
+    /// the root namespace when omitted; the caller is expected to either pass both
+    /// or pass neither.
+    #[napi(catch_unwind)]
+    pub async fn rename_table(
+        &self,
+        current_name: String,
+        new_name: String,
+        current_namespace_path: Option<Vec<String>>,
+        new_namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let cur_ns = current_namespace_path.unwrap_or_default();
+        let new_ns = new_namespace_path.unwrap_or_default();
         self.get_inner()?
-            .drop_all_tables(&namespace)
+            .rename_table(&current_name, &new_name, &cur_ns, &new_ns)
             .await
             .default_error()
     }

@@ -1,83 +1,126 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arrow::array::make_array;
+use crate::expr::PyExpr;
+use crate::runtime::future_into_py;
+use crate::util::parse_distance_type;
+use crate::{arrow::RecordBatchStream, util::PyLanceDB};
+use crate::{error::PythonErrorExt, index::class_name};
 use arrow::array::Array;
 use arrow::array::ArrayData;
+use arrow::array::make_array;
 use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
+use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
-    BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
-    Operator, PhraseQuery,
+    BooleanQuery, BoostQuery, DocumentGranularity, FtsQuery, FullTextSearchQuery, MatchQuery,
+    MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
+use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::QueryBase;
 use lancedb::query::QueryExecutionOptions;
 use lancedb::query::QueryFilter;
 use lancedb::query::{
-    ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
+    ColumnOrdering, ExecutableQuery, Query as LanceDbQuery, Select, TakeQuery as LanceDbTakeQuery,
     VectorQuery as LanceDbVectorQuery,
 };
 use lancedb::table::AnyQuery;
-use pyo3::prelude::{PyAnyMethods, PyDictMethods};
-use pyo3::pymethods;
-use pyo3::types::PyList;
-use pyo3::types::{PyDict, PyString};
 use pyo3::Bound;
 use pyo3::IntoPyObject;
 use pyo3::PyAny;
 use pyo3::PyRef;
 use pyo3::PyResult;
-use pyo3::{exceptions::PyRuntimeError, FromPyObject};
-use pyo3::{
-    exceptions::{PyNotImplementedError, PyValueError},
-    intern,
-};
-use pyo3::{pyclass, PyErr};
-use pyo3_async_runtimes::tokio::future_into_py;
+use pyo3::Python;
+use pyo3::prelude::{PyAnyMethods, PyDictMethods};
+use pyo3::pyfunction;
+use pyo3::pymethods;
+use pyo3::types::PyList;
+use pyo3::types::{PyDict, PyString};
+use pyo3::{Borrowed, FromPyObject, exceptions::PyRuntimeError};
+use pyo3::{PyErr, pyclass};
+use pyo3::{exceptions::PyValueError, intern};
 
-use crate::util::parse_distance_type;
-use crate::{arrow::RecordBatchStream, util::PyLanceDB};
-use crate::{error::PythonErrorExt, index::class_name};
+fn analyze_plan_options(distributed_metrics: Option<&str>) -> PyResult<QueryExecutionOptions> {
+    let analyze_plan_distributed_metrics = match distributed_metrics.unwrap_or("aggregate") {
+        "aggregate" => AnalyzePlanDistributedMetrics::Aggregate,
+        "per_worker" => AnalyzePlanDistributedMetrics::PerWorker,
+        "full" => AnalyzePlanDistributedMetrics::Full,
+        mode => {
+            return Err(PyValueError::new_err(format!(
+                "Invalid distributed_metrics value '{}'. Expected one of: \
+                 'aggregate', 'per_worker', 'full'",
+                mode
+            )));
+        }
+    };
 
-impl FromPyObject<'_> for PyLanceDB<FtsQuery> {
-    fn extract_bound(ob: &Bound<'_, PyAny>) -> PyResult<Self> {
-        match class_name(ob)?.as_str() {
+    let mut options = QueryExecutionOptions::default();
+    options.analyze_plan_distributed_metrics = analyze_plan_distributed_metrics;
+    Ok(options)
+}
+
+impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
+    type Error = PyErr;
+
+    fn extract(ob: Borrowed<'a, 'py, PyAny>) -> PyResult<Self> {
+        let ob = ob.to_owned();
+        match class_name(&ob)?.as_str() {
             "MatchQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let boost = ob.getattr("boost")?.extract()?;
                 let fuzziness = ob.getattr("fuzziness")?.extract()?;
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
                 let operator = ob.getattr("operator")?.extract::<String>()?;
                 let prefix_length = ob.getattr("prefix_length")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
+                let mut query =
                     MatchQuery::new(query)
-                        .with_column(Some(column))
+                        .with_column(column)
                         .with_boost(boost)
                         .with_fuzziness(fuzziness)
                         .with_max_expansions(max_expansions)
                         .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
                             PyValueError::new_err(format!("Invalid operator: {}", e))
                         })?)
-                        .with_prefix_length(prefix_length)
-                        .into(),
-                ))
+                        .with_prefix_length(prefix_length);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
                 let column = ob.getattr("column")?.extract()?;
                 let slop = ob.getattr("slop")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
-                    PhraseQuery::new(query)
-                        .with_column(Some(column))
-                        .with_slop(slop)
-                        .into(),
-                ))
+                let mut query = PhraseQuery::new(query)
+                    .with_column(Some(column))
+                    .with_slop(slop);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "BoostQuery" => {
                 let positive: Self = ob.getattr("positive")?.extract()?;
@@ -137,6 +180,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
+            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
+                "Combined-fields FTS queries are not yet supported in Python",
+            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -144,13 +190,27 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("max_expansions", query.max_expansions)?;
                 kwargs.set_item::<_, &str>("operator", query.operator.into())?;
                 kwargs.set_item("prefix_length", query.prefix_length)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Phrase(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("slop", query.slop)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -204,6 +264,48 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
 #[derive(Clone)]
 pub struct PyQueryVectors(Vec<Arc<dyn Array>>);
 
+#[derive(Clone, FromPyObject)]
+#[pyo3(from_item_all)]
+pub struct PyColumnOrdering {
+    pub column_name: String,
+    pub ascending: bool,
+    pub nulls_first: bool,
+}
+
+impl From<ColumnOrdering> for PyColumnOrdering {
+    fn from(ordering: ColumnOrdering) -> Self {
+        Self {
+            column_name: ordering.column_name,
+            ascending: ordering.ascending,
+            nulls_first: ordering.nulls_first,
+        }
+    }
+}
+
+impl From<PyColumnOrdering> for ColumnOrdering {
+    fn from(ordering: PyColumnOrdering) -> Self {
+        Self {
+            column_name: ordering.column_name,
+            ascending: ordering.ascending,
+            nulls_first: ordering.nulls_first,
+        }
+    }
+}
+
+impl<'py> IntoPyObject<'py> for PyColumnOrdering {
+    type Target = PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = PyErr;
+
+    fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
+        let dict = PyDict::new(py);
+        dict.set_item("column_name", self.column_name)?;
+        dict.set_item("ascending", self.ascending)?;
+        dict.set_item("nulls_first", self.nulls_first)?;
+        Ok(dict)
+    }
+}
+
 impl<'py> IntoPyObject<'py> for PyQueryVectors {
     type Target = PyList;
     type Output = Bound<'py, Self::Target>;
@@ -224,17 +326,20 @@ impl<'py> IntoPyObject<'py> for PyQueryVectors {
 pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub take_offsets: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
+    pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
+    pub use_rte: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
+    pub nprobes: Option<usize>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default shoud be used (currenty 20)
-    // Some(0) means user set it to None and there is no limit
     pub maximum_nprobes: Option<usize>,
+    pub search_effort: Option<f64>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
@@ -243,6 +348,7 @@ pub struct PyQueryRequest {
     pub bypass_vector_index: Option<bool>,
     pub postfilter: Option<bool>,
     pub norm: Option<String>,
+    pub order_by: Option<Vec<PyColumnOrdering>>,
 }
 
 impl From<AnyQuery> for PyQueryRequest {
@@ -251,17 +357,22 @@ impl From<AnyQuery> for PyQueryRequest {
             AnyQuery::Query(query_request) => Self {
                 limit: query_request.limit,
                 offset: query_request.offset,
+                take_offsets: query_request.take_offsets,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
                     .map(|fts| PyLanceDB(fts.query)),
+                select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
+                use_rte: query_request.use_rte,
                 column: None,
                 query_vector: None,
+                nprobes: None,
                 minimum_nprobes: None,
                 maximum_nprobes: None,
+                search_effort: None,
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
@@ -270,22 +381,27 @@ impl From<AnyQuery> for PyQueryRequest {
                 bypass_vector_index: None,
                 postfilter: None,
                 norm: None,
+                order_by: query_request
+                    .order_by
+                    .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
             },
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
+                take_offsets: vector_query.base.take_offsets,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
+                select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
+                use_rte: vector_query.base.use_rte,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                minimum_nprobes: Some(vector_query.minimum_nprobes),
-                maximum_nprobes: match vector_query.maximum_nprobes {
-                    None => Some(0),
-                    Some(value) => Some(value),
-                },
+                nprobes: vector_query.nprobes,
+                minimum_nprobes: vector_query.minimum_nprobes,
+                maximum_nprobes: vector_query.maximum_nprobes,
+                search_effort: vector_query.search_effort,
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
@@ -294,6 +410,10 @@ impl From<AnyQuery> for PyQueryRequest {
                 bypass_vector_index: Some(!vector_query.use_index),
                 postfilter: Some(!vector_query.base.prefilter),
                 norm: vector_query.base.norm.map(|n| n.to_string()),
+                order_by: vector_query
+                    .base
+                    .order_by
+                    .map(|order_by| order_by.into_iter().map(PyColumnOrdering::from).collect()),
             },
         }
     }
@@ -302,6 +422,25 @@ impl From<AnyQuery> for PyQueryRequest {
 // Python representation of query selection
 #[derive(Clone)]
 pub struct PySelect(Select);
+
+impl PySelect {
+    fn source_columns(select: &Select) -> Option<HashMap<String, String>> {
+        match select {
+            Select::Expr(pairs) => Some(
+                pairs
+                    .iter()
+                    .filter_map(|(output, expr)| match expr {
+                        lancedb::expr::DfExpr::Column(column) if column.relation.is_none() => {
+                            Some((output.clone(), column.name.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+}
 
 impl<'py> IntoPyObject<'py> for PySelect {
     type Target = PyAny;
@@ -313,6 +452,19 @@ impl<'py> IntoPyObject<'py> for PySelect {
             Select::All => Ok(py.None().into_bound(py).into_any()),
             Select::Columns(columns) => Ok(columns.into_pyobject(py)?.into_any()),
             Select::Dynamic(columns) => Ok(columns.into_pyobject(py)?.into_any()),
+            Select::Expr(pairs) => {
+                // Serialize DataFusion Expr -> SQL string so Python sees the same
+                // format as Select::Dynamic: a list of (name, sql_string) tuples.
+                let sql_pairs: PyResult<Vec<(String, String)>> = pairs
+                    .into_iter()
+                    .map(|(name, expr)| {
+                        lancedb::expr::expr_to_sql_string(&expr)
+                            .map(|sql| (name, sql))
+                            .map_err(|e| PyRuntimeError::new_err(e.to_string()))
+                    })
+                    .collect();
+                Ok(sql_pairs?.into_pyobject(py)?.into_any())
+            }
         }
     }
 }
@@ -328,9 +480,13 @@ impl<'py> IntoPyObject<'py> for PyQueryFilter {
 
     fn into_pyobject(self, py: pyo3::Python<'py>) -> PyResult<Self::Output> {
         match self.0 {
-            QueryFilter::Datafusion(_) => Err(PyNotImplementedError::new_err(
-                "Datafusion filter has no conversion to Python",
-            )),
+            QueryFilter::Datafusion(expr) => {
+                // Serialize the DataFusion expression to a SQL string so that
+                // callers (e.g. remote tables) see the same format as Sql.
+                let sql = lancedb::expr::expr_to_sql_string(&expr)
+                    .map_err(|e| PyRuntimeError::new_err(e.to_string()))?;
+                Ok(sql.into_pyobject(py)?.into_any())
+            }
             QueryFilter::Sql(sql) => Ok(sql.into_pyobject(py)?.into_any()),
             QueryFilter::Substrait(substrait) => Ok(substrait.into_pyobject(py)?.into_any()),
         }
@@ -354,8 +510,18 @@ impl Query {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -372,6 +538,10 @@ impl Query {
 
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -396,7 +566,7 @@ impl Query {
                 "Query text is required for nearest_to_text",
             ))?;
 
-        let query = if let Ok(query_text) = fts_query.downcast::<PyString>() {
+        let query = if let Ok(query_text) = fts_query.cast::<PyString>() {
             let mut query_text = query_text.to_string();
             let columns = query
                 .get_item("columns")?
@@ -445,6 +615,22 @@ impl Query {
         })
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner = self.inner.clone().order_by(ordering);
+        Ok(())
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -475,11 +661,16 @@ impl Query {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -515,6 +706,19 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -545,11 +749,16 @@ impl TakeQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -560,7 +769,7 @@ impl TakeQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct FTSQuery {
     inner: LanceDbQuery,
@@ -573,8 +782,18 @@ impl FTSQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -589,8 +808,19 @@ impl FTSQuery {
         self.inner = self.inner.clone().offset(offset as usize);
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner = self.inner.clone().order_by(ordering);
+        Ok(())
+    }
+
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -599,6 +829,15 @@ impl FTSQuery {
 
     pub fn postfilter(&mut self) {
         self.inner = self.inner.clone().postfilter();
+    }
+
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
     }
 
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
@@ -646,21 +885,26 @@ impl FTSQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_
             .inner
             .clone()
             .full_text_search(self_.fts_query.clone());
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
     }
 
     pub fn get_query(&self) -> String {
-        self.fts_query.query.query().to_owned()
+        self.fts_query.query.query().clone()
     }
 
     pub fn to_query_request(&self) -> PyQueryRequest {
@@ -670,7 +914,7 @@ impl FTSQuery {
     }
 }
 
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone)]
 pub struct VectorQuery {
     inner: LanceDbVectorQuery,
@@ -682,6 +926,10 @@ impl VectorQuery {
         self.inner = self.inner.clone().only_if(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner = self.inner.clone().only_if_expr(expr.0);
+    }
+
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
         let data: ArrayData = ArrayData::from_pyarrow_bound(&vector)?;
         let array = make_array(data);
@@ -691,6 +939,12 @@ impl VectorQuery {
 
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner = self.inner.clone().select(Select::dynamic(&columns));
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        let pairs: Vec<(String, lancedb::expr::DfExpr)> =
+            columns.into_iter().map(|(name, e)| (name, e.0)).collect();
+        self.inner = self.inner.clone().select(Select::Expr(pairs));
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -705,8 +959,19 @@ impl VectorQuery {
         self.inner = self.inner.clone().offset(offset as usize);
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        let ordering =
+            ordering.map(|ordering| ordering.into_iter().map(ColumnOrdering::from).collect());
+        self.inner = self.inner.clone().order_by(ordering);
+        Ok(())
+    }
+
     pub fn fast_search(&mut self) {
         self.inner = self.inner.clone().fast_search();
+    }
+
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -731,8 +996,18 @@ impl VectorQuery {
         self.inner = self.inner.clone().refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
+    }
+
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .infer_error()?;
+        Ok(())
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
@@ -771,6 +1046,15 @@ impl VectorQuery {
         self.inner = self.inner.clone().bypass_vector_index()
     }
 
+    #[pyo3(signature = ())]
+    pub fn output_schema(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.inner.clone();
+        future_into_py(self_.py(), async move {
+            let schema = inner.output_schema().await.infer_error()?;
+            Python::attach(|py| schema.to_pyarrow(py).map(|obj| obj.unbind()))
+        })
+    }
+
     #[pyo3(signature = (max_batch_length=None, timeout=None))]
     pub fn execute(
         self_: PyRef<'_, Self>,
@@ -801,11 +1085,16 @@ impl VectorQuery {
         })
     }
 
-    pub fn analyze_plan(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    #[pyo3(signature = (distributed_metrics=None))]
+    pub fn analyze_plan(
+        self_: PyRef<'_, Self>,
+        distributed_metrics: Option<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
+        let options = analyze_plan_options(distributed_metrics.as_deref())?;
         future_into_py(self_.py(), async move {
             inner
-                .analyze_plan()
+                .analyze_plan_with_options(options)
                 .await
                 .map_err(|e| PyRuntimeError::new_err(e.to_string()))
         })
@@ -838,9 +1127,19 @@ impl HybridQuery {
         self.inner_fts.r#where(predicate);
     }
 
+    pub fn where_expr(&mut self, expr: PyExpr) {
+        self.inner_vec.where_expr(expr.clone());
+        self.inner_fts.where_expr(expr);
+    }
+
     pub fn select(&mut self, columns: Vec<(String, String)>) {
         self.inner_vec.select(columns.clone());
         self.inner_fts.select(columns);
+    }
+
+    pub fn select_expr(&mut self, columns: Vec<(String, PyExpr)>) {
+        self.inner_vec.select_expr(columns.clone());
+        self.inner_fts.select_expr(columns);
     }
 
     pub fn select_columns(&mut self, columns: Vec<String>) {
@@ -858,6 +1157,12 @@ impl HybridQuery {
         self.inner_fts.offset(offset);
     }
 
+    pub fn order_by(&mut self, ordering: Option<Vec<PyColumnOrdering>>) -> PyResult<()> {
+        self.inner_vec.order_by(ordering.clone())?;
+        self.inner_fts.order_by(ordering)?;
+        Ok(())
+    }
+
     pub fn fast_search(&mut self) {
         self.inner_vec.fast_search();
         self.inner_fts.fast_search();
@@ -871,6 +1176,11 @@ impl HybridQuery {
     pub fn postfilter(&mut self) {
         self.inner_vec.postfilter();
         self.inner_fts.postfilter();
+    }
+
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner_vec.use_rte(enable);
+        self.inner_fts.use_rte(enable);
     }
 
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
@@ -889,8 +1199,20 @@ impl HybridQuery {
         self.inner_vec.refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner_vec.nprobes(nprobe);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner_vec.nprobes(nprobe)
+    }
+
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner_vec.search_effort(search_effort)
+    }
+
+    pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.minimum_nprobes(minimum_nprobes)
+    }
+
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.maximum_nprobes(maximum_nprobes)
     }
 
     pub fn ef(&mut self, ef: u32) {
@@ -937,10 +1259,26 @@ impl HybridQuery {
         req.query_vector = vec_req.query_vector;
         req.column = vec_req.column;
         req.distance_type = vec_req.distance_type;
+        req.nprobes = vec_req.nprobes;
+        req.minimum_nprobes = vec_req.minimum_nprobes;
+        req.maximum_nprobes = vec_req.maximum_nprobes;
+        req.search_effort = vec_req.search_effort;
         req.ef = vec_req.ef;
         req.refine_factor = vec_req.refine_factor;
         req.lower_bound = vec_req.lower_bound;
         req.upper_bound = vec_req.upper_bound;
         req
     }
+}
+
+/// Convert a Python FTS query to JSON string
+#[pyfunction]
+pub fn fts_query_to_json(query_obj: &Bound<'_, PyAny>) -> PyResult<String> {
+    let wrapped: PyLanceDB<FtsQuery> = query_obj.extract()?;
+    lancedb::table::datafusion::udtf::fts::to_json(&wrapped.0).map_err(|e| {
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!(
+            "Failed to serialize FTS query to JSON: {}",
+            e
+        ))
+    })
 }

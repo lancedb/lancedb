@@ -1,0 +1,43 @@
+{
+  "name": "normalize_score",
+  "artifact": {
+    "kind": "python_callable",
+    "digest": "sha256:760784bdcef57b802f389b97804cc0b618aae39e86044733451bcd0b13089a7f",
+    "entrypoint": "normalize_score",
+    "content": {
+      "encoding": "base64",
+      "data": "ZnJvbSBfX2Z1dHVyZV9fIGltcG9ydCBhbm5vdGF0aW9ucwoKZGVmIG5vcm1hbGl6ZV9zY29yZSh2YWx1ZTogZmxvYXQpIC0+IGZsb2F0OgogICAgcmV0dXJuIHZhbHVlIC8gMTAwLjAK"
+    },
+    "adapter": {
+      "kind": "scalar_to_arrow_batch",
+      "version": 1
+    }
+  },
+  "signature": {
+    "inputs": [
+      {
+        "name": "value",
+        "arrow_type": "float64",
+        "nullable": false
+      }
+    ],
+    "output": {
+      "kind": "scalar",
+      "arrow_type": "float64",
+      "nullable": false
+    }
+  },
+  "runtime": {
+    "kind": "python",
+    "python_version": "3.12",
+    "environment": {
+      "kind": "pip",
+      "packages": [
+        "numpy>=2"
+      ]
+    },
+    "env": {
+      "MODE": "test"
+    }
+  }
+}

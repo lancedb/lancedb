@@ -7,8 +7,7 @@ from functools import cached_property
 from typing import List, Union
 
 import numpy as np
-
-from lancedb.pydantic import PYDANTIC_VERSION
+from pydantic import ConfigDict
 
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
@@ -21,20 +20,20 @@ class BedRockText(TextEmbeddingFunction):
     """
     Parameters
     ----------
-    name: str, default "amazon.titan-embed-text-v1"
+    name : str, default "amazon.titan-embed-text-v1"
         The model ID of the bedrock model to use. Supported models for are:
         - amazon.titan-embed-text-v1
         - cohere.embed-english-v3
         - cohere.embed-multilingual-v3
-    region: str, default "us-east-1"
+    region : str, default "us-east-1"
         Optional name of the AWS Region in which the service should be called.
-    profile_name: str, default None
+    profile_name : str, default None
         Optional name of the AWS profile to use for calling the Bedrock service.
         If not specified, the default profile will be used.
-    assumed_role: str, default None
+    assumed_role : str, default None
         Optional ARN of an AWS IAM role to assume for calling the Bedrock service.
         If not specified, the current active credentials will be used.
-    role_session_name: str, default "lancedb-embeddings"
+    role_session_name : str, default "lancedb-embeddings"
         Optional name of the AWS IAM role session to use for calling the Bedrock
         service. If not specified, "lancedb-embeddings" name will be used.
 
@@ -67,13 +66,7 @@ class BedRockText(TextEmbeddingFunction):
     source_input_type: str = "search_document"
     query_input_type: str = "search_query"
 
-    if PYDANTIC_VERSION.major < 2:  # Pydantic 1.x compat
-
-        class Config:
-            keep_untouched = (cached_property,)
-    else:
-        model_config = dict()
-        model_config["ignored_types"] = (cached_property,)
+    model_config = ConfigDict(ignored_types=(cached_property,))
 
     def ndims(self):
         # return len(self._generate_embedding("test"))

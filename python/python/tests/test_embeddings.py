@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+import pickle
 from typing import List, Optional, Union
 from unittest.mock import MagicMock, patch
 
@@ -63,6 +64,23 @@ def test_embedding_function(tmp_path):
     assert np.allclose(actual, expected)
 
 
+def test_instructor_ndims_uses_instruction():
+    instructor = get_registry().get("instructor").create()
+    model = MagicMock()
+    model.encode.return_value = np.zeros((1, 384))
+
+    with patch.object(type(instructor), "get_model", return_value=model):
+        assert instructor.ndims() == 384
+
+    model.encode.assert_called_once_with(
+        [[instructor.source_instruction, "foo"]],
+        batch_size=instructor.batch_size,
+        show_progress_bar=instructor.show_progress_bar,
+        normalize_embeddings=instructor.normalize_embeddings,
+        device=instructor.device,
+    )
+
+
 def test_embedding_function_variables():
     @register("variable-testing")
     class VariableTestingFunction(TextEmbeddingFunction):
@@ -112,6 +130,50 @@ def test_embedding_function_variables():
     )
     assert func.secret_key == "secret_value"
     assert func.safe_model_dump()["secret_key"] == "$var:secret"
+
+
+def test_openai_variables_survive_metadata_round_trip():
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    registry.set_var("test_api_key", "sk-test-key-12345")
+
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="vector",
+        function=registry.get("openai").create(
+            api_key="$var:test_api_key", base_url="https://api.example.com"
+        ),
+    )
+
+    metadata = registry.get_table_metadata([conf])
+
+    # Create a mock arrow table with the metadata
+    schema = pa.schema(
+        [
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 1536)),
+        ]
+    )
+    table = pa.table({"text": [], "vector": []}, schema=schema)
+    table = table.replace_schema_metadata(metadata)
+
+    ds = lance.write_dataset(table, "memory://")
+
+    configs = registry.parse_functions(ds.schema.metadata)
+
+    assert "vector" in configs
+    parsed_func = configs["vector"].function
+
+    assert parsed_func.api_key == "sk-test-key-12345"
+    assert parsed_func.base_url == "https://api.example.com"
+    assert parsed_func.safe_model_dump()["api_key"] == "$var:test_api_key"
+
+    with patch("lancedb.embeddings.openai.attempt_import_or_raise") as import_openai:
+        parsed_func._openai_client
+
+    import_openai.return_value.OpenAI.assert_called_once_with(
+        api_key="sk-test-key-12345", base_url="https://api.example.com"
+    )
 
 
 def test_embedding_with_bad_results(tmp_path):
@@ -185,6 +247,49 @@ def test_embedding_with_bad_results(tmp_path):
     assert tbl["vector"].null_count == 1
 
 
+def test_embedding_with_empty_output_vectors(tmp_path):
+    """Regression test for issue #1672.
+
+    When an embedding function returns an empty list (e.g. for empty-string
+    inputs), _append_vector_columns used to crash because PyArrow cannot cast
+    [] into a fixed-size list element.  The fix replaces wrong-length vectors
+    with None before building the Arrow array so that _handle_bad_vectors can
+    process them normally.
+    """
+
+    @register("empty-vec-embedding")
+    class EmptyVecEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 128
+
+        def generate_embeddings(self, texts: Union[List[str], np.ndarray]) -> list:
+            # Simulate a model that returns an empty list for blank inputs
+            return [
+                [] if text.strip() == "" else np.random.randn(self.ndims()).tolist()
+                for text in texts
+            ]
+
+    db = lancedb.connect(tmp_path)
+    registry = EmbeddingFunctionRegistry.get_instance()
+    model = registry.get("empty-vec-embedding").create()
+
+    class Schema(LanceModel):
+        text: str = model.SourceField()
+        vector: Vector(model.ndims()) = model.VectorField()
+
+    table = db.create_table("test_empty_vec", schema=Schema, mode="overwrite")
+
+    # Should not crash; the row with the empty string should be dropped
+    table.add(
+        [{"text": "hello world"}, {"text": ""}, {"text": "foo"}],
+        on_bad_vectors="drop",
+    )
+
+    assert len(table) == 2
+    texts = table.to_arrow()["text"].to_pylist()
+    assert "" not in texts
+
+
 def test_with_existing_vectors(tmp_path):
     @register("mock-embedding")
     class MockEmbeddingFunction(TextEmbeddingFunction):
@@ -222,8 +327,8 @@ def test_embedding_function_with_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func = registery.get("mock-embedding").create()
+    registry = get_registry()
+    func = registry.get("mock-embedding").create()
 
     class TestSchema(LanceModel):
         text: str = func.SourceField()
@@ -289,9 +394,9 @@ def test_multiple_embeddings_for_pandas(tmp_path):
         ) -> List[np.array]:
             return [np.random.randn(self.ndims()).tolist() for _ in range(len(texts))]
 
-    registery = get_registry()
-    func1 = registery.get("mock-embedding").create()
-    func2 = registery.get("mock-embedding2").create()
+    registry = get_registry()
+    func1 = registry.get("mock-embedding").create()
+    func2 = registry.get("mock-embedding2").create()
 
     class TestSchema(LanceModel):
         text: str = func1.SourceField()
@@ -458,3 +563,103 @@ def test_openai_propagates_api_key(monkeypatch):
     query = "greetings"
     actual = table.search(query).limit(1).to_pydantic(Words)[0]
     assert len(actual.text) > 0
+
+
+@patch("time.sleep")
+def test_openai_no_retry_on_401(mock_sleep):
+    """
+    Test that OpenAI embedding function does not retry on 401 authentication
+    errors.
+    """
+    from lancedb.embeddings.utils import retry_with_exponential_backoff
+
+    # Create a mock that raises an AuthenticationError
+    class MockAuthenticationError(Exception):
+        """Mock OpenAI AuthenticationError"""
+
+        pass
+
+    MockAuthenticationError.__name__ = "AuthenticationError"
+
+    mock_func = MagicMock(side_effect=MockAuthenticationError("Invalid API key"))
+
+    # Wrap the function with retry logic
+    wrapped_func = retry_with_exponential_backoff(mock_func, max_retries=3)
+
+    # Should raise without retrying
+    with pytest.raises(MockAuthenticationError):
+        wrapped_func()
+
+    # Verify that the function was only called once (no retries)
+    assert mock_func.call_count == 1
+    # Verify that sleep was never called (no retries)
+    assert mock_sleep.call_count == 0
+
+
+def test_ollama_embeddings_pickle():
+    """OllamaEmbeddings must pickle even after the cached client is created."""
+    registry = get_registry()
+    model = registry.get("ollama").create(name="nomic-embed-text")
+
+    # Simulate accessing the cached client, which stores it on the instance.
+    model.__dict__["_ollama_client"] = MagicMock()
+
+    pickled = pickle.dumps(model)
+    restored = pickle.loads(pickled)
+
+    assert restored.name == "nomic-embed-text"
+    assert restored.host == "http://localhost:11434"
+    assert "_ollama_client" not in restored.__dict__
+
+
+def test_url_retrieve_downloads_image():
+    """
+    Embedding functions like open-clip, siglip, and jinaai use url_retrieve()
+    to download images from HTTP URLs. For example, open_clip._to_pil() calls:
+
+        PIL_Image.open(io.BytesIO(url_retrieve(image)))
+
+    Verify that url_retrieve() can download an image and open it as PIL Image,
+    matching the real usage pattern in embedding functions.
+    """
+    import io
+
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.utils import url_retrieve
+
+    image_url = "http://farm1.staticflickr.com/53/167798175_7c7845bbbd_z.jpg"
+    image_bytes = url_retrieve(image_url)
+    img = Image.open(io.BytesIO(image_bytes))
+    assert img.size[0] > 0 and img.size[1] > 0
+
+
+def test_open_clip_opens_percent_encoded_file_uri(tmp_path):
+    """OpenCLIP should decode local file URIs before opening them."""
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.open_clip import OpenClipEmbeddings
+
+    image_path = tmp_path / "test image.png"
+    Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
+
+    with OpenClipEmbeddings._to_pil(None, image_path.as_uri()) as image:
+        assert image.size == (4, 4)
+
+
+def test_jina_generate_image_input_dict_local_path(tmp_path):
+    """
+    JinaEmbeddings._generate_image_input_dict must accept a local image path
+    (str or Path), not just bytes. Previously it crashed with
+    `AttributeError: 'function' object has no attribute 'urlparse'` on any
+    str/Path input because it called `urlparse.urlparse(image)` instead of
+    `urlparse(image)` (urlparse was imported as a function, not a module).
+    """
+    Image = pytest.importorskip("PIL.Image")
+    from lancedb.embeddings.jinaai import JinaEmbeddings
+
+    image_path = tmp_path / "test.png"
+    Image.new("RGB", (4, 4), color="red").save(image_path, format="PNG")
+
+    for image in (str(image_path), image_path):
+        image_dict = JinaEmbeddings._generate_image_input_dict(image)
+        assert "image" in image_dict
+        assert isinstance(image_dict["image"], str) and len(image_dict["image"]) > 0

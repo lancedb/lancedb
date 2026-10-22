@@ -26,7 +26,7 @@ export interface IvfPqOptions {
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -112,6 +112,77 @@ export interface IvfPqOptions {
   sampleRate?: number;
 }
 
+export interface IvfRqOptions {
+  /**
+   * The number of IVF partitions to create.
+   *
+   * This value should generally scale with the number of rows in the dataset.
+   * By default the number of partitions is the square root of the number of
+   * rows.
+   *
+   * If this value is too large then the first part of the search (picking the
+   * right partition) will be slow. If this value is too small then the second
+   * part of the search (searching within a partition) will be slow.
+   */
+  numPartitions?: number;
+
+  /**
+   * Number of bits per dimension for residual quantization.
+   *
+   * This value controls how much each residual component is compressed. The more
+   * bits, the more accurate the index will be but the slower search. Typical values
+   * are small integers; the default is 1 bit per dimension.
+   */
+  numBits?: number;
+
+  /**
+   * Distance type to use to build the index.
+   *
+   * Default value is "l2".
+   *
+   * This is used when training the index to calculate the IVF partitions
+   * (vectors are grouped in partitions with similar vectors according to this
+   * distance type) and during quantization.
+   *
+   * The distance type used to train an index MUST match the distance type used
+   * to search the index. Failure to do so will yield inaccurate results.
+   *
+   * The following distance types are available:
+   *
+   * "l2" - Euclidean distance.
+   * "cosine" - Cosine distance.
+   * "dot" - Dot product.
+   */
+  distanceType?: "l2" | "cosine" | "dot";
+
+  /**
+   * Max iterations to train IVF kmeans.
+   *
+   * When training an IVF index we use kmeans to calculate the partitions. This parameter
+   * controls how many iterations of kmeans to run.
+   *
+   * The default value is 50.
+   */
+  maxIterations?: number;
+
+  /**
+   * The number of vectors, per partition, to sample when training IVF kmeans.
+   *
+   * When an IVF index is trained, we need to calculate partitions. These are groups
+   * of vectors that are similar to each other. To do this we use an algorithm called kmeans.
+   *
+   * Running kmeans on a large dataset can be slow. To speed this up we run kmeans on a
+   * random sample of the data. This parameter controls the size of the sample. The total
+   * number of vectors used to train the index is `sample_rate * num_partitions`.
+   *
+   * Increasing this value might improve the quality of the index but in most cases the
+   * default should be sufficient.
+   *
+   * The default value is 256.
+   */
+  sampleRate?: number;
+}
+
 /**
  * Options to create an `HNSW_PQ` index
  */
@@ -157,7 +228,7 @@ export interface HnswPqOptions {
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -415,6 +486,17 @@ export interface IvfFlatOptions {
   sampleRate?: number;
 }
 
+export type BaseTokenizer =
+  | "simple"
+  | "whitespace"
+  | "raw"
+  | "ngram"
+  | "code"
+  | "icu"
+  | "icu/split"
+  | `jieba/${string}`
+  | `lindera/${string}`;
+
 /**
  * Options to create a full text search index
  */
@@ -438,8 +520,14 @@ export interface FtsOptions {
    * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   *
+   * "code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
+   *
+   * "icu" - ICU dictionary-based word segmentation.
+   *
+   * "icu/split" - ICU segmentation with simple-style delimiter splitting.
    */
-  baseTokenizer?: "simple" | "whitespace" | "raw" | "ngram";
+  baseTokenizer?: BaseTokenizer;
 
   /**
    * language for stemming and stop words
@@ -469,6 +557,16 @@ export interface FtsOptions {
   removeStopWords?: boolean;
 
   /**
+   * Custom stop words that replace the built-in list for `language`.
+   *
+   * This option only affects tokenization when `removeStopWords` is true.
+   *
+   * `undefined` keeps the built-in language list. An empty array explicitly
+   * replaces it with no stop words.
+   */
+  customStopWords?: string[];
+
+  /**
    * whether to remove punctuation
    */
   asciiFolding?: boolean;
@@ -487,6 +585,14 @@ export interface FtsOptions {
    * whether to only index the prefix of the token for ngram tokenizer
    */
   prefixOnly?: boolean;
+
+  /**
+   * Number of documents per compressed posting block.
+   *
+   * The default is 128. Supported values are 128 and 256. A value of 256 uses
+   * the experimental FTS V3 format and may introduce breaking changes.
+   */
+  blockSize?: 128 | 256;
 }
 
 export class Index {
@@ -523,6 +629,35 @@ export class Index {
         options?.distanceType,
         options?.numPartitions,
         options?.numSubVectors,
+        options?.numBits,
+        options?.maxIterations,
+        options?.sampleRate,
+      ),
+    );
+  }
+
+  /**
+   * Create an IvfRq index
+   *
+   * IVF-RQ (RabitQ Quantization) compresses vectors using RabitQ quantization
+   * and organizes them into IVF partitions.
+   *
+   * The compression scheme is called RabitQ quantization. Each dimension is quantized into a small number of bits.
+   * The parameters `num_bits` and `num_partitions` control this process, providing a tradeoff
+   * between index size (and thus search speed) and index accuracy.
+   *
+   * The partitioning process is called IVF and the `num_partitions` parameter controls how
+   * many groups to create.
+   *
+   * Note that training an IVF RQ index on a large dataset is a slow operation and
+   * currently is also a memory intensive operation.
+   */
+  static ivfRq(options?: Partial<IvfRqOptions>) {
+    return new Index(
+      LanceDbIndex.ivfRq(
+        options?.distanceType,
+        options?.numPartitions,
+        options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
       ),
@@ -603,6 +738,17 @@ export class Index {
   }
 
   /**
+   * Create an FM-Index.
+   *
+   * An FM-Index is a scalar index on string or binary columns that accelerates
+   * substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+   * full-text-search index, it matches arbitrary substrings of the raw bytes.
+   */
+  static fm() {
+    return new Index(LanceDbIndex.fm());
+  }
+
+  /**
    * Create a full text search index
    *
    * A full text search index is an index on a string column, so that you can conduct full
@@ -622,10 +768,12 @@ export class Index {
         options?.lowercase,
         options?.stem,
         options?.removeStopWords,
+        options?.customStopWords,
         options?.asciiFolding,
         options?.ngramMinLength,
         options?.ngramMaxLength,
         options?.prefixOnly,
+        options?.blockSize,
       ),
     );
   }
@@ -680,7 +828,7 @@ export interface IndexOptions {
   /**
    * Advanced index configuration
    *
-   * This option allows you to specify a specfic index to create and also
+   * This option allows you to specify a specific index to create and also
    * allows you to pass in configuration for training the index.
    *
    * See the static methods on Index for details on the various index types.

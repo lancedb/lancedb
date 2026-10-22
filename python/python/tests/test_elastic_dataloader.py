@@ -1,0 +1,3526 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+"""Tests for elastic dataloader properties.
+
+Two properties are verified:
+
+1. **Elastic determinism** — for a fixed (num_splits, shuffle_seed, epoch), the
+   set of samples that forms each global training step is identical regardless of
+   the training topology (world_size).  This mirrors the MDS guarantee described
+   in dataloader.md: "the global batch at a given step will always contain the
+   same samples."
+
+2. **Resumability** — after calling state_dict() and load_state_dict(), a fresh
+   dataset continues from exactly where the previous run stopped: no sample is
+   skipped, no sample is repeated.  The checkpoint is topology-independent (it
+   captures per-split consumption counts), so resumption works even when
+   world_size changes between runs.
+
+Tests use explicit rank / world_size constructor parameters rather than
+torch.distributed, so they run in a single process without a distributed process
+group.  The import guard below causes the whole module to be skipped when
+lancedb.streaming does not yet exist, which keeps CI green while the
+implementation is in progress.
+
+Parameters used throughout:
+  NUM_ROWS        = 120   (divisible by all tested world_sizes and num_splits)
+  NUM_SPLITS      = 12    (divides cleanly by world_sizes 1,2,3,4,6,12)
+  GLOBAL_BATCH_SIZE = 12  (= num_splits → each split contributes 1 sample/step)
+  STEPS_PER_EPOCH = 10    (= NUM_ROWS / GLOBAL_BATCH_SIZE)
+"""
+
+import dataclasses
+import logging
+import threading
+from unittest.mock import patch
+
+import lancedb
+import pyarrow as pa
+import pytest
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
+
+torch = pytest.importorskip("torch")
+streaming = pytest.importorskip("lancedb.streaming")
+StreamingDataset = streaming.StreamingDataset
+StreamingDataLoader = streaming.StreamingDataLoader
+
+# ---------------------------------------------------------------------------
+# Dataset parameters
+# ---------------------------------------------------------------------------
+
+NUM_ROWS = 120
+NUM_SPLITS = 12
+GLOBAL_BATCH_SIZE = NUM_SPLITS  # one sample per split per step
+STEPS_PER_EPOCH = NUM_ROWS // GLOBAL_BATCH_SIZE  # = 10
+SHUFFLE_SEED = 42
+
+# world_sizes compatible with NUM_SPLITS (i.e. NUM_SPLITS % world_size == 0)
+COMPATIBLE_WORLD_SIZES = [1, 2, 3, 4, 6, 12]
+
+# Parameters for the "large global batch" tests where global_batch_size is a
+# multiple of num_splits rather than equal to it.  Using 3× gives 3 samples per
+# split per step, which exercises the path where each rank drains more than one
+# sample per split per global step.
+LARGE_GLOBAL_BATCH_SIZE = 36  # = 3 * NUM_SPLITS
+LARGE_NUM_ROWS = 360  # must be divisible by LARGE_GLOBAL_BATCH_SIZE (360/36=10)
+
+# (world_size, num_workers) pairs used in multi-worker tests.
+# Constraint: num_splits % (world_size * num_workers) == 0, i.e. world_size *
+# num_workers must divide NUM_SPLITS (12).
+MULTI_WORKER_TOPOLOGIES = [
+    (1, 2),
+    (1, 3),
+    (1, 4),
+    (2, 2),
+    (2, 3),
+]
+
+
+@dataclasses.dataclass
+class FakeWorkerInfo:
+    """Stand-in for torch.utils.data.WorkerInfo, accepted by worker_info_override.
+
+    Mirrors the attributes that StreamingDataset reads from the real WorkerInfo:
+      id          — this worker's index (0-based)
+      num_workers — total workers for this rank's DataLoader
+    """
+
+    id: int
+    num_workers: int
+
+
+def _collate_with_first_batch_error(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise ValueError("first batch fails")
+    return ids
+
+
+def _collate_with_first_batch_stop(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise StopIteration("first batch stopped")
+    return ids
+
+
+def _collate_with_first_batch_interrupt(samples):
+    ids = [sample["id"] for sample in samples]
+    if ids == [0, 1]:
+        raise KeyboardInterrupt("first batch interrupted")
+    return ids
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def lance_table(tmp_path):
+    """A simple LanceDB table with integer IDs 0 .. NUM_ROWS-1."""
+    db = lancedb.connect(tmp_path)
+    return db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+
+@pytest.fixture
+def lance_table_large(tmp_path):
+    """A larger table for tests where global_batch_size > num_splits.
+
+    Uses LARGE_NUM_ROWS rows.
+    """
+    db = lancedb.connect(tmp_path)
+    return db.create_table("data", pa.table({"id": list(range(LARGE_NUM_ROWS))}))
+
+
+# ---------------------------------------------------------------------------
+# Simulation helpers
+# ---------------------------------------------------------------------------
+
+
+def _make_dataset(
+    table,
+    rank: int,
+    world_size: int,
+    *,
+    num_splits: int = NUM_SPLITS,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+    worker_info_override: FakeWorkerInfo | None = None,
+) -> StreamingDataset:
+    """Create a StreamingDataset configured for a specific rank in a simulated
+    distributed run.  rank and world_size are passed explicitly so we do not
+    need an actual torch.distributed process group.
+
+    Pass worker_info_override to simulate a specific DataLoader worker without
+    spawning real worker processes.
+    """
+    return StreamingDataset(
+        table,
+        num_splits=num_splits,
+        shuffle_seed=shuffle_seed,
+        epoch=epoch,
+        rank=rank,
+        world_size=world_size,
+        worker_info_override=worker_info_override,
+    )
+
+
+def _collect_global_batches(
+    table,
+    world_size: int,
+    *,
+    num_splits: int = NUM_SPLITS,
+    global_batch_size: int = GLOBAL_BATCH_SIZE,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+) -> list[frozenset[int]]:
+    """Drain a full epoch and return one frozenset of sample IDs per global step.
+
+    Each rank is represented by one StreamingDataset.  A "global step" consumes
+    (global_batch_size // world_size) samples from every rank, so the global batch
+    at step k is the union of all per-rank micro-batches at that step.  frozensets
+    are used so comparisons are order-independent within a batch.
+
+    global_batch_size must be a multiple of num_splits (each split contributes
+    global_batch_size // num_splits samples per step).
+
+    Raises AssertionError if the per-rank iterators exhaust at different times,
+    which would indicate a padding/truncation bug in the implementation.
+    """
+    assert num_splits % world_size == 0, (
+        f"world_size={world_size} does not divide num_splits={num_splits}"
+    )
+    assert global_batch_size % num_splits == 0, (
+        f"global_batch_size={global_batch_size} is not a multiple of "
+        f"num_splits={num_splits}"
+    )
+    micro = global_batch_size // world_size  # samples per rank per global step
+
+    datasets = [
+        _make_dataset(
+            table,
+            rank,
+            world_size,
+            num_splits=num_splits,
+            shuffle_seed=shuffle_seed,
+            epoch=epoch,
+        )
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+
+    _STOP = object()
+    global_batches: list[frozenset[int]] = []
+    while True:
+        step_samples: set[int] = set()
+        exhausted = 0
+        for it in iters:
+            for _ in range(micro):
+                val = next(it, _STOP)
+                if val is _STOP:
+                    exhausted += 1
+                    break
+                step_samples.add(val["id"])
+        if exhausted == len(iters):
+            # All iterators exhausted at the same step — end of epoch.
+            break
+        assert exhausted == 0, (
+            "Rank iterators exhausted at different steps. "
+            "StreamingDataset must produce equal-length sequences across ranks."
+        )
+        global_batches.append(frozenset(step_samples))
+
+    return global_batches
+
+
+def _advance_and_checkpoint(
+    table,
+    world_size: int,
+    steps: int,
+    *,
+    num_splits: int = NUM_SPLITS,
+    global_batch_size: int = GLOBAL_BATCH_SIZE,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+) -> tuple[list[frozenset[int]], dict]:
+    """Run `steps` global steps, then snapshot the dataset state.
+
+    Returns (batches_consumed, checkpoint) where checkpoint is the state_dict
+    from rank 0's dataset.  Because state is per-split (not per-rank), any
+    rank's state_dict can be used to resume on any compatible topology.
+    """
+    assert num_splits % world_size == 0
+    assert global_batch_size % num_splits == 0
+    micro = global_batch_size // world_size
+
+    datasets = [
+        _make_dataset(
+            table,
+            rank,
+            world_size,
+            num_splits=num_splits,
+            shuffle_seed=shuffle_seed,
+            epoch=epoch,
+        )
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+
+    seen: list[frozenset[int]] = []
+    for _ in range(steps):
+        step_samples: set[int] = set()
+        for it in iters:
+            for _ in range(micro):
+                step_samples.add(next(it)["id"])
+        seen.append(frozenset(step_samples))
+
+    checkpoint = datasets[0].state_dict()
+    return seen, checkpoint
+
+
+def _resume_and_collect(
+    table,
+    world_size: int,
+    checkpoint: dict,
+    *,
+    num_splits: int = NUM_SPLITS,
+    global_batch_size: int = GLOBAL_BATCH_SIZE,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+) -> list[frozenset[int]]:
+    """Create fresh datasets, load checkpoint, and drain to epoch end.
+
+    world_size may differ from the run that produced the checkpoint,
+    exercising the elastic-resume path.
+    """
+    assert num_splits % world_size == 0
+    assert global_batch_size % num_splits == 0
+    micro = global_batch_size // world_size
+
+    datasets = [
+        _make_dataset(
+            table,
+            rank,
+            world_size,
+            num_splits=num_splits,
+            shuffle_seed=shuffle_seed,
+            epoch=epoch,
+        )
+        for rank in range(world_size)
+    ]
+    for ds in datasets:
+        ds.load_state_dict(checkpoint)
+
+    iters = [iter(ds) for ds in datasets]
+    _STOP2 = object()
+    remaining: list[frozenset[int]] = []
+    while True:
+        step_samples: set[int] = set()
+        exhausted = 0
+        for it in iters:
+            for _ in range(micro):
+                val = next(it, _STOP2)
+                if val is _STOP2:
+                    exhausted += 1
+                    break
+                step_samples.add(val["id"])
+        if exhausted == len(iters):
+            break
+        assert exhausted == 0
+        remaining.append(frozenset(step_samples))
+
+    return remaining
+
+
+# ---------------------------------------------------------------------------
+# Elastic determinism tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_elastic_det_full_coverage(lance_table, world_size):
+    """Every sample ID appears exactly once across all steps of an epoch."""
+    batches = _collect_global_batches(lance_table, world_size)
+    all_seen = sorted(sid for b in batches for sid in b)
+    assert all_seen == list(range(NUM_ROWS)), (
+        f"world_size={world_size}: expected IDs 0..{NUM_ROWS - 1} but got {all_seen}"
+    )
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_elastic_det_correct_step_count(lance_table, world_size):
+    """Number of global steps equals NUM_ROWS // GLOBAL_BATCH_SIZE."""
+    batches = _collect_global_batches(lance_table, world_size)
+    assert len(batches) == STEPS_PER_EPOCH, (
+        f"world_size={world_size}: expected {STEPS_PER_EPOCH} steps, got {len(batches)}"
+    )
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_elastic_det_no_intra_batch_duplicates(lance_table, world_size):
+    """Within a single global batch, every sample ID is distinct."""
+    batches = _collect_global_batches(lance_table, world_size)
+    for step, batch in enumerate(batches):
+        assert len(batch) == GLOBAL_BATCH_SIZE, (
+            f"world_size={world_size} step {step}: "
+            f"expected {GLOBAL_BATCH_SIZE} samples, got {len(batch)}"
+        )
+
+
+def test_elastic_det_same_batches_across_world_sizes(lance_table):
+    """The global batch at each step is identical for every compatible world_size.
+
+    This is the core elastic-determinism guarantee from the design doc.
+    """
+    reference = _collect_global_batches(lance_table, world_size=1)
+    for ws in COMPATIBLE_WORLD_SIZES[1:]:
+        batches = _collect_global_batches(lance_table, world_size=ws)
+        assert len(batches) == len(reference), (
+            f"world_size={ws} produced {len(batches)} steps; "
+            f"world_size=1 produced {len(reference)}"
+        )
+        for step, (ref_batch, batch) in enumerate(zip(reference, batches)):
+            assert ref_batch == batch, (
+                f"Global batch at step {step} differs between world_size=1 and "
+                f"world_size={ws}.\n"
+                f"  world_size=1  → {sorted(ref_batch)}\n"
+                f"  world_size={ws} → {sorted(batch)}"
+            )
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_elastic_det_reproducible(lance_table, world_size):
+    """Two independent runs with the same parameters produce identical epochs."""
+    batches_a = _collect_global_batches(lance_table, world_size)
+    batches_b = _collect_global_batches(lance_table, world_size)
+    assert batches_a == batches_b, (
+        f"world_size={world_size}: second run produced different batches"
+    )
+
+
+@pytest.mark.parametrize("epoch_a,epoch_b", [(0, 1), (1, 2), (0, 2)])
+def test_elastic_det_different_epochs_differ(lance_table, epoch_a, epoch_b):
+    """Different epochs use different shuffles and therefore produce different
+    step sequences.  (Both cover all samples; they just appear in different order.)
+    """
+    batches_a = _collect_global_batches(lance_table, world_size=1, epoch=epoch_a)
+    batches_b = _collect_global_batches(lance_table, world_size=1, epoch=epoch_b)
+    # Same set of samples overall...
+    assert sorted(sid for b in batches_a for sid in b) == list(range(NUM_ROWS))
+    assert sorted(sid for b in batches_b for sid in b) == list(range(NUM_ROWS))
+    # ...but a different step-by-step ordering.
+    assert batches_a != batches_b, (
+        f"Epoch {epoch_a} and epoch {epoch_b} produced identical step sequences; "
+        "shuffle_seed should incorporate the epoch number."
+    )
+
+
+def test_elastic_det_different_seeds_differ(lance_table):
+    """Different shuffle seeds produce different sample orderings."""
+    batches_seed0 = _collect_global_batches(lance_table, world_size=1, shuffle_seed=0)
+    batches_seed1 = _collect_global_batches(lance_table, world_size=1, shuffle_seed=1)
+    assert batches_seed0 != batches_seed1, (
+        "Different shuffle_seed values must produce different sample orderings."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Resumability tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "checkpoint_at_step", [0, 1, 4, STEPS_PER_EPOCH - 1, STEPS_PER_EPOCH]
+)
+def test_resumability_same_world_size(lance_table, checkpoint_at_step):
+    """Resuming on the same world_size produces the same global batches as a
+    reference full-epoch run, split at the checkpoint step.
+
+    Combined (before + after resume):
+    - No sample is repeated.
+    - No sample is skipped.
+    - Each global batch matches the reference exactly.
+    """
+    world_size = 2
+    reference = _collect_global_batches(lance_table, world_size)
+
+    seen_before, checkpoint = _advance_and_checkpoint(
+        lance_table, world_size, checkpoint_at_step
+    )
+    seen_after = _resume_and_collect(lance_table, world_size, checkpoint)
+
+    # Correct total number of steps.
+    assert len(seen_before) + len(seen_after) == STEPS_PER_EPOCH, (
+        f"Expected {STEPS_PER_EPOCH} total steps; "
+        f"got {len(seen_before)} + {len(seen_after)}"
+    )
+
+    # Each pre-checkpoint batch matches the reference.
+    for step, (ref, got) in enumerate(zip(reference, seen_before)):
+        assert ref == got, (
+            f"Pre-checkpoint batch {step} doesn't match reference.\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    # Each post-resume batch matches the reference (continuing from
+    # checkpoint_at_step).
+    for offset, (ref, got) in enumerate(
+        zip(reference[checkpoint_at_step:], seen_after)
+    ):
+        step = checkpoint_at_step + offset
+        assert ref == got, (
+            f"Post-resume batch {step} doesn't match reference.\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    # Full coverage: every sample seen exactly once.
+    all_seen = sorted(sid for b in seen_before + seen_after for sid in b)
+    assert all_seen == list(range(NUM_ROWS))
+
+
+@pytest.mark.parametrize(
+    "initial_world_size,resume_world_size",
+    [
+        (1, 2),
+        (1, 4),
+        (1, 12),
+        (2, 1),
+        (2, 4),
+        (4, 2),
+        (4, 1),
+        (3, 6),
+        (6, 3),
+        (12, 1),
+    ],
+)
+def test_resumability_elastic_world_size_change(
+    lance_table, initial_world_size, resume_world_size
+):
+    """Resuming on a *different* world_size (elastic resume) produces the same
+    global batches as the reference epoch for both the pre- and post-checkpoint
+    phases.  No sample is skipped or repeated.
+
+    This is the central elastic-resume guarantee: because state is stored
+    per-split (not per-rank), the checkpoint is topology-independent.
+    """
+    checkpoint_at_step = 4
+    reference = _collect_global_batches(lance_table, world_size=initial_world_size)
+
+    seen_before, checkpoint = _advance_and_checkpoint(
+        lance_table, initial_world_size, checkpoint_at_step
+    )
+    seen_after = _resume_and_collect(lance_table, resume_world_size, checkpoint)
+
+    # Pre-checkpoint batches match reference.
+    for step, (ref, got) in enumerate(zip(reference, seen_before)):
+        assert ref == got, (
+            f"Pre-checkpoint batch {step} differs "
+            f"(initial_world_size={initial_world_size}).\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    # Post-resume batches match reference (elastic determinism also holds
+    # for the resumed phase with the new world_size).
+    for offset, (ref, got) in enumerate(
+        zip(reference[checkpoint_at_step:], seen_after)
+    ):
+        step = checkpoint_at_step + offset
+        assert ref == got, (
+            f"Post-resume batch {step} differs "
+            f"(resume_world_size={resume_world_size}).\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    # No overlap and full coverage.
+    before_ids = {sid for b in seen_before for sid in b}
+    after_ids = {sid for b in seen_after for sid in b}
+    assert before_ids.isdisjoint(after_ids), (
+        f"Samples seen before and after resume overlap: "
+        f"{sorted(before_ids & after_ids)}"
+    )
+    assert before_ids | after_ids == set(range(NUM_ROWS)), (
+        f"Not all samples covered. Missing: "
+        f"{sorted(set(range(NUM_ROWS)) - (before_ids | after_ids))}"
+    )
+
+
+def test_resumability_state_dict_is_topology_independent(lance_table):
+    """state_dict() captures per-split consumption, so it must be identical
+    across all ranks at the same training step.
+
+    If ranks produce different state dicts, resumption with a different
+    world_size would give inconsistent results depending on which rank's
+    checkpoint was saved.
+    """
+    checkpoint_at_step = 4
+    world_size = 4
+    micro = NUM_SPLITS // world_size
+
+    datasets = [
+        _make_dataset(lance_table, rank, world_size) for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+
+    for _ in range(checkpoint_at_step):
+        for it in iters:
+            for _ in range(micro):
+                next(it)
+
+    state_dicts = [ds.state_dict() for ds in datasets]
+    for rank in range(1, world_size):
+        assert state_dicts[rank] == state_dicts[0], (
+            f"state_dict from rank {rank} differs from rank 0.\n"
+            f"  rank 0:    {state_dicts[0]}\n"
+            f"  rank {rank}: {state_dicts[rank]}"
+        )
+
+
+def test_resumability_round_trip_is_deterministic(lance_table):
+    """Loading the same checkpoint twice produces identical post-resume sequences."""
+    world_size = 2
+    checkpoint_at_step = 3
+
+    _, checkpoint = _advance_and_checkpoint(lance_table, world_size, checkpoint_at_step)
+    remaining_a = _resume_and_collect(lance_table, world_size, checkpoint)
+    remaining_b = _resume_and_collect(lance_table, world_size, checkpoint)
+
+    assert remaining_a == remaining_b, (
+        "Same checkpoint produced different sequences on two separate resumes."
+    )
+
+
+def test_resumability_at_epoch_start(lance_table):
+    """A checkpoint taken before any samples are consumed resumes as a full epoch."""
+    world_size = 2
+    reference = _collect_global_batches(lance_table, world_size)
+
+    seen_before, checkpoint = _advance_and_checkpoint(lance_table, world_size, steps=0)
+    seen_after = _resume_and_collect(lance_table, world_size, checkpoint)
+
+    assert seen_before == []
+    assert seen_after == reference
+
+
+def test_resumability_at_epoch_end(lance_table):
+    """A checkpoint taken after all steps are consumed yields an empty resume."""
+    world_size = 2
+
+    _, checkpoint = _advance_and_checkpoint(lance_table, world_size, STEPS_PER_EPOCH)
+    remaining = _resume_and_collect(lance_table, world_size, checkpoint)
+
+    assert remaining == [], (
+        f"Expected no remaining samples after epoch-end checkpoint, "
+        f"but got {len(remaining)} batches: {remaining}"
+    )
+
+
+def test_resumability_state_dict_contains_required_keys(lance_table):
+    """state_dict() must contain the keys the design doc mandates.
+
+    From the design doc:
+      - shuffle_seed    (must match on resume)
+      - num_splits      (must match on resume)
+      - epoch           (current epoch)
+      - samples_consumed_per_split  (per-split counter, topology-independent)
+    """
+    _, checkpoint = _advance_and_checkpoint(lance_table, world_size=1, steps=3)
+    required_keys = {
+        "shuffle_seed",
+        "num_splits",
+        "epoch",
+        "samples_consumed_per_split",
+    }
+    missing = required_keys - checkpoint.keys()
+    assert not missing, (
+        f"state_dict() is missing required keys: {missing}\n"
+        f"Got keys: {set(checkpoint.keys())}"
+    )
+
+
+def test_resumability_mismatched_num_splits_raises(lance_table):
+    """Loading a checkpoint with a different num_splits must raise an error.
+
+    Changing num_splits invalidates the split partitioning and mid-epoch resume
+    is no longer meaningful.
+    """
+    _, checkpoint = _advance_and_checkpoint(lance_table, world_size=1, steps=3)
+
+    different_splits = NUM_SPLITS * 2
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=different_splits,
+        shuffle_seed=SHUFFLE_SEED,
+        rank=0,
+        world_size=1,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        ds.load_state_dict(checkpoint)
+
+
+def test_resumability_mismatched_shuffle_seed_raises(lance_table):
+    """Loading a checkpoint with a different shuffle_seed must raise an error.
+
+    A different seed produces a different sample ordering, so the per-split
+    consumption counts in the checkpoint no longer refer to the same samples.
+    """
+    _, checkpoint = _advance_and_checkpoint(lance_table, world_size=1, steps=3)
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED + 1,
+        rank=0,
+        world_size=1,
+    )
+    with pytest.raises((ValueError, RuntimeError)):
+        ds.load_state_dict(checkpoint)
+
+
+# ---------------------------------------------------------------------------
+# Large global batch size tests (global_batch_size is a multiple of num_splits)
+# ---------------------------------------------------------------------------
+# These tests use LARGE_GLOBAL_BATCH_SIZE = 36 = 3 * NUM_SPLITS, so each split
+# contributes 3 samples per global step instead of 1.  The elastic-determinism
+# and resumability properties must hold regardless of this multiplier.
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_large_batch_elastic_det_full_coverage(lance_table_large, world_size):
+    """Every sample appears exactly once per epoch regardless of global_batch_size."""
+    batches = _collect_global_batches(
+        lance_table_large,
+        world_size,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+    all_seen = sorted(sid for b in batches for sid in b)
+    assert all_seen == list(range(LARGE_NUM_ROWS))
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_large_batch_elastic_det_correct_step_count(lance_table_large, world_size):
+    """Steps per epoch = LARGE_NUM_ROWS // LARGE_GLOBAL_BATCH_SIZE."""
+    expected_steps = LARGE_NUM_ROWS // LARGE_GLOBAL_BATCH_SIZE
+    batches = _collect_global_batches(
+        lance_table_large,
+        world_size,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+    assert len(batches) == expected_steps, (
+        f"world_size={world_size}: expected {expected_steps} steps, got {len(batches)}"
+    )
+
+
+@pytest.mark.parametrize("world_size", COMPATIBLE_WORLD_SIZES)
+def test_large_batch_elastic_det_correct_batch_size(lance_table_large, world_size):
+    """Each global batch contains exactly LARGE_GLOBAL_BATCH_SIZE distinct samples."""
+    batches = _collect_global_batches(
+        lance_table_large,
+        world_size,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+    for step, batch in enumerate(batches):
+        assert len(batch) == LARGE_GLOBAL_BATCH_SIZE, (
+            f"world_size={world_size} step {step}: "
+            f"expected {LARGE_GLOBAL_BATCH_SIZE} samples, got {len(batch)}"
+        )
+
+
+def test_large_batch_elastic_det_same_across_topologies(lance_table_large):
+    """Global batch k is identical for every compatible world_size when
+    global_batch_size (36) is a 3× multiple of num_splits (12)."""
+    reference = _collect_global_batches(
+        lance_table_large,
+        world_size=1,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+    for ws in COMPATIBLE_WORLD_SIZES[1:]:
+        batches = _collect_global_batches(
+            lance_table_large,
+            world_size=ws,
+            global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+        )
+        assert len(batches) == len(reference)
+        for step, (ref, got) in enumerate(zip(reference, batches)):
+            assert ref == got, (
+                f"Global batch at step {step} differs between world_size=1 and "
+                f"world_size={ws} (global_batch_size={LARGE_GLOBAL_BATCH_SIZE}).\n"
+                f"  world_size=1  → {sorted(ref)}\n"
+                f"  world_size={ws} → {sorted(got)}"
+            )
+
+
+@pytest.mark.parametrize(
+    "initial_world_size,resume_world_size",
+    [(1, 4), (2, 4), (4, 2), (4, 1), (3, 6), (6, 3)],
+)
+def test_large_batch_resumability_elastic_world_size_change(
+    lance_table_large, initial_world_size, resume_world_size
+):
+    """Elastic resume with global_batch_size=36 (3× num_splits): combined
+    samples before and after the checkpoint match the reference epoch exactly."""
+    checkpoint_at_step = 4
+    reference = _collect_global_batches(
+        lance_table_large,
+        world_size=initial_world_size,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+
+    seen_before, checkpoint = _advance_and_checkpoint(
+        lance_table_large,
+        initial_world_size,
+        checkpoint_at_step,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+    seen_after = _resume_and_collect(
+        lance_table_large,
+        resume_world_size,
+        checkpoint,
+        global_batch_size=LARGE_GLOBAL_BATCH_SIZE,
+    )
+
+    for step, (ref, got) in enumerate(zip(reference, seen_before)):
+        assert ref == got, (
+            f"Pre-checkpoint batch {step} differs "
+            f"(initial_world_size={initial_world_size}, "
+            f"global_batch_size={LARGE_GLOBAL_BATCH_SIZE}).\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    for offset, (ref, got) in enumerate(
+        zip(reference[checkpoint_at_step:], seen_after)
+    ):
+        step = checkpoint_at_step + offset
+        assert ref == got, (
+            f"Post-resume batch {step} differs "
+            f"(resume_world_size={resume_world_size}, "
+            f"global_batch_size={LARGE_GLOBAL_BATCH_SIZE}).\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    before_ids = {sid for b in seen_before for sid in b}
+    after_ids = {sid for b in seen_after for sid in b}
+    assert before_ids.isdisjoint(after_ids), (
+        f"Samples overlap across checkpoint: {sorted(before_ids & after_ids)}"
+    )
+    assert before_ids | after_ids == set(range(LARGE_NUM_ROWS))
+
+
+# ---------------------------------------------------------------------------
+# Multi-worker tests (num_workers > 1)
+# ---------------------------------------------------------------------------
+# PyTorch DataLoader collects a full batch from each worker before moving to the
+# next (batch-level, not item-level, round-robin).  For the dataset's batches to
+# be consistent across num_workers, the dataset must assign each worker a
+# contiguous block of splits.  Worker k owns splits in the range:
+#   [k * (num_splits // num_workers), (k+1) * (num_splits // num_workers))
+# (within a single rank's split allocation).
+#
+# Tests in this section use worker_info_override to simulate multiple workers
+# without spawning real DataLoader worker processes.
+
+
+def _collect_global_batches_multi_worker(
+    table,
+    world_size: int,
+    num_workers: int,
+    *,
+    num_splits: int = NUM_SPLITS,
+    global_batch_size: int = GLOBAL_BATCH_SIZE,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+) -> list[frozenset[int]]:
+    """Drain a full epoch using multiple simulated workers per rank.
+
+    Creates one StreamingDataset per (rank, worker_id) pair, each configured
+    via worker_info_override.  Samples from all (rank, worker_id) pairs at the
+    same global step are combined into one frozenset, mirroring the contiguous
+    batch-level collection that PyTorch DataLoader performs.
+
+    Constraint: num_splits % (world_size * num_workers) == 0
+    """
+    assert num_splits % (world_size * num_workers) == 0, (
+        f"num_splits={num_splits} must be divisible by "
+        f"world_size * num_workers = {world_size * num_workers}"
+    )
+    assert global_batch_size % (world_size * num_workers) == 0
+    samples_per_worker_per_step = global_batch_size // (world_size * num_workers)
+
+    # Collect all samples from every (rank, worker_id) pair.
+    worker_samples: dict[tuple[int, int], list[int]] = {}
+    for rank in range(world_size):
+        for worker_id in range(num_workers):
+            ds = _make_dataset(
+                table,
+                rank,
+                world_size,
+                num_splits=num_splits,
+                shuffle_seed=shuffle_seed,
+                epoch=epoch,
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
+            )
+            worker_samples[(rank, worker_id)] = [item["id"] for item in ds]
+
+    lengths = {len(s) for s in worker_samples.values()}
+    assert len(lengths) == 1, (
+        f"Workers produced unequal sample counts: "
+        f"{dict(zip(worker_samples, (len(s) for s in worker_samples.values())))}"
+    )
+    n_per_worker = lengths.pop()
+    assert n_per_worker % samples_per_worker_per_step == 0
+    n_steps = n_per_worker // samples_per_worker_per_step
+
+    global_batches: list[frozenset[int]] = []
+    for step in range(n_steps):
+        batch: set[int] = set()
+        for samples in worker_samples.values():
+            start = step * samples_per_worker_per_step
+            batch.update(samples[start : start + samples_per_worker_per_step])
+        global_batches.append(frozenset(batch))
+
+    return global_batches
+
+
+def _advance_and_checkpoint_multi_worker(
+    table,
+    world_size: int,
+    num_workers: int,
+    steps: int,
+    *,
+    num_splits: int = NUM_SPLITS,
+    global_batch_size: int = GLOBAL_BATCH_SIZE,
+    shuffle_seed: int = SHUFFLE_SEED,
+    epoch: int = 0,
+) -> tuple[list[frozenset[int]], dict]:
+    """Run `steps` global steps with multiple workers per rank, then checkpoint."""
+    assert num_splits % (world_size * num_workers) == 0
+    assert global_batch_size % (world_size * num_workers) == 0
+    samples_per_worker_per_step = global_batch_size // (world_size * num_workers)
+
+    datasets: dict[tuple[int, int], StreamingDataset] = {}
+    iters: dict[tuple[int, int], object] = {}
+    for rank in range(world_size):
+        for worker_id in range(num_workers):
+            ds = _make_dataset(
+                table,
+                rank,
+                world_size,
+                num_splits=num_splits,
+                shuffle_seed=shuffle_seed,
+                epoch=epoch,
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
+            )
+            datasets[(rank, worker_id)] = ds
+            iters[(rank, worker_id)] = iter(ds)
+
+    seen: list[frozenset[int]] = []
+    for _ in range(steps):
+        batch: set[int] = set()
+        for it in iters.values():
+            for _ in range(samples_per_worker_per_step):
+                batch.add(next(it)["id"])
+        seen.append(frozenset(batch))
+
+    # State is per-split → same across all rank/worker combinations.
+    checkpoint = datasets[(0, 0)].state_dict()
+    return seen, checkpoint
+
+
+# ── Multi-worker correctness ──────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
+def test_multi_worker_full_coverage(lance_table, world_size, num_workers):
+    """Every sample is seen exactly once across all workers and all steps."""
+    batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
+    all_seen = sorted(sid for b in batches for sid in b)
+    assert all_seen == list(range(NUM_ROWS)), (
+        f"world_size={world_size} num_workers={num_workers}: "
+        f"expected IDs 0..{NUM_ROWS - 1}"
+    )
+
+
+@pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
+def test_multi_worker_correct_step_count(lance_table, world_size, num_workers):
+    """Step count equals NUM_ROWS // GLOBAL_BATCH_SIZE regardless of topology."""
+    batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
+    assert len(batches) == STEPS_PER_EPOCH, (
+        f"world_size={world_size} num_workers={num_workers}: "
+        f"expected {STEPS_PER_EPOCH} steps, got {len(batches)}"
+    )
+
+
+@pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
+def test_multi_worker_no_cross_worker_overlap(lance_table, world_size, num_workers):
+    """Workers within the same rank have disjoint sample sets."""
+    for rank in range(world_size):
+        per_worker: list[set[int]] = []
+        for worker_id in range(num_workers):
+            ds = _make_dataset(
+                lance_table,
+                rank,
+                world_size,
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
+            )
+            per_worker.append({item["id"] for item in ds})
+
+        for i in range(num_workers):
+            for j in range(i + 1, num_workers):
+                overlap = per_worker[i] & per_worker[j]
+                assert not overlap, (
+                    f"rank={rank} workers {i} and {j} share samples: {sorted(overlap)}"
+                )
+
+
+# ── Elastic determinism with num_workers ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("world_size,num_workers", MULTI_WORKER_TOPOLOGIES)
+def test_multi_worker_same_global_batches_as_single_worker(
+    lance_table, world_size, num_workers
+):
+    """Global batches produced with num_workers > 1 match those from num_workers=1.
+
+    PyTorch DataLoader collects a complete batch from each worker before moving
+    to the next.  With contiguous split assignment, worker k's batch at step s
+    contains the same samples as the corresponding segment of the single-worker
+    batch at step s.  The union across all workers at step s is therefore the
+    same global batch.
+    """
+    reference = _collect_global_batches(lance_table, world_size)
+    batches = _collect_global_batches_multi_worker(lance_table, world_size, num_workers)
+
+    assert len(batches) == len(reference)
+    for step, (ref, got) in enumerate(zip(reference, batches)):
+        assert ref == got, (
+            f"Global batch at step {step} differs between num_workers=1 and "
+            f"num_workers={num_workers} (world_size={world_size}).\n"
+            f"  num_workers=1 → {sorted(ref)}\n"
+            f"  num_workers={num_workers} → {sorted(got)}"
+        )
+
+
+def test_multi_worker_elastic_det_across_worker_counts(lance_table):
+    """Global batches match for every compatible world_size / num_workers pair."""
+    reference = _collect_global_batches(lance_table, world_size=1)
+    for world_size, num_workers in MULTI_WORKER_TOPOLOGIES:
+        batches = _collect_global_batches_multi_worker(
+            lance_table, world_size, num_workers
+        )
+        assert batches == reference, (
+            f"Mismatch for world_size={world_size}, num_workers={num_workers}"
+        )
+
+
+# ── Resumability with num_workers ─────────────────────────────────────────────
+
+
+def test_streaming_dataloader_commits_only_consumed_worker_batches(tmp_path):
+    """Prefetched worker state is committed only as the trainer receives it."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "worker_commit", pa.table({"id": [1, 2, 3, 4, 10, 20, 30, 40]})
+    )
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=4,
+    )
+    iterator = iter(loader)
+    try:
+        first = next(iterator)["id"].tolist()
+
+        assert first == [1, 2]
+        assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2, 0]
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        second = next(iterator)["id"].tolist()
+        assert second == [10, 20]
+        checkpoint = dataset.state_dict()
+        assert checkpoint["samples_consumed_per_split"] == [2, 2]
+        uninterrupted = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    resumed_loader = StreamingDataLoader(
+        resumed,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=4,
+    )
+    resumed_iterator = iter(resumed_loader)
+    try:
+        remaining = [batch["id"].tolist() for batch in resumed_iterator]
+    finally:
+        resumed_iterator._shutdown_workers()
+    assert remaining == uninterrupted == [[3, 4], [30, 40]]
+
+
+def test_distributed_checkpoint_uses_rank_local_worker_boundary(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("rank_boundary", pa.table({"id": list(range(8))}))
+    dataset = StreamingDataset(
+        table,
+        num_splits=4,
+        shuffle=False,
+        rank=0,
+        world_size=2,
+    )
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [0]
+        assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [
+            1,
+            0,
+            0,
+            0,
+        ]
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        assert next(iterator)["id"].tolist() == [2]
+        checkpoint = dataset.state_dict()
+        remaining = [batch["id"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    assert checkpoint["samples_consumed_per_split"] == [1, 1, 0, 0]
+    assert remaining == [[1], [3]]
+
+
+def test_standard_dataloader_rejects_stale_parent_checkpoint(tmp_path):
+    """A standard DataLoader must not expose prefetched producer progress."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("untracked_workers", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    # Merely constructing the checkpoint-aware loader must not authorize a
+    # later plain DataLoader's worker progress.
+    StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+    )
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [1, 2]
+        with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+            dataset.state_dict()
+        list(iterator)
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_streaming_dataloader_rejects_persistent_workers(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("persistent_workers", pa.table({"id": [1, 2]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+
+    with pytest.raises(ValueError, match="persistent_workers=True"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=1,
+            num_workers=2,
+            persistent_workers=True,
+        )
+
+
+def test_collate_failure_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "collate_failure", pa.table({"id": [0, 1, 2, 3, 100, 101, 102, 103]})
+    )
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        collate_fn=_collate_with_first_batch_error,
+        prefetch_factor=2,
+    )
+    iterator = iter(loader)
+    try:
+        with pytest.raises(ValueError, match="first batch fails"):
+            next(iterator)
+        assert next(iterator) == [100, 101]
+        assert next(iterator) == [2, 3]
+        with pytest.raises(RuntimeError, match="failed before it was returned"):
+            dataset.state_dict()
+        list(iterator)
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_collate_stop_iteration_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("collate_stop", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=_collate_with_first_batch_stop,
+    )
+    iterator = iter(loader)
+
+    with pytest.raises(RuntimeError, match="collate_fn raised StopIteration"):
+        next(iterator)
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+    assert list(iterator) == [[2, 3], [4, 5]]
+
+
+def test_batch_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("collate_interrupt", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=0,
+        collate_fn=_collate_with_first_batch_interrupt,
+    )
+    iterator = iter(loader)
+
+    with pytest.raises(KeyboardInterrupt, match="first batch interrupted"):
+        next(iterator)
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+    assert list(iterator) == [[2, 3], [4, 5]]
+
+
+def test_parent_commit_base_exception_invalidates_consumer_checkpoint(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("commit_interrupt", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    iterator = iter(loader)
+    real_commit = dataset._commit_worker_state
+
+    def interrupt_after_commit(state, *, require_uniform):
+        real_commit(state, require_uniform=require_uniform)
+        raise KeyboardInterrupt("after parent commit")
+
+    with patch.object(
+        dataset, "_commit_worker_state", side_effect=interrupt_after_commit
+    ):
+        with pytest.raises(KeyboardInterrupt, match="after parent commit"):
+            next(iterator)
+
+    assert dataset._checkpoint_snapshot()["samples_consumed_per_split"] == [2]
+    with pytest.raises(RuntimeError, match="failed before it was returned"):
+        dataset.state_dict()
+
+
+def test_direct_iteration_surfaces_prefetch_failure_before_committing_row(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("prefetch_failure", pa.table({"id": list(range(4))}))
+    release = threading.Event()
+    failed = threading.Event()
+    real_getitems = streaming.Permutation.__getitems__
+
+    def controlled_getitems(permutation, indices):
+        if indices and indices[0] >= 2:
+            assert release.wait(timeout=5)
+            failed.set()
+            raise RuntimeError("later prefetched I/O failed")
+        return real_getitems(permutation, indices)
+
+    class SignalDict(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            release.set()
+            assert failed.wait(timeout=5)
+
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", controlled_getitems)
+    dataset = StreamingDataset(
+        table,
+        num_splits=1,
+        shuffle=False,
+        read_batch_size=2,
+        io_queue_depth=2,
+    )
+    dataset._resume_positions = SignalDict()
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 0
+    with pytest.raises(RuntimeError, match="later prefetched I/O failed"):
+        next(iterator)
+
+    checkpoint = dataset.state_dict()
+    assert checkpoint["samples_consumed_per_split"] == [1]
+    assert checkpoint["positions_consumed_per_split"] == [1]
+
+
+@pytest.mark.parametrize("workers", [0, 1, 2])
+def test_streaming_dataloader_rejects_drop_last(tmp_path, workers):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("drop_last", pa.table({"id": [0, 1, 2]}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    worker_options = {"multiprocessing_context": "spawn"} if workers else {}
+
+    with pytest.raises(ValueError, match="drop_last=True"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=workers,
+            drop_last=True,
+            **worker_options,
+        )
+
+
+def test_streaming_dataloader_owns_one_iterator_until_teardown(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("iterator_owner", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=2,
+        num_workers=1,
+        multiprocessing_context="spawn",
+    )
+
+    first = iter(loader)
+    try:
+        assert next(first)["id"].tolist() == [0, 1]
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            iter(loader)
+    finally:
+        first._shutdown_workers()
+
+    second = iter(loader)
+    try:
+        assert [batch["id"].tolist() for batch in second] == [[2, 3]]
+    except BaseException:
+        second._shutdown_workers()
+        raise
+
+    # Natural exhaustion releases ownership too.
+    third = iter(loader)
+    try:
+        assert list(third) == []
+    finally:
+        third._shutdown_workers()
+
+
+def test_zero_worker_shutdown_closes_inner_iterator_before_release(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("zero_worker_shutdown", pa.table({"id": list(range(6))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+    first._shutdown_workers()
+
+    assert dataset._consumer_iterator_active is False
+    assert dataset._raw_batches_ref is None
+    second = iter(loader)
+    try:
+        with pytest.raises(StopIteration):
+            next(first)
+        assert next(second)["id"].tolist() == [2, 3]
+    finally:
+        second._shutdown_workers()
+
+
+def test_direct_and_loader_admission_share_one_atomic_lease(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("direct_loader_lease", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    entered = threading.Event()
+    release = threading.Event()
+    direct_result = []
+    direct_error = []
+    contender = []
+    real_resolve = dataset._resolve_my_splits
+
+    def controlled_resolve():
+        if threading.current_thread().name == "direct-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_resolve()
+
+    def advance_direct(iterator):
+        try:
+            direct_result.append(next(iterator)["id"])
+        except BaseException as exc:
+            direct_error.append(exc)
+
+    monkeypatch.setattr(dataset, "_resolve_my_splits", controlled_resolve)
+    direct = iter(dataset)
+    thread = threading.Thread(
+        target=advance_direct, args=(direct,), name="direct-start"
+    )
+    thread.start()
+    assert entered.wait(timeout=5)
+    try:
+        with pytest.raises(RuntimeError, match="concurrent iteration"):
+            contender.append(iter(loader))
+    finally:
+        release.set()
+        thread.join(timeout=5)
+        if contender:
+            contender[0]._shutdown_workers()
+        direct.close()
+
+    assert not thread.is_alive()
+    assert direct_error == []
+    assert direct_result == [0]
+
+
+def test_loader_acquires_before_snapshot_and_cleans_interrupted_acquire(
+    tmp_path, monkeypatch
+):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("lease_snapshot", pa.table({"id": list(range(4))}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=2, num_workers=0)
+    first = iter(loader)
+    assert next(first)["id"].tolist() == [0, 1]
+
+    entered = threading.Event()
+    release = threading.Event()
+    pending = []
+    pending_errors = []
+    observed_snapshots = []
+    real_acquire = dataset._acquire_consumer_iterator
+    real_snapshot = dataset._checkpoint_snapshot
+
+    def controlled_acquire():
+        if threading.current_thread().name == "stale-start":
+            entered.set()
+            assert release.wait(timeout=5)
+        return real_acquire()
+
+    def recording_snapshot():
+        state = real_snapshot()
+        if threading.current_thread().name == "stale-start":
+            observed_snapshots.append(state["samples_consumed_per_split"])
+        return state
+
+    def create_pending_iterator():
+        try:
+            pending.append(iter(loader))
+        except BaseException as exc:
+            pending_errors.append(exc)
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", controlled_acquire)
+    monkeypatch.setattr(dataset, "_checkpoint_snapshot", recording_snapshot)
+    thread = threading.Thread(target=create_pending_iterator, name="stale-start")
+    thread.start()
+    assert entered.wait(timeout=5)
+    assert next(first)["id"].tolist() == [2, 3]
+    with pytest.raises(StopIteration):
+        next(first)
+    release.set()
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert pending_errors == []
+    assert observed_snapshots == [[4]]
+    assert len(pending) == 1
+    assert list(pending[0]) == []
+    assert dataset.state_dict()["samples_consumed_per_split"] == [4]
+
+    def interrupted_acquire():
+        real_acquire()
+        raise KeyboardInterrupt("after acquire")
+
+    monkeypatch.setattr(dataset, "_acquire_consumer_iterator", interrupted_acquire)
+    with pytest.raises(KeyboardInterrupt, match="after acquire"):
+        iter(loader)
+    assert dataset._consumer_iterator_active is False
+
+
+def test_consumer_iterator_lease_publication_is_atomic(tmp_path, monkeypatch):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("atomic_lease", pa.table({"id": [0, 1]}))
+    dataset = StreamingDataset(table, num_splits=1, shuffle=False)
+    loader = StreamingDataLoader(dataset, batch_size=1, num_workers=0)
+    real_get_ident = streaming.threading.get_ident
+    calls = 0
+
+    def interrupt_during_publication():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt("during lease mutation")
+        return real_get_ident()
+
+    monkeypatch.setattr(streaming.threading, "get_ident", interrupt_during_publication)
+    with pytest.raises(KeyboardInterrupt, match="during lease mutation"):
+        iter(loader)
+    monkeypatch.setattr(streaming.threading, "get_ident", real_get_ident)
+
+    assert dataset._consumer_iterator_active is False
+    iterator = iter(loader)
+    try:
+        assert next(iterator)["id"].tolist() == [0]
+    finally:
+        iterator._shutdown_workers()
+
+
+def test_streaming_dataloader_rejects_dataset_iter_override(tmp_path):
+    class CustomizedDataset(StreamingDataset):
+        def __iter__(self):
+            return iter([1000, 1001])
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("custom_iteration", pa.table({"id": [0, 1, 2]}))
+    dataset = CustomizedDataset(table, num_splits=1, shuffle=False)
+
+    assert list(dataset) == [1000, 1001]
+    with pytest.raises(TypeError, match="override __iter__"):
+        StreamingDataLoader(
+            dataset,
+            batch_size=2,
+            num_workers=0,
+            collate_fn=list,
+        )
+
+
+def test_interleaved_adapters_do_not_authorize_plain_iteration(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table_a = db.create_table("adapter_a", pa.table({"id": [0, 1]}))
+    table_b = db.create_table("adapter_b", pa.table({"id": [10, 11]}))
+    dataset_a = StreamingDataset(table_a, num_splits=1, shuffle=False)
+    dataset_b = StreamingDataset(table_b, num_splits=1, shuffle=False)
+    initial_state = dataset_a.state_dict()
+
+    owner_a = dataset_a._acquire_consumer_iterator()
+    owner_b = dataset_b._acquire_consumer_iterator()
+    try:
+        iterator_a = iter(streaming._StreamingDatasetAdapter(dataset_a))
+        iterator_b = iter(streaming._StreamingDatasetAdapter(dataset_b))
+        assert next(iterator_a).data["id"] == 0
+        assert next(iterator_b).data["id"] == 10
+        assert [sample.data["id"] for sample in iterator_a] == [1]
+        assert [sample.data["id"] for sample in iterator_b] == [11]
+    finally:
+        dataset_a._release_consumer_iterator(owner_a)
+        dataset_b._release_consumer_iterator(owner_b)
+
+    dataset_a.load_state_dict(initial_state)
+    with patch(
+        "lancedb.streaming.get_worker_info",
+        return_value=FakeWorkerInfo(id=0, num_workers=1),
+    ):
+        plain_iterator = iter(dataset_a)
+        assert next(plain_iterator)["id"] == 0
+        plain_iterator.close()
+
+    assert dataset_a._untracked_worker_iteration[0] == 1
+    with pytest.raises(RuntimeError, match="Use StreamingDataLoader"):
+        dataset_a.state_dict()
+
+
+def test_resume_from_partial_split_cycle_preserves_remaining_order(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("partial_cycle", pa.table({"id": [1, 2, 10, 20]}))
+    dataset = StreamingDataset(table, num_splits=2, shuffle=False)
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 1
+    checkpoint = dataset.state_dict()
+    iterator.close()
+    assert checkpoint["samples_consumed_per_split"] == [1, 0]
+
+    resumed = StreamingDataset(table, num_splits=2, shuffle=False)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == [10, 2, 20]
+
+
+def test_partial_cycle_resume_preserves_skip_truncation(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "partial_skip", pa.table({"id": [0, 1, 2, 3, 100, 101, 102, 103]})
+    )
+    kwargs = dict(
+        num_splits=2,
+        shuffle=False,
+        transform=_failing_transform({1, 2, 3}),
+        on_transform_error="skip",
+    )
+    dataset = StreamingDataset(table, **kwargs)
+    iterator = iter(dataset)
+
+    assert next(iterator)["id"] == 0
+    checkpoint = dataset.state_dict()
+    uninterrupted = [row["id"] for row in iterator]
+
+    resumed = StreamingDataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    assert [row["id"] for row in resumed] == uninterrupted == [100]
+
+
+def test_multi_worker_resumability_same_topology(lance_table):
+    """Checkpoint with num_workers=2, resume with num_workers=2: exact continuation."""
+    world_size = 1
+    num_workers = 2
+    checkpoint_at_step = 4
+
+    reference = _collect_global_batches_multi_worker(
+        lance_table, world_size, num_workers
+    )
+    seen_before, checkpoint = _advance_and_checkpoint_multi_worker(
+        lance_table, world_size, num_workers, checkpoint_at_step
+    )
+
+    # Resume: create new datasets, load checkpoint, collect remaining.
+    remaining: list[frozenset[int]] = []
+    samples_per_worker_per_step = GLOBAL_BATCH_SIZE // (world_size * num_workers)
+    datasets = {}
+    iters = {}
+    for rank in range(world_size):
+        for worker_id in range(num_workers):
+            ds = _make_dataset(
+                lance_table,
+                rank,
+                world_size,
+                worker_info_override=FakeWorkerInfo(
+                    id=worker_id, num_workers=num_workers
+                ),
+            )
+            ds.load_state_dict(checkpoint)
+            datasets[(rank, worker_id)] = ds
+            iters[(rank, worker_id)] = iter(ds)
+
+    _STOP3 = object()
+    while True:
+        batch: set[int] = set()
+        exhausted = 0
+        for it in iters.values():
+            for _ in range(samples_per_worker_per_step):
+                val = next(it, _STOP3)
+                if val is _STOP3:
+                    exhausted += 1
+                    break
+                batch.add(val["id"])
+        if exhausted == len(iters):
+            break
+        assert exhausted == 0
+        remaining.append(frozenset(batch))
+
+    for step, (ref, got) in enumerate(zip(reference, seen_before)):
+        assert ref == got, f"Pre-checkpoint step {step} doesn't match reference"
+    for offset, (ref, got) in enumerate(zip(reference[checkpoint_at_step:], remaining)):
+        step = checkpoint_at_step + offset
+        assert ref == got, f"Post-resume step {step} doesn't match reference"
+
+    all_seen = sorted(sid for b in seen_before + remaining for sid in b)
+    assert all_seen == list(range(NUM_ROWS))
+
+
+def test_multi_worker_resumability_worker_count_change(lance_table):
+    """Checkpoint with num_workers=1, resume with num_workers=2.
+
+    Because state is per-split, it is independent of num_workers just as it is
+    independent of world_size.
+    """
+    world_size = 1
+    checkpoint_at_step = 4
+    reference = _collect_global_batches(lance_table, world_size=1)
+
+    seen_before, checkpoint = _advance_and_checkpoint(
+        lance_table, world_size=1, steps=checkpoint_at_step
+    )
+
+    # Resume with num_workers=2 using the checkpoint.
+    num_workers = 2
+    samples_per_worker_per_step = GLOBAL_BATCH_SIZE // (world_size * num_workers)
+    iters = {}
+    for worker_id in range(num_workers):
+        ds = _make_dataset(
+            lance_table,
+            rank=0,
+            world_size=world_size,
+            worker_info_override=FakeWorkerInfo(id=worker_id, num_workers=num_workers),
+        )
+        ds.load_state_dict(checkpoint)
+        iters[worker_id] = iter(ds)
+
+    _STOP4 = object()
+    remaining: list[frozenset[int]] = []
+    while True:
+        batch: set[int] = set()
+        exhausted = 0
+        for it in iters.values():
+            for _ in range(samples_per_worker_per_step):
+                val = next(it, _STOP4)
+                if val is _STOP4:
+                    exhausted += 1
+                    break
+                batch.add(val["id"])
+        if exhausted == len(iters):
+            break
+        assert exhausted == 0
+        remaining.append(frozenset(batch))
+
+    for offset, (ref, got) in enumerate(zip(reference[checkpoint_at_step:], remaining)):
+        step = checkpoint_at_step + offset
+        assert ref == got, (
+            f"Post-resume step {step} doesn't match reference when switching "
+            f"from num_workers=1 to num_workers=2.\n"
+            f"  reference: {sorted(ref)}\n"
+            f"  got:       {sorted(got)}"
+        )
+
+    before_ids = {sid for b in seen_before for sid in b}
+    after_ids = {sid for b in remaining for sid in b}
+    assert before_ids.isdisjoint(after_ids)
+    assert before_ids | after_ids == set(range(NUM_ROWS))
+
+
+# ── worker_info_override warning behaviour ────────────────────────────────────
+
+
+def test_worker_info_override_logs_warning_when_torch_worker_active(
+    lance_table, caplog
+):
+    """When worker_info_override is set but get_worker_info() also returns a
+    value (i.e. the dataset is being iterated inside a real DataLoader worker),
+    the dataset must log a warning that the override takes precedence and that
+    this may produce incorrect or duplicated data.
+
+    The warning is important because silently ignoring the real worker assignment
+    would cause all workers to read the same data.
+    """
+    override = FakeWorkerInfo(id=0, num_workers=2)
+    ds = _make_dataset(lance_table, rank=0, world_size=1, worker_info_override=override)
+
+    fake_torch_info = FakeWorkerInfo(id=0, num_workers=4)
+    with patch("lancedb.streaming.get_worker_info", return_value=fake_torch_info):
+        with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+            list(ds)
+
+    warning_messages = [
+        r.message for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert warning_messages, (
+        "Expected at least one WARNING when worker_info_override is active inside "
+        "a real DataLoader worker, but no warnings were logged."
+    )
+    combined = " ".join(warning_messages).lower()
+    assert "override" in combined or "worker_info_override" in combined, (
+        f"Warning message did not mention the override. Messages: {warning_messages}"
+    )
+
+
+def test_worker_info_override_no_warning_in_main_process(lance_table, caplog):
+    """When get_worker_info() returns None (main process / num_workers=0),
+    using worker_info_override is the normal testing path and must not warn.
+    """
+    override = FakeWorkerInfo(id=0, num_workers=2)
+    ds = _make_dataset(lance_table, rank=0, world_size=1, worker_info_override=override)
+
+    with patch("lancedb.streaming.get_worker_info", return_value=None):
+        with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+            list(ds)
+
+    warning_messages = [
+        r.message for r in caplog.records if r.levelno >= logging.WARNING
+    ]
+    assert not warning_messages, (
+        f"Unexpected warnings when override used in main process: {warning_messages}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prefetch queue depth tests
+# ---------------------------------------------------------------------------
+
+
+def test_concurrent_iteration_raises(lance_table):
+    """Starting a second iterator while one is already active must raise."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it1 = iter(ds)
+    next(it1)  # advance it1 so the pipeline is live
+
+    it2 = iter(ds)
+    with pytest.raises(RuntimeError, match="concurrent"):
+        next(it2)
+
+
+def test_raw_queue_depth_zero_when_not_iterating(lance_table):
+    """raw_queue_depth is 0 before iteration starts and after it ends."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert ds.raw_queue_depth == 0
+
+    list(ds)  # drain the whole epoch
+
+    assert ds.raw_queue_depth == 0
+
+
+def test_prefetch_queue_depth_zero_when_not_iterating(lance_table):
+    """prefetch_queue_depth is 0 before iteration starts and after it ends."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert ds.prefetch_queue_depth == 0
+
+    list(ds)  # drain the whole epoch
+
+    assert ds.prefetch_queue_depth == 0
+
+
+def test_prefetch_queue_depth_positive_during_iteration(lance_table):
+    """prefetch_queue_depth is > 0 while rows are being yielded."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    next(it)  # advance past the first yield; pipeline is now primed
+    # The other splits still have their initial futures in flight.
+    assert ds.prefetch_queue_depth > 0
+
+    list(it)  # exhaust the remaining rows
+
+    assert ds.prefetch_queue_depth == 0
+
+
+# ---------------------------------------------------------------------------
+# Transform tests
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_and_transform_time_zero_before_iteration(lance_table):
+    """fetch_time and transform_time start at 0."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert ds.fetch_time == 0.0
+    assert ds.transform_time == 0.0
+
+
+def test_fetch_and_transform_time_positive_after_iteration(lance_table):
+    """Both timers are positive after a full epoch."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    list(ds)
+    assert ds.fetch_time > 0.0
+    assert ds.transform_time > 0.0
+
+
+def test_fetch_time_excludes_transform(lance_table):
+    """fetch_time does not include transform time: fetch + transform < total wall time,
+    and neither counter bleeds into the other."""
+    import pyarrow as pa
+    import time
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.01)  # 10 ms of artificial transform work
+        return batch.to_pydict()["id"]
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=slow_transform,
+    )
+    list(ds)
+
+    # The slow transform should dominate transform_time.
+    assert ds.transform_time > ds.fetch_time
+
+
+def test_bytes_loaded_increases_after_iteration(lance_table):
+    """bytes_loaded is 0 before iteration and positive after."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert ds.bytes_loaded == 0
+
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+
+
+def test_bytes_loaded_measured_before_transform(lance_table):
+    """bytes_loaded measures raw Arrow size even when transform discards everything."""
+    import pyarrow as pa
+
+    # This transform throws away every value.  If bytes_loaded were measured
+    # after the transform, it would see no Arrow data and stay at 0.
+    def discard_everything(batch: pa.RecordBatch) -> list:
+        return [None] * batch.num_rows
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=discard_everything,
+    )
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+
+
+def test_transform_is_applied(lance_table):
+    """A custom transform passed to StreamingDataset is forwarded to the
+    underlying Permutation and applied to every yielded item."""
+    import pyarrow as pa
+
+    def id_only(batch: pa.RecordBatch) -> list[int]:
+        return batch.column("id").to_pylist()
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=id_only,
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(isinstance(item, int) for item in items), (
+        f"Expected ints from transform, got {type(items[0])}"
+    )
+    assert sorted(items) == list(range(NUM_ROWS))
+
+
+def test_transform_none_yields_dicts(lance_table):
+    """With no transform (the default), items are plain Python dicts."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(isinstance(item, dict) for item in items)
+    assert all("id" in item for item in items)
+
+
+@pytest.mark.parametrize(
+    ("configured", "detected", "expected"),
+    [(2, 8, 2), (None, 3, 3), (None, None, 1)],
+)
+def test_transform_parallelism_configures_executor(
+    lance_table, monkeypatch, configured, detected, expected
+):
+    """Explicit transform parallelism overrides the detected CPU count."""
+    real_executor = streaming.ThreadPoolExecutor
+    monkeypatch.setattr(streaming.os, "cpu_count", lambda: detected)
+
+    with patch.object(streaming, "ThreadPoolExecutor", wraps=real_executor) as executor:
+        list(
+            StreamingDataset(
+                lance_table,
+                num_splits=NUM_SPLITS,
+                shuffle_seed=SHUFFLE_SEED,
+                transform_parallelism=configured,
+            )
+        )
+
+    assert executor.call_args_list[-1].kwargs["max_workers"] == expected
+
+
+@pytest.mark.parametrize("transform_parallelism", [0, -1])
+def test_transform_parallelism_must_be_positive(lance_table, transform_parallelism):
+    with pytest.raises(
+        ValueError, match="transform_parallelism must be greater than 0"
+    ):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            transform_parallelism=transform_parallelism,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Backpressure / transform_queue_depth tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("transform_queue_depth", [0, -1])
+def test_transform_queue_depth_must_be_positive(lance_table, transform_queue_depth):
+    """transform_queue_depth=0 or negative must raise ValueError."""
+    with pytest.raises(
+        ValueError, match="transform_queue_depth must be greater than 0"
+    ):
+        StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            transform_queue_depth=transform_queue_depth,
+        )
+
+
+@pytest.mark.parametrize("transform_queue_depth", [1, 2, 4])
+def test_transform_queue_depth_correctness(lance_table, transform_queue_depth):
+    """With backpressure enabled, every row is still yielded exactly once."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=transform_queue_depth,
+        read_batch_size=8,
+    )
+    items = list(ds)
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS))
+
+
+def test_transform_queue_depth_matches_no_backpressure(lance_table):
+    """With backpressure enabled the same samples are produced as without it."""
+    ds_unlimited = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_limited = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=1,
+    )
+    assert [item["id"] for item in ds_unlimited] == [
+        item["id"] for item in ds_limited
+    ], "transform_queue_depth must not affect the sample ordering or set"
+
+
+def test_transform_queue_depth_bounds_cooked_rows(lance_table):
+    """prefetch_queue_depth stays within transform_queue_depth * read_batch_size
+    per split when observed from the main thread during iteration."""
+    n_splits = 4
+    batch_size = 8
+    cooked_depth = 2
+    # max cooked rows across all 4 splits: 4 * 2 * 8 = 64
+    max_allowed = n_splits * cooked_depth * batch_size
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=n_splits,
+        shuffle_seed=SHUFFLE_SEED,
+        transform_queue_depth=cooked_depth,
+        read_batch_size=batch_size,
+        transform_parallelism=1,
+        world_size=1,
+    )
+
+    peak = 0
+    for _ in ds:
+        depth = ds.prefetch_queue_depth
+        if depth > peak:
+            peak = depth
+
+    # The main thread observes depth *after* popping a row, so the peak is at
+    # most max_allowed (one row already popped from the split just served).
+    assert peak <= max_allowed, (
+        f"prefetch_queue_depth peaked at {peak}, expected <= {max_allowed}"
+    )
+
+
+def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
+    """io_queue_depth bounds raw_batches even when transform is the bottleneck.
+
+    Regression test for a bug where Stage 1 (I/O) applied no backpressure at
+    all: _fill_io only capped io_pending (in-flight fetches) at
+    io_queue_depth, but every completed fetch was drained into raw_batches
+    unconditionally (_drain_io) and immediately replaced by a new fetch
+    (_fill_io again), so I/O kept racing arbitrarily far ahead of a slow
+    transform stage -- raw_batches had no cap of its own.
+    transform_queue_depth did not help either: its admission check in
+    _try_submit_tx only counts cooked rows and in-flight transform futures
+    (`len(cooked[i]) + len(tx_pending[i]) * batch_size`); it never looks at
+    len(raw_batches[i]), so it cannot throttle Stage 1.
+
+    The fix makes _fill_io count both io_pending and raw_batches against the
+    io_queue_depth budget, so raw_queue_depth should never exceed
+    io_queue_depth * read_batch_size per split, regardless of how slow the
+    transform stage is.
+
+    I/O is forced to run synchronously (same technique as
+    test_transform_queue_depth_does_not_admit_at_capacity_minus_one) so the
+    assertion is deterministic regardless of machine load, rather than
+    relying on a real-time race between I/O and transform threads.  Only the
+    transform runs on a real background thread (with a short sleep) so the
+    consumer genuinely blocks waiting for it, letting Stage 1 attempt to run
+    ahead between blocking waits.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import pyarrow as pa
+    import time
+
+    n_rows = 200
+    read_batch_size = 10
+    io_queue_depth = 2
+    transform_queue_depth = 2
+    max_allowed = io_queue_depth * read_batch_size
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(n_rows))}))
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.005)
+        return batch.column("id").to_pylist()
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def synchronous_io_submit(self, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_io_call":
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", synchronous_io_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            read_batch_size=read_batch_size,
+            io_queue_depth=io_queue_depth,
+            transform_queue_depth=transform_queue_depth,
+            transform_parallelism=1,
+            transform=slow_transform,
+        )
+
+        peak_raw = 0
+        ids = []
+        for item in ds:
+            ids.append(item)  # slow_transform yields bare ids, not dicts
+            if ds.raw_queue_depth > peak_raw:
+                peak_raw = ds.raw_queue_depth
+
+    assert peak_raw <= max_allowed, (
+        f"raw_queue_depth peaked at {peak_raw}, expected <= {max_allowed} "
+        "(io_queue_depth * read_batch_size)"
+    )
+    # The backpressure fix must not come at the cost of dropping or
+    # duplicating rows.
+    assert sorted(ids) == list(range(n_rows))
+
+
+def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
+    """Admission requires a full read_batch_size of free space, not just one slot.
+
+    The test intercepts ThreadPoolExecutor.submit to make I/O calls execute
+    synchronously on the main thread.  This ensures all raw batches land in
+    raw_batches (via _drain_io) before _try_submit_tx evaluates the admission
+    predicate for the first time.  Without this, the I/O future for batch N+1
+    might still be in io_pending at the capacity-minus-one transition, leaving
+    raw_batches empty and causing _try_submit_tx to skip the admission check
+    entirely — so both the correct and the broken predicate produce depth=0
+    observations and the test cannot distinguish them.
+
+    With all raw batches pre-loaded in raw_batches the 4→3 cooked transition
+    (consuming one row from a full cooked queue) always triggers _try_submit_tx
+    against a non-empty raw_batches.
+
+    With transform_queue_depth=1 and batch_size=4, max_cooked_rows=4.
+    A transform may only be submitted when in_pipeline + batch_size <= 4, i.e.
+    when in_pipeline == 0 (cooked is completely empty).  Under the old broken
+    predicate (in_pipeline >= max_cooked_rows) the second transform would be
+    admitted with cooked containing batch_size-1 rows still unconsumed.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+
+    db = lancedb.connect(tmp_path)
+    batch_size = 4
+    # Four full batches → four transform submissions to observe.
+    table = db.create_table("t", pa.table({"id": list(range(batch_size * 4))}))
+
+    cooked_at_submit: list[int] = []
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def tracking_submit(self, fn, *args, **kwargs):
+        name = getattr(fn, "__name__", "")
+        if name == "_io_call":
+            # Run I/O synchronously on the calling (main) thread and return an
+            # already-completed Future.  _drain_io checks fut.done(), so a
+            # completed Future is moved to raw_batches immediately on the next
+            # _advance call — making raw-batch readiness deterministic at the
+            # capacity-minus-one transition instead of depending on I/O thread
+            # scheduling.
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        if name == "_tx_call_guarded":
+            # Capture cooked depth synchronously on the main thread before the
+            # transform worker can drain the queue.
+            ref = ds._cooked_ref
+            cooked_at_submit.append(len(ref[0]) if ref is not None else -1)
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", tracking_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=42,
+            read_batch_size=batch_size,
+            transform_queue_depth=1,
+            transform_parallelism=1,
+        )
+        list(ds)
+
+    assert len(cooked_at_submit) == 4, (
+        f"Expected 4 transform submissions (one per batch), got {len(cooked_at_submit)}"
+    )
+    # With full-batch backpressure each transform is only admitted when the
+    # cooked queue is completely empty (depth == 0).  The old broken predicate
+    # would admit at depth == batch_size - 1 == 3.
+    assert all(depth == 0 for depth in cooked_at_submit), (
+        "Transform admitted with non-empty cooked queue; full-batch backpressure "
+        "requires in_pipeline + batch_size <= max_cooked_rows before admission. "
+        f"Cooked depths at each submission: {cooked_at_submit}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deprecated parameter name tests
+# ---------------------------------------------------------------------------
+
+
+def test_prefetch_batches_deprecated_warns(lance_table, caplog):
+    """prefetch_batches logs a deprecation warning and behaves like io_queue_depth."""
+    with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            prefetch_batches=2,
+        )
+    messages = [r.message for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("deprecated" in m.lower() and "io_queue_depth" in m for m in messages), (
+        f"Expected deprecation warning mentioning io_queue_depth; got: {messages}"
+    )
+    assert sorted(item["id"] for item in ds) == list(range(NUM_ROWS))
+
+
+def test_filter_limits_rows(tmp_path):
+    """A filter expression is applied to the permutation so only matching rows
+    are yielded.  IDs 0..59 pass ``id < 60``; the other 60 are excluded."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        filter="id < 60",
+    )
+    items = list(ds)
+
+    ids = [item["id"] for item in items]
+    assert sorted(ids) == list(range(60)), f"Expected ids 0-59, got {sorted(ids)}"
+
+
+def test_filter_too_few_rows_raises(tmp_path):
+    """A filter that leaves fewer rows than num_splits raises ValueError at
+    construction time because each split must have at least one row."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    with pytest.raises(ValueError, match="at least 1 row per split"):
+        StreamingDataset(
+            table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            filter="id < 0",
+        )
+
+
+def test_columns_limits_output_columns(tmp_path):
+    """Only the requested columns are present in each yielded row."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "data",
+        pa.table({"id": list(range(NUM_ROWS)), "val": list(range(NUM_ROWS))}),
+    )
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id"],
+    )
+    items = list(ds)
+
+    assert len(items) == NUM_ROWS
+    assert all(list(item.keys()) == ["id"] for item in items), (
+        "Expected only 'id' column in each row"
+    )
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS))
+
+
+def test_columns_invalid_column_raises(tmp_path):
+    """Requesting a column that does not exist raises an error at iteration time."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("data", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["nonexistent"],
+    )
+    with pytest.raises(ValueError):
+        list(ds)
+
+
+def test_shuffle_clump_size_yields_all_rows(lance_table):
+    """shuffle_clump_size still produces a complete epoch with no duplicates or
+    omissions — clumping affects I/O locality, not correctness."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        shuffle_clump_size=4,
+    )
+    items = list(ds)
+
+    assert sorted(item["id"] for item in items) == list(range(NUM_ROWS)), (
+        "Expected every row exactly once with shuffle_clump_size set"
+    )
+
+
+# ---------------------------------------------------------------------------
+# on_transform_error tests
+# ---------------------------------------------------------------------------
+
+
+class BadRowError(ValueError):
+    """Raised by the failing transforms below when a batch contains a bad id."""
+
+
+def _failing_transform(bad_ids: set):
+    """A transform that raises BadRowError whenever the batch has a bad id.
+
+    Raises on the full batch and on any single-row slice containing a bad id,
+    so per-row isolation drops exactly the bad rows.
+    """
+
+    def transform(batch: pa.RecordBatch) -> list:
+        ids = batch.column("id").to_pylist()
+        bad = sorted(set(ids) & bad_ids)
+        if bad:
+            raise BadRowError(f"bad ids in batch: {bad}")
+        return [{"id": i} for i in ids]
+
+    return transform
+
+
+def _sequential_split_members(table) -> list[list[int]]:
+    """Return each split's ids in yield order for shuffle=False.
+
+    With a single rank and no workers the round-robin yields one row per split
+    per cycle, so item k of a clean run belongs to split k % NUM_SPLITS.
+    """
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle=False)
+    members: list[list[int]] = [[] for _ in range(NUM_SPLITS)]
+    for k, row in enumerate(ds):
+        members[k % NUM_SPLITS].append(row["id"])
+    return members
+
+
+def test_on_transform_error_default_raises(lance_table):
+    """By default a transform exception propagates and aborts iteration."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=_failing_transform({7}),
+    )
+    with pytest.raises(BadRowError):
+        list(ds)
+
+
+def test_on_transform_error_invalid_value(lance_table):
+    with pytest.raises(ValueError, match="on_transform_error"):
+        StreamingDataset(lance_table, num_splits=NUM_SPLITS, on_transform_error="bogus")
+
+
+def test_on_transform_error_skip_drops_bad_rows(lance_table):
+    """With one bad row per split, 'skip' yields every good row exactly once
+    and counts the dropped rows in rows_skipped."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][4] for i in range(NUM_SPLITS)}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    assert ds.rows_skipped == 0
+
+    ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == sorted(set(range(NUM_ROWS)) - bad_ids)
+    assert ds.rows_skipped == NUM_SPLITS
+
+
+def test_on_transform_error_skip_uneven_ends_at_last_complete_cycle(lance_table):
+    """When one split loses more rows than the others, the epoch ends at the
+    last cycle where every split still has a row — no crash, no bad rows, and
+    every step remains one sample per split."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0][:3])  # all 3 bad rows in split 0
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    items = [row["id"] for row in ds]
+
+    rows_per_split = NUM_ROWS // NUM_SPLITS
+    expected_cycles = rows_per_split - len(bad_ids)
+    assert len(items) == expected_cycles * NUM_SPLITS
+    assert len(set(items)) == len(items), "duplicate samples yielded"
+    assert not set(items) & bad_ids, "a bad row was yielded"
+    # Split 0 contributed exactly its surviving rows, in order, one per cycle.
+    survivors = [i for i in members[0] if i not in bad_ids]
+    assert items[0::NUM_SPLITS] == survivors[:expected_cycles]
+
+
+def test_on_transform_error_warn_logs(lance_table, caplog):
+    """'warn' skips like 'skip' but logs a warning for the failing batch."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][3] for i in range(NUM_SPLITS)}
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="warn",
+    )
+    with caplog.at_level(logging.WARNING, logger="lancedb.streaming"):
+        items = list(ds)
+
+    assert len(items) == NUM_ROWS - NUM_SPLITS
+    assert ds.rows_skipped == NUM_SPLITS
+    assert "Skipped" in caplog.text
+    assert "BadRowError" in caplog.text
+
+
+def test_on_transform_error_callable_selective(lance_table):
+    """A callable handler can skip expected errors and re-raise the rest."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][0] for i in range(NUM_SPLITS)}
+
+    handled: list[Exception] = []
+
+    def handler(exc: Exception) -> bool:
+        handled.append(exc)
+        return isinstance(exc, BadRowError)
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error=handler,
+    )
+    items = list(ds)
+    assert len(items) == NUM_ROWS - NUM_SPLITS
+    assert handled and all(isinstance(exc, BadRowError) for exc in handled)
+
+    def broken_transform(batch: pa.RecordBatch) -> list:
+        raise TypeError("boom")
+
+    ds2 = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=broken_transform,
+        on_transform_error=handler,
+    )
+    with pytest.raises(TypeError, match="boom"):
+        list(ds2)
+
+
+def test_transform_wrong_row_count_raises(lance_table):
+    """A transform that returns the wrong number of rows is an error even with
+    on_transform_error='skip' — silent shrinkage would corrupt accounting."""
+
+    def drops_rows(batch: pa.RecordBatch) -> list:
+        return batch.column("id").to_pylist()[:-1]
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        transform=drops_rows,
+        on_transform_error="skip",
+    )
+    with pytest.raises(ValueError, match="one output row per input row"):
+        list(ds)
+
+
+def test_skip_deterministic_across_runs(lance_table):
+    """With a fixed seed, skipping produces the identical sample sequence on
+    every run — skips are data-dependent, not run-dependent."""
+    bad_ids = {5, 17, 46}
+
+    def run() -> tuple[list[int], int]:
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=NUM_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            transform=_failing_transform(bad_ids),
+            on_transform_error="skip",
+        )
+        return [row["id"] for row in ds], ds.rows_skipped
+
+    ids_a, skipped_a = run()
+    ids_b, skipped_b = run()
+    assert ids_a == ids_b
+    assert skipped_a == skipped_b
+    assert not set(ids_a) & bad_ids
+
+
+def test_skip_elastic_det_across_world_sizes(lance_table):
+    """With equal bad-row counts per split, skipping preserves the full
+    elastic-determinism guarantee: identical global batches at every step for
+    every compatible world_size."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = {members[i][6] for i in range(NUM_SPLITS)}
+
+    def collect(world_size: int) -> list[frozenset[int]]:
+        micro = GLOBAL_BATCH_SIZE // world_size
+        iters = [
+            iter(
+                StreamingDataset(
+                    lance_table,
+                    num_splits=NUM_SPLITS,
+                    shuffle=False,
+                    rank=rank,
+                    world_size=world_size,
+                    transform=_failing_transform(bad_ids),
+                    on_transform_error="skip",
+                )
+            )
+            for rank in range(world_size)
+        ]
+        _STOP = object()
+        batches: list[frozenset[int]] = []
+        while True:
+            step_samples: set[int] = set()
+            exhausted = 0
+            for it in iters:
+                for _ in range(micro):
+                    val = next(it, _STOP)
+                    if val is _STOP:
+                        exhausted += 1
+                        break
+                    step_samples.add(val["id"])
+            if exhausted == len(iters):
+                break
+            assert exhausted == 0, (
+                "Rank iterators exhausted at different steps despite equal "
+                "bad-row counts per split"
+            )
+            batches.append(frozenset(step_samples))
+        return batches
+
+    reference = collect(1)
+    assert len(reference) == NUM_ROWS // NUM_SPLITS - 1
+    for ws in (2, 3, 4):
+        assert collect(ws) == reference, f"world_size={ws} diverged"
+
+
+def test_resumability_with_skips_same_topology(lance_table):
+    """Checkpointing mid-epoch with skipped rows resumes exactly: no sample
+    repeated, no sample lost, skipped rows stay skipped."""
+    members = _sequential_split_members(lance_table)
+    # Uneven skips: positions diverge across splits (2 bad in split 0, 1 in
+    # split 5), which only a position-based checkpoint can resume exactly.
+    bad_ids = {members[0][2], members[0][3], members[5][7]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+    rows_per_split = NUM_ROWS // NUM_SPLITS
+    assert len(reference) == (rows_per_split - 2) * NUM_SPLITS
+
+    steps = 3
+    ds = StreamingDataset(lance_table, **kwargs)
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(steps * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    it.close()
+
+    # Split 0 skipped positions 2 and 3 within its first 3 yields; split 5's
+    # bad row is beyond the checkpoint.  Everything else is at 3 = the sample
+    # count.
+    positions = checkpoint["positions_consumed_per_split"]
+    assert positions[0] == 5
+    assert positions[1:] == [3] * (NUM_SPLITS - 1)
+    assert checkpoint["samples_consumed_per_split"] == [3] * NUM_SPLITS
+
+    ds2 = StreamingDataset(lance_table, **kwargs)
+    ds2.load_state_dict(checkpoint)
+    resumed = [row["id"] for row in ds2]
+
+    assert consumed == reference[: steps * NUM_SPLITS]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
+def test_resumability_with_skips_elastic_merge(lance_table):
+    """Elastic resume with skips: each rank's checkpoint knows exact positions
+    only for its own splits; merge_state_dicts recovers the global state, and
+    a run on a different world_size continues exactly."""
+    members = _sequential_split_members(lance_table)
+    # Bad rows early in split 0 (rank 0) and split 6 (rank 1 of a ws=2 run) so
+    # both ranks' position vectors diverge before the checkpoint.
+    bad_ids = {members[0][0], members[0][2], members[6][1]}
+    kwargs = dict(
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+
+    reference = [row["id"] for row in StreamingDataset(lance_table, **kwargs)]
+
+    steps = 3
+    world_size = 2
+    micro = GLOBAL_BATCH_SIZE // world_size
+    datasets = [
+        StreamingDataset(lance_table, rank=rank, world_size=world_size, **kwargs)
+        for rank in range(world_size)
+    ]
+    iters = [iter(ds) for ds in datasets]
+    seen: list[frozenset[int]] = []
+    for _ in range(steps):
+        step_samples = set()
+        for it in iters:
+            for _ in range(micro):
+                step_samples.add(next(it)["id"])
+        seen.append(frozenset(step_samples))
+    states = [ds.state_dict() for ds in datasets]
+    for it in iters:
+        it.close()
+
+    merged = StreamingDataset.merge_state_dicts(states)
+    expected_positions = [3] * NUM_SPLITS
+    expected_positions[0] = 5  # skipped positions 0 and 2
+    expected_positions[6] = 4  # skipped position 1
+    assert merged["positions_consumed_per_split"] == expected_positions
+
+    # The first 3 global batches match the world_size=1 reference.
+    ref_batches = [
+        frozenset(reference[s * NUM_SPLITS : (s + 1) * NUM_SPLITS])
+        for s in range(len(reference) // NUM_SPLITS)
+    ]
+    assert seen == ref_batches[:steps]
+
+    # Resume on world_size=1 from the merged state.
+    ds_resume = StreamingDataset(lance_table, **kwargs)
+    ds_resume.load_state_dict(merged)
+    resumed = [row["id"] for row in ds_resume]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
+def test_rows_skipped_flushed_when_split_entirely_bad(lance_table):
+    """A split whose rows all fail never completes a cycle, so the epoch ends
+    immediately — but rows_skipped must still report the drops after the
+    iterator exits (the shared-memory counter is flushed on exhaustion)."""
+    members = _sequential_split_members(lance_table)
+    bad_ids = set(members[0])  # every row of split 0 is bad
+
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+        transform=_failing_transform(bad_ids),
+        on_transform_error="skip",
+    )
+    assert list(ds) == []
+    assert ds.rows_skipped == len(bad_ids)
+
+
+def test_merge_state_dicts_validates_consistency(lance_table):
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    state = ds.state_dict()
+    other = dict(state, shuffle_seed=SHUFFLE_SEED + 1)
+    with pytest.raises(ValueError, match="shuffle_seed mismatch"):
+        StreamingDataset.merge_state_dicts([state, other])
+    with pytest.raises(ValueError, match="at least one"):
+        StreamingDataset.merge_state_dicts([])
+
+
+def test_merge_state_dicts_combines_nonuniform_consumer_progress(lance_table):
+    dataset = StreamingDataset(
+        lance_table, num_splits=2, shuffle=False, shuffle_seed=SHUFFLE_SEED
+    )
+    rank0 = dataset.state_dict()
+    rank0["samples_consumed_per_split"] = [2, 0]
+    rank0["positions_consumed_per_split"] = [2, 0]
+    rank1 = dataset.state_dict()
+    rank1["samples_consumed_per_split"] = [0, 2]
+    rank1["positions_consumed_per_split"] = [0, 2]
+
+    merged = StreamingDataset.merge_state_dicts([rank0, rank1])
+
+    assert merged["samples_consumed_per_split"] == [2, 2]
+    assert merged["positions_consumed_per_split"] == [2, 2]
+
+
+def test_load_state_dict_without_positions_key(lance_table):
+    """Checkpoints from before positions_consumed_per_split existed still
+    resume exactly (positions equal sample counts when nothing is skipped)."""
+    reference = [
+        row["id"]
+        for row in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+        )
+    ]
+
+    steps = 4
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(steps * NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    it.close()
+    del checkpoint["positions_consumed_per_split"]
+
+    ds2 = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds2.load_state_dict(checkpoint)
+    resumed = [row["id"] for row in ds2]
+    assert resumed == reference[steps * NUM_SPLITS :]
+
+
+def test_num_splits_defaults_to_world_size(lance_table):
+    """Omitting num_splits gives world_size splits (one per rank)."""
+    ds = StreamingDataset(
+        lance_table,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    assert ds._num_splits == 1  # world_size defaults to 1
+
+    ds_ws2 = StreamingDataset(
+        lance_table,
+        world_size=2,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    assert ds_ws2._num_splits == 2
+
+
+def test_shuffle_false_sequential_and_deterministic(lance_table):
+    """shuffle=False produces identical ordering across two fresh instances."""
+    ds1 = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ds2 = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    first = [item["id"] for item in ds1]
+    second = [item["id"] for item in ds2]
+    assert first == second, "shuffle=False must be deterministic"
+    assert sorted(first) == list(range(NUM_ROWS)), "All rows must be present"
+
+
+def test_shuffle_false_vs_true_differ(lance_table):
+    """shuffle=True and shuffle=False produce different orderings."""
+    ds_shuf = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=True,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds_seq = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle=False,
+    )
+    shuffled = [item["id"] for item in ds_shuf]
+    sequential = [item["id"] for item in ds_seq]
+    assert shuffled != sequential, "Shuffled and sequential orderings should differ"
+
+
+def test_shuffle_seed_none_generates_stable_seed(lance_table):
+    """shuffle_seed=None resolves to a concrete integer at construction time.
+
+    A second dataset built with the same resolved seed must produce the same ordering.
+    """
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=None,
+    )
+    assert isinstance(ds._shuffle_seed, int), (
+        "shuffle_seed=None must resolve to an integer"
+    )
+    first = [item["id"] for item in ds]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=ds._shuffle_seed,
+    )
+    second = [item["id"] for item in ds2]
+    assert first == second, "Same resolved seed must produce the same ordering"
+
+
+# Sequence packing tests
+
+
+def _create_token_table(tmp_path, documents):
+    db = lancedb.connect(tmp_path)
+    tokens = pa.array(documents, type=pa.list_(pa.int64()))
+    return db.create_table("tokens", pa.table({"tokens": tokens}))
+
+
+def _packed_dataset(table, pack_sequences, *, blocks_per_epoch, pad_id=0, **kwargs):
+    return StreamingDataset(
+        table,
+        shuffle=False,
+        columns=["tokens"],
+        pack_sequences=pack_sequences,
+        eos_id=9,
+        pad_id=pad_id,
+        blocks_per_epoch=blocks_per_epoch,
+        **kwargs,
+    )
+
+
+def test_pack_sequences_emits_blocks_and_pads_final_tail(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2], [3, 4], [5]])
+    dataset = _packed_dataset(table, 6, blocks_per_epoch=2)
+
+    blocks = list(dataset)
+
+    assert len(blocks) == 2
+    assert blocks[0]["input_ids"].tolist() == [1, 2, 9, 3, 4, 9]
+    assert blocks[0]["doc_ids"].tolist() == [0, 0, 0, 1, 1, 1]
+    assert blocks[1]["input_ids"].tolist() == [5, 9, 0, 0, 0, 0]
+    assert blocks[1]["doc_ids"].tolist() == [0, 0, 0, 0, 0, 0]
+    assert blocks[0]["input_ids"].dtype == torch.int64
+    assert blocks[0]["doc_ids"].dtype == torch.int64
+
+
+def test_pack_sequences_pads_lagging_splits(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    dataset = _packed_dataset(table, 5, blocks_per_epoch=6, num_splits=2)
+    input_ids = [block["input_ids"].tolist() for block in dataset]
+    # Split 0 has four real tokens including EOS markers, while split 1 has
+    # eleven. Packing must emit three complete two-split cycles.
+    assert input_ids == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+        [0, 0, 0, 0, 0],
+        [15, 16, 17, 9, 20],
+        [0, 0, 0, 0, 0],
+        [9, 0, 0, 0, 0],
+    ]
+
+    per_rank = []
+    for rank in range(2):
+        rank_dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch=6,
+            num_splits=2,
+            world_size=2,
+            rank=rank,
+        )
+        per_rank.append([block["input_ids"].tolist() for block in rank_dataset])
+
+    assert [len(blocks) for blocks in per_rank] == [3, 3]
+    sharded = [block for cycle in zip(*per_rank) for block in cycle]
+    assert sharded == input_ids
+
+
+def test_pack_sequences_auto_estimates_filtered_token_column(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "tokens",
+        pa.table(
+            {
+                "tokens": pa.array([[1] * 4, [2] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        ),
+    )
+    table.add(
+        pa.table(
+            {
+                "tokens": pa.array([[3] * 4, [4] * 9], type=pa.list_(pa.int64())),
+                "keep": [True, False],
+            }
+        )
+    )
+
+    with pytest.warns(UserWarning, match="approximate token-count sample"):
+        dataset = _packed_dataset(
+            table,
+            5,
+            blocks_per_epoch="auto",
+            num_splits=2,
+            filter="keep",
+        )
+
+    # Two kept documents contain 8 tokens plus 2 EOS tokens: two blocks.
+    assert dataset.state_dict()["blocks_per_epoch"] == 2
+
+
+def test_pack_sequences_checkpoint_resumes_on_new_topology(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [10, 11, 12, 13, 14, 15, 16, 17], [20]],
+    )
+    kwargs = dict(pack_sequences=5, blocks_per_epoch=6, num_splits=2)
+    reference = list(_packed_dataset(table, **kwargs))
+
+    datasets = [
+        _packed_dataset(table, world_size=2, rank=rank, **kwargs) for rank in range(2)
+    ]
+    iterators = [iter(dataset) for dataset in datasets]
+    first_cycle = [next(iterator) for iterator in iterators]
+    checkpoint = StreamingDataset.merge_state_dicts(
+        [dataset.state_dict() for dataset in datasets]
+    )
+    for iterator in iterators:
+        iterator.close()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    actual_remaining = list(resumed)
+
+    assert [block["input_ids"].tolist() for block in first_cycle] == [
+        [1, 9, 2, 9, 0],
+        [10, 11, 12, 13, 14],
+    ]
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert [block["input_ids"].tolist() for block in actual_remaining] == [
+        block["input_ids"].tolist() for block in reference[2:]
+    ]
+    assert [block["doc_ids"].tolist() for block in actual_remaining] == [
+        block["doc_ids"].tolist() for block in reference[2:]
+    ]
+
+
+def test_packed_checkpoint_requires_complete_split_cycle(tmp_path):
+    table = _create_token_table(tmp_path, [[1], [2], [10], [20]])
+    dataset = _packed_dataset(table, pack_sequences=3, blocks_per_epoch=4, num_splits=2)
+    iterator = iter(dataset)
+
+    next(iterator)
+    with pytest.raises(RuntimeError, match="complete logical step boundary"):
+        dataset.state_dict()
+
+    next(iterator)
+    assert dataset.state_dict()["blocks_emitted_per_split"] == [1, 1]
+    iterator.close()
+
+
+def test_streaming_dataloader_commits_consumed_packed_batches(tmp_path):
+    table = _create_token_table(
+        tmp_path,
+        [[1], [2], [3], [4], [10], [20], [30], [40]],
+    )
+    kwargs = dict(pack_sequences=4, blocks_per_epoch=4, num_splits=2)
+    dataset = _packed_dataset(table, **kwargs)
+    loader = StreamingDataLoader(
+        dataset,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=2,
+    )
+    iterator = iter(loader)
+    try:
+        next(iterator)
+        with pytest.raises(RuntimeError, match="complete logical step boundary"):
+            dataset.state_dict()
+
+        next(iterator)
+        checkpoint = dataset.state_dict()
+        uninterrupted = [batch["input_ids"].tolist() for batch in iterator]
+    finally:
+        iterator._shutdown_workers()
+
+    resumed = _packed_dataset(table, **kwargs)
+    resumed.load_state_dict(checkpoint)
+    resumed_loader = StreamingDataLoader(
+        resumed,
+        batch_size=1,
+        num_workers=2,
+        multiprocessing_context="spawn",
+        prefetch_factor=2,
+    )
+    resumed_iterator = iter(resumed_loader)
+    try:
+        remaining = [batch["input_ids"].tolist() for batch in resumed_iterator]
+    finally:
+        resumed_iterator._shutdown_workers()
+
+    assert checkpoint["blocks_emitted_per_split"] == [1, 1]
+    assert remaining == uninterrupted
+
+
+def test_pack_sequences_validates_configuration_and_tokens(tmp_path):
+    table = _create_token_table(tmp_path, [[1, 2]])
+
+    with pytest.raises(ValueError, match="pad_id is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+        )
+
+    with pytest.raises(ValueError, match="blocks_per_epoch is required"):
+        StreamingDataset(
+            table,
+            shuffle=False,
+            columns=["tokens"],
+            pack_sequences=4,
+            eos_id=9,
+            pad_id=0,
+        )
+
+    with pytest.raises(ValueError, match="must be divisible"):
+        _packed_dataset(table, 4, blocks_per_epoch=3, num_splits=2)
+
+    with pytest.raises(ValueError, match="positive integer or 'auto'"):
+        _packed_dataset(table, 4, blocks_per_epoch="estimate")
+
+    checkpoint = _packed_dataset(table, 4, blocks_per_epoch=1).state_dict()
+    resumed = _packed_dataset(table, 4, blocks_per_epoch=1, pad_id=8)
+    with pytest.raises(ValueError, match="pad_id mismatch"):
+        resumed.load_state_dict(checkpoint)
+
+    float_db = lancedb.connect(tmp_path / "float")
+    float_table = float_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([[1.5, 2.5]], type=pa.list_(pa.float64()))}),
+    )
+    with pytest.raises(ValueError, match="token column with integer values"):
+        _packed_dataset(float_table, 4, blocks_per_epoch=1)
+
+    null_db = lancedb.connect(tmp_path / "null")
+    null_table = null_db.create_table(
+        "tokens",
+        pa.table({"tokens": pa.array([None], type=pa.list_(pa.int64()))}),
+    )
+    with pytest.raises(ValueError, match="does not support null token lists"):
+        list(_packed_dataset(null_table, 4, blocks_per_epoch=1))
+
+    null_value_db = lancedb.connect(tmp_path / "null_value")
+    null_value_table = null_value_db.create_table(
+        "tokens",
+        pa.table(
+            {"tokens": pa.array([[1], [2, None], [3]], type=pa.list_(pa.int64()))}
+        ),
+    )
+    blocks = list(
+        _packed_dataset(
+            null_value_table,
+            2,
+            blocks_per_epoch=2,
+            on_transform_error="skip",
+        )
+    )
+    assert [block["input_ids"].tolist() for block in blocks] == [[1, 9], [3, 9]]
+
+
+# ---------------------------------------------------------------------------
+# Doc examples — each test mirrors the code snippet in index.mdx so that
+# broken doc examples are caught before they ship.
+# ---------------------------------------------------------------------------
+
+
+def test_doc_example_basic(tmp_path):
+    """doc: Basic Data loading — StreamingDataset with default params."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "some_table",
+        pa.table({"feature": [float(i) for i in range(24)], "label": ["cat"] * 24}),
+    )
+
+    ds = StreamingDataset(table, shuffle_seed=42)
+    samples = list(ds)
+
+    assert len(samples) == 24
+    assert all(isinstance(s, dict) for s in samples)
+    assert all("feature" in s and "label" in s for s in samples)
+
+
+def test_doc_example_prefetch_params(tmp_path):
+    """doc: Prefetching — read_batch_size and io_queue_depth still cover all rows."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(NUM_ROWS))}))
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        read_batch_size=8,
+        io_queue_depth=2,
+    )
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
+def test_doc_example_transform(tmp_path):
+    """doc: Transformation — normalize scales values into [0, 1]."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"value": list(range(NUM_ROWS))}))
+
+    def normalize(batch: pa.RecordBatch) -> list[dict]:
+        rows = batch.to_pylist()
+        for row in rows:
+            row["value"] = row["value"] / 255.0
+        return rows
+
+    ds = StreamingDataset(
+        table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, transform=normalize
+    )
+    samples = list(ds)
+
+    assert len(samples) == NUM_ROWS
+    assert all(0.0 <= s["value"] <= 1.0 for s in samples)
+
+
+def test_doc_example_observability(lance_table):
+    """doc: Observability — counters are zero before and positive after iteration."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert ds.unscanned_rows == 0
+    assert ds.raw_queue_depth == 0
+    assert ds.prefetch_queue_depth == 0
+    assert ds.consumed_rows == 0
+    assert ds.bytes_loaded == 0
+    assert ds.fetch_time == 0.0
+    assert ds.transform_time == 0.0
+
+    list(ds)
+
+    assert ds.bytes_loaded > 0
+    assert ds.fetch_time >= 0.0
+    assert ds.transform_time >= 0.0
+
+
+def test_doc_example_columns_and_filter(tmp_path):
+    """doc: Filtering data — columns + filter reduce both dimensions independently."""
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "t",
+        pa.table(
+            {
+                "id": list(range(NUM_ROWS)),
+                "value": list(range(NUM_ROWS)),
+                "category": ["train"] * 60 + ["val"] * 60,
+            }
+        ),
+    )
+
+    ds = StreamingDataset(
+        table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        columns=["id"],
+        filter="category = 'train'",
+    )
+    samples = list(ds)
+
+    assert all(list(s.keys()) == ["id"] for s in samples), "Only 'id' column expected"
+    assert len(samples) == 60, "Only train rows expected"
+    assert all(s["id"] < 60 for s in samples)
+
+
+def test_doc_example_epoch_shuffle(lance_table):
+    """doc: Shuffling rows — different epochs produce different orderings."""
+    ids_e0 = [
+        s["id"]
+        for s in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=0
+        )
+    ]
+    ids_e1 = [
+        s["id"]
+        for s in StreamingDataset(
+            lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED, epoch=1
+        )
+    ]
+
+    assert sorted(ids_e0) == list(range(NUM_ROWS))
+    assert sorted(ids_e1) == list(range(NUM_ROWS))
+    assert ids_e0 != ids_e1, "Different epochs must produce different orderings"
+
+
+def test_doc_example_shuffle_false_eval(lance_table):
+    """doc: Shuffling rows — shuffle=False gives deterministic sequential order."""
+    ids_a = [
+        s["id"]
+        for s in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
+    ids_b = [
+        s["id"]
+        for s in StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle=False)
+    ]
+
+    assert ids_a == ids_b, "shuffle=False must produce identical orderings"
+    assert sorted(ids_a) == list(range(NUM_ROWS))
+
+
+def test_doc_example_shuffle_clump_size(lance_table):
+    """doc: Shuffling rows (Note) — shuffle_clump_size still covers every row."""
+    ds = StreamingDataset(
+        lance_table,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+        shuffle_clump_size=16,
+    )
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
+def test_doc_example_elastic_ddp(lance_table):
+    """doc: Data splits and elasticity — rank/world_size/num_splits covers all rows."""
+    # Use a highly composite num_splits that works across many world sizes
+    ELASTIC_SPLITS = 12  # works with world_size 1, 2, 3, 4, 6, 12
+
+    all_ids: set[int] = set()
+    for rank in range(4):
+        ds = StreamingDataset(
+            lance_table,
+            num_splits=ELASTIC_SPLITS,
+            shuffle_seed=SHUFFLE_SEED,
+            rank=rank,
+            world_size=4,
+        )
+        all_ids.update(s["id"] for s in ds)
+
+    assert all_ids == set(range(NUM_ROWS)), "All ranks together must cover every row"
+
+
+def test_doc_example_checkpoint(lance_table):
+    """doc: state_dict/load_state_dict checkpointing resumes without gaps or repeats."""
+    STEPS_BEFORE_CHECKPOINT = 4  # consume 4 full cycles then checkpoint
+
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    consumed = [next(it)["id"] for _ in range(STEPS_BEFORE_CHECKPOINT * NUM_SPLITS)]
+    checkpoint = ds.state_dict()
+    remaining_original = [s["id"] for s in it]  # drain the rest
+
+    # Resume from checkpoint on a fresh dataset
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)
+    remaining_resumed = [s["id"] for s in ds_resumed]
+
+    assert remaining_original == remaining_resumed, (
+        "Resumed dataset must continue from exactly the same position"
+    )
+    assert sorted(consumed + remaining_original) == list(range(NUM_ROWS)), (
+        "Consumed + remaining must cover every row exactly once"
+    )
+
+
+def test_streaming_dataset_over_table_with_schema_metadata(tmp_path):
+    """StreamingDataset builds its permutation at construction; base table schema
+    metadata (e.g. Hugging Face's `source-column-name-map`) must not break it."""
+    schema = pa.schema(
+        [pa.field("id", pa.int64())],
+        metadata={b"source-column-name-map": b"{}", b"huggingface": b"{}"},
+    )
+    table = lancedb.connect(tmp_path).create_table(
+        "data", pa.table({"id": list(range(NUM_ROWS))}, schema=schema)
+    )
+
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
+# ---------------------------------------------------------------------------
+# Remote tables (LanceDB Cloud / Enterprise)
+# ---------------------------------------------------------------------------
+
+
+def test_streaming_dataset_over_remote_table():
+    """StreamingDataset reads a remote table, with server-safe requests.
+
+    Builds a permutation over a remote table, then fetches batches from it by row id.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        ds = StreamingDataset(table, num_splits=2, shuffle_seed=SHUFFLE_SEED)
+        ids = [row["id"] for row in ds]
+
+    assert sorted(ids) == list(range(server.num_rows)), (
+        "Every row of the remote table must be yielded exactly once"
+    )
+    assert len(server.scans) == 1, "the permutation is built with one row-id scan"
+    assert server.takes, "rows must be fetched with row-id takes"
+    assert_server_safe_row_id_requests(server)
+
+
+# ---------------------------------------------------------------------------
+# split_strategy escape hatch
+# ---------------------------------------------------------------------------
+
+
+def test_split_strategy_bootstrap_sample(lance_table):
+    """split_strategy lets StreamingDataset use bootstrap_sample directly, producing
+    more rows than the base table has (sampling with replacement)."""
+    num_samples = 4 * NUM_ROWS
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            num_samples, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    ids = [row["id"] for row in ds]
+
+    assert len(ids) == num_samples
+    # 4x oversampling a small table must produce at least one repeat.
+    assert len(set(ids)) < len(ids)
+    assert set(ids).issubset(set(range(NUM_ROWS)))
+
+
+def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
+    """StreamingDataset(split_strategy=...), read single-process (no DataLoader
+    workers, so this one process owns every split and round-robins across all of
+    them), must yield exactly what calling the same strategy directly on a
+    PermutationBuilder would read, interleaved one row per split per cycle.
+
+    Reads each split via __getitems__ (explicit indices), not plain iteration:
+    Permutation's sequential __iter__ returns empty for a permutation with repeated
+    row_ids (confirmed directly -- len() is correct, __getitems__ returns the right
+    rows, but `for row in perm` yields nothing). That's a pre-existing limitation of
+    Permutation's iterator, unrelated to Bootstrap sampling's correctness: it doesn't
+    affect StreamingDataset or this benchmark, since both only ever read via
+    explicit-index batched fetches (take_offsets/__getitems__), never the plain
+    iterator -- flagged separately, not fixed here (out of scope for this change).
+    """
+    from lancedb.permutation import Permutation, permutation_builder
+
+    def strategy(builder):
+        return builder.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=1)
+
+    direct_perm_tbl = strategy(permutation_builder(lance_table)).execute()
+    expected_by_split = []
+    for split in range(NUM_SPLITS):
+        perm = Permutation.from_tables(lance_table, direct_perm_tbl, split=split)
+        rows = perm.__getitems__(list(range(len(perm))))
+        expected_by_split.append([row["id"] for row in rows])
+    samples_per_split = len(expected_by_split[0])
+    expected = [
+        expected_by_split[split][cycle]
+        for cycle in range(samples_per_split)
+        for split in range(NUM_SPLITS)
+    ]
+
+    ds = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    actual = [row["id"] for row in ds]
+    assert actual == expected
+
+
+def test_split_strategy_is_reproducible_across_instances(lance_table):
+    def strategy(builder):
+        return builder.bootstrap_sample(3 * NUM_ROWS, fixed=NUM_SPLITS, seed=99)
+
+    ds1 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    ds2 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+
+    assert [row["id"] for row in ds1] == [row["id"] for row in ds2]
+
+
+def test_split_strategy_num_splits_mismatch_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose split
+    count doesn't match num_splits. `_rank_splits` assumes split ids are exactly
+    0..num_splits-1 with no gaps; a mismatch would otherwise silently drop rows
+    (split ids >= num_splits) or leave some ranks reading an empty split (missing
+    ids < num_splits)."""
+    with pytest.raises(ValueError, match="num_splits"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+            ),
+            num_splits=NUM_SPLITS + 1,  # the strategy above always builds NUM_SPLITS
+        )
+
+
+def test_split_strategy_unequal_split_sizes_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose splits
+    all exist (ids 0..num_splits-1) but aren't the same size. The round-robin
+    iteration (see _iter_owned) assumes every owned split has the same row count
+    and stops as soon as any one is exhausted -- `ratios`/`counts` (unlike
+    `fixed`) can produce unequal split sizes, which would otherwise silently
+    drop rows from the larger splits."""
+    with pytest.raises(ValueError, match="unequal split sizes"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                100, ratios=[0.7, 0.3], seed=SHUFFLE_SEED
+            ),
+            num_splits=2,
+        )
+
+
+def test_split_strategy_permutation_mismatch_on_resume_raises(lance_table):
+    """load_state_dict must reject resuming against a different permutation than
+    the one that produced the checkpoint. num_splits/shuffle_seed alone can't catch
+    this for split_strategy, since that path ignores shuffle_seed entirely: a
+    bootstrap_sample reseeded differently resamples completely differently while
+    shuffle_seed keeps whatever value the caller passed either way, so the
+    pre-existing checks would pass despite the mismatch."""
+
+    def strategy(seed):
+        return lambda b: b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=seed)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(1),
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):  # one full cycle: every split advances uniformly
+        next(it)
+    checkpoint = ds1.state_dict()
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(2),  # different seed -> a different permutation
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,  # unchanged -- irrelevant on this path
+    )
+    with pytest.raises(ValueError, match="permutation mismatch"):
+        ds2.load_state_dict(checkpoint)
+
+
+def test_split_strategy_resume_with_matching_permutation_succeeds(lance_table):
+    """The common case: resuming against the same split_strategy (same seed) must
+    work exactly like the non-split_strategy checkpoint/resume path, continuing
+    from exactly the same position with no gaps or repeats."""
+
+    def strategy(b):
+        return b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=7)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds1.state_dict()
+    remaining_original = [row["id"] for row in it]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds2.load_state_dict(checkpoint)  # must not raise
+    remaining_resumed = [row["id"] for row in ds2]
+
+    assert remaining_original == remaining_resumed
+
+
+def test_default_checkpoint_omits_perm_fingerprint(lance_table):
+    """split_random/split_sequential checkpoints must not carry a
+    perm_fingerprint -- see test_default_checkpoint_resumes_after_compaction for
+    why checking one on this path would be wrong, not just unnecessary."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert "perm_fingerprint" not in ds.state_dict()
+
+
+def test_split_strategy_checkpoint_includes_perm_fingerprint(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    assert "perm_fingerprint" in ds.state_dict()
+
+
+def test_default_checkpoint_resumes_after_compaction(lance_table):
+    """split_random/split_sequential checkpoints must resume normally even after
+    the table is compacted between save and load. Lance row ids are not stable
+    across compaction by default (confirmed empirically: a 2-fragment table's
+    row ids differ before and after `optimize()`), so fingerprinting raw row ids
+    on this path -- instead of relying on shuffle_seed/num_splits alone, as it
+    does -- would reject this resume even though the seeded permutation itself
+    is unchanged."""
+    lance_table.add(pa.table({"id": [NUM_ROWS]}))  # a second fragment to compact
+
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    assert "perm_fingerprint" not in checkpoint
+
+    before_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    lance_table.optimize()
+    after_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    assert before_compaction != after_compaction, (
+        "test setup didn't actually renumber row ids -- fix the fixture, not "
+        "the assertion below"
+    )
+
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)  # must not raise

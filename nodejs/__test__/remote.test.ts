@@ -3,7 +3,67 @@
 
 import * as http from "http";
 import { RequestListener } from "http";
-import { Connection, ConnectionOptions, connect } from "../lancedb";
+import packageJson = require("../package.json");
+import {
+  ClientAuthMethod,
+  ClientConfig,
+  Connection,
+  ConnectionOptions,
+  OAuthConfig,
+  OAuthFlowType,
+  TlsConfig,
+  blob,
+  connect,
+} from "../lancedb";
+import {
+  Table as ArrowTable,
+  Field,
+  Int64,
+  RecordBatch,
+  RecordBatchReader,
+  Schema,
+  Struct,
+  makeArrowTable,
+  tableToIPC,
+} from "../lancedb/arrow";
+import {
+  HeaderProvider,
+  OAuthHeaderProvider,
+  StaticHeaderProvider,
+} from "../lancedb/header";
+import { Index } from "../lancedb/indices";
+import { LocalTable } from "../lancedb/table";
+
+// Test-only header providers
+class CustomProvider extends HeaderProvider {
+  getHeaders(): Record<string, string> {
+    return { "X-Custom": "custom-value" };
+  }
+}
+
+class ErrorProvider extends HeaderProvider {
+  private errorMessage: string;
+  public callCount: number = 0;
+
+  constructor(errorMessage: string = "Test error") {
+    super();
+    this.errorMessage = errorMessage;
+  }
+
+  getHeaders(): Record<string, string> {
+    this.callCount++;
+    throw new Error(this.errorMessage);
+  }
+}
+
+class ConcurrentProvider extends HeaderProvider {
+  private counter: number = 0;
+
+  getHeaders(): Record<string, string> {
+    this.counter++;
+    return { "X-Request-Id": String(this.counter) };
+  }
+}
 
 async function withMockDatabase(
   listener: RequestListener,
@@ -27,11 +87,513 @@ async function withMockDatabase(
   try {
     await callback(db);
   } finally {
-    server.close();
+    // `close()` alone leaves the port bound until keep-alive sockets drain, so
+    // a single failing test would cascade into EADDRINUSE for every test after
+    // it. Destroy the connections and wait for the port to actually be free.
+    await new Promise<void>((resolve) => {
+      server.closeAllConnections();
+      server.close(() => resolve());
+    });
   }
 }
 
 describe("remote connection", () => {
+  it.each([false, true])(
+    "normalizes remote blob writes (range target: %s)",
+    async (wide) => {
+      const field = (full: boolean) => {
+        const f = blob("image");
+        return full
+          ? f
+          : new Field(
+              f.name,
+              new Struct((f.type as Struct).children.slice(0, 2)),
+              f.nullable,
+              f.metadata,
+            );
+      };
+      const schema = (full: boolean) =>
+        new Schema([new Field("id", new Int64(), true), field(full)]);
+      const writes: { path: string; schema: Schema }[] = [];
+      let storedWide = wide;
+      const describe = () => ({
+        version: writes.length + 1,
+        schema: {
+          fields: [
+            { name: "id", type: { type: "int64" }, nullable: true },
+            {
+              name: "image",
+              nullable: true,
+              metadata: { "ARROW:extension:name": "lance.blob.v2" },
+              type: {
+                type: "struct",
+                fields: [
+                  {
+                    name: "data",
+                    nullable: true,
+                    type: { type: "large_binary" },
+                  },
+                  { name: "uri", nullable: true, type: { type: "string" } },
+                  ...(storedWide
+                    ? ["position", "size"].map((name) => ({
+                        name,
+                        nullable: true,
+                        type: { type: "uint64" },
+                      }))
+                    : []),
+                ],
+              },
+            },
+          ],
+        },
+      });
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.includes("/describe/")) {
+            res
+              .writeHead(200, { "content-type": "application/json" })
+              .end(JSON.stringify(describe()));
+            return;
+          }
+          const chunks: Buffer[] = [];
+          // Failed streaming input aborts before end; only complete bodies commit.
+          req.on("error", () => {
+            /* Aborted inputs must not commit. */
+          });
+          req.on("data", (chunk) => chunks.push(chunk));
+          req.on("end", () => {
+            const reader = RecordBatchReader.from(Buffer.concat(chunks)).open();
+            // Only read the schema: Rust separately checks compressed wire values.
+            writes.push({ path: req.url ?? "", schema: reader.schema });
+            storedWide =
+              (reader.schema.fields[1].type as Struct).children.length === 4;
+            res.writeHead(200, { "content-type": "application/json" }).end(
+              JSON.stringify({
+                version: writes.length + 1,
+                // biome-ignore lint/style/useNamingConvention: server wire format
+                num_inserted_rows: 1,
+              }),
+            );
+          });
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          const input = makeArrowTable(
+            [{ id: 1n, image: Buffer.from("payload") }],
+            { schema: schema(!wide) },
+          );
+          await table.add(input);
+          await table
+            .mergeInsert("id")
+            .whenMatchedUpdateAll()
+            .whenNotMatchedInsertAll()
+            .execute(input);
+          expect(writes).toHaveLength(2);
+          for (const write of writes)
+            expect(write.schema).toEqual(schema(wide));
+          expect(writes[0].path).toContain("/insert/");
+          expect(writes[1].path).toContain("/merge_insert/");
+          if (!wide) {
+            const invalid = makeArrowTable(
+              [
+                {
+                  id: 1n,
+                  image: {
+                    uri: "s3://registered/payload",
+                    position: 4,
+                    size: 6,
+                  },
+                },
+              ],
+              { schema: schema(true) },
+            );
+            await expect(table.add(invalid)).rejects.toThrow(
+              /cannot store byte ranges/,
+            );
+            await expect(
+              table
+                .mergeInsert("id")
+                .whenMatchedUpdateAll()
+                .whenNotMatchedInsertAll()
+                .execute(invalid),
+            ).rejects.toThrow(/cannot store byte ranges/);
+            expect(writes).toHaveLength(2);
+          }
+          await table.add(input, { mode: "overwrite" });
+          expect(writes).toHaveLength(3);
+          expect(writes[2].path).toContain("mode=overwrite");
+          expect(writes[2].schema).toEqual(schema(!wide));
+          expect(await table.schema()).toEqual(schema(!wide));
+        },
+      );
+    },
+  );
+
+  it("reports unsupported operations with backend-neutral errors", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/table/test/describe/");
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            version: 1,
+            schema: {
+              fields: [
+                { name: "id", type: { type: "int64" }, nullable: false },
+                {
+                  name: "vector",
+                  type: {
+                    type: "fixed_size_list",
+                    fields: [
+                      { name: "item", type: { type: "float" }, nullable: true },
+                    ],
+                    length: 2,
+                  },
+                  nullable: false,
+                },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const table = (await db.openTable("test")) as LocalTable;
+        const cases: [() => Promise<unknown>, string][] = [
+          [() => table.usesV2ManifestPaths(), "uses_v2_manifest_paths"],
+          [() => table.migrateManifestPathsV2(), "migrate_manifest_paths_v2"],
+          [() => table.optimize(), "optimize"],
+          [
+            () => table.createIndex("vector", { config: Index.hnswPq() }),
+            "IVF_HNSW_PQ",
+          ],
+        ];
+        for (const [run, operation] of cases) {
+          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          if (operation === "IVF_HNSW_PQ") {
+            message += " Please use IVF_HNSW_SQ instead.";
+          }
+          await expect(run()).rejects.toThrow(new Error(message));
+        }
+      },
+    );
+  });
+
+  it("rejects nprobes(0) before sending a query", async () => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        if (req.url === "/v1/table/test/describe/") {
+          res
+            .writeHead(200, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ version: 1, schema: { fields: [] } }));
+        } else {
+          res.writeHead(404).end();
+        }
+      },
+      async (db) => {
+        const table = await db.openTable("test");
+        expect(() => table.vectorSearch([0, 0]).nprobes(0)).toThrow(
+          "Invalid input, nprobes must be greater than 0",
+        );
+        expect(() =>
+          table.query().nearestTo([0, 0]).fullTextSearch("dog").nprobes(0),
+        ).toThrow("Invalid input, nprobes must be greater than 0");
+        await expect(
+          table
+            .vectorSearch(Promise.resolve([0, 0]))
+            .nprobes(0)
+            .toArrow(),
+        ).rejects.toThrow("Invalid input, nprobes must be greater than 0");
+      },
+    );
+    expect(requests).toEqual(["/v1/table/test/describe/"]);
+  });
+
+  it.each([false, true])(
+    "forwards scoring autoprojection only when disabled: %s",
+    async (disableScoring) => {
+      const response = Buffer.from(
+        tableToIPC(makeArrowTable([{ id: 1n }]), "stream"),
+      );
+      const requests: Record<string, unknown>[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.endsWith("/describe/")) {
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              JSON.stringify({
+                version: 1,
+                schema: {
+                  fields: [
+                    { name: "id", type: { type: "int64" }, nullable: false },
+                  ],
+                },
+              }),
+            );
+          } else if (req.url?.endsWith("/query/")) {
+            let body = "";
+            req.on("data", (chunk) => {
+              body += chunk;
+            });
+            req.on("end", () => {
+              requests.push(JSON.parse(body));
+              res
+                .writeHead(200, {
+                  "Content-Type": "application/vnd.apache.arrow.stream",
+                })
+                .end(response);
+            });
+          } else {
+            res.writeHead(404).end();
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          const query = table.vectorSearch([0, 0]).select(["id"]);
+          if (disableScoring) {
+            query.disableScoringAutoprojection();
+          }
+          expect((await query.toArrow()).numRows).toBe(1);
+        },
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0].disable_scoring_autoprojection).toBe(
+        disableScoring ? true : undefined,
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "preserves an empty query's schema with an empty batch: %s",
+    async (withEmptyBatch) => {
+      const schema = new Schema(
+        [new Field("doubled", new Int64(), false)],
+        new Map([["source", "query-output"]]),
+      );
+      const result = new ArrowTable(
+        schema,
+        withEmptyBatch ? [new RecordBatch(schema, undefined)] : [],
+      );
+      const response = Buffer.from(tableToIPC(result, "stream"));
+      let queryRequests = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.endsWith("/describe/")) {
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              JSON.stringify({
+                name: "items",
+                version: 1,
+                schema: {
+                  fields: [
+                    { name: "id", type: { type: "int64" }, nullable: false },
+                  ],
+                },
+              }),
+            );
+          } else if (req.url?.endsWith("/query/")) {
+            queryRequests++;
+            req.resume();
+            req.on("end", () => {
+              res
+                .writeHead(200, {
+                  "Content-Type": "application/vnd.apache.arrow.stream",
+                })
+                .end(response);
+            });
+          } else {
+            res.writeHead(404).end();
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("items");
+          const result = await table
+            .query()
+            .where("id < 0")
+            .select({ doubled: "id * 2" })
+            .toArrow();
+
+          expect(result.numRows).toBe(0);
+          expect(result.schema).toEqual(schema);
+          expect(result.getChild("doubled")?.length).toBe(0);
+        },
+      );
+
+      expect(queryRequests).toBe(1);
+    },
+  );
+
+  it("rejects the external blob opt-in without blocking regular adds", async () => {
+    let insertRequests = 0;
+    const describeRequests: string[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const requestPath = req.url ?? "";
+        if (requestPath.endsWith("/describe/")) {
+          describeRequests.push(requestPath);
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "items",
+              version: 1,
+              schema: {
+                fields: [
+                  {
+                    name: "id",
+                    type: { type: "int64" },
+                    nullable: true,
+                  },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+        if (requestPath.endsWith("/insert/")) {
+          insertRequests++;
+          req.resume();
+          req.on("end", () => {
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify({ version: insertRequests + 1 }));
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("items");
+
+        await expect(
+          table.add([{ id: 1n }], {
+            allowExternalBlobOutsideBases: true,
+          }),
+        ).rejects.toThrow("only supported on local tables");
+        expect(insertRequests).toBe(0);
+
+        await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
+          version: 2,
+        });
+        await expect(
+          table.add([{ id: 3n }], {
+            allowExternalBlobOutsideBases: false,
+          }),
+        ).resolves.toMatchObject({ version: 3 });
+      },
+    );
+
+    expect(describeRequests.length).toBeGreaterThan(0);
+    expect(insertRequests).toBe(2);
+  });
+
+  it("lists materialized views through the namespace route", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("GET");
+        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["daily_sales"] }));
+      },
+      async (db) => {
+        expect(await collect(db.listMaterializedViews())).toEqual([
+          "daily_sales",
+        ]);
+      },
+    );
+  });
+
+  it("creates a view and decodes the schema it resolved to", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/analytics$adults/create");
+        res.writeHead(200, { "content-type": "application/json" }).end(
+          JSON.stringify({
+            name: "adults",
+            namespace: ["analytics"],
+            query: "SELECT name FROM people",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
+            default_database: "db",
+            // biome-ignore lint/style/useNamingConvention: the wire field is snake_case
+            default_namespace: ["analytics"],
+            schema: {
+              fields: [
+                { name: "name", nullable: true, type: { type: "utf8" } },
+              ],
+            },
+          }),
+        );
+      },
+      async (db) => {
+        const view = await db.createView("adults", "SELECT name FROM people", [
+          "analytics",
+        ]);
+        expect(view.name).toBe("adults");
+        expect(view.namespacePath).toEqual(["analytics"]);
+        expect(view.query).toBe("SELECT name FROM people");
+        expect(view.defaultDatabase).toBe("db");
+        expect(view.defaultNamespacePath).toEqual(["analytics"]);
+        expect(view.schema.fields.map((f) => f.name)).toEqual(["name"]);
+      },
+    );
+  });
+
+  it("lists and drops views through their own routes", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/namespace/$/view/list");
+        res
+          .writeHead(200, { "content-type": "application/json" })
+          .end(JSON.stringify({ views: ["adults"] }));
+      },
+      async (db) => {
+        expect(await collect(db.listViews())).toEqual(["adults"]);
+      },
+    );
+
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        await db.dropView("adults");
+      },
+    );
+  });
+
+  it("reports the cleanup job when a view drop is accepted", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.method).toBe("POST");
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res
+          .writeHead(202, { "content-type": "application/json" })
+          .end('{"job_id": "j1-do-abc"}');
+      },
+      async (db) => {
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBe("j1-do-abc");
+      },
+    );
+  });
+
+  it("reports a finished job when a view drop had nothing to delete", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        expect(req.url).toBe("/v1/view/adults/drop");
+        res.writeHead(200, { "content-type": "application/json" }).end("{}");
+      },
+      async (db) => {
+        // A 200 means the name was not bound, so there is no cleanup to wait on.
+        const job = await db.dropViewAsync("adults");
+        expect(job.id).toBeNull();
+        await job.wait();
+      },
+    );
+  });
+
   it("should accept partial connection options", async () => {
     await connect("db://test", {
       apiKey: "fake",
@@ -69,7 +631,7 @@ describe("remote connection", () => {
       (req, res) => {
         expect(req.headers["x-api-key"]).toEqual("fake");
         expect(req.headers["user-agent"]).toEqual(
-          `LanceDB-Node-Client/${process.env.npm_package_version}`,
+          `LanceDB-Node-Client/${packageJson.version}`,
         );
 
         const body = JSON.stringify({ tables: [] });
@@ -102,6 +664,15 @@ describe("remote connection", () => {
     );
   });
 
+  it("rejects a zero blob request concurrency limit", async () => {
+    await expect(
+      connect("db://dev", {
+        apiKey: "fake",
+        clientConfig: { blobRequestConcurrency: 0 },
+      }),
+    ).rejects.toThrow("blob_request_concurrency");
+  });
+
   it("shows the full error messages on retry errors", async () => {
     await withMockDatabase(
       (_req, res) => {
@@ -127,6 +698,98 @@ describe("remote connection", () => {
     );
   });
 
+  it("lists the rows a Function refresh skipped", async () => {
+    const bodies: unknown[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "docs",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+        if (path === "/v1/table/docs/errors") {
+          let body = "";
+          req.on("data", (chunk) => {
+            body += chunk;
+          });
+          req.on("end", () => {
+            bodies.push(JSON.parse(body));
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              `{"records": [{"job_id": "j-7", "fragment_id": 3, "row_offset": 9,
+                "column": "embedding", "function": "embed", "function_version": "2",
+                "table_version": 11, "error_type": "ValueError",
+                "error_message": "bad input 'x'", "created_at_millis": 1700000000000}],
+                "fragments": [{"job_id": "j-7", "fragment_id": 4, "rows_skipped": 500,
+                "rows_recorded": 100}], "truncated": true}`,
+            );
+          });
+          return;
+        }
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("docs");
+        const errors = await table.functionErrors({
+          jobId: "j-7",
+          column: "embedding",
+          limit: 2,
+        });
+        expect(errors.truncated).toBe(true);
+        expect(errors.records.map((r) => r.errorMessage)).toEqual([
+          "bad input 'x'",
+        ]);
+        expect(errors.records[0].rowOffset).toBe(9);
+        expect(errors.fragments[0].rowsSkipped).toBe(500);
+        await table.functionErrors();
+        await expect(table.functionErrors({ limit: -1 })).rejects.toThrow(
+          "limit must be a non-negative integer",
+        );
+      },
+    );
+    expect(bodies).toEqual([
+      JSON.parse('{"job_id": "j-7", "column": "embedding", "limit": 2}'),
+      {},
+    ]);
+  });
+
+  it("surfaces JSON server errors from remote table operations", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "broken_table",
+              version: 1,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/count_rows/")) {
+          res
+            .writeHead(400, { "Content-Type": "application/json" })
+            .end(JSON.stringify({ error: "count rows failed" }));
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("broken_table");
+
+        await expect(table.countRows()).rejects.toThrow("count rows failed");
+      },
+    );
+  });
+
   it("should pass on requested extra headers", async () => {
     await withMockDatabase(
       (req, res) => {
@@ -148,4 +811,1057 @@ describe("remote connection", () => {
       },
     );
   });
+
+  it("supports version time-travel and branches on remote", async () => {
+    await withMockDatabase(
+      (req, res) => {
+        const body = req.url?.includes("/branches/list")
+          ? JSON.stringify({
+              branches: {
+                exp: { parentVersion: 1, createAt: 1, manifestSize: 1 },
+              },
+            })
+          : JSON.stringify({ name: "t", version: 2, schema: { fields: [] } });
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        // version-only (and "main" + version) time-travel the main chain
+        const v2 = await db.openTable("t", undefined, { version: 2 });
+        expect(v2.currentBranch()).toBeNull();
+        const mainV2 = await db.openTable("t", undefined, {
+          branch: "main",
+          version: 2,
+        });
+        expect(mainV2.currentBranch()).toBeNull();
+
+        // a non-main branch opens a handle scoped to that branch
+        const exp = await db.openTable("t", undefined, { branch: "exp" });
+        expect(exp.currentBranch()).toBe("exp");
+        const expV2 = await db.openTable("t", undefined, {
+          branch: "exp",
+          version: 2,
+        });
+        expect(expV2.currentBranch()).toBe("exp");
+      },
+    );
+  });
+
+  it("sends FTS options to remote tables", async () => {
+    let createIndexBody: Record<string, unknown> | undefined;
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 1,
+              schema: {
+                fields: [
+                  { name: "text", type: { type: "string" }, nullable: false },
+                ],
+              },
+            }),
+          );
+          return;
+        }
+
+        if (path.endsWith("/create_index/")) {
+          let raw = "";
+          req.on("data", (chunk) => {
+            raw += chunk;
+          });
+          req.on("end", () => {
+            createIndexBody = JSON.parse(raw);
+            res.writeHead(200).end();
+          });
+          return;
+        }
+
+        res.writeHead(404).end();
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        await table.createIndex("text", {
+          config: Index.fts({
+            blockSize: 256,
+            removeStopWords: true,
+            customStopWords: ["the"],
+          }),
+        });
+      },
+    );
+
+    expect(createIndexBody?.["column"]).toBe("text");
+    expect(createIndexBody?.["index_type"]).toBe("FTS");
+    expect(createIndexBody?.["block_size"]).toBe(256);
+    expect(createIndexBody?.["custom_stop_words"]).toEqual(["the"]);
+  });
+
+  it("diffs and cherry-picks remote branches", async () => {
+    const sampleDiff = {
+      fromBranch: "exp",
+      parentVersion: 1,
+      mainVersion: 2,
+      branchVersion: 3,
+      baseMoved: false,
+      rowCountMain: 3,
+      rowCountBranch: 3,
+      rowSummary: {
+        unchanged: 3,
+        newOnBase: 0,
+        newOnBranch: 0,
+        staleRecompute: 0,
+        inputsChanged: 0,
+        deltaAvailable: false,
+      },
+      addedColumns: [{ name: "tag", dataType: "utf8", nullable: true }],
+      removedColumns: [],
+      changedColumns: [],
+      addedIndexes: [],
+      removedIndexes: [],
+      errors: [],
+    };
+    const cherryPickBodies: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        if (path.endsWith("/describe/")) {
+          res.writeHead(200, { "Content-Type": "application/json" }).end(
+            JSON.stringify({
+              name: "t",
+              version: 2,
+              schema: { fields: [] },
+            }),
+          );
+          return;
+        }
+
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          const body = raw ? JSON.parse(raw) : {};
+          if (path.endsWith("/branches/diff/")) {
+            // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+            expect(body).toEqual({ from_branch: "exp" });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(JSON.stringify(sampleDiff));
+            return;
+          }
+          if (path.endsWith("/branches/cherry_pick/")) {
+            cherryPickBodies.push(body);
+            const dryRun = body["dry_run"] === true;
+            const response = {
+              status: dryRun ? "ready" : "failed",
+              diff: dryRun
+                ? sampleDiff
+                : {
+                    ...sampleDiff,
+                    errors: [
+                      { code: "baseMoved", message: "main has advanced" },
+                    ],
+                  },
+              preview: { promotedColumns: dryRun ? ["tag"] : [] },
+            };
+            res
+              .writeHead(dryRun ? 200 : 409, {
+                "Content-Type": "application/json",
+              })
+              .end(JSON.stringify(response));
+            return;
+          }
+          res.writeHead(404).end();
+        });
+      },
+      async (db) => {
+        const table = await db.openTable("t");
+        const branches = await table.branches();
+
+        await expect(branches.diff("exp")).resolves.toEqual(sampleDiff);
+
+        const failed = await branches.cherryPick("exp");
+        expect(failed.status).toBe("failed");
+        expect(failed.diff.errors).toEqual([
+          { code: "baseMoved", message: "main has advanced" },
+        ]);
+
+        const preview = await branches.cherryPick("exp", true);
+        expect(preview.status).toBe("ready");
+        expect(preview.preview.promotedColumns).toEqual(["tag"]);
+      },
+    );
+
+    expect(cherryPickBodies).toEqual([
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      { from_branch: "exp", dry_run: false },
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      { from_branch: "exp", dry_run: true },
+    ]);
+  });
+
+  describe("OAuthConfig", () => {
+    it("should expose client auth method values", () => {
+      expect(ClientAuthMethod.None).toBe("none");
+      expect(ClientAuthMethod.ClientSecretBasic).toBe("client_secret_basic");
+      expect(ClientAuthMethod.ClientSecretPost).toBe("client_secret_post");
+    });
+
+    it("should accept a confidential client with basic auth", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        clientSecret: "secret",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        clientAuthMethod: ClientAuthMethod.ClientSecretBasic,
+      };
+
+      expect(config.clientAuthMethod).toBe(ClientAuthMethod.ClientSecretBasic);
+    });
+
+    it("should accept a public PKCE client without auth method or secret", () => {
+      const config: OAuthConfig = {
+        issuerUrl: "https://issuer.example.com",
+        clientId: "client-id",
+        scopes: ["openid"],
+        flow: OAuthFlowType.AuthorizationCode,
+        usePkce: true,
+      };
+
+      expect(config.clientSecret).toBeUndefined();
+      expect(config.clientAuthMethod).toBeUndefined();
+    });
+  });
+
+  describe("TlsConfig", () => {
+    it("should create TlsConfig with all fields", () => {
+      const tlsConfig: TlsConfig = {
+        certFile: "/path/to/cert.pem",
+        keyFile: "/path/to/key.pem",
+        sslCaCert: "/path/to/ca.pem",
+        assertHostname: false,
+      };
+
+      expect(tlsConfig.certFile).toBe("/path/to/cert.pem");
+      expect(tlsConfig.keyFile).toBe("/path/to/key.pem");
+      expect(tlsConfig.sslCaCert).toBe("/path/to/ca.pem");
+      expect(tlsConfig.assertHostname).toBe(false);
+    });
+
+    it("should create TlsConfig with partial fields", () => {
+      const tlsConfig: TlsConfig = {
+        certFile: "/path/to/cert.pem",
+        keyFile: "/path/to/key.pem",
+      };
+
+      expect(tlsConfig.certFile).toBe("/path/to/cert.pem");
+      expect(tlsConfig.keyFile).toBe("/path/to/key.pem");
+      expect(tlsConfig.sslCaCert).toBeUndefined();
+      expect(tlsConfig.assertHostname).toBeUndefined();
+    });
+
+    it("should create ClientConfig with TlsConfig", () => {
+      const tlsConfig: TlsConfig = {
+        certFile: "/path/to/cert.pem",
+        keyFile: "/path/to/key.pem",
+        sslCaCert: "/path/to/ca.pem",
+        assertHostname: true,
+      };
+
+      const clientConfig: ClientConfig = {
+        userAgent: "test-agent",
+        tlsConfig: tlsConfig,
+      };
+
+      expect(clientConfig.userAgent).toBe("test-agent");
+      expect(clientConfig.tlsConfig).toBeDefined();
+      expect(clientConfig.tlsConfig?.certFile).toBe("/path/to/cert.pem");
+      expect(clientConfig.tlsConfig?.keyFile).toBe("/path/to/key.pem");
+      expect(clientConfig.tlsConfig?.sslCaCert).toBe("/path/to/ca.pem");
+      expect(clientConfig.tlsConfig?.assertHostname).toBe(true);
+    });
+
+    it("should handle empty TlsConfig", () => {
+      const tlsConfig: TlsConfig = {};
+
+      expect(tlsConfig.certFile).toBeUndefined();
+      expect(tlsConfig.keyFile).toBeUndefined();
+      expect(tlsConfig.sslCaCert).toBeUndefined();
+      expect(tlsConfig.assertHostname).toBeUndefined();
+    });
+
+    it("should accept TlsConfig in connection options", () => {
+      const tlsConfig: TlsConfig = {
+        certFile: "/path/to/cert.pem",
+        keyFile: "/path/to/key.pem",
+        sslCaCert: "/path/to/ca.pem",
+        assertHostname: false,
+      };
+
+      // Just verify that the ClientConfig accepts the TlsConfig
+      const clientConfig: ClientConfig = {
+        tlsConfig: tlsConfig,
+      };
+
+      const connectionOptions: ConnectionOptions = {
+        apiKey: "fake",
+        clientConfig: clientConfig,
+      };
+
+      // Verify the configuration structure is correct
+      expect(connectionOptions.clientConfig).toBeDefined();
+      expect(connectionOptions.clientConfig?.tlsConfig).toBeDefined();
+      expect(connectionOptions.clientConfig?.tlsConfig?.certFile).toBe(
+        "/path/to/cert.pem",
+      );
+    });
+  });
+
+  describe("header providers", () => {
+    it("should work with StaticHeaderProvider", async () => {
+      const provider = new StaticHeaderProvider({
+        authorization: "Bearer test-token",
+        "X-Custom": "value",
+      });
+
+      const headers = provider.getHeaders();
+      expect(headers).toEqual({
+        authorization: "Bearer test-token",
+        "X-Custom": "value",
+      });
+
+      // Test that it returns a copy
+      headers["X-Modified"] = "modified";
+      const headers2 = provider.getHeaders();
+      expect(headers2).not.toHaveProperty("X-Modified");
+    });
+
+    it("should pass headers from StaticHeaderProvider to requests", async () => {
+      const provider = new StaticHeaderProvider({
+        "X-Custom-Auth": "secret-token",
+        "X-Request-Source": "test-suite",
+      });
+
+      await withMockDatabase(
+        (req, res) => {
+          expect(req.headers["x-custom-auth"]).toEqual("secret-token");
+          expect(req.headers["x-request-source"]).toEqual("test-suite");
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Use actual header provider mechanism instead of extraHeaders
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          const tableNames = await conn.tableNames();
+          expect(tableNames).toEqual([]);
+        },
+      );
+    });
+
+    it("should work with CustomProvider", () => {
+      const provider = new CustomProvider();
+      const headers = provider.getHeaders();
+      expect(headers).toEqual({ "X-Custom": "custom-value" });
+    });
+
+    it("should handle ErrorProvider errors", () => {
+      const provider = new ErrorProvider("Authentication failed");
+
+      expect(() => provider.getHeaders()).toThrow("Authentication failed");
+      expect(provider.callCount).toBe(1);
+
+      // Test that error is thrown each time
+      expect(() => provider.getHeaders()).toThrow("Authentication failed");
+      expect(provider.callCount).toBe(2);
+    });
+
+    it("should work with ConcurrentProvider", () => {
+      const provider = new ConcurrentProvider();
+
+      const headers1 = provider.getHeaders();
+      const headers2 = provider.getHeaders();
+      const headers3 = provider.getHeaders();
+
+      expect(headers1).toEqual({ "X-Request-Id": "1" });
+      expect(headers2).toEqual({ "X-Request-Id": "2" });
+      expect(headers3).toEqual({ "X-Request-Id": "3" });
+    });
+
+    describe("OAuthHeaderProvider", () => {
+      it("should initialize correctly", () => {
+        const fetcher = () => ({
+          accessToken: "token123",
+          expiresIn: 3600,
+        });
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        expect(provider).toBeInstanceOf(HeaderProvider);
+      });
+
+      it("should fetch token on first use", async () => {
+        let callCount = 0;
+        const fetcher = () => {
+          callCount++;
+          return {
+            accessToken: "token123",
+            expiresIn: 3600,
+          };
+        };
+
+        const provider = new OAuthHeaderProvider(fetcher);
+
+        // Need to manually refresh first due to sync limitation
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer token123" });
+        expect(callCount).toBe(1);
+
+        // Second call should not fetch again
+        const headers2 = provider.getHeaders();
+        expect(headers2).toEqual({ authorization: "Bearer token123" });
+        expect(callCount).toBe(1);
+      });
+
+      it("should handle tokens without expiry", async () => {
+        const fetcher = () => ({
+          accessToken: "permanent_token",
+        });
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer permanent_token" });
+      });
+
+      it("should throw error when access_token is missing", async () => {
+        const fetcher = () =>
+          ({
+            expiresIn: 3600,
+          }) as { accessToken?: string; expiresIn?: number };
+
+        const provider = new OAuthHeaderProvider(
+          fetcher as () => {
+            accessToken: string;
+            expiresIn?: number;
+          },
+        );
+
+        await expect(provider.refreshToken()).rejects.toThrow(
+          "Token fetcher did not return 'accessToken'",
+        );
+      });
+
+      it("should handle async token fetchers", async () => {
+        const fetcher = async () => {
+          // Simulate async operation
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          return {
+            accessToken: "async_token",
+            expiresIn: 3600,
+          };
+        };
+
+        const provider = new OAuthHeaderProvider(fetcher);
+        await provider.refreshToken();
+
+        const headers = provider.getHeaders();
+        expect(headers).toEqual({ authorization: "Bearer async_token" });
+      });
+    });
+
+    it("should merge header provider headers with extra headers", async () => {
+      const provider = new StaticHeaderProvider({
+        "X-From-Provider": "provider-value",
+      });
+
+      await withMockDatabase(
+        (req, res) => {
+          expect(req.headers["x-from-provider"]).toEqual("provider-value");
+          expect(req.headers["x-extra-header"]).toEqual("extra-value");
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Use header provider with additional extraHeaders
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+              clientConfig: {
+                extraHeaders: {
+                  "X-Extra-Header": "extra-value",
+                },
+              },
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          const tableNames = await conn.tableNames();
+          expect(tableNames).toEqual([]);
+        },
+      );
+    });
+  });
+
+  describe("header provider integration", () => {
+    it("should work with TypeScript StaticHeaderProvider", async () => {
+      let requestCount = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          requestCount++;
+
+          // Check headers are present on each request
+          expect(req.headers["authorization"]).toEqual("Bearer test-token-123");
+          expect(req.headers["x-custom"]).toEqual("custom-value");
+
+          // Return different responses based on the endpoint
+          if (req.url === "/v1/table/test_table/describe/") {
+            const body = JSON.stringify({
+              name: "test_table",
+              schema: { fields: [] },
+            });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(body);
+          } else {
+            const body = JSON.stringify({ tables: ["test_table"] });
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(body);
+          }
+        },
+        async () => {
+          // Create provider with static headers
+          const provider = new StaticHeaderProvider({
+            authorization: "Bearer test-token-123",
+            "X-Custom": "custom-value",
+          });
+
+          // Connect with the provider
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            provider, // headerProvider
+          );
+
+          // Make multiple requests to verify headers are sent each time
+          const tables1 = await conn.tableNames();
+          expect(tables1).toEqual(["test_table"]);
+
+          const tables2 = await conn.tableNames();
+          expect(tables2).toEqual(["test_table"]);
+
+          // Verify headers were sent with each request
+          expect(requestCount).toBeGreaterThanOrEqual(2);
+        },
+      );
+    });
+
+    it("should work with JavaScript function provider", async () => {
+      let requestId = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          // Check dynamic header is present
+          expect(req.headers["x-request-id"]).toBeDefined();
+          expect(req.headers["x-request-id"]).toMatch(/^req-\d+$/);
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Create a JavaScript function that returns dynamic headers
+          const getHeaders = async () => {
+            requestId++;
+            return {
+              "X-Request-Id": `req-${requestId}`,
+              "X-Timestamp": new Date().toISOString(),
+            };
+          };
+
+          // Connect with the function directly
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            getHeaders, // headerProvider
+          );
+
+          // Make requests - each should have different headers
+          const tables = await conn.tableNames();
+          expect(tables).toEqual([]);
+        },
+      );
+    });
+
+    it("should support OAuth-like token refresh pattern", async () => {
+      let tokenVersion = 0;
+
+      await withMockDatabase(
+        (req, res) => {
+          // Verify authorization header
+          const authHeader = req.headers["authorization"];
+          expect(authHeader).toBeDefined();
+          expect(authHeader).toMatch(/^Bearer token-v\d+$/);
+
+          const body = JSON.stringify({ tables: [] });
+          res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+        },
+        async () => {
+          // Simulate OAuth token fetcher
+          const fetchToken = async () => {
+            tokenVersion++;
+            return {
+              authorization: `Bearer token-v${tokenVersion}`,
+            };
+          };
+
+          // Connect with the function directly
+          const conn = await connect(
+            "db://dev",
+            {
+              apiKey: "fake",
+              hostOverride: "http://localhost:8000",
+            },
+            undefined, // session
+            fetchToken, // headerProvider
+          );
+
+          // Each request will fetch a new token
+          await conn.tableNames();
+
+          // Token should be different on next request
+          await conn.tableNames();
+        },
+      );
+    });
+  });
+
+  describe("renameTable", () => {
+    async function captureRenameRequest(
+      call: (db: Connection) => Promise<void>,
+    ): Promise<{ url: string; body: Record<string, unknown> }> {
+      let captured: { url: string; body: Record<string, unknown> } | undefined;
+      await withMockDatabase((req, res) => {
+        let raw = "";
+        req.on("data", (chunk) => {
+          raw += chunk;
+        });
+        req.on("end", () => {
+          captured = {
+            url: req.url ?? "",
+            body: raw ? JSON.parse(raw) : {},
+          };
+          res.writeHead(200, { "Content-Type": "application/json" }).end("");
+        });
+      }, call);
+      if (!captured) {
+        throw new Error("mock server never saw a request");
+      }
+      return captured;
+    }
+
+    it("sends rename request for a table in the root namespace", async () => {
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2");
+      });
+      expect(url).toBe("/v1/table/table1/rename/");
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      expect(body).toEqual({ new_table_name: "table2" });
+    });
+
+    it("omits new_namespace when only the current namespace is supplied", async () => {
+      // Safe-default check: passing namespacePath alone must not send
+      // `new_namespace`, so the server keeps the table in its current
+      // namespace instead of silently moving it to root.
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2", {
+          namespacePath: ["ns1"],
+        });
+      });
+      expect(url).toBe("/v1/table/ns1$table1/rename/");
+      // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+      expect(body).toEqual({ new_table_name: "table2" });
+    });
+
+    it("includes new_namespace in the body for a cross-namespace rename", async () => {
+      const { url, body } = await captureRenameRequest(async (db) => {
+        await db.renameTable("table1", "table2", {
+          namespacePath: ["ns1"],
+          newNamespacePath: ["ns2"],
+        });
+      });
+      expect(url).toBe("/v1/table/ns1$table1/rename/");
+      expect(body).toEqual({
+        // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+        new_table_name: "table2",
+        // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+        new_namespace: ["ns2"],
+      });
+    });
+  });
+});
+
+describe("remote connection jobs surface", () => {
+  it("lists, describes, cancels, and reads history", async () => {
+    const { tableFromArrays, tableToIPC } = await import("apache-arrow");
+    const eventsTable = tableFromArrays({ state: ["created", "succeeded"] });
+    const eventsBody = Buffer.from(tableToIPC(eventsTable, "stream"));
+    const queryEventsPayloads: Record<string, unknown>[] = [];
+
+    await withMockDatabase(
+      (req, res) => {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          const payload = body.length > 0 ? JSON.parse(body) : {};
+          if (req.url === "/v1/jobs/list") {
+            if (payload["page_token"] === undefined) {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"jobs": [{"job_id": "job-1", "table": "t1", ' +
+                    '"job_type": "create_index", "state": "in_progress", ' +
+                    '"created_at_millis": 1000}], "page_token": "next"}',
+                );
+            } else {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"jobs": [{"job_id": "job-2", "table": "t2", ' +
+                    '"job_type": "create_index", "state": "succeeded", ' +
+                    '"created_at_millis": 2000}]}',
+                );
+            }
+          } else if (req.url === "/v1/jobs/describe") {
+            if (payload["job_id"] === "job-2") {
+              res
+                .writeHead(200, { "Content-Type": "application/json" })
+                .end(
+                  '{"job_id": "job-2", "job_type": "refresh_column", ' +
+                    '"job_state": "DONE", "creation_ms": 2000, ' +
+                    '"result": {"rows_assigned": 1000000}}',
+                );
+              return;
+            }
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(
+                '{"job_id": "job-1", "job_type": "create_index", ' +
+                  '"job_state": "FAILED", "creation_ms": 1000, ' +
+                  '"spec": {"column": "vec"}, "failure": {"phase": "execute", ' +
+                  '"message": "worker died", "retryable": true}}',
+              );
+          } else if (req.url === "/v1/jobs/cancel") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1"}');
+          } else if (req.url === "/v1/jobs/pause") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end('{"job_id": "job-1", "paused": true}');
+          } else if (req.url === "/v1/jobs/resume") {
+            if (payload["job_id"] !== "job-1") {
+              res.writeHead(404).end("no such job");
+              return;
+            }
+            res
+              .writeHead(200, { "Content-Type": "application/json" })
+              .end(
+                '{"job_id": "job-1", "resumed": false, "still_pausing": true}',
+              );
+          } else if (req.url === "/v1/jobs/query_events") {
+            queryEventsPayloads.push(payload);
+            res
+              .writeHead(200, {
+                "Content-Type": "application/vnd.apache.arrow.stream",
+              })
+              .end(eventsBody);
+          } else {
+            res.writeHead(404).end();
+          }
+        });
+      },
+      async (db) => {
+        const jobs = await collect(db.listJobs());
+        expect(jobs.map((job) => job.jobId)).toEqual(["job-1", "job-2"]);
+        expect(jobs[0].state).toEqual("running");
+        expect(jobs[1].state).toEqual("finished");
+
+        expect(await db.cancelJob("job-1")).toBe(true);
+        expect(await db.cancelJob("missing")).toBe(false);
+
+        expect(await db.pauseJob("job-1")).toEqual("pausing");
+        expect(await db.resumeJob("job-1")).toEqual("still_pausing");
+
+        // Opening a job hands back a populated handle; a missing one rejects.
+        await expect(db.openJob("missing")).rejects.toThrow("not found");
+        const finished = await db.openJob("job-2");
+        expect(finished.state).toEqual("finished");
+        expect(finished.result).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          rows_assigned: 1000000,
+        });
+
+        const job = await db.openJob("job-1");
+        expect(job.id).toEqual("job-1");
+
+        // openJob already populated the handle; refresh() re-reads it.
+        expect(job.state).toEqual("failed");
+        await job.refresh();
+        expect(job.state).toEqual("failed");
+        expect(job.jobType).toEqual("create_index");
+        expect(job.creationMs).toEqual(1000);
+        expect(job.spec).toEqual({ column: "vec" });
+        expect(job.result).toBeNull();
+        expect(job.failure?.message).toEqual("worker died");
+
+        // The handle reaches its own events, supplying its job id.
+        const jobEvents = await job.events({
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+        expect(jobEvents.numRows).toEqual(2);
+        expect(queryEventsPayloads.pop()).toEqual({
+          // biome-ignore lint/style/useNamingConvention: snake_case mandated by the server wire format
+          job_id: "job-1",
+          limit: 500,
+          filter: "state = 'claim_complete'",
+        });
+
+        // Printing lays every known field out on its own line, with the JSON
+        // payloads indented rather than crammed onto one line.
+        expect(`${job}`).toEqual(
+          [
+            "Job(",
+            '    id="job-1",',
+            '    state="failed",',
+            '    jobType="create_index",',
+            "    creationMs=1000,",
+            "    spec={",
+            '        "column": "vec"',
+            "    },",
+            "    failure={",
+            '        "phase": "execute",',
+            '        "message": "worker died",',
+            '        "retryable": true',
+            "    },",
+            ")",
+          ].join("\n"),
+        );
+
+        expect(await job.status()).toEqual("failed");
+        await expect(job.wait()).rejects.toThrow("worker died");
+      },
+    );
+  });
+
+  it("leaves numDeletedRows absent when the server omits it", async () => {
+    // A server that predates num_deleted_rows says nothing about deleted rows
+    const statsReply =
+      '{"total_bytes":1,"num_rows":3,"num_indices":0,"fragment_stats":' +
+      '{"num_fragments":1,"num_small_fragments":0,' +
+      '"lengths":{"min":3,"max":3,"mean":3,"p25":3,"p50":3,"p75":3,"p99":3}}}';
+
+    await withMockDatabase(
+      (req, res) => {
+        const path = req.url ?? "";
+        const body = path.endsWith("/describe/")
+          ? JSON.stringify({ name: "t", version: 1, schema: { fields: [] } })
+          : statsReply;
+        res.writeHead(200, { "Content-Type": "application/json" }).end(body);
+      },
+      async (db) => {
+        const stats = await (await db.openTable("t")).stats();
+        expect("numDeletedRows" in stats).toBe(false);
+        expect(stats.numDeletedRows).toBeUndefined();
+      },
+    );
+  });
+});
+
+async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
+  const result: T[] = [];
+  for await (const item of items) result.push(item);
+  return result;
+}
+
+describe("lazy resource listings", () => {
+  for (const kind of ["views", "materializedViews", "jobs"] as const) {
+    const listing = (
+      db: Connection,
+      options: { pageToken?: string; pageLimit?: number } = {},
+    ) => {
+      if (kind === "jobs") return db.listJobs(options);
+      if (kind === "views") return db.listViews(["team"], options);
+      return db.listMaterializedViews(options);
+    };
+    const page = (names: string[], token?: string) => {
+      const items =
+        kind === "jobs"
+          ? names.map((name) => ({
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              job_id: name,
+              table: "t",
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              job_type: "create_index",
+              state: "in_progress",
+              // biome-ignore lint/style/useNamingConvention: server wire format
+              created_at_millis: 1,
+            }))
+          : names;
+      return {
+        [kind === "jobs" ? "jobs" : "views"]: items,
+        // biome-ignore lint/style/useNamingConvention: server wire format
+        page_token: token,
+      };
+    };
+
+    it(`${kind} fetches lazily, skips empty pages, and resumes`, async () => {
+      const requests: { url: string; body: Record<string, unknown> }[] = [];
+      const responses = [
+        page(["a", "b"], "empty"),
+        page([], "last"),
+        page(["c", "d"], ""),
+      ];
+      await withMockDatabase(
+        async (req, res) => {
+          const chunks: Buffer[] = [];
+          for await (const chunk of req) chunks.push(Buffer.from(chunk));
+          const body = Buffer.concat(chunks).toString();
+          requests.push({
+            url: req.url ?? "",
+            body: body ? JSON.parse(body) : {},
+          });
+          res
+            .writeHead(200, { "content-type": "application/json" })
+            .end(JSON.stringify(responses.shift()));
+        },
+        async (db) => {
+          const items = listing(db, { pageToken: "start/token", pageLimit: 2 });
+          expect(requests).toHaveLength(0);
+          expect(items.pageToken()).toBe("start/token");
+          expect(items.numPageResults()).toBe(0);
+          expect((await items.next()).done).toBe(false);
+          expect(items.numPageResults()).toBe(1);
+          expect(items.pageToken()).toBe("empty");
+          await items.next();
+          expect(requests).toHaveLength(1);
+          const resumed = listing(db, {
+            pageToken: items.pageToken(),
+            pageLimit: 2,
+          });
+          await resumed.next();
+          expect(resumed.numPageResults()).toBe(1);
+          expect(resumed.pageToken()).toBeUndefined();
+          expect(requests).toHaveLength(3);
+          await resumed.next();
+          expect((await resumed.next()).done).toBe(true);
+          expect((await resumed.next()).done).toBe(true);
+          for (const [i, request] of requests.entries()) {
+            const token = ["start/token", "empty", "last"][i];
+            const url = new URL(request.url, "http://localhost");
+            if (kind === "jobs") {
+              expect(url.pathname).toBe("/v1/jobs/list");
+              expect(request.body).toEqual({
+                // biome-ignore lint/style/useNamingConvention: server wire format
+                page_token: token,
+                limit: 2,
+              });
+            } else {
+              expect(url.pathname).toBe(
+                kind === "views"
+                  ? "/v1/namespace/team/view/list"
+                  : "/v1/namespace/$/materialized_view/list",
+              );
+              expect(url.searchParams.get("page_token")).toBe(token);
+              expect(url.searchParams.get("limit")).toBe("2");
+            }
+          }
+        },
+      );
+    });
+
+    it(`${kind} retains failed tokens and serializes concurrent advances`, async () => {
+      let requests = 0;
+      await withMockDatabase(
+        (_req, res) => {
+          requests += 1;
+          res
+            .writeHead(requests === 1 ? 401 : 200, {
+              "content-type": "application/json",
+            })
+            .end(JSON.stringify(requests === 1 ? {} : page(["a", "b"])));
+        },
+        async (db) => {
+          const failed = listing(db, { pageToken: "retry" });
+          await expect(failed.next()).rejects.toThrow();
+          expect(failed.pageToken()).toBe("retry");
+          expect((await failed.next()).done).toBe(true);
+          expect(requests).toBe(1);
+          const resumed = listing(db, { pageToken: failed.pageToken() });
+          const results = await Promise.all([
+            resumed.next(),
+            resumed.next(),
+            resumed.next(),
+          ]);
+          expect(results.filter((result) => result.done)).toHaveLength(1);
+          expect(requests).toBe(2);
+          for (const limit of [
+            0,
+            -1,
+            1.5,
+            Number.NaN,
+            Number.POSITIVE_INFINITY,
+            2147483648,
+          ]) {
+            expect(() => listing(db, { pageLimit: limit })).toThrow("limit");
+          }
+          expect(requests).toBe(2);
+        },
+      );
+    });
+  }
 });

@@ -1,0 +1,1234 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+pub(crate) mod background_cache;
+
+use std::sync::Arc;
+
+use arrow_array::RecordBatch;
+use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use datafusion_common::{DataFusionError, Result as DataFusionResult};
+use datafusion_execution::RecordBatchStream;
+use futures::{FutureExt, Stream};
+use lance::arrow::json::JsonDataType;
+use lance::dataset::{ReadParams, WriteParams};
+use lance::index::vector::utils::infer_vector_dim;
+use lance::io::{ObjectStoreParams, WrappingObjectStore};
+use std::pin::Pin;
+
+use crate::error::{Error, Result};
+use datafusion_physical_plan::SendableRecordBatchStream;
+
+/// The maximum length of a table name. Table names are used in URLs and in the keys used with the
+/// object store.
+const MAX_TABLE_NAME_CHARS: usize = 128;
+
+/// The maximum length of a component of a namespace.
+const MAX_NAMESPACE_NAME_CHARS: usize = 64;
+
+/// The maximum number of namespace components that are allowed.
+const MAX_NAMESPACE_COMPONENTS: usize = 10;
+
+/// The maximum length of a view name.
+const MAX_VIEW_NAME_CHARS: usize = 128;
+
+/// The maximum length of a secret name.
+const MAX_SECRET_NAME_CHARS: usize = 128;
+
+/// The maximum length of a function name.
+const MAX_FUNCTION_NAME_CHARS: usize = 128;
+
+/// The maximum length of a database name.
+const MAX_DB_NAME_CHARS: usize = 64;
+
+pub trait PatchStoreParam {
+    fn patch_with_store_wrapper(
+        self,
+        wrapper: Arc<dyn WrappingObjectStore>,
+    ) -> Result<Option<ObjectStoreParams>>;
+}
+
+impl PatchStoreParam for Option<ObjectStoreParams> {
+    fn patch_with_store_wrapper(
+        self,
+        wrapper: Arc<dyn WrappingObjectStore>,
+    ) -> Result<Option<ObjectStoreParams>> {
+        let mut params = self.unwrap_or_default();
+        if params.object_store_wrapper.is_some() {
+            return Err(Error::Other {
+                message: "can not patch param because object store is already set".into(),
+                source: None,
+            });
+        }
+        params.object_store_wrapper = Some(wrapper);
+
+        Ok(Some(params))
+    }
+}
+
+pub trait PatchWriteParam {
+    fn patch_with_store_wrapper(self, wrapper: Arc<dyn WrappingObjectStore>)
+    -> Result<WriteParams>;
+}
+
+impl PatchWriteParam for WriteParams {
+    fn patch_with_store_wrapper(
+        mut self,
+        wrapper: Arc<dyn WrappingObjectStore>,
+    ) -> Result<WriteParams> {
+        self.store_params = self.store_params.patch_with_store_wrapper(wrapper)?;
+        Ok(self)
+    }
+}
+
+// NOTE: we have some API inconsistency here.
+// WriteParam is found in the form of Option<WriteParam> and ReadParam is found in the form of ReadParam
+
+pub trait PatchReadParam {
+    fn patch_with_store_wrapper(self, wrapper: Arc<dyn WrappingObjectStore>) -> Result<ReadParams>;
+}
+
+impl PatchReadParam for ReadParams {
+    fn patch_with_store_wrapper(
+        mut self,
+        wrapper: Arc<dyn WrappingObjectStore>,
+    ) -> Result<ReadParams> {
+        self.store_options = self.store_options.patch_with_store_wrapper(wrapper)?;
+        Ok(self)
+    }
+}
+
+/// Translate a string into something that can be safely logged. This involves removing control
+/// characters that could be used in an exploit like CVE-2003-0063.
+fn sanitize(input: &str) -> String {
+    input.chars().filter(|c| !c.is_control()).collect()
+}
+
+pub fn validate_table_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." {
+        return Err(Error::InvalidTableName {
+            name: name.to_string(),
+            reason: "Illegal table name.".to_string(),
+        });
+    }
+    if name.len() > MAX_TABLE_NAME_CHARS {
+        return Err(Error::InvalidTableName {
+            name: sanitize(name),
+            reason: format!(
+                "Table name cannot be more than {MAX_TABLE_NAME_CHARS} characters long."
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(Error::InvalidTableName {
+            name: sanitize(name),
+            reason: "Only alphanumeric characters, dashes, underscores, and\
+                periods are allowed in table names."
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+/// Validate that an input string contains alphanumerics, or dashes, underscores, and periods.
+fn validate_view_or_namespace_or_secret(input: &str, kind: &str, max_len: usize) -> Result<()> {
+    if input.is_empty() || input == "." || input == ".." {
+        return Err(Error::InvalidInput {
+            message: format!("Illegal {} '{}'.", kind, input),
+        });
+    }
+    if input.len() > max_len {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid {} '{}' is more than {} characters long.",
+                kind,
+                sanitize(input),
+                max_len
+            ),
+        });
+    }
+    if !input
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid {} '{}': only alphanumeric characters, \
+                         dashes, underscores, and periods are allowed.",
+                kind,
+                sanitize(input)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate one component of a namespace path -- a single segment, not the
+/// whole path. [`validate_namespace`] covers a path.
+pub fn validate_namespace_component(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "namespace component", MAX_NAMESPACE_NAME_CHARS)
+}
+
+/// Validate all components of a namespace
+pub fn validate_namespace(namespace: &[String]) -> Result<()> {
+    if namespace.len() > 1 && namespace.first().map(String::as_str) == Some("public") {
+        return Err(Error::InvalidInput {
+            message: "Namespaces that begin with public cannot have multiple namespace components."
+                .to_string(),
+        });
+    }
+    if namespace.len() > MAX_NAMESPACE_COMPONENTS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Cannot have a namespace with more than {MAX_NAMESPACE_COMPONENTS} components."
+            ),
+        });
+    }
+    for component in namespace {
+        validate_namespace_component(component)?;
+    }
+    Ok(())
+}
+
+/// Validate a secret name.
+pub fn validate_secret_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "secret name", MAX_SECRET_NAME_CHARS)
+}
+
+/// Validate a Secret name and every segment of the namespace path holding it.
+pub fn validate_secret_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_secret_name(name)
+}
+
+pub fn validate_view_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "view name", MAX_VIEW_NAME_CHARS)
+}
+
+/// Validate a view name and every segment of the namespace path holding it.
+pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_view_name(name)
+}
+
+/// Validate a function name. These do not allow dashes or periods.
+pub fn validate_function_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::InvalidInput {
+            message: format!("Invalid function name '{}'.", name),
+        });
+    }
+    if name.len() > MAX_FUNCTION_NAME_CHARS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid function name '{}' is more than {} characters long.",
+                sanitize(name),
+                MAX_FUNCTION_NAME_CHARS
+            ),
+        });
+    }
+    if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid function name '{}': only alphanumeric \
+                              characters and underscores are allowed.",
+                sanitize(name)
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Validate a database name, including slash-separated components.
+pub fn validate_database_name(name: &str) -> Result<()> {
+    if name.len() > MAX_DB_NAME_CHARS {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid database name '{}' is more than {} characters long.",
+                sanitize(name),
+                MAX_DB_NAME_CHARS
+            ),
+        });
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' || c == '/')
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "Invalid database name '{}': only alphanumeric characters, dashes, \
+                              underscores, periods, and slashes are allowed.",
+                sanitize(name)
+            ),
+        });
+    }
+    for component in name.split('/') {
+        if component.is_empty() {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Invalid database name '{}': invalid empty path component.",
+                    sanitize(name)
+                ),
+            });
+        }
+        if component == "." || component == ".." {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Invalid database name '{}': illegal path component.",
+                    sanitize(name)
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Find one default column to create index or perform vector query.
+pub(crate) fn default_vector_column(schema: &Schema, dim: Option<i32>) -> Result<String> {
+    // Try to find a vector column.
+    let mut candidates = Vec::new();
+    for field in schema.fields() {
+        collect_vector_columns(field, &mut Vec::new(), dim, &mut candidates);
+    }
+    if candidates.is_empty() {
+        Err(Error::InvalidInput {
+            message: format!(
+                "No vector column found to match with the query vector dimension: {}",
+                dim.unwrap_or_default()
+            ),
+        })
+    } else if candidates.len() != 1 {
+        Err(Error::Schema {
+            message: format!(
+                "More than one vector columns found, \
+                    please specify which column to create index or query: {:?}",
+                candidates
+            ),
+        })
+    } else {
+        Ok(candidates[0].clone())
+    }
+}
+
+fn collect_vector_columns(
+    field: &Field,
+    path: &mut Vec<String>,
+    dim: Option<i32>,
+    candidates: &mut Vec<String>,
+) {
+    path.push(field.name().clone());
+    match infer_vector_dim(field.data_type()) {
+        Ok(d) if dim.is_none() || dim == Some(d as i32) => {
+            let path_segments = path.iter().map(String::as_str).collect::<Vec<_>>();
+            candidates.push(lance_core::datatypes::format_field_path(&path_segments));
+        }
+        _ => {
+            if let DataType::Struct(fields) = field.data_type() {
+                for child in fields {
+                    collect_vector_columns(child, path, dim, candidates);
+                }
+            }
+        }
+    }
+    path.pop();
+}
+
+pub(crate) fn resolve_arrow_field_path(schema: &Schema, column: &str) -> Result<(String, Field)> {
+    lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+        message: format!("Invalid field path `{}`: {}", column, e),
+    })?;
+
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+    let field_path = lance_schema
+        .resolve_case_insensitive(column)
+        .ok_or_else(|| Error::Schema {
+            message: format!(
+                "Field path `{}` not found in schema. Available field paths: {}",
+                column,
+                lance_schema.field_paths().join(", ")
+            ),
+        })?;
+    let field = field_path.last().expect("field path should be non-empty");
+    let path_segments = field_path
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
+    let canonical_path = lance_core::datatypes::format_field_path(&path_segments);
+
+    Ok((canonical_path, Field::from(*field)))
+}
+
+pub(crate) struct ResolvedFtsField {
+    pub canonical_path: String,
+    pub terminal_field: Field,
+    pub list_depth: usize,
+}
+
+/// Canonicalize a public FTS field path while keeping Arrow list item names hidden.
+pub(crate) fn resolve_lance_fts_field_path(
+    schema: &lance_core::datatypes::Schema,
+    column: &str,
+) -> Result<ResolvedFtsField> {
+    let names =
+        lance_core::datatypes::parse_field_path(column).map_err(|e| Error::InvalidInput {
+            message: format!("Invalid field path `{}`: {}", column, e),
+        })?;
+    let (root_name, remaining_names) = names.split_first().ok_or_else(|| Error::InvalidInput {
+        message: "FTS field path cannot be empty".to_string(),
+    })?;
+    let mut field = schema
+        .fields
+        .iter()
+        .find(|field| field.name == *root_name)
+        .or_else(|| {
+            schema
+                .fields
+                .iter()
+                .find(|field| field.name.eq_ignore_ascii_case(root_name))
+        })
+        .ok_or_else(|| fts_field_not_found(schema, column))?;
+    let mut canonical_names = vec![field.name.clone()];
+    let mut list_depth = 0;
+
+    for name in remaining_names {
+        while matches!(
+            field.data_type(),
+            DataType::List(_) | DataType::LargeList(_)
+        ) {
+            list_depth += 1;
+            field = field.children.first().ok_or_else(|| Error::Schema {
+                message: format!(
+                    "FTS field path `{}` has a list without an item field",
+                    column
+                ),
+            })?;
+        }
+        if !matches!(field.data_type(), DataType::Struct(_)) {
+            return Err(fts_field_not_found(schema, column));
+        }
+        field = field
+            .children
+            .iter()
+            .find(|field| field.name == *name)
+            .or_else(|| {
+                field
+                    .children
+                    .iter()
+                    .find(|field| field.name.eq_ignore_ascii_case(name))
+            })
+            .ok_or_else(|| fts_field_not_found(schema, column))?;
+        canonical_names.push(field.name.clone());
+    }
+
+    let mut terminal = field;
+    while matches!(
+        terminal.data_type(),
+        DataType::List(_) | DataType::LargeList(_)
+    ) {
+        list_depth += 1;
+        terminal = terminal.children.first().ok_or_else(|| Error::Schema {
+            message: format!(
+                "FTS field path `{}` has a list without an item field",
+                column
+            ),
+        })?;
+    }
+
+    let canonical_path = lance_core::datatypes::format_field_path(
+        &canonical_names
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+    );
+    Ok(ResolvedFtsField {
+        canonical_path,
+        terminal_field: Field::from(terminal),
+        list_depth,
+    })
+}
+
+fn fts_field_not_found(schema: &lance_core::datatypes::Schema, column: &str) -> Error {
+    Error::Schema {
+        message: format!(
+            "Field path `{}` not found in schema. Available field paths: {}",
+            column,
+            schema.field_paths().join(", ")
+        ),
+    }
+}
+
+fn find_public_fts_field_path_by_id(
+    field: &lance_core::datatypes::Field,
+    field_id: i32,
+    path: &mut Vec<String>,
+) -> bool {
+    if field.id == field_id {
+        return true;
+    }
+    match field.data_type() {
+        DataType::List(_) | DataType::LargeList(_) => field
+            .children
+            .first()
+            .is_some_and(|child| find_public_fts_field_path_by_id(child, field_id, path)),
+        DataType::Struct(_) => field.children.iter().any(|child| {
+            path.push(child.name.clone());
+            let found = find_public_fts_field_path_by_id(child, field_id, path);
+            if !found {
+                path.pop();
+            }
+            found
+        }),
+        _ => false,
+    }
+}
+
+pub(crate) fn public_fts_field_path_by_id(
+    schema: &lance_core::datatypes::Schema,
+    field_id: i32,
+) -> Result<String> {
+    for root in &schema.fields {
+        let mut path = vec![root.name.clone()];
+        if find_public_fts_field_path_by_id(root, field_id, &mut path) {
+            return Ok(lance_core::datatypes::format_field_path(
+                &path.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
+        }
+    }
+    Err(Error::Schema {
+        message: format!("Field id `{}` not found in schema", field_id),
+    })
+}
+
+pub(crate) fn resolve_arrow_fts_field_path(
+    schema: &Schema,
+    column: &str,
+) -> Result<(String, Field)> {
+    let lance_schema =
+        lance_core::datatypes::Schema::try_from(schema).map_err(|e| Error::Schema {
+            message: format!("Invalid schema: {}", e),
+        })?;
+    let resolved = resolve_lance_fts_field_path(&lance_schema, column)?;
+    Ok((resolved.canonical_path, resolved.terminal_field))
+}
+
+pub fn supported_btree_data_type(dtype: &DataType) -> bool {
+    dtype.is_integer()
+        || dtype.is_floating()
+        || matches!(
+            dtype,
+            DataType::Boolean
+                | DataType::Utf8
+                | DataType::Time32(_)
+                | DataType::Time64(_)
+                | DataType::Date32
+                | DataType::Date64
+                | DataType::Timestamp(_, _)
+                | DataType::FixedSizeBinary(_)
+        )
+}
+
+pub fn supported_zonemap_data_type(dtype: &DataType) -> bool {
+    supported_btree_data_type(dtype)
+        || matches!(
+            dtype,
+            DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+        )
+}
+
+pub fn supported_bitmap_data_type(dtype: &DataType) -> bool {
+    dtype.is_integer()
+        || matches!(
+            dtype,
+            DataType::Utf8
+                | DataType::LargeUtf8
+                | DataType::Binary
+                | DataType::LargeBinary
+                | DataType::Boolean
+        )
+}
+
+pub fn supported_label_list_data_type(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::List(field) | DataType::LargeList(field) => {
+            supported_bitmap_data_type(field.data_type())
+        }
+        DataType::FixedSizeList(field, _) => supported_bitmap_data_type(field.data_type()),
+        _ => false,
+    }
+}
+
+pub fn supported_fts_data_type(dtype: &DataType) -> bool {
+    supported_fts_data_type_impl(dtype, false)
+}
+
+/// Validate FTS input without losing the logical type in field metadata.
+pub(crate) fn validate_fts_field(field: &Field) -> Result<()> {
+    if lance_arrow::json::is_json_field(field) || supported_fts_data_type(field.data_type()) {
+        return Ok(());
+    }
+    let logical_type = field
+        .metadata()
+        .get("ARROW:extension:name")
+        .map(|name| format!(" (logical type {name})"))
+        .unwrap_or_default();
+    Err(Error::Schema {
+        message: format!(
+            "A FTS index cannot be created on the field `{}` which has data type {}{}. FTS supports strings, lists of strings, and lance.json fields stored as LargeBinary; raw binary is not supported",
+            field.name(),
+            field.data_type(),
+            logical_type,
+        ),
+    })
+}
+
+fn supported_fts_data_type_impl(dtype: &DataType, in_list: bool) -> bool {
+    match (dtype, in_list) {
+        (DataType::Utf8 | DataType::LargeUtf8, _) => true,
+        (DataType::List(field) | DataType::LargeList(field), false) => {
+            supported_fts_data_type_impl(field.data_type(), true)
+        }
+        _ => false,
+    }
+}
+
+/// FM-Index accelerates substring (`contains`) search over raw bytes, so it
+/// applies to string and binary columns.
+pub fn supported_fm_data_type(dtype: &DataType) -> bool {
+    matches!(
+        dtype,
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Binary | DataType::LargeBinary
+    )
+}
+
+pub fn supported_vector_data_type(dtype: &DataType) -> bool {
+    match dtype {
+        DataType::FixedSizeList(field, _) => {
+            field.data_type().is_floating() || field.data_type() == &DataType::UInt8
+        }
+        DataType::List(field) => supported_vector_data_type(field.data_type()),
+        _ => false,
+    }
+}
+
+/// Note: this is temporary until we get a proper datatype conversion in Lance.
+pub fn string_to_datatype(s: &str) -> Option<DataType> {
+    let data_type: serde_json::Value = {
+        if let Ok(data_type) = serde_json::from_str(s) {
+            data_type
+        } else {
+            serde_json::json!({ "type": s })
+        }
+    };
+    let json_type: JsonDataType = serde_json::from_value(data_type).ok()?;
+    (&json_type).try_into().ok()
+}
+
+enum TimeoutState {
+    NotStarted {
+        timeout: std::time::Duration,
+    },
+    Started {
+        deadline: Pin<Box<tokio::time::Sleep>>,
+        timeout: std::time::Duration,
+    },
+    Completed,
+}
+
+/// A `Stream` wrapper that implements a timeout.
+///
+/// The timeout starts when the first `poll_next` is called. As soon as the timeout
+/// duration has passed, the stream will return an `Err` indicating a timeout error
+/// for the next poll.
+pub struct TimeoutStream {
+    inner: SendableRecordBatchStream,
+    state: TimeoutState,
+}
+
+impl TimeoutStream {
+    pub fn new(inner: SendableRecordBatchStream, timeout: std::time::Duration) -> Self {
+        Self {
+            inner,
+            state: TimeoutState::NotStarted { timeout },
+        }
+    }
+
+    pub fn new_boxed(
+        inner: SendableRecordBatchStream,
+        timeout: std::time::Duration,
+    ) -> SendableRecordBatchStream {
+        Box::pin(Self::new(inner, timeout))
+    }
+
+    fn timeout_error(timeout: &std::time::Duration) -> DataFusionError {
+        DataFusionError::Execution(format!("Query timeout after {} ms", timeout.as_millis()))
+    }
+}
+
+impl RecordBatchStream for TimeoutStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl Stream for TimeoutStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        match &mut self.state {
+            TimeoutState::NotStarted { timeout } => {
+                if timeout.is_zero() {
+                    return std::task::Poll::Ready(Some(Err(Self::timeout_error(timeout))));
+                }
+                let deadline = Box::pin(tokio::time::sleep(*timeout));
+                self.state = TimeoutState::Started {
+                    deadline,
+                    timeout: *timeout,
+                };
+                self.poll_next(cx)
+            }
+            TimeoutState::Started { deadline, timeout } => match deadline.poll_unpin(cx) {
+                std::task::Poll::Ready(_) => {
+                    let err = Self::timeout_error(timeout);
+                    self.state = TimeoutState::Completed;
+                    std::task::Poll::Ready(Some(Err(err)))
+                }
+                std::task::Poll::Pending => {
+                    let inner = Pin::new(&mut self.inner);
+                    inner.poll_next(cx)
+                }
+            },
+            TimeoutState::Completed => std::task::Poll::Ready(None),
+        }
+    }
+}
+
+/// A `Stream` wrapper that slices oversized batches to enforce a maximum batch length.
+pub struct MaxBatchLengthStream {
+    inner: SendableRecordBatchStream,
+    max_batch_length: Option<usize>,
+    buffered_batch: Option<RecordBatch>,
+    buffered_offset: usize,
+}
+
+impl MaxBatchLengthStream {
+    pub fn new(inner: SendableRecordBatchStream, max_batch_length: usize) -> Self {
+        Self {
+            inner,
+            max_batch_length: (max_batch_length > 0).then_some(max_batch_length),
+            buffered_batch: None,
+            buffered_offset: 0,
+        }
+    }
+
+    pub fn new_boxed(
+        inner: SendableRecordBatchStream,
+        max_batch_length: usize,
+    ) -> SendableRecordBatchStream {
+        if max_batch_length == 0 {
+            inner
+        } else {
+            Box::pin(Self::new(inner, max_batch_length))
+        }
+    }
+}
+
+impl RecordBatchStream for MaxBatchLengthStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl Stream for MaxBatchLengthStream {
+    type Item = DataFusionResult<RecordBatch>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        loop {
+            let Some(max_batch_length) = self.max_batch_length else {
+                return Pin::new(&mut self.inner).poll_next(cx);
+            };
+
+            if let Some(batch) = self.buffered_batch.clone() {
+                if self.buffered_offset < batch.num_rows() {
+                    let remaining = batch.num_rows() - self.buffered_offset;
+                    let length = remaining.min(max_batch_length);
+                    let sliced = batch.slice(self.buffered_offset, length);
+                    self.buffered_offset += length;
+                    if self.buffered_offset >= batch.num_rows() {
+                        self.buffered_batch = None;
+                        self.buffered_offset = 0;
+                    }
+                    return std::task::Poll::Ready(Some(Ok(sliced)));
+                }
+
+                self.buffered_batch = None;
+                self.buffered_offset = 0;
+            }
+
+            match Pin::new(&mut self.inner).poll_next(cx) {
+                std::task::Poll::Ready(Some(Ok(batch))) => {
+                    if batch.num_rows() <= max_batch_length {
+                        return std::task::Poll::Ready(Some(Ok(batch)));
+                    }
+                    self.buffered_batch = Some(batch);
+                    self.buffered_offset = 0;
+                }
+                other => return other,
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow_array::Int32Array;
+    use arrow_schema::Field;
+    use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
+    use futures::{StreamExt, stream};
+    use tokio::time::sleep;
+
+    use super::*;
+
+    #[test]
+    fn test_fts_field_logical_type_validation() {
+        let json = lance_arrow::json::json_field("doc", true);
+        assert!(validate_fts_field(&json).is_ok());
+
+        for dtype in [DataType::Binary, DataType::LargeBinary] {
+            let raw = Field::new("doc", dtype.clone(), true);
+            let err = validate_fts_field(&raw).unwrap_err().to_string();
+            assert!(err.contains("raw binary is not supported"), "{err}");
+            assert!(err.contains("lance.json"), "{err}");
+
+            let other_extension = raw.with_metadata(std::collections::HashMap::from([(
+                "ARROW:extension:name".into(),
+                "other.json".into(),
+            )]));
+            let err = validate_fts_field(&other_extension)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("logical type other.json"), "{err}");
+        }
+
+        // A JSON marker on the wrong binary storage type is insufficient.
+        let wrong_storage =
+            Field::new("doc", DataType::Binary, true).with_metadata(json.metadata().clone());
+        assert!(validate_fts_field(&wrong_storage).is_err());
+        for dtype in [DataType::Utf8, DataType::LargeUtf8] {
+            let text = Field::new("text", dtype, true);
+            assert!(validate_fts_field(&text).is_ok());
+            for list_type in [
+                DataType::List(Arc::new(text.clone())),
+                DataType::LargeList(Arc::new(text.clone())),
+            ] {
+                assert!(validate_fts_field(&Field::new("texts", list_type, true)).is_ok());
+            }
+        }
+    }
+
+    #[test]
+    fn test_public_fts_field_path_prefers_exact_case() {
+        let text_list = || {
+            DataType::List(Arc::new(Field::new(
+                "item",
+                DataType::Struct(vec![Field::new("content", DataType::Utf8, true)].into()),
+                true,
+            )))
+        };
+        let schema = Schema::new(vec![
+            Field::new("Docs", text_list(), true),
+            Field::new("docs", text_list(), true),
+        ]);
+
+        let (path, field) = resolve_arrow_fts_field_path(&schema, "docs.content").unwrap();
+        assert_eq!(path, "docs.content");
+        assert_eq!(field.data_type(), &DataType::Utf8);
+
+        let lance_schema = lance_core::datatypes::Schema::try_from(&schema).unwrap();
+        let field_id = lance_schema
+            .resolve_case_insensitive("docs.item.content")
+            .unwrap()
+            .last()
+            .unwrap()
+            .id;
+        assert_eq!(
+            public_fts_field_path_by_id(&lance_schema, field_id).unwrap(),
+            "docs.content"
+        );
+    }
+
+    #[test]
+    fn test_guess_default_column() {
+        let schema_no_vector = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new("tag", DataType::Utf8, false),
+        ]);
+        assert!(
+            default_vector_column(&schema_no_vector, None)
+                .unwrap_err()
+                .to_string()
+                .contains("No vector column")
+        );
+
+        let schema_with_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_vector_column(&schema_with_vec_col, None).unwrap(),
+            "vec"
+        );
+
+        let schema_with_nested_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "image",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            10,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_vector_column(&schema_with_nested_vec_col, None).unwrap(),
+            "image.embedding"
+        );
+
+        let schema_with_escaped_nested_vec_col = Schema::new(vec![Field::new(
+            "image-meta",
+            DataType::Struct(
+                vec![Field::new(
+                    "embedding.v1",
+                    DataType::FixedSizeList(
+                        Arc::new(Field::new("item", DataType::Float32, false)),
+                        10,
+                    ),
+                    false,
+                )]
+                .into(),
+            ),
+            false,
+        )]);
+        assert_eq!(
+            default_vector_column(&schema_with_escaped_nested_vec_col, None).unwrap(),
+            "`image-meta`.`embedding.v1`"
+        );
+
+        let multi_vec_col = Schema::new(vec![
+            Field::new("id", DataType::Int16, true),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 10),
+                false,
+            ),
+            Field::new(
+                "vec2",
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float64, false)), 50),
+                false,
+            ),
+        ]);
+        assert!(
+            default_vector_column(&multi_vec_col, None)
+                .unwrap_err()
+                .to_string()
+                .contains("More than one")
+        );
+
+        let multi_nested_vec_col = Schema::new(vec![
+            Field::new(
+                "image",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            10,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+            Field::new(
+                "text",
+                DataType::Struct(
+                    vec![Field::new(
+                        "embedding",
+                        DataType::FixedSizeList(
+                            Arc::new(Field::new("item", DataType::Float32, false)),
+                            50,
+                        ),
+                        false,
+                    )]
+                    .into(),
+                ),
+                false,
+            ),
+        ]);
+        assert_eq!(
+            default_vector_column(&multi_nested_vec_col, Some(50)).unwrap(),
+            "text.embedding"
+        );
+        let err = default_vector_column(&multi_nested_vec_col, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("image.embedding"));
+        assert!(err.contains("text.embedding"));
+    }
+
+    #[test]
+    fn test_validate_database_name() {
+        for name in [
+            "db",
+            "team/search",
+            "Team_1/db-2.3",
+            &"a".repeat(MAX_DB_NAME_CHARS),
+        ] {
+            assert!(validate_database_name(name).is_ok(), "rejected {name:?}");
+        }
+        for name in [
+            "",
+            "/",
+            "//",
+            ".",
+            "..",
+            "/db",
+            "db/",
+            "a//b",
+            "a/./b",
+            "a/../b",
+            "a$b",
+            "a b",
+            "a?b",
+            "café",
+            &"a".repeat(MAX_DB_NAME_CHARS + 1),
+        ] {
+            assert!(validate_database_name(name).is_err(), "accepted {name:?}");
+        }
+    }
+
+    #[test]
+    fn test_validate_table_name() {
+        assert!(validate_table_name("my_table").is_ok());
+        assert!(validate_table_name("my_table_1").is_ok());
+        assert!(validate_table_name("123mytable").is_ok());
+        assert!(validate_table_name("_12345table").is_ok());
+        assert!(validate_table_name("table.12345").is_ok());
+        assert!(validate_table_name("table.._dot_..12345").is_ok());
+        assert!(validate_table_name("...").is_ok());
+
+        assert!(validate_table_name("").is_err());
+        assert!(validate_table_name(".").is_err());
+        assert!(validate_table_name("..").is_err());
+        assert!(validate_table_name("my_table!").is_err());
+        assert!(validate_table_name("my/table").is_err());
+        assert!(validate_table_name("my@table").is_err());
+        assert!(validate_table_name("name with space").is_err());
+    }
+
+    #[test]
+    fn test_validate_namespace_component() {
+        // Valid namespace names
+        assert!(validate_namespace_component("ns1").is_ok());
+        assert!(validate_namespace_component("namespace_123").is_ok());
+        assert!(validate_namespace_component("my-namespace").is_ok());
+        assert!(validate_namespace_component("my.namespace").is_ok());
+        assert!(validate_namespace_component("NS_1.2.3").is_ok());
+        assert!(validate_namespace_component("a").is_ok());
+        assert!(validate_namespace_component("123").is_ok());
+        assert!(validate_namespace_component("_underscore").is_ok());
+        assert!(validate_namespace_component("-hyphen").is_ok());
+        assert!(validate_namespace_component(".period").is_ok());
+
+        // Invalid namespace names
+        assert!(validate_namespace_component("").is_err());
+        assert!(validate_namespace_component("namespace with spaces").is_err());
+        assert!(validate_namespace_component("namespace/with/slashes").is_err());
+        assert!(validate_namespace_component("namespace\\with\\backslashes").is_err());
+        assert!(validate_namespace_component("namespace$with$delimiter").is_err());
+        assert!(validate_namespace_component("namespace@special").is_err());
+        assert!(validate_namespace_component("namespace#hash").is_err());
+    }
+
+    #[test]
+    fn test_validate_namespace() {
+        // Valid namespace with single component
+        assert!(validate_namespace(&["ns1".to_string()]).is_ok());
+
+        // Valid namespace with multiple components
+        assert!(
+            validate_namespace(&["ns1".to_string(), "ns2".to_string(), "ns3".to_string()]).is_ok()
+        );
+
+        // Empty namespace (root) is valid
+        assert!(validate_namespace(&[]).is_ok());
+
+        // Valid public namespace (which is equivalent to the root namespace.)
+        assert!(validate_namespace(&["public".to_string()]).is_ok());
+
+        // Invalid: contains empty component
+        assert!(validate_namespace(&["ns1".to_string(), "".to_string()]).is_err());
+
+        // Invalid: contains component with spaces
+        assert!(validate_namespace(&["ns1".to_string(), "ns 2".to_string()]).is_err());
+
+        // Invalid: contains component with special characters
+        assert!(validate_namespace(&["ns1".to_string(), "ns@2".to_string()]).is_err());
+        assert!(validate_namespace(&["ns1".to_string(), "ns/2".to_string()]).is_err());
+        assert!(validate_namespace(&["ns1".to_string(), "ns$2".to_string()]).is_err());
+
+        // Invalid: starts with public but contains other components.
+        assert!(validate_namespace(&["public".to_string(), "foo".to_string()]).is_err());
+
+        // Valid: underscores, hyphens, and periods are allowed
+        assert!(
+            validate_namespace(&["ns_1".to_string(), "ns-2".to_string(), "ns.3".to_string()])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn test_string_to_datatype() {
+        let string = "int32";
+        let expected = DataType::Int32;
+        assert_eq!(string_to_datatype(string), Some(expected));
+    }
+
+    fn sample_batch(num_rows: i32) -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "col1",
+            DataType::Int32,
+            false,
+        )]));
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..num_rows))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream() {
+        let batch = sample_batch(3);
+        let schema = batch.schema();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+        let timeout_duration = std::time::Duration::from_millis(10);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // Poll the stream to get the first batch
+        let first_result = timeout_stream.next().await;
+        assert!(first_result.is_some());
+        assert!(first_result.unwrap().is_ok());
+
+        // Sleep for the timeout duration
+        sleep(timeout_duration).await;
+
+        // Poll the stream again and ensure it returns a timeout error
+        let second_result = timeout_stream.next().await.unwrap();
+        assert!(second_result.is_err());
+        assert!(
+            second_result
+                .unwrap_err()
+                .to_string()
+                .contains("Query timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream_zero_duration() {
+        let batch = sample_batch(3);
+        let schema = batch.schema();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+
+        // Setup similar to test_timeout_stream
+        let timeout_duration = std::time::Duration::from_secs(0);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // First poll should immediately return a timeout error
+        let result = timeout_stream.next().await.unwrap();
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Query timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout_stream_completes_normally() {
+        let batch = sample_batch(3);
+        let schema = batch.schema();
+        let mock_stream = stream::iter(vec![Ok(batch.clone()), Ok(batch.clone())]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+
+        // Setup a stream with 2 batches
+        // Use a longer timeout that won't trigger
+        let timeout_duration = std::time::Duration::from_secs(1);
+        let mut timeout_stream = TimeoutStream::new(sendable_stream, timeout_duration);
+
+        // Both polls should return data normally
+        assert!(timeout_stream.next().await.unwrap().is_ok());
+        assert!(timeout_stream.next().await.unwrap().is_ok());
+        // Stream should be empty now
+        assert!(timeout_stream.next().await.is_none());
+    }
+
+    async fn collect_batch_sizes(
+        stream: SendableRecordBatchStream,
+        max_batch_length: usize,
+    ) -> Vec<usize> {
+        let mut sliced_stream = MaxBatchLengthStream::new(stream, max_batch_length);
+        sliced_stream
+            .by_ref()
+            .map(|batch| batch.unwrap().num_rows())
+            .collect::<Vec<_>>()
+            .await
+    }
+
+    #[tokio::test]
+    async fn test_max_batch_length_stream_behaviors() {
+        let schema = sample_batch(7).schema();
+        let mock_stream = stream::iter(vec![Ok(sample_batch(2)), Ok(sample_batch(7))]);
+
+        let sendable_stream: SendableRecordBatchStream =
+            Box::pin(RecordBatchStreamAdapter::new(schema.clone(), mock_stream));
+        assert_eq!(
+            collect_batch_sizes(sendable_stream, 3).await,
+            vec![2, 3, 3, 1]
+        );
+
+        let sendable_stream: SendableRecordBatchStream = Box::pin(RecordBatchStreamAdapter::new(
+            schema,
+            stream::iter(vec![Ok(sample_batch(2)), Ok(sample_batch(7))]),
+        ));
+        assert_eq!(collect_batch_sizes(sendable_stream, 0).await, vec![2, 7]);
+    }
+}

@@ -1,6 +1,9 @@
 import argparse
+import re
 import sys
 import json
+
+LANCE_GIT_URL = "https://github.com/lance-format/lance.git"
 
 
 def run_command(command: str) -> str:
@@ -18,13 +21,17 @@ def run_command(command: str) -> str:
 
 def get_latest_stable_version() -> str:
     version_line = run_command("cargo info lance | grep '^version:'")
-    version = version_line.split(" ")[1].strip()
-    return version
+    # Example output: "version: 0.35.0 (latest 0.37.0)"
+    match = re.search(r"\(latest ([0-9.]+)\)", version_line)
+    if match:
+        return match.group(1)
+    # Fallback: use the first version after 'version:'
+    return version_line.split("version:")[1].split()[0].strip()
 
 
 def get_latest_preview_version() -> str:
     lance_tags = run_command(
-        "git ls-remote --tags https://github.com/lancedb/lance.git | grep 'refs/tags/v[0-9beta.-]\\+$'"
+        f"git ls-remote --tags {LANCE_GIT_URL} | grep 'refs/tags/v[0-9beta.-]\\+$'"
     ).splitlines()
     lance_tags = (
         tag.split("refs/tags/")[1]
@@ -50,7 +57,7 @@ def extract_features(line: str) -> list:
     match = re.search(r'"features"\s*=\s*\[\s*(.*?)\s*\]', line, re.DOTALL)
     if match:
         features_str = match.group(1)
-        return [f.strip('"') for f in features_str.split(",") if len(f) > 0]
+        return [f.strip().strip('"') for f in features_str.split(",") if f.strip()]
     return []
 
 
@@ -62,7 +69,7 @@ def extract_default_features(line: str) -> bool:
     """
     import re
 
-    match = re.search(r'default-features\s*=\s*false', line)
+    match = re.search(r"default-features\s*=\s*false", line)
     return match is not None
 
 
@@ -97,7 +104,7 @@ def dict_to_toml_line(package_name: str, config: dict) -> str:
             # This shouldn't happen with our current usage
             parts.append(f'"{key}" = {json.dumps(value)}')
 
-    return f'{package_name} = {{ {", ".join(parts)} }}\n'
+    return f"{package_name} = {{ {', '.join(parts)} }}\n"
 
 
 def update_cargo_toml(line_updater):
@@ -112,7 +119,7 @@ def update_cargo_toml(line_updater):
     lance_line = ""
     is_parsing_lance_line = False
     for line in lines:
-        if line.startswith("lance"):
+        if re.match(r"^lance(?:\s|[-_])", line):
             # Check if this is a single-line or multi-line entry
             # Single-line entries either:
             # 1. End with } (complete inline table)
@@ -171,17 +178,15 @@ def set_stable_version(version: str):
 def set_preview_version(version: str):
     """
     Sets lines to
-    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
-    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = "https://github.com/lancedb/lance.git" }
+    lance = { "version" = "=0.29.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
+    lance-io = { "version" = "=0.29.0", default-features = false, "tag" = "v0.29.0-beta.2", "git" = LANCE_GIT_URL }
     ...
     """
 
     def line_updater(line: str) -> str:
         package_name = line.split("=", maxsplit=1)[0].strip()
-        base_version = version.split("-")[0]  # Get the base version without beta suffix
-
         # Build config in desired order: version, default-features, features, tag, git
-        config = {"version": f"={base_version}"}
+        config = {"version": f"={version}"}
 
         if extract_default_features(line):
             config["default-features"] = False
@@ -191,7 +196,7 @@ def set_preview_version(version: str):
             config["features"] = features
 
         config["tag"] = f"v{version}"
-        config["git"] = "https://github.com/lancedb/lance.git"
+        config["git"] = LANCE_GIT_URL
 
         return dict_to_toml_line(package_name, config)
 
@@ -224,6 +229,29 @@ def set_local_version():
     update_cargo_toml(line_updater)
 
 
+def update_lockfiles(version: str, fallback_to_git: bool = False):
+    """
+    Update Cargo metadata and optionally fall back to using the git tag if the
+    requested crates.io version is unavailable.
+    """
+    try:
+        print("Updating lockfiles...", file=sys.stderr, end="")
+        run_command("cargo metadata > /dev/null")
+        print(" done.", file=sys.stderr)
+    except Exception as e:
+        if fallback_to_git and "failed to select a version" in str(e):
+            print(
+                f" failed for crates.io v{version}, retrying with git tag...",
+                file=sys.stderr,
+            )
+            set_preview_version(version)
+            print("Updating lockfiles...", file=sys.stderr, end="")
+            run_command("cargo metadata > /dev/null")
+            print(" done.", file=sys.stderr)
+        else:
+            raise
+
+
 parser = argparse.ArgumentParser(description="Set the version of the Lance package.")
 parser.add_argument(
     "version",
@@ -239,6 +267,7 @@ if args.version == "stable":
         file=sys.stderr,
     )
     set_stable_version(latest_stable_version)
+    update_lockfiles(latest_stable_version)
 elif args.version == "preview":
     latest_preview_version = get_latest_preview_version()
     print(
@@ -246,8 +275,10 @@ elif args.version == "preview":
         file=sys.stderr,
     )
     set_preview_version(latest_preview_version)
+    update_lockfiles(latest_preview_version)
 elif args.version == "local":
     set_local_version()
+    update_lockfiles("local")
 else:
     # Parse the version number.
     version = args.version
@@ -257,9 +288,7 @@ else:
 
     if "beta" in version:
         set_preview_version(version)
+        update_lockfiles(version)
     else:
         set_stable_version(version)
-
-print("Updating lockfiles...", file=sys.stderr, end="")
-run_command("cargo metadata > /dev/null")
-print(" done.", file=sys.stderr)
+        update_lockfiles(version, fallback_to_git=True)

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use chrono::{DateTime, Utc};
+use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -8,11 +10,18 @@ use std::sync::Arc;
 use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
-use crate::{table::BaseTable, DistanceType, Error, Result};
+use crate::index::vector::IvfRqIndexBuilder;
+use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 
 use self::{
-    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, LabelListIndexBuilder},
-    vector::{IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder},
+    scalar::{
+        BTreeIndexBuilder, BitmapIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder,
+        LabelListIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+    },
+    vector::{
+        IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
+        IvfSqIndexBuilder,
+    },
 };
 
 pub mod scalar;
@@ -44,7 +53,58 @@ pub enum Index {
     /// using an underlying bitmap index.
     LabelList(LabelListIndexBuilder),
 
-    /// Full text search index using bm25.
+    /// An `FM` index is a scalar index on string/binary columns that accelerates
+    /// substring search (`contains(col, 'needle')`). It matches arbitrary
+    /// substrings of the raw bytes, unlike the tokenized [`Index::FTS`] index.
+    Fm(FmIndexBuilder),
+
+    /// A `ZoneMap` index stores min/max summaries for ranges of rows.
+    ///
+    /// It can accelerate range filters by skipping zones whose min/max values
+    /// prove they cannot match the predicate.
+    ZoneMap(ZoneMapIndexBuilder),
+
+    /// An NGram index accelerates substring and pattern filters on UTF-8 strings.
+    NGram(NGramIndexBuilder),
+
+    /// A Bloom filter index skips groups of scalar values that cannot match a filter.
+    BloomFilter(BloomFilterIndexBuilder),
+
+    /// An R-tree index accelerates spatial intersection filters on GeoArrow geometries.
+    /// Native creation requires the `geo` feature.
+    RTree(RTreeIndexBuilder),
+
+    /// Full text search index using BM25.
+    ///
+    /// Supports strings, lists of strings, and `lance.json` logical fields
+    /// stored as `LargeBinary`. Raw binary fields are not supported. Lance
+    /// selects its JSON-aware tokenizer from the field metadata.
+    ///
+    /// JSON queries use `path,str,value` triples, where the dotted path is
+    /// relative to the indexed column. For example, `meta.tag,str,nature`
+    /// searches the string value at `$.meta.tag`, not other paths or key names.
+    /// Create the index on the JSON column, not on a JSON subpath. Plain text
+    /// queries are invalid for this tokenizer; malformed triples can panic in
+    /// the current Lance dependency (see [lance#8812](https://github.com/lance-format/lance/issues/8812)).
+    ///
+    /// The posting block size defaults to 128. Supported values are 128 and 256;
+    /// a value of 256 uses the experimental FTS V3 format and may introduce
+    /// breaking changes.
+    ///
+    /// ```
+    /// use lancedb::index::{Index, scalar::FtsIndexBuilder};
+    ///
+    /// # async fn create_fts_index(
+    /// #     table: &lancedb::Table,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let params = FtsIndexBuilder::default().block_size(256)?;
+    /// table
+    ///     .create_index(&["text"], Index::FTS(params))
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     FTS(FtsIndexBuilder),
 
     /// IVF index
@@ -53,6 +113,12 @@ pub enum Index {
     /// IVF index with Product Quantization
     IvfPq(IvfPqIndexBuilder),
 
+    /// IVF index with Scalar Quantization
+    IvfSq(IvfSqIndexBuilder),
+
+    /// IVF index with RabitQ Quantization
+    IvfRq(IvfRqIndexBuilder),
+
     /// IVF-HNSW index with Product Quantization
     /// It is a variant of the HNSW algorithm that uses product quantization to compress the vectors.
     IvfHnswPq(IvfHnswPqIndexBuilder),
@@ -60,6 +126,10 @@ pub enum Index {
     /// IVF-HNSW index with Scalar Quantization
     /// It is a variant of the HNSW algorithm that uses scalar quantization to compress the vectors.
     IvfHnswSq(IvfHnswSqIndexBuilder),
+
+    /// IVF-HNSW index without quantization.
+    /// Stores raw vectors, providing the highest recall at the cost of more memory and disk space.
+    IvfHnswFlat(IvfHnswFlatIndexBuilder),
 }
 
 /// Builder for the create_index operation
@@ -266,6 +336,14 @@ impl IndexBuilder {
     pub async fn execute(self) -> Result<()> {
         self.parent.clone().create_index(self).await
     }
+
+    /// Creates the index, returning a [`Job`] tracking the operation.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the index exists until [`Job::wait`] resolves.
+    pub async fn execute_async(self) -> Result<Job> {
+        self.parent.clone().create_index_async(self).await
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -273,12 +351,18 @@ pub enum IndexType {
     // Vector
     #[serde(alias = "IVF_FLAT")]
     IvfFlat,
+    #[serde(alias = "IVF_SQ")]
+    IvfSq,
     #[serde(alias = "IVF_PQ")]
     IvfPq,
+    #[serde(alias = "IVF_RQ")]
+    IvfRq,
     #[serde(alias = "IVF_HNSW_PQ")]
     IvfHnswPq,
     #[serde(alias = "IVF_HNSW_SQ")]
     IvfHnswSq,
+    #[serde(alias = "IVF_HNSW_FLAT")]
+    IvfHnswFlat,
     // Scalar
     #[serde(alias = "BTREE")]
     BTree,
@@ -286,22 +370,72 @@ pub enum IndexType {
     Bitmap,
     #[serde(alias = "LABEL_LIST")]
     LabelList,
+    #[serde(alias = "FM", alias = "FMINDEX", alias = "FMIndex")]
+    Fm,
+    #[serde(alias = "ZONEMAP", alias = "ZONE_MAP")]
+    ZoneMap,
+    #[serde(alias = "NGRAM", alias = "N_GRAM")]
+    NGram,
+    #[serde(alias = "BLOOM_FILTER", alias = "BLOOMFILTER")]
+    BloomFilter,
+    #[serde(alias = "RTREE", alias = "R_TREE")]
+    RTree,
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
+    /// A registered scalar index plugin's display name, preserved verbatim.
+    ///
+    /// For example, `Custom("Sketch".into()).to_string()` returns `"Sketch"`.
+    Custom(String),
+    /// Catch-all for index types not recognized by this version of LanceDB.
+    Unknown,
+}
+
+impl IndexType {
+    pub(crate) fn from_description(
+        description: &dyn lance_index::traits::IndexDescription,
+    ) -> Self {
+        let index_type = description.index_type().parse().unwrap_or(Self::Unknown);
+        if index_type != Self::Unknown {
+            return index_type;
+        }
+        let Some(metadata) = description.segments().first() else {
+            return Self::Unknown;
+        };
+        if lance_index::is_system_index(metadata) {
+            return Self::Unknown;
+        }
+        let Some(details) = metadata.index_details.as_ref() else {
+            return Self::Unknown;
+        };
+        IndexDetails(details.clone())
+            .get_plugin()
+            .map(|plugin| Self::Custom(plugin.name().to_string()))
+            .unwrap_or(Self::Unknown)
+    }
 }
 
 impl std::fmt::Display for IndexType {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::IvfFlat => write!(f, "IVF_FLAT"),
+            Self::IvfSq => write!(f, "IVF_SQ"),
             Self::IvfPq => write!(f, "IVF_PQ"),
+            Self::IvfRq => write!(f, "IVF_RQ"),
             Self::IvfHnswPq => write!(f, "IVF_HNSW_PQ"),
             Self::IvfHnswSq => write!(f, "IVF_HNSW_SQ"),
+            Self::IvfHnswFlat => write!(f, "IVF_HNSW_FLAT"),
             Self::BTree => write!(f, "BTREE"),
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
+            Self::Fm => write!(f, "FM"),
+            Self::ZoneMap => write!(f, "ZONEMAP"),
+            Self::NGram => write!(f, "NGRAM"),
+            Self::BloomFilter => write!(f, "BLOOM_FILTER"),
+            Self::RTree => write!(f, "RTREE"),
             Self::FTS => write!(f, "FTS"),
+            Self::Custom(name) => f.write_str(name),
+            Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
 }
@@ -314,14 +448,20 @@ impl std::str::FromStr for IndexType {
             "BTREE" => Ok(Self::BTree),
             "BITMAP" => Ok(Self::Bitmap),
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
+            "FM" | "FMINDEX" => Ok(Self::Fm),
+            "ZONEMAP" | "ZONE_MAP" => Ok(Self::ZoneMap),
+            "NGRAM" | "N_GRAM" => Ok(Self::NGram),
+            "BLOOM_FILTER" | "BLOOMFILTER" => Ok(Self::BloomFilter),
+            "RTREE" | "R_TREE" => Ok(Self::RTree),
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
+            "IVF_SQ" => Ok(Self::IvfSq),
             "IVF_PQ" => Ok(Self::IvfPq),
+            "IVF_RQ" => Ok(Self::IvfRq),
             "IVF_HNSW_PQ" => Ok(Self::IvfHnswPq),
             "IVF_HNSW_SQ" => Ok(Self::IvfHnswSq),
-            _ => Err(Error::InvalidInput {
-                message: format!("the input value {} is not a valid IndexType", value),
-            }),
+            "IVF_HNSW_FLAT" => Ok(Self::IvfHnswFlat),
+            _ => Ok(Self::Unknown),
         }
     }
 }
@@ -338,27 +478,66 @@ pub struct IndexConfig {
     /// Currently this is always a Vec of size 1.  In the future there may
     /// be more columns to represent composite indices.
     pub columns: Vec<String>,
+    /// The UUID of the first segment of the index.
+    ///
+    /// An index may be made up of multiple segments, each with their own UUID.
+    /// This is the UUID of the first segment. `None` if it could not be
+    /// determined (e.g. for remote tables, which do not yet surface this).
+    pub index_uuid: Option<String>,
+    /// The protobuf type URL, a precise type identifier for the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub type_url: Option<String>,
+    /// When the index was created, taken as the minimum creation time across
+    /// all segments.
+    ///
+    /// `None` if unavailable, such as for indices created before creation
+    /// timestamps were tracked, or for remote tables.
+    pub created_at: Option<DateTime<Utc>>,
+    /// The number of rows indexed, across all segments.
+    ///
+    /// This is approximate and may include rows that have since been deleted.
+    /// `None` if unavailable (e.g. for remote tables).
+    pub num_indexed_rows: Option<u64>,
+    /// The number of rows in the table that are not yet covered by this index.
+    ///
+    /// Computed as the table's total row count minus [`Self::num_indexed_rows`].
+    /// Optimizing the index will fold these rows into it. `None` if unavailable
+    /// (e.g. for remote tables).
+    pub num_unindexed_rows: Option<u64>,
+    /// The total size in bytes of all index files across all segments.
+    ///
+    /// `None` if size information is unavailable, such as for indices created
+    /// before file sizes were tracked, or for remote tables.
+    pub size_bytes: Option<u64>,
+    /// The number of segments that make up the index.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub num_segments: Option<u32>,
+    /// The on-disk index format version, taken from the first segment.
+    ///
+    /// `None` if unavailable (e.g. for remote tables).
+    pub index_version: Option<i32>,
+    /// Index-type-specific details, serialized as JSON.
+    ///
+    /// The shape of this JSON varies by index type. `None` if the details
+    /// could not be produced (e.g. no plugin available) or for remote tables.
+    pub index_details: Option<String>,
 }
 
 #[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexMetadata {
     pub metric_type: Option<DistanceType>,
-    // Sometimes the index type is provided at this level.
-    pub index_type: Option<IndexType>,
-    pub loss: Option<f64>,
 }
 
-// This struct is used to deserialize the JSON data returned from the Lance API
-// Dataset::index_statistics().
+// Deserializes the JSON returned by Dataset::index_statistics().
 #[skip_serializing_none]
 #[derive(Debug, Deserialize)]
 pub(crate) struct IndexStatisticsImpl {
     pub num_indexed_rows: usize,
     pub num_unindexed_rows: usize,
     pub indices: Vec<IndexMetadata>,
-    // Sometimes, the index type is provided at this level.
-    pub index_type: Option<IndexType>,
     pub num_indices: Option<u32>,
 }
 
@@ -378,6 +557,35 @@ pub struct IndexStatistics {
     pub distance_type: Option<DistanceType>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
-    /// The loss value used by the index.
-    pub loss: Option<f64>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IndexType;
+
+    #[test]
+    fn builtin_scalar_index_type_names() {
+        for (index_type, canonical, aliases) in [
+            (IndexType::NGram, "NGRAM", ["NGram", "NGRAM", "N_GRAM"]),
+            (
+                IndexType::BloomFilter,
+                "BLOOM_FILTER",
+                ["BloomFilter", "BLOOMFILTER", "BLOOM_FILTER"],
+            ),
+            (IndexType::RTree, "RTREE", ["RTree", "RTREE", "R_TREE"]),
+        ] {
+            assert_eq!(index_type.to_string(), canonical);
+            for alias in aliases {
+                assert_eq!(alias.parse::<IndexType>().unwrap(), index_type);
+                assert_eq!(
+                    alias.to_lowercase().parse::<IndexType>().unwrap(),
+                    index_type
+                );
+                assert_eq!(
+                    serde_json::from_value::<IndexType>(serde_json::json!(alias)).unwrap(),
+                    index_type
+                );
+            }
+        }
+    }
 }

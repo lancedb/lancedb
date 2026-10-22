@@ -4,27 +4,70 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
+from lance.blob import BlobType as LanceBlobType
 from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.embeddings.base import EmbeddingFunctionConfig
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 from lancedb.table import (
     _append_vector_columns,
     _cast_to_target_schema,
+    _fill_bad_vector_values,
     _handle_bad_vectors,
     _into_pyarrow_reader,
-    _sanitize_data,
     _infer_target_schema,
+    _merge_metadata,
+    _sanitize_data,
+    sanitize_create_table,
 )
 import pyarrow as pa
 import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import (
+    flatten_columns,
+    get_uri_scheme,
+    inf_vector_column_query,
+    join_uri,
+    value_to_sql,
+)
 from utils import exception_output
+
+
+def _struct_table() -> pa.Table:
+    return pa.table(
+        {
+            "id": [1, 2],
+            "nested": pa.array([{"a": 1, "b": 2}, {"a": 3, "b": 4}]),
+        }
+    )
+
+
+def test_flatten_columns():
+    tbl = _struct_table()
+
+    # None / False mean "do not flatten": the struct column is preserved.
+    # `False` is a regression guard: because bool is a subclass of int it used
+    # to fall into the integer branch and raise ValueError (see issue).
+    for no_flatten in (None, False):
+        result = flatten_columns(tbl, no_flatten)
+        assert result.column_names == ["id", "nested"]
+
+    # True flattens all nested levels.
+    flattened = flatten_columns(tbl, True)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # A positive integer flattens up to that depth.
+    flattened = flatten_columns(tbl, 1)
+    assert flattened.column_names == ["id", "nested.a", "nested.b"]
+
+    # Non-positive integers are still rejected.
+    with pytest.raises(ValueError):
+        flatten_columns(tbl, 0)
 
 
 def test_normalize_uri():
@@ -121,6 +164,126 @@ def test_value_to_sql_string(tmp_path):
         assert table.to_pandas().query("search == @value")["replace"].item() == value
 
 
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
+
+
+def test_value_to_sql_dict():
+    # Simple flat struct
+    assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
+
+    # Nested struct
+    assert (
+        value_to_sql({"outer": {"inner": 1}})
+        == "named_struct('outer', named_struct('inner', 1))"
+    )
+
+    # List inside struct
+    assert value_to_sql({"a": [1, 2]}) == "named_struct('a', [1, 2])"
+
+    # Mixed types
+    assert (
+        value_to_sql({"name": "test", "count": 42, "rate": 3.14, "active": True})
+        == "named_struct('name', 'test', 'count', 42, 'rate', 3.14, 'active', TRUE)"
+    )
+
+    # Null value inside struct
+    assert value_to_sql({"a": None}) == "named_struct('a', NULL)"
+
+    # Empty dict
+    assert value_to_sql({}) == "named_struct()"
+
+
+def test_value_to_sql_dict_key_escaping():
+    # Struct field names that contain a single quote must be escaped (doubled)
+    # the same way string values are, otherwise value_to_sql emits invalid SQL
+    # such as named_struct('it's', 1).
+    assert value_to_sql({"it's": 1}) == "named_struct('it''s', 1)"
+    assert (
+        value_to_sql({"o'brien": "d'angelo"}) == "named_struct('o''brien', 'd''angelo')"
+    )
+    # Escaping also applies to keys of nested structs.
+    assert (
+        value_to_sql({"outer": {"in'r": 1}})
+        == "named_struct('outer', named_struct('in''r', 1))"
+    )
+
+
+def test_value_to_sql_numpy_scalars():
+    # numpy scalars (e.g. pulled from an ndarray or a pandas column) must
+    # convert the same way as their native Python counterparts. np.float64
+    # already worked by virtue of subclassing float, but the integer / bool
+    # / float32 scalars previously raised NotImplementedError.
+    import numpy as np
+
+    assert value_to_sql(np.int32(5)) == "5"
+    assert value_to_sql(np.int64(5)) == "5"
+    assert value_to_sql(np.float32(1.5)) == "1.5"
+    assert value_to_sql(np.float64(1.5)) == "1.5"
+    assert value_to_sql(np.bool_(True)) == "TRUE"
+    assert value_to_sql(np.bool_(False)) == "FALSE"
+
+
+def test_value_to_sql_nan_and_infinity(tmp_path):
+    # str(float("nan")) is "nan", which SQL reads as a column named nan, so
+    # table.update(values={"x": float("nan")}) failed with "No field named nan".
+    import math
+
+    import numpy as np
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2, 3, 4],
+                "f64": [1.0, 2.0, 3.0, 4.0],
+                "f32": pa.array([1.0, 2.0, 3.0, 4.0], pa.float32()),
+            }
+        ),
+    )
+    table.update(where="id = 1", values={"f64": float("nan"), "f32": np.nan})
+    table.update(where="id = 2", values={"f64": math.inf, "f32": np.float32("inf")})
+    table.update(where="id = 3", values={"f64": -math.inf, "f32": -math.inf})
+
+    rows = {row["id"]: row for row in table.to_arrow().to_pylist()}
+    assert math.isnan(rows[1]["f64"]) and math.isnan(rows[1]["f32"])
+    assert rows[2]["f64"] == math.inf and rows[2]["f32"] == math.inf
+    assert rows[3]["f64"] == -math.inf and rows[3]["f32"] == -math.inf
+    assert rows[4]["f64"] == 4.0 and rows[4]["f32"] == 4.0
+
+
 def test_append_vector_columns():
     registry = EmbeddingFunctionRegistry.get_instance()
     registry.register("test")(MockTextEmbeddingFunction)
@@ -197,7 +360,9 @@ def test_append_vector_columns():
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
 def test_handle_bad_vectors_jagged(on_bad_vectors):
-    vector = pa.array([[1.0, 2.0], [3.0], [4.0, 5.0]])
+    vector = pa.array(
+        [[1.0, 2.0], [3.0], [4.0, 5.0], [6.0, 7.0, 8.0], [None, 9.0], None]
+    )
     schema = pa.schema({"vector": pa.list_(pa.float64())})
     data = pa.table({"vector": vector}, schema=schema)
 
@@ -223,13 +388,52 @@ def test_handle_bad_vectors_jagged(on_bad_vectors):
         ).read_all()
 
     if on_bad_vectors == "drop":
-        expected = pa.array([[1.0, 2.0], [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], [4.0, 5.0], [None, 9.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[1.0, 2.0], [42.0, 42.0], [4.0, 5.0]])
+        expected = pa.array(
+            [
+                [1.0, 2.0],
+                [3.0, 42.0],
+                [4.0, 5.0],
+                [6.0, 7.0],
+                [None, 9.0],
+                [42.0, 42.0],
+            ]
+        )
     elif on_bad_vectors == "null":
-        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0]])
+        expected = pa.array([[1.0, 2.0], None, [4.0, 5.0], None, [None, 9.0], None])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize(
+    ("vector_type", "vectors", "expected"),
+    [
+        (
+            pa.list_(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.large_list(pa.float64()),
+            [[1.0, float("nan")], [2.0], None, [None, 3.0], [4.0, 5.0, 6.0]],
+            [[1.0, 42.0], [2.0, 42.0], [42.0, 42.0], [None, 3.0], [4.0, 5.0]],
+        ),
+        (
+            pa.list_(pa.float64(), 2),
+            [[1.0, float("nan")], None, [None, 3.0]],
+            [[1.0, 42.0], [42.0, 42.0], [None, 3.0]],
+        ),
+    ],
+)
+def test_fill_bad_vector_values_arrow_types(vector_type, vectors, expected):
+    arr = pa.array([[0.0, 0.0], *vectors, [9.0, 9.0]], type=vector_type)
+    arr = arr.slice(1, len(vectors))
+
+    actual = _fill_bad_vector_values(arr, dim=2, fill_value=42.0)
+
+    assert actual.type == vector_type
+    assert actual.to_pylist() == expected
 
 
 @pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
@@ -261,7 +465,7 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
     if on_bad_vectors == "drop":
         expected = pa.array([[3.0, 4.0]])
     elif on_bad_vectors == "fill":
-        expected = pa.array([[42.0, 42.0], [3.0, 4.0]])
+        expected = pa.array([[1.0, 42.0], [3.0, 4.0]])
     elif on_bad_vectors == "null":
         expected = pa.array([None, [3.0, 4.0]])
 
@@ -278,6 +482,117 @@ def test_handle_bad_vectors_noop():
     assert output["vector"] == vector
 
 
+def test_handle_bad_vectors_updates_reader_schema_for_target_schema():
+    data = pa.table({"vector": [[1, 2, 3, 4]]})
+    target_schema = pa.schema([pa.field("vector", pa.list_(pa.float32(), 4))])
+
+    output = _handle_bad_vectors(
+        data.to_reader(),
+        on_bad_vectors="drop",
+        target_schema=target_schema,
+    )
+
+    assert output.schema == pa.schema([pa.field("vector", pa.list_(pa.float32()))])
+    assert output.read_all()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+def test_sanitize_data_keeps_target_field_metadata():
+    source_field = pa.field(
+        "vector",
+        pa.list_(pa.float32(), 2),
+        metadata={b"source": b"drop-me"},
+    )
+    target_field = pa.field(
+        "vector",
+        pa.list_(pa.float32(), 2),
+        metadata={b"target": b"keep-me"},
+    )
+    data = pa.table(
+        {"vector": pa.array([[1.0, 2.0]], type=pa.list_(pa.float32(), 2))},
+        schema=pa.schema([source_field]),
+    )
+
+    output = _sanitize_data(
+        data,
+        target_schema=pa.schema([target_field]),
+        on_bad_vectors="drop",
+    ).read_all()
+
+    assert output.schema.field("vector").metadata == {b"target": b"keep-me"}
+
+
+def test_sanitize_data_uses_separate_embedding_metadata_for_bad_vectors():
+    registry = EmbeddingFunctionRegistry.get_instance()
+    conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="custom_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    metadata = registry.get_table_metadata([conf])
+    schema = pa.schema(
+        {
+            "text": pa.string(),
+            "custom_vector": pa.list_(pa.float32(), 10),
+        },
+        metadata={b"note": b"keep-me"},
+    )
+    data = pa.table(
+        {
+            "text": ["bad", "good"],
+            "custom_vector": [[1.0] * 9, [2.0] * 10],
+        }
+    )
+
+    output = _sanitize_data(
+        data,
+        target_schema=schema,
+        metadata=metadata,
+        on_bad_vectors="drop",
+    ).read_all()
+
+    assert output["text"].to_pylist() == ["good"]
+    assert output.schema.metadata[b"note"] == b"keep-me"
+    assert b"embedding_functions" in output.schema.metadata
+
+
+def test_sanitize_create_table_merges_and_overrides_embedding_metadata():
+    registry = EmbeddingFunctionRegistry.get_instance()
+    old_conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="old_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    new_conf = EmbeddingFunctionConfig(
+        source_column="text",
+        vector_column="custom_vector",
+        function=MockTextEmbeddingFunction.create(),
+    )
+    metadata = registry.get_table_metadata([new_conf])
+    schema = pa.schema(
+        {
+            "text": pa.string(),
+            "custom_vector": pa.list_(pa.float32(), 10),
+        },
+        metadata=_merge_metadata(
+            {b"note": b"keep-me"},
+            registry.get_table_metadata([old_conf]),
+        ),
+    )
+
+    data, schema = sanitize_create_table(
+        pa.table({"text": ["good"]}),
+        schema,
+        metadata=metadata,
+        on_bad_vectors="drop",
+    )
+
+    assert schema.metadata[b"note"] == b"keep-me"
+    assert b"embedding_functions" in schema.metadata
+    assert data.schema.metadata[b"note"] == b"keep-me"
+    funcs = EmbeddingFunctionRegistry.get_instance().parse_functions(schema.metadata)
+    assert set(funcs.keys()) == {"custom_vector"}
+
+
 class TestModel(lancedb.pydantic.LanceModel):
     a: Optional[int]
     b: Optional[int]
@@ -292,18 +607,14 @@ class TestModel(lancedb.pydantic.LanceModel):
         lambda: pa.table({"a": [1], "b": [2]}),
         lambda: pa.table({"a": [1], "b": [2]}).to_reader(),
         lambda: iter(pa.table({"a": [1], "b": [2]}).to_batches()),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            )
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
         ),
-        lambda: (
-            lance.write_dataset(
-                pa.table({"a": [1], "b": [2]}),
-                "memory://test",
-            ).scanner()
-        ),
+        lambda: lance.write_dataset(
+            pa.table({"a": [1], "b": [2]}),
+            "memory://test",
+        ).scanner(),
         lambda: pd.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.DataFrame({"a": [1], "b": [2]}),
         lambda: pl.LazyFrame({"a": [1], "b": [2]}),
@@ -528,12 +839,19 @@ def test_sanitize_data(
         else:
             expected_schema = schema
     else:
+        from conftest import pandas_string_type
+
+        # polars uses large_string, pandas 3.0+ uses large_string, others use string
+        if isinstance(data, pl.DataFrame):
+            text_type = pa.large_utf8()
+        elif isinstance(data, pd.DataFrame):
+            text_type = pandas_string_type()
+        else:
+            text_type = pa.string()
         expected_schema = pa.schema(
             {
                 "id": pa.int64(),
-                "text": pa.large_utf8()
-                if isinstance(data, pl.DataFrame)
-                else pa.string(),
+                "text": text_type,
                 "vector": pa.list_(pa.float32(), 10),
             }
         )
@@ -661,6 +979,247 @@ def test_cast_to_target_schema():
     assert output == expected
 
 
+def test_cast_to_target_schema_coerces_binary_to_blob_v2():
+    data = pa.table({"image": pa.array([b"hello", None], type=pa.binary())})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "string_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_cast_to_target_schema_coerces_string_to_blob_v2_uri(string_type):
+    data = pa.table({"image": pa.array(["file:///payload", None], type=string_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": None, "uri": "file:///payload", "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_cast_to_target_schema_rejects_unsupported_blob_input(source_type, value):
+    data = pa.table({"image": pa.array([value], type=source_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        _cast_to_target_schema(data.to_reader(), target)
+
+
+def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
+    storage = lancedb.blob("image").type.storage_type
+    target = pa.schema(
+        [
+            pa.field(
+                "image",
+                storage,
+                metadata={
+                    b"ARROW:extension:name": b"lance.blob.v2",
+                    b"ARROW:extension:metadata": b"",
+                },
+            )
+        ]
+    )
+    data = pa.table({"image": pa.array([b"hello", None], type=pa.binary())})
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert not isinstance(image.type, pa.ExtensionType)
+    assert image.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_labels_json_text_with_table_extension_metadata():
+    # A table created from pa.json_() stores the empty ARROW:extension:metadata that
+    # pyarrow exports next to the name. Lance keeps that key when it turns the
+    # arrow.json label back into lance.json on write and then requires the field to
+    # match the stored one exactly, so the label has to mirror the table's metadata.
+    target = pa.schema(
+        [
+            pa.field(
+                "payload",
+                pa.large_binary(),
+                metadata={
+                    b"ARROW:extension:name": b"lance.json",
+                    b"ARROW:extension:metadata": b"",
+                },
+            ),
+            pa.field(
+                "docs",
+                pa.list_(
+                    pa.field(
+                        "item",
+                        pa.large_binary(),
+                        metadata={b"ARROW:extension:name": b"lance.json"},
+                    )
+                ),
+            ),
+        ]
+    )
+    data = pa.table(
+        {
+            "payload": pa.array(['{"a": 1}', None], type=pa.string()),
+            "docs": pa.array([['{"b": 2}'], []], type=pa.list_(pa.string())),
+        }
+    )
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    payload = output.schema.field("payload")
+    assert payload.type == pa.string()
+    assert payload.metadata == {
+        b"ARROW:extension:name": b"arrow.json",
+        b"ARROW:extension:metadata": b"",
+    }
+    docs_item = output.schema.field("docs").type.value_field
+    assert docs_item.type == pa.string()
+    assert docs_item.metadata == {b"ARROW:extension:name": b"arrow.json"}
+    assert output["payload"].to_pylist() == ['{"a": 1}', None]
+    assert output["docs"].to_pylist() == [['{"b": 2}'], []]
+
+
+def test_cast_to_target_schema_coerces_nested_binary_blob():
+    data = pa.table(
+        {
+            "info": pa.array(
+                [{"blob": b"hello"}, {"blob": None}],
+                type=pa.struct([pa.field("blob", pa.binary())]),
+            )
+        }
+    )
+    target = pa.schema([pa.field("info", pa.struct([lancedb.blob("blob")]))])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    blob = output["info"].chunk(0).field("blob")
+    assert type(blob.type) is lancedb.BlobType
+    assert blob.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_coerces_list_binary_blob_with_inferred_child_name():
+    data = pa.table(
+        {"images": pa.array([[b"a", b"b"], None], type=pa.list_(pa.binary()))}
+    )
+    target = pa.schema([pa.field("images", pa.list_(lancedb.blob("image")))])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    images = output["images"].chunk(0)
+    assert images.type.value_field.name == "image"
+    assert type(images.type.value_type) is lancedb.BlobType
+    assert images.to_pylist()[1] is None
+    assert images.values.storage.to_pylist() == [
+        {"data": b"a", "uri": None, "position": None, "size": None},
+        {"data": b"b", "uri": None, "position": None, "size": None},
+    ]
+
+
+def test_list_blob_coercion_preserves_null_slots_with_nonzero_extent():
+    child = pa.field("image", pa.binary())
+    source = pa.ListArray.from_arrays(
+        pa.array([0, 2, 4], type=pa.int32()),
+        pa.array([b"a", b"b", b"dead", b"beef"], type=pa.binary()),
+        mask=pa.array([False, True]),
+    ).cast(pa.list_(child))
+    target = pa.schema([pa.field("images", pa.list_(lancedb.blob("image")))])
+
+    output = _cast_to_target_schema(
+        pa.table({"images": source}).to_reader(), target
+    ).read_all()
+
+    images = output["images"].chunk(0)
+    assert images.to_pylist()[1] is None
+    assert [b["data"] for b in images.to_pylist()[0]] == [b"a", b"b"]
+
+
+def test_fixed_size_list_blob_coercion_keeps_null_rows():
+    child = pa.field("frame", pa.binary())
+    source = (
+        pa.FixedSizeListArray.from_arrays(
+            pa.array([b"a", b"b", b"c", b"d"], type=pa.binary()), 2
+        )
+        .take(pa.array([0, None], type=pa.int32()))
+        .cast(pa.list_(child, 2))
+    )
+    target = pa.schema([pa.field("frames", pa.list_(lancedb.blob("frame"), 2))])
+
+    output = _cast_to_target_schema(
+        pa.table({"frames": source}).to_reader(), target
+    ).read_all()
+
+    frames = output["frames"].chunk(0)
+    assert frames.to_pylist()[1] is None
+    assert [b["data"] for b in frames.to_pylist()[0]] == [b"a", b"b"]
+
+
+def test_cast_to_target_schema_accepts_pylance_blob_v2():
+    target_type = lancedb.BlobType()
+    source = lance.blob_array([b"hello", None])
+    assert type(source.type) is LanceBlobType
+    assert type(source.type) is type(target_type)
+    data = pa.table({"image": source})
+    target = pa.schema([pa.field("image", target_type)])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is LanceBlobType
+    assert image.type == target_type
+    assert image.storage.to_pylist() == [
+        {"data": b"hello", "uri": None, "position": None, "size": None},
+        None,
+    ]
+
+
+def test_cast_to_target_schema_rejects_different_blob_v2_class():
+    class OtherBlobType(pa.ExtensionType):
+        def __init__(self):
+            super().__init__(lancedb.BlobType().storage_type, "lance.blob.v2")
+
+        def __arrow_ext_serialize__(self) -> bytes:
+            return b""
+
+        @classmethod
+        def __arrow_ext_deserialize__(
+            cls, storage_type: pa.DataType, serialized: bytes
+        ) -> "OtherBlobType":
+            return cls()
+
+    storage = lance.blob_array([b"hello"]).storage
+    source = pa.ExtensionArray.from_storage(OtherBlobType(), storage)
+    data = pa.table({"image": source})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(pa.ArrowTypeError, match="different extension type"):
+        _cast_to_target_schema(data.to_reader(), target).read_all()
+
+
 def test_sanitize_data_stream():
     # Make sure we don't collect the whole stream when running sanitize_data
     schema = pa.schema({"a": pa.int32()})
@@ -678,3 +1237,61 @@ def test_sanitize_data_stream():
 
     with pytest.raises(ValueError):
         next(output)
+
+
+def test_infer_vector_column_raises_clear_error(tmp_path):
+    """Regression: querying a table with no inferable vector column should raise
+    a clear ValueError, not a cryptic TypeError (issue #1653).
+
+    Previously, inf_vector_column_query silently returned None which then caused
+    a confusing TypeError deep in schema lookup. The fix adds a ValueError guard
+    so the user gets a direct, actionable error message.
+    """
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "no_vec",
+        data=[{"id": 1, "text": "hello"}, {"id": 2, "text": "world"}],
+    )
+
+    with pytest.raises(ValueError, match="vector"):
+        # Plain vector search on a table with no vector column should raise
+        # a clear ValueError, not a cryptic TypeError.
+        table.search([1.0, 2.0]).to_list()
+
+
+def test_inf_vector_column_query_dim_mismatch_still_resolves():
+    """Regression: a query dimension that matches no column must not hide an
+    otherwise-unambiguous vector column behind "no vector column in the data".
+
+    `dim` exists to disambiguate between *multiple* vector columns of
+    different sizes. When the schema has exactly one vector column, that
+    column is still the only sensible one to search; a dimension mismatch is
+    a query-execution concern, not a missing-column one. This previously
+    broke remote search (#4409 wired up client-side inference there), which
+    expects the server to reject the mismatched dimension itself.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+            pa.field("s", pa.string(), False),
+        ]
+    )
+
+    assert inf_vector_column_query(schema, dim=32) == "vector_col"
+    assert inf_vector_column_query(schema, dim=120) == "vector_col"
+    assert inf_vector_column_query(schema) == "vector_col"
+
+
+def test_inf_vector_column_query_dim_mismatch_with_multiple_columns():
+    """With more than one vector column, a dimension that matches none of
+    them is still ambiguous and must raise, not silently pick one."""
+    schema = pa.schema(
+        [
+            pa.field("vector1", pa.list_(pa.float32(), 10), False),
+            pa.field("vector2", pa.list_(pa.float32(), 20), False),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="more than one vector column"):
+        inf_vector_column_query(schema, dim=99)

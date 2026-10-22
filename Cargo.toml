@@ -1,65 +1,98 @@
 [workspace]
-members = ["rust/lancedb", "nodejs", "python", "java/core/lancedb-jni"]
-# Python package needs to be built by maturin.
-exclude = ["python"]
+members = ["rust/lancedb", "nodejs", "python"]
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
+edition = "2024"
 authors = ["LanceDB Devs <dev@lancedb.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/lancedb/lancedb"
 description = "Serverless, low-latency vector database for AI applications"
 keywords = ["lancedb", "lance", "database", "vector", "search"]
 categories = ["database-implementations"]
-rust-version = "1.78.0"
+rust-version = "1.94.0"
 
 [workspace.dependencies]
-lance = { "version" = "=0.33.0", default-features = false, "features" = ["dynamodb"], "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-io = { "version" = "=0.33.0", default-features = false, "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-index = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-linalg = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-table = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-testing = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-datafusion = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
-lance-encoding = { "version" = "=0.33.0", "tag" = "v0.33.0-beta.4", "git" = "https://github.com/lancedb/lance.git" }
+lance = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lancedb = { path = "rust/lancedb", default-features = false }
+ahash = "0.8"
 # Note that this one does not include pyarrow
-arrow = { version = "55.1", optional = false }
-arrow-array = "55.1"
-arrow-data = "55.1"
-arrow-ipc = "55.1"
-arrow-ord = "55.1"
-arrow-schema = "55.1"
-arrow-arith = "55.1"
-arrow-cast = "55.1"
+arrow = { version = "58.0.0", optional = false }
+arrow-array = "58.0.0"
+arrow-buffer = "58.0.0"
+arrow-data = "58.0.0"
+arrow-ipc = "58.0.0"
+arrow-ord = "58.0.0"
+arrow-schema = "58.0.0"
+arrow-select = "58.0.0"
+arrow-cast = "58.0.0"
+arrow-flight = { version = "58.0.0", features = ["flight-sql-experimental"] }
 async-trait = "0"
-datafusion = { version = "48.0", default-features = false }
-datafusion-catalog = "48.0"
-datafusion-common = { version = "48.0", default-features = false }
-datafusion-execution = "48.0"
-datafusion-expr = "48.0"
-datafusion-physical-plan = "48.0"
+# Smithy JSON 0.63 requires the pre-1.7 Document representation; allow the MSRV pin.
+aws-smithy-types = ">=1.3.6, <1.7"
+bytes = "1"
+datafusion = { version = "54.0.0", default-features = false }
+datafusion-catalog = "54.0.0"
+datafusion-common = { version = "54.0.0", default-features = false }
+datafusion-execution = "54.0.0"
+datafusion-expr = "54.0.0"
+datafusion-functions = "54.0.0"
+datafusion-physical-plan = "54.0.0"
+datafusion-physical-expr = "54.0.0"
+datafusion-sql = "54.0.0"
 env_logger = "0.11"
-half = { "version" = "2.6.0", default-features = false, features = [
+half = { "version" = "2.7.1", default-features = false, features = [
     "num-traits",
 ] }
-futures = "0"
+futures = "0.3"
 log = "0.4"
+metrics = "0.24"
+metrics-util = "0.19"
 moka = { version = "0.12", features = ["future"] }
-object_store = "0.12.0"
+object_store = "0.14.1"
 pin-project = "1.0.7"
+rand = "0.9"
 snafu = "0.8"
 url = "2"
 num-traits = "0.2"
-rand = "0.9"
+oauth2 = { version = "5.0", default-features = false }
 regex = "1.10"
-lazy_static = "1"
 semver = "1.0.25"
-crunchy = "0.2.4"
-# Temporary pins to work around downstream issues
-# https://github.com/apache/arrow-rs/commit/2fddf85afcd20110ce783ed5b4cdeb82293da30b
-chrono = "=0.4.41"
-# https://github.com/RustCrypto/formats/issues/1684
-base64ct = "=1.6.0"
-# Workaround for: https://github.com/Lokathor/bytemuck/issues/306
-bytemuck_derive = ">=1.8.1, <1.9.0"
+serde = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3.5.0"
+tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-aws-lc"] }
+uuid = { version = "1.7.0", features = ["v4", "v7"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[patch.crates-io]
+# Lance v14.0.0-beta.18 requires multipart write modes from this upstream revision.
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c10758c207c0103355f940f0c736fb8ecb157b04" }
+
+[profile.ci]
+debug = "line-tables-only"
+inherits = "dev"
+incremental = false
+
+# This rule applies to every package except workspace members (dependencies
+# such as `arrow` and `tokio`). It disables debug info and related features on
+# dependencies so their binaries stay smaller, improving cache reuse.
+[profile.ci.package."*"]
+debug = false
+debug-assertions = false
+strip = "debuginfo"
+incremental = false

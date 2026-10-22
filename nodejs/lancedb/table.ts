@@ -5,43 +5,92 @@ import {
   Table as ArrowTable,
   Data,
   DataType,
+  Field,
   IntoVector,
   MultiVector,
   Schema,
   dataTypeToJson,
   fromDataToBuffer,
+  fromTableToBuffer,
   isMultiVector,
+  makeEmptyTable,
   tableFromIPC,
 } from "./arrow";
 
+import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { Job } from "./job";
+import { validateNonNegativeInteger } from "./materialized_view";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
   AddColumnsSql,
   AddResult,
   AlterColumnsResult,
+  BranchContents,
   DeleteResult,
   DropColumnsResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
+  Branches as NativeBranches,
   OptimizeStats,
+  RTEStats,
+  RefreshColumnResult,
+  RefreshMaterializedViewResult,
   TableStatistics,
   Tags,
+  UpdateFieldMetadataResult,
   UpdateResult,
   Table as _NativeTable,
 } from "./native";
 import {
+  AutoQuery,
   FullTextQuery,
   Query,
   TakeQuery,
   VectorQuery,
+  createAutoQuery,
   instanceOfFullTextQuery,
 } from "./query";
 import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
+export {
+  TableShardStats,
+  SsTableStats,
+  RTEStats,
+  MemtableStats,
+} from "./native";
+
+/**
+ * Progress snapshot for a write operation, delivered to the `progress`
+ * callback passed to {@link Table.add}.
+ */
+export interface WriteProgress {
+  /** Number of rows written so far. */
+  outputRows: number;
+  /** Number of bytes written so far. */
+  outputBytes: number;
+  /**
+   * Total rows expected, when the input source reports it.
+   *
+   * Always set on the final callback (the one with `done: true`), falling
+   * back to the actual number of rows written when the source could not
+   * report a row count up front.
+   */
+  totalRows?: number;
+  /** Wall-clock seconds since the write started. */
+  elapsedSeconds: number;
+  /** Number of parallel write tasks currently in flight. */
+  activeTasks: number;
+  /** Total number of parallel write tasks (the write parallelism). */
+  totalTasks: number;
+  /** `true` for the final callback; `false` otherwise. */
+  done: boolean;
+}
 
 /**
  * Options for adding data to a table.
@@ -53,6 +102,39 @@ export interface AddDataOptions {
    * If "overwrite" then the new data will replace the existing data in the table.
    */
   mode: "append" | "overwrite";
+
+  /**
+   * Optional callback invoked periodically with write progress.
+   *
+   * The callback is fired once per batch written and once more with
+   * `done: true` when the write completes. Calls are dispatched
+   * asynchronously to the JS event loop and never block the write — a slow
+   * callback will queue events rather than back-pressure the writer.
+   *
+   * Errors thrown from the callback are logged with `console.warn` and
+   * swallowed — they do not abort the write.
+   *
+   * @example
+   * ```ts
+   * await table.add(data, {
+   *   progress: (p) => {
+   *     console.log(`${p.outputRows}/${p.totalRows ?? "?"} rows`);
+   *   },
+   * });
+   * ```
+   */
+  progress: (progress: WriteProgress) => void;
+
+  /**
+   * Whether blob URIs outside registered external bases may be written.
+   *
+   * Defaults to `false`. This option is supported only for local/native
+   * tables; remote tables return an error when it is enabled. An enabled write
+   * stores the absolute URI reference without registering a base or copying
+   * the external object into the database. The object must remain accessible
+   * when the blob is read later.
+   */
+  allowExternalBlobOutsideBases?: boolean;
 }
 
 export interface UpdateOptions {
@@ -80,10 +162,21 @@ export interface OptimizeOptions {
    * olderThan.setDate(olderThan.getDate() - 1));
    * tbl.optimize({cleanupOlderThan: olderThan});
    *
-   * // Delete all versions except the current version
+   * // Delete versions committed before this point. Versions created by the
+   * // optimize call itself are newer than the cutoff and will be retained.
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
+  /**
+   * Because they may be part of an in-progress transaction, files newer than
+   * 7 days old are not deleted by default. If you are sure that there are no
+   * in-progress transactions, then you can set this to true to delete all
+   * files older than `cleanupOlderThan`.
+   *
+   * **WARNING**: This should only be set to true if you can guarantee that
+   * no other process is currently working on this dataset. Otherwise the
+   * dataset could be put into a corrupted state.
+   */
   deleteUnverified: boolean;
 }
 
@@ -91,6 +184,53 @@ export interface Version {
   version: number;
   timestamp: Date;
   metadata: Record<string, string>;
+}
+
+/** Token produced by the tokenizer configured on a full-text search index. */
+export interface FtsToken {
+  /** Token text after tokenizer filters have been applied. */
+  text: string;
+  /** Token position used by full-text query matching. */
+  position: number;
+}
+
+export type TokenizeTableOptions =
+  | {
+      /** FTS-indexed column whose tokenizer should be used. */
+      column: string;
+      indexName?: never;
+    }
+  | {
+      /** Name of the FTS index whose tokenizer should be used. */
+      indexName: string;
+      column?: never;
+    };
+
+/**
+ * Specification enabling the realtime engine (RTE), which routes
+ * `mergeInsert` through Lance's MemWAL LSM-style write path.
+ *
+ * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
+ * `column` and `numBuckets` are required; for `"identity"`, `column` is
+ * required and must be a deterministic function of the unenforced primary
+ * key (every row with a given primary key must always produce the same
+ * `column` value, or upserts of that key can land in different shards and a
+ * stale version can win).
+ */
+export interface RTEWriteSpec {
+  /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
+  specType: "bucket" | "identity" | "unsharded";
+  /** Bucket and identity variants: the sharding column. */
+  column?: string;
+  /** Bucket variant: the number of buckets, in `[1, 1024]`. */
+  numBuckets?: number;
+  /**
+   * Indexes the RTE keeps up to date. Omit for every index the table has,
+   * including ones created later. Pass `[]` for none.
+   */
+  maintainedIndexes?: string[];
+  /** Default `ShardWriter` configuration recorded in the MemWAL index. */
+  writerConfigDefaults?: Record<string, string>;
 }
 
 /**
@@ -188,7 +328,7 @@ export abstract class Table {
    * Note: if your condition is something like "some_id_column == 7" and
    * you are updating many rows (with different ids) then you will get
    * better performance with a single [`merge_insert`] call instead of
-   * repeatedly calilng this method.
+   * repeatedly calling this method.
    * @param {Map<string, string> | Record<string, string>} updates - the
    * columns to update
    * @returns {Promise<UpdateResult>} A promise that resolves to an object
@@ -250,6 +390,17 @@ export abstract class Table {
   ): Promise<void>;
 
   /**
+   * Create an index, returning a handle to the indexing job.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the index exists until {@link Job.wait} resolves.
+   */
+  abstract createIndexAsync(
+    column: string,
+    options?: Partial<IndexOptions>,
+  ): Promise<Job>;
+
+  /**
    * Drop an index from the table.
    *
    * @param name The name of the index.
@@ -271,6 +422,25 @@ export abstract class Table {
    * wasteful.
    */
   abstract prewarmIndex(name: string): Promise<void>;
+
+  /**
+   * Prewarm one or more columns of data in the table.
+   *
+   * @param columns The columns to prewarm. If undefined, all columns are prewarmed.
+   *
+   * This will load the column data into the page cache so that future queries that
+   * read those columns avoid the initial cold-start latency.  This call initiates
+   * prewarming and returns once the request is accepted; the warming itself may
+   * continue in the background.  Calling it on already-prewarmed columns is a
+   * no-op on the server.
+   *
+   * Prewarming is generally useful for columns used in filters or projections.
+   * Large columns (e.g. high-dimensional vectors or binary data) may not be
+   * practical to prewarm.
+   *
+   * This feature is currently only supported on remote tables.
+   */
+  abstract prewarmData(columns?: string[]): Promise<void>;
 
   /**
    * Waits for asynchronous indexing to complete on the table.
@@ -347,9 +517,55 @@ export abstract class Table {
   /**
    * Create a query that returns a subset of the rows in the table.
    * @param rowIds The row ids of the rows to return.
+   *
+   * Row ids returned by `withRowId()` are `bigint`, so `bigint[]` is supported.
+   * For convenience / backwards compatibility, `number[]` is also accepted (for
+   * small row ids that fit in a safe integer).
    * @returns A builder that can be used to parameterize the query.
    */
-  abstract takeRowIds(rowIds: number[]): TakeQuery;
+  abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
+
+  /**
+   * Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+   * Blobs inside lists are omitted because a row ID does not identify an element.
+   */
+  abstract blobColumns(): Promise<string[]>;
+
+  /**
+   * Bytes for `column` at row IDs from {@link Query.withRowId}.
+   *
+   * Reads the table's current checkout. IDs from another version can fail after
+   * compaction unless stable row ids are enabled. Results keep input order and
+   * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial results are returned.
+   * Blobs inside lists cannot be fetched by row ID.
+   *
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
+   */
+  abstract fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * Opens lazy blob handles for `column` at the given row IDs using the
+   * table's current checkout.
+   *
+   * Preserves input order, duplicates, and nulls. Use this for large payloads.
+   * See {@link Table.fetchBlobs} for row-ID validity across versions.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial handles are returned.
+   */
+  abstract fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(BlobFile | null)[]>;
 
   /**
    * Create a search query to find the nearest neighbors
@@ -366,7 +582,7 @@ export abstract class Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType?: string,
     ftsColumns?: string | string[],
-  ): VectorQuery | Query;
+  ): VectorQuery | Query | AutoQuery;
   /**
    * Search the table with a given query vector.
    *
@@ -377,16 +593,109 @@ export abstract class Table {
   abstract vectorSearch(vector: IntoVector | MultiVector): VectorQuery;
   /**
    * Add new columns with defined values.
-   * @param {AddColumnsSql[]} newColumnTransforms pairs of column names and
-   * the SQL expression to use to calculate the value of the new column. These
-   * expressions will be evaluated for each row in the table, and can
-   * reference existing columns in the table.
+   *
+   * The `{ computed }` form stores the expression rather than evaluating it
+   * now: the column is committed with no values, and rows get them from
+   * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
+   * large table as on an empty one.
+   *
+   * A refresh also recomputes the rows whose inputs changed since they were
+   * computed, so a mutated input is reflected by the next refresh. While a
+   * declaration reads a column, that column cannot be renamed, retyped or
+   * dropped.
+   *
+   * On LanceDB Cloud and Enterprise the expression is planned by the
+   * server, and the refresh runs as a server job -- see
+   * {@link Table#refreshColumnAsync}.
+   * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
+   *   - An array of objects with column names and SQL expressions to calculate values
+   *   - A single Arrow Field defining one column with its data type (column will be initialized with null values)
+   *   - An array of Arrow Fields defining columns with their data types (columns will be initialized with null values)
+   *   - An Arrow Schema defining columns with their data types (columns will be initialized with null values)
+   *   - `{ computed }`, declaring columns defined by a SQL expression whose type and inputs are derived from it
    * @returns {Promise<AddColumnsResult>} A promise that resolves to an object
    * containing the new version number of the table after adding the columns.
+   * @example
+   * ```ts
+   * await table.addColumns({ computed: [{ name: "doubled", valueSql: "x * 2" }] });
+   * const { rowsFilled } = await table.refreshColumn("doubled");
+   * ```
    */
   abstract addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult>;
+
+  /**
+   * Fill the rows of a computed column that hold no value yet.
+   *
+   * Rows appended since the last refresh are filled by the next one, and
+   * rows whose inputs changed since they were computed are recomputed;
+   * everything else is left as it is. Local tables only: a remote refresh
+   * runs as a server job, through {@link Table#refreshColumnAsync}.
+   * @param {string} column The name of the computed column to fill.
+   * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
+   * number of rows filled and the new version number of the table.
+   */
+  abstract refreshColumn(column: string): Promise<RefreshColumnResult>;
+
+  /**
+   * Like {@link Table#refreshColumn}, but returns a handle to the refresh
+   * job instead of blocking until it completes.
+   *
+   * The job may already be complete when returned; callers must not assume
+   * the column is filled until {@link Job.wait} resolves. Invalid input --
+   * an unknown column, or one that is not computed -- rejects here rather
+   * than failing the job. On local tables the job runs in-process; on
+   * LanceDB Cloud and Enterprise it is the server's backfill job.
+   * @param {string} column The name of the computed column to fill.
+   * @example
+   * ```ts
+   * const job = await table.refreshColumnAsync("doubled");
+   * await job.wait();
+   * console.log(await job.status()); // "finished"
+   * ```
+   */
+  abstract refreshColumnAsync(column: string): Promise<Job>;
+
+  /**
+   * The per-row errors Function refreshes recorded on this table.
+   *
+   * A refresh running under a skip policy records each row it skipped with
+   * the input that failed and the error. This lists those records, newest
+   * job first, plus a summary for any fragment whose per-row detail was
+   * capped. LanceDB Cloud and Enterprise only; reading errors needs read
+   * access to the table, since a message carries the value that failed.
+   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
+   * `column`, and `limit` (server default 10000, cap 100000).
+   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
+   * and whether the listing stopped at its limit.
+   * @example
+   * ```ts
+   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * ```
+   */
+  abstract functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors>;
+
+  /**
+   * Recompute this table's contents from its materialized-view definition.
+   *
+   * Plumbing for {@link MaterializedView.refresh}, which is the way to call
+   * it: rejects tables that carry no view definition.
+   * @ignore
+   */
+  abstract refreshMaterializedView(
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult>;
+
+  /** @ignore */
+  abstract materializedViewDefinition(): Promise<string>;
 
   /**
    * Alter the name or nullability of columns.
@@ -398,6 +707,30 @@ export abstract class Table {
   abstract alterColumns(
     columnAlterations: ColumnAlteration[],
   ): Promise<AlterColumnsResult>;
+
+  /**
+   * Update per-field (column) metadata.
+   *
+   * The following keys are treated specially, by convention, and should be
+   * used when appropriate:
+   *
+   * - `lancedb:description`: for a human-readable description of a field.
+   * - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+   *   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+   * - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+   *   `feature_v2` might be in the same logical column.
+   * - `lancedb:status`: for status options (`production`, `candidate`,
+   *   `deprecated`, `archived`) to designate the current life cycle state of
+   *   this column.
+   * @param {FieldMetadataUpdate[]} updates One or more per-field updates. Each
+   * update's metadata is merged into the field's existing metadata by default;
+   * a value of `null` deletes that key, and `replace: true` swaps the whole map.
+   * @returns {Promise<UpdateFieldMetadataResult>} resolves to the new table version.
+   */
+  abstract updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult>;
+
   /**
    * Drop one or more columns from the dataset
    *
@@ -412,6 +745,133 @@ export abstract class Table {
    * containing the new version number of the table after dropping the columns.
    */
   abstract dropColumns(columnNames: string[]): Promise<DropColumnsResult>;
+  /**
+   * Set the unenforced primary key for this table to a single column.
+   *
+   * "Unenforced" means LanceDB does not check uniqueness on writes; the
+   * column is recorded in the schema as the primary key for use by features
+   * such as `merge_insert`. Only single-column primary keys are supported,
+   * and the key cannot be changed once set.
+   * @param {string | string[]} columns The primary key column. A one-element
+   * array is also accepted; passing more than one column is rejected.
+   * @returns {Promise<void>}
+   */
+  abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
+  /**
+   * Install an {@link RTEWriteSpec} on this table, selecting Lance's MemWAL
+   * LSM-style write path for future `mergeInsert` calls.
+   *
+   * `RTEWriteSpec` chooses one of three sharding strategies via `specType`:
+   *
+   * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
+   *   key (`column` and `numBuckets` required).
+   * - `"identity"` — shard by the raw value of a scalar `column`.
+   * - `"unsharded"` — route every write to a single shard.
+   *
+   * All variants require the table to have an unenforced primary key
+   * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
+   * requires it to be the single column being bucketed.
+   *
+   * Omitting `maintainedIndexes` maintains every index the table has,
+   * including ones created later, and skips a kind the RTE cannot maintain.
+   * Naming them pins an exact set, and a still-building index is rejected
+   * rather than quietly omitted.
+   * @param {RTEWriteSpec} spec The sharding spec to install.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * await table.setUnenforcedPrimaryKey("id");
+   * await table.enableRTE({
+   *   specType: "bucket",
+   *   column: "id",
+   *   numBuckets: 16,
+   *   maintainedIndexes: ["id_idx"],
+   * });
+   * ```
+   */
+  abstract enableRTE(spec: RTEWriteSpec): Promise<void>;
+  /**
+   * Remove the {@link RTEWriteSpec} from this table, reverting to the standard
+   * `mergeInsert` write path.
+   *
+   * Errors if no spec is currently set.
+   * @returns {Promise<void>}
+   */
+  abstract disableRTE(): Promise<void>;
+  /**
+   * Read the {@link RTEWriteSpec} currently installed on this table.
+   *
+   * Resolves to `undefined` when the RTE write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#disableRTE}).
+   * The spec is the one installed, including its maintained-index selection:
+   * an absent `maintainedIndexes` for every index the table has, an empty
+   * array for none.
+   * @returns {Promise<RTEWriteSpec | undefined>}
+   */
+  abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
+  /**
+   * Drain and close any cached RTE shard writers held for this table.
+   *
+   * When an {@link RTEWriteSpec} is installed, `mergeInsert` opens RTE
+   * shard writers and caches them for reuse across calls. This closes them,
+   * flushing pending data; writers reopen lazily on the next `mergeInsert`.
+   * It is a no-op when no writers are cached.
+   * @returns {Promise<void>}
+   */
+  abstract closeRTEWriters(): Promise<void>;
+  /**
+   * Freeze every table shard's active memtable into a new SSTable.
+   *
+   * Returns once the freeze is committed. Freezing an empty memtable is a no-op,
+   * so this is safe to call repeatedly.
+   * @returns {Promise<void>}
+   */
+  abstract flushRTE(): Promise<void>;
+  /**
+   * Trigger a background SSTable compaction pass per table shard.
+   *
+   * Returns once the passes are *dispatched*, not once they finish — watch
+   * {@link Table#getRTEStats} for progress, or use
+   * {@link Table#checkpointRTE} to wait for convergence.
+   * @returns {Promise<void>}
+   */
+  abstract compactRTE(): Promise<void>;
+  /**
+   * Converge this table's RTE write path into its base table.
+   *
+   * Freezes once, then triggers compaction and polls until the SSTables that existed
+   * at the start is gone. The target set is fixed at the start, so
+   * SSTables created *during* the checkpoint are ignored — that is what
+   * lets it terminate under write load, and what makes it best-effort: it
+   * converges the fresh tier as of some instant. Idempotent, abandonable at
+   * any point, and safe to run on a cadence.
+   *
+   * There is no liveness bound — the compactor pool is shared across tables,
+   * so a checkpoint queued behind unrelated work looks exactly like one that
+   * is merging. The caller owns the deadline.
+   * @returns {Promise<void>}
+   * @example
+   * ```ts
+   * const before = await table.getRTEStats();
+   * await table.checkpointRTE();
+   * const after = await table.getRTEStats();
+   * ```
+   */
+  abstract checkpointRTE(): Promise<void>;
+  /**
+   * Read live per-table-shard RTE state.
+   *
+   * Answers "how far behind is my fresh tier", "which table shard is hot", and
+   * "why is my fresh-tier vector search brute-force". Mutates no table state.
+   *
+   * Resolves to `undefined` only when the RTE write path is not enabled.
+   * @param {boolean} includeSstableRows Also count rows per SSTable.
+   *   Off by default because each count opens an uncached Lance dataset.
+   * @returns {Promise<RTEStats | undefined>}
+   */
+  abstract getRTEStats(
+    includeSstableRows?: boolean,
+  ): Promise<RTEStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -473,6 +933,22 @@ export abstract class Table {
   abstract tags(): Promise<Tags>;
 
   /**
+   * Get the branch manager for this table.
+   *
+   * Branches are isolated, writable lines of history forked from another
+   * branch (or version). Writes on a branch do not affect `main`.
+   */
+  abstract branches(): Promise<Branches>;
+
+  /**
+   * The branch this table handle is scoped to, or `null` for the main branch.
+   *
+   * A handle returned by {@link Branches.create} or {@link Branches.checkout}
+   * reports the branch it targets; a handle opened normally reports `null`.
+   */
+  abstract currentBranch(): string | null;
+
+  /**
    * Restore the table to the currently checked out version
    *
    * This operation will fail if checkout has not been called previously
@@ -497,19 +973,7 @@ export abstract class Table {
    *  - Index: Optimizes the indices, adding new data to existing indices
    *
    *
-   *  Experimental API
-   *  ----------------
-   *
-   *  The optimization process is undergoing active development and may change.
-   *  Our goal with these changes is to improve the performance of optimization and
-   *  reduce the complexity.
-   *
-   *  That being said, it is essential today to run optimize if you want the best
-   *  performance.  It should be stable and safe to use in production, but it our
-   *  hope that the API may be simplified (or not even need to be called) in the
-   *  future.
-   *
-   *  The frequency an application shoudl call optimize is based on the frequency of
+   *  The frequency an application should call optimize is based on the frequency of
    *  data modifications.  If data is frequently added, deleted, or updated then
    *  optimize should be run frequently.  A good rule of thumb is to run optimize if
    *  you have added or modified 100,000 or more records or run more than 20 data
@@ -518,9 +982,32 @@ export abstract class Table {
   abstract optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats>;
   /** List all indices that have been created with {@link Table.createIndex} */
   abstract listIndices(): Promise<IndexConfig[]>;
+  /**
+   * Tokenize a full-text search query using the tokenizer configured on an FTS index.
+   *
+   * Specify exactly one of `column` or `indexName`.
+   *
+   * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
+   * the client process from index metadata. For remote tables, this means the
+   * same tokenizer model files must also exist locally.
+   */
+  abstract tokenize(
+    query: string,
+    options: TokenizeTableOptions,
+  ): Promise<FtsToken[]>;
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
+  /**
+   * Create a {@link MergeInsertBuilder}, which combines new data with the
+   * existing table in a single transaction — inserting, updating and deleting
+   * rows depending on how they match.
+   *
+   * @param on - The column, or columns, to match source rows against target
+   * rows on. Typically a key or id column. Several columns match on the
+   * composite key: a source row updates a target row only when it agrees on
+   * every one of them.
+   */
   abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
 
   /** List all the stats of a specified index
@@ -538,6 +1025,35 @@ export abstract class Table {
    *
    */
   abstract stats(): Promise<TableStatistics>;
+
+  /**
+   * Get the initial storage options that were passed in when opening this table.
+   *
+   * For dynamically refreshed options (e.g., credential vending), use
+   * {@link Table.latestStorageOptions}.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
+
+  /**
+   * Get the latest storage options, refreshing from provider if configured.
+   *
+   * This method is useful for credential vending scenarios where storage options
+   * may be refreshed dynamically. If no dynamic provider is configured, this
+   * returns the initial static options.
+   *
+   * Warning: This is an internal API and the return value is subject to change.
+   *
+   * @returns The storage options, or undefined if no storage options were configured.
+   */
+  abstract latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  >;
 }
 
 export class LocalTable extends Table {
@@ -562,10 +1078,11 @@ export class LocalTable extends Table {
     return this.inner.display();
   }
 
-  private async getEmbeddingFunctions(): Promise<
-    Map<string, EmbeddingFunctionConfig>
-  > {
-    const schema = await this.schema();
+  private async getEmbeddingFunctions(
+    inner: _NativeTable = this.inner,
+  ): Promise<Map<string, EmbeddingFunctionConfig>> {
+    const schemaBuf = await inner.schema();
+    const schema = tableFromIPC(schemaBuf).schema;
     const registry = getRegistry();
     return registry.parseFunctions(schema.metadata);
   }
@@ -582,7 +1099,25 @@ export class LocalTable extends Table {
     const schema = await this.schema();
 
     const buffer = await fromDataToBuffer(data, undefined, schema);
-    return await this.inner.add(buffer, mode);
+    // Wrap the user callback so a thrown error doesn't surface as an
+    // unhandled exception (the callback fires from a napi threadsafe
+    // function — exceptions there crash the process).
+    const userProgress = options?.progress;
+    const progress = userProgress
+      ? (p: WriteProgress) => {
+          try {
+            userProgress(p);
+          } catch (e) {
+            console.warn("Table.add progress callback threw:", e);
+          }
+        }
+      : undefined;
+    return await this.inner.add(
+      buffer,
+      mode,
+      progress,
+      options?.allowExternalBlobOutsideBases,
+    );
   }
 
   async update(
@@ -667,12 +1202,34 @@ export class LocalTable extends Table {
     );
   }
 
+  async createIndexAsync(
+    column: string,
+    options?: Partial<IndexOptions>,
+  ): Promise<Job> {
+    // biome-ignore lint/suspicious/noExplicitAny: skip
+    const nativeIndex = (options?.config as any)?.inner;
+    return new Job(
+      await this.inner.createIndexAsync(
+        nativeIndex,
+        column,
+        options?.replace,
+        options?.waitTimeoutSeconds,
+        options?.name,
+        options?.train,
+      ),
+    );
+  }
+
   async dropIndex(name: string): Promise<void> {
     await this.inner.dropIndex(name);
   }
 
   async prewarmIndex(name: string): Promise<void> {
     await this.inner.prewarmIndex(name);
+  }
+
+  async prewarmData(columns?: string[]): Promise<void> {
+    await this.inner.prewarmData(columns);
   }
 
   async waitForIndex(
@@ -683,11 +1240,47 @@ export class LocalTable extends Table {
   }
 
   takeOffsets(offsets: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeOffsets(offsets));
+    return new TakeQuery(this.inner.takeOffsets(offsets), {
+      table: this.inner,
+      withRowId: false,
+    });
   }
 
-  takeRowIds(rowIds: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeRowIds(rowIds));
+  takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
+    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)), {
+      table: this.inner,
+      withRowId: false,
+    });
+  }
+
+  blobColumns(): Promise<string[]> {
+    return this.inner.blobColumns();
+  }
+
+  async fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(BlobFile | null)[]> {
+    const files = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobFiles(column, rowIdsToBigInts(rowIds), signal),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return files.map((file) =>
+      file == null ? null : BlobFile.fromNative(file),
+    );
   }
 
   query(): Query {
@@ -698,7 +1291,7 @@ export class LocalTable extends Table {
     query: string | IntoVector | MultiVector | FullTextQuery,
     queryType: string = "auto",
     ftsColumns?: string | string[],
-  ): VectorQuery | Query {
+  ): VectorQuery | Query | AutoQuery {
     if (typeof query !== "string" && !instanceOfFullTextQuery(query)) {
       if (queryType === "fts") {
         throw new Error("Cannot perform full text search on a vector query");
@@ -713,14 +1306,28 @@ export class LocalTable extends Table {
       });
     }
 
-    // The query type is auto or vector
-    // fall back to full text search if no embedding functions are defined and the query is a string
-    if (
-      queryType === "auto" &&
-      (getRegistry().length() === 0 || instanceOfFullTextQuery(query))
-    ) {
-      return this.query().fullTextSearch(query, {
-        columns: ftsColumns,
+    if (queryType === "auto") {
+      if (instanceOfFullTextQuery(query)) {
+        return this.query().fullTextSearch(query, {
+          columns: ftsColumns,
+        });
+      }
+
+      const columns =
+        typeof ftsColumns === "string" ? [ftsColumns] : (ftsColumns ?? null);
+      return createAutoQuery(this.inner, query, columns, async (metadata) => {
+        const functions = await getRegistry().parseFunctions(
+          new Map([["embedding_functions", metadata]]),
+        );
+        // TODO: Support multiple embedding functions
+        const embeddingFunc: EmbeddingFunctionConfig | undefined = functions
+          .values()
+          .next().value;
+        // The route only calls this callback when embedding metadata exists.
+        // parseFunctions either yields a provider or reports malformed metadata.
+        if (!embeddingFunc)
+          throw new Error("Invalid embedding function metadata");
+        return await embeddingFunc.function.computeQueryEmbeddings(query);
       });
     }
 
@@ -757,9 +1364,79 @@ export class LocalTable extends Table {
   // TODO: Support BatchUDF
 
   async addColumns(
-    newColumnTransforms: AddColumnsSql[],
+    newColumnTransforms:
+      | AddColumnsSql[]
+      | Field
+      | Field[]
+      | Schema
+      | { computed: AddColumnsSql[] },
   ): Promise<AddColumnsResult> {
-    return await this.inner.addColumns(newColumnTransforms);
+    // Columns defined by an expression are declared, not materialized here.
+    if (
+      typeof newColumnTransforms === "object" &&
+      !Array.isArray(newColumnTransforms) &&
+      "computed" in newColumnTransforms
+    ) {
+      return await this.inner.addComputedColumns(newColumnTransforms.computed);
+    }
+
+    // Handle single Field -> convert to array of Fields
+    if (newColumnTransforms instanceof Field) {
+      newColumnTransforms = [newColumnTransforms];
+    }
+
+    // Handle array of Fields -> convert to Schema
+    if (
+      Array.isArray(newColumnTransforms) &&
+      newColumnTransforms.length > 0 &&
+      newColumnTransforms[0] instanceof Field
+    ) {
+      const fields = newColumnTransforms as Field[];
+      newColumnTransforms = new Schema(fields);
+    }
+
+    // Handle Schema -> use schema-based approach
+    if (newColumnTransforms instanceof Schema) {
+      const schema = newColumnTransforms;
+      // Convert schema to buffer using Arrow IPC format
+      const emptyTable = makeEmptyTable(schema);
+      const schemaBuf = await fromTableToBuffer(emptyTable);
+      return await this.inner.addColumnsWithSchema(schemaBuf);
+    }
+
+    // Handle SQL expressions (existing functionality)
+    if (Array.isArray(newColumnTransforms)) {
+      return await this.inner.addColumns(
+        newColumnTransforms as AddColumnsSql[],
+      );
+    }
+
+    throw new Error("Invalid input type for addColumns");
+  }
+
+  async refreshColumn(column: string): Promise<RefreshColumnResult> {
+    return await this.inner.refreshColumn(column);
+  }
+
+  async refreshColumnAsync(column: string): Promise<Job> {
+    return new Job(await this.inner.refreshColumnAsync(column));
+  }
+
+  async functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return await this.inner.functionErrors(options);
+  }
+
+  async refreshMaterializedView(
+    sourceVersion?: number,
+  ): Promise<RefreshMaterializedViewResult> {
+    return await this.inner.refreshMaterializedView(sourceVersion);
+  }
+
+  async materializedViewDefinition(): Promise<string> {
+    return await this.inner.materializedViewDefinition();
   }
 
   async alterColumns(
@@ -788,8 +1465,58 @@ export class LocalTable extends Table {
     return await this.inner.alterColumns(processedAlterations);
   }
 
+  async updateFieldMetadata(
+    updates: FieldMetadataUpdate[],
+  ): Promise<UpdateFieldMetadataResult> {
+    return await this.inner.updateFieldMetadata(updates);
+  }
+
   async dropColumns(columnNames: string[]): Promise<DropColumnsResult> {
     return await this.inner.dropColumns(columnNames);
+  }
+
+  async setUnenforcedPrimaryKey(columns: string | string[]): Promise<void> {
+    const cols = typeof columns === "string" ? [columns] : columns;
+    return await this.inner.setUnenforcedPrimaryKey(cols);
+  }
+
+  async enableRTE(spec: RTEWriteSpec): Promise<void> {
+    return await this.inner.enableRTE(spec);
+  }
+
+  async disableRTE(): Promise<void> {
+    return await this.inner.disableRTE();
+  }
+
+  async getRTESpec(): Promise<RTEWriteSpec | undefined> {
+    // The native binding types `specType` as a plain `string`; narrow it back
+    // to the public union. The Rust `From` impl only ever emits one of the
+    // three valid values, so the cast is safe.
+    return ((await this.inner.getRTESpec()) ?? undefined) as
+      | RTEWriteSpec
+      | undefined;
+  }
+
+  async closeRTEWriters(): Promise<void> {
+    return await this.inner.closeRTEWriters();
+  }
+
+  async flushRTE(): Promise<void> {
+    return await this.inner.flushRTE();
+  }
+
+  async compactRTE(): Promise<void> {
+    return await this.inner.compactRTE();
+  }
+
+  async checkpointRTE(): Promise<void> {
+    return await this.inner.checkpointRTE();
+  }
+
+  async getRTEStats(
+    includeSstableRows: boolean = false,
+  ): Promise<RTEStats | undefined> {
+    return (await this.inner.getRTEStats(includeSstableRows)) ?? undefined;
   }
 
   async version(): Promise<number> {
@@ -823,23 +1550,34 @@ export class LocalTable extends Table {
     return await this.inner.tags();
   }
 
+  async branches(): Promise<Branches> {
+    return new Branches(await this.inner.branches());
+  }
+
+  currentBranch(): string | null {
+    return this.inner.currentBranch() ?? null;
+  }
+
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    let cleanupOlderThanMs;
-    if (
-      options?.cleanupOlderThan !== undefined &&
-      options?.cleanupOlderThan !== null
-    ) {
-      cleanupOlderThanMs =
-        new Date().getTime() - options.cleanupOlderThan.getTime();
-    }
     return await this.inner.optimize(
-      cleanupOlderThanMs,
+      options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
     );
   }
 
   async listIndices(): Promise<IndexConfig[]> {
     return await this.inner.listIndices();
+  }
+
+  async tokenize(
+    query: string,
+    options: TokenizeTableOptions,
+  ): Promise<FtsToken[]> {
+    return await this.inner.tokenize(
+      query,
+      options?.column,
+      options?.indexName,
+    );
   }
 
   async toArrow(): Promise<ArrowTable> {
@@ -856,6 +1594,18 @@ export class LocalTable extends Table {
 
   async stats(): Promise<TableStatistics> {
     return await this.inner.stats();
+  }
+
+  async initialStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.initialStorageOptions();
+  }
+
+  async latestStorageOptions(): Promise<
+    Record<string, string> | null | undefined
+  > {
+    return await this.inner.latestStorageOptions();
   }
 
   mergeInsert(on: string | string[]): MergeInsertBuilder {
@@ -924,4 +1674,186 @@ export interface ColumnAlteration {
   dataType?: string | DataType;
   /** Set the new nullability. Note that a nullable column cannot be made non-nullable. */
   nullable?: boolean;
+}
+
+/** A per-field metadata update, addressed by dot-path. */
+export interface FieldMetadataUpdate {
+  /**
+   * Dot-separated path to the field. For a top-level column this is just its
+   * name; for a nested field it's the path, e.g. "a.b.c".
+   */
+  path: string;
+  /**
+   * Metadata key/value pairs. Merged into the field's existing metadata by
+   * default; a value of `null` deletes that key. See
+   * {@link Table.updateFieldMetadata} for the conventional `lancedb:*` keys.
+   */
+  metadata: Record<string, string | null>;
+  /** If true, replace the field's entire metadata map instead of merging. */
+  replace?: boolean;
+}
+
+/** Summary of a column in a branch diff. */
+export interface BranchColumnSummary {
+  name: string;
+  dataType: string;
+  nullable: boolean;
+}
+
+/** A column whose definition differs between main and the branch. */
+export interface BranchColumnChange {
+  name: string;
+  main: BranchColumnSummary;
+  branch: BranchColumnSummary;
+}
+
+/** Summary of an index in a branch diff. */
+export interface BranchIndexSummary {
+  indexName: string;
+  columns: string[];
+  indexType?: string;
+  status: string;
+}
+
+/** Row-level comparison between main and the branch. */
+export interface BranchRowCountSummary {
+  unchanged: number;
+  newOnBase: number;
+  newOnBranch: number;
+  staleRecompute: number;
+  inputsChanged: number;
+  deltaAvailable: boolean;
+}
+
+/** A reason why a cherry-pick cannot currently land. */
+export interface CherryPickError {
+  code: string;
+  message: string;
+}
+
+/** Read-only comparison of a branch against main. */
+export interface BranchDiff {
+  fromBranch: string;
+  parentVersion: number;
+  mainVersion: number;
+  branchVersion: number;
+  baseMoved: boolean;
+  rowCountMain: number;
+  rowCountBranch: number;
+  rowSummary: BranchRowCountSummary;
+  addedColumns: BranchColumnSummary[];
+  removedColumns: BranchColumnSummary[];
+  changedColumns: BranchColumnChange[];
+  addedIndexes: BranchIndexSummary[];
+  removedIndexes: BranchIndexSummary[];
+  errors: CherryPickError[];
+}
+
+/** Changes that would be, or were, promoted by a cherry-pick. */
+export interface CherryPickPreview {
+  promotedColumns: string[];
+}
+
+/** Result of previewing or attempting a cherry-pick. */
+export interface CherryPickResult {
+  status: "ready" | "failed" | "notImplemented" | "cherryPicked" | "unknown";
+  diff: BranchDiff;
+  preview: CherryPickPreview;
+  mainVersionAfter?: number;
+}
+
+/**
+ * Branch manager for a {@link Table}.
+ *
+ * Unlike tags, `create` and `checkout` return a new {@link Table} handle scoped
+ * to the branch; writes on it do not affect `main`.
+ */
+export class Branches {
+  #inner: NativeBranches;
+
+  /**
+   * Construct a Branches manager. Internal use only.
+   * @hidden
+   */
+  constructor(inner: NativeBranches) {
+    this.#inner = inner;
+  }
+
+  /** List all branches, mapping name to branch metadata. */
+  async list(): Promise<Record<string, BranchContents>> {
+    return await this.#inner.list();
+  }
+
+  /**
+   * Create a branch and return a handle scoped to it.
+   *
+   * @param name Name of the new branch.
+   * @param fromRef Source branch to fork from. Defaults to `main`.
+   * @param fromVersion A specific version on `fromRef`. Defaults to latest.
+   */
+  async create(
+    name: string,
+    fromRef?: string,
+    fromVersion?: number,
+  ): Promise<Table> {
+    return new LocalTable(await this.#inner.create(name, fromRef, fromVersion));
+  }
+
+  /**
+   * Check out an existing branch and return a handle scoped to it.
+   *
+   * With `version` set, the returned handle is pinned to that version of the
+   * branch (a read-only, detached view); otherwise it tracks the branch's
+   * latest and stays writable.
+   */
+  async checkout(name: string, version?: number): Promise<Table> {
+    return new LocalTable(await this.#inner.checkout(name, version));
+  }
+
+  /** Delete a branch. */
+  async delete(name: string): Promise<void> {
+    return await this.#inner.delete(name);
+  }
+
+  /** Compare a branch against main without modifying either branch. */
+  async diff(fromBranch: string): Promise<BranchDiff> {
+    return (await this.#inner.diff(fromBranch)) as unknown as BranchDiff;
+  }
+
+  /**
+   * Cherry-pick a branch onto main.
+   *
+   * Set `dryRun` to `true` to preview. A failed cherry-pick resolves
+   * with `status: "failed"` instead of throwing.
+   *
+   * @param fromBranch Branch to cherry-pick from.
+   * @param dryRun When true, only preview. Defaults to false.
+   */
+  async cherryPick(
+    fromBranch: string,
+    dryRun: boolean = false,
+  ): Promise<CherryPickResult> {
+    return (await this.#inner.cherryPick(
+      fromBranch,
+      dryRun,
+    )) as unknown as CherryPickResult;
+  }
+}
+
+function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
+  return rowIds.map((id) => {
+    if (typeof id === "bigint") {
+      return id;
+    }
+    if (!Number.isInteger(id)) {
+      throw new Error("Row id must be an integer (or bigint)");
+    }
+    if (id < 0) {
+      throw new Error("Row id cannot be negative");
+    }
+    if (!Number.isSafeInteger(id)) {
+      throw new Error("Row id is too large for number; use bigint instead");
+    }
+    return BigInt(id);
+  });
 }

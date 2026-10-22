@@ -33,13 +33,19 @@ protected inner: Query | Promise<Query>;
 ### analyzePlan()
 
 ```ts
-analyzePlan(): Promise<string>
+analyzePlan(distributedMetrics?): Promise<string>
 ```
 
 Executes the query and returns the physical query plan annotated with runtime metrics.
 
 This is useful for debugging and performance analysis, as it shows how the query was executed
 and includes metrics such as elapsed time, rows processed, and I/O statistics.
+
+#### Parameters
+
+* **distributedMetrics?**: [`AnalyzePlanDistributedMetrics`](../type-aliases/AnalyzePlanDistributedMetrics.md)
+    How distributed worker metrics are displayed for remote query plans.
+    Defaults to `"aggregate"`.
 
 #### Returns
 
@@ -80,7 +86,7 @@ AnalyzeExec verbose=true, metrics=[]
 ### execute()
 
 ```ts
-protected execute(options?): RecordBatchIterator
+protected execute(options?): AsyncGenerator<RecordBatch<any>, void, unknown>
 ```
 
 Execute the query and return the results as an
@@ -91,7 +97,7 @@ Execute the query and return the results as an
 
 #### Returns
 
-[`RecordBatchIterator`](RecordBatchIterator.md)
+`AsyncGenerator`&lt;`RecordBatch`&lt;`any`&gt;, `void`, `unknown`&gt;
 
 #### See
 
@@ -343,6 +349,53 @@ This is useful for pagination.
 
 ***
 
+### orderBy()
+
+```ts
+orderBy(ordering): this
+```
+
+Sort the results by the specified column(s).
+
+#### Parameters
+
+* **ordering**: [`ColumnOrdering`](../interfaces/ColumnOrdering.md) \| [`ColumnOrdering`](../interfaces/ColumnOrdering.md)[]
+
+#### Returns
+
+`this`
+
+This query builder.
+
+#### Inherited from
+
+`StandardQueryBase.orderBy`
+
+***
+
+### outputSchema()
+
+```ts
+outputSchema(): Promise<Schema<any>>
+```
+
+Returns the schema of the output that will be returned by this query.
+
+This can be used to inspect the types and names of the columns that will be
+returned by the query before executing it.
+
+#### Returns
+
+`Promise`&lt;`Schema`&lt;`any`&gt;&gt;
+
+An Arrow Schema describing the output columns.
+
+#### Inherited from
+
+`StandardQueryBase.outputSchema`
+
+***
+
 ### select()
 
 ```ts
@@ -371,7 +424,7 @@ input to this method would be:
 
 #### Parameters
 
-* **columns**: `string` \| `string`[] \| `Record`&lt;`string`, `string`&gt; \| `Map`&lt;`string`, `string`&gt;
+* **columns**: `string` \| `string`[] \| `Map`&lt;`string`, `string`&gt; \| `Record`&lt;`string`, `string`&gt;
 
 #### Returns
 
@@ -438,9 +491,47 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 `StandardQueryBase.toArrow`
+
+***
+
+### useRTE()
+
+```ts
+useRTE(enable): this
+```
+
+Control RTE read routing for this query.
+
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
+they also return data written via the `mergeInsert` LSM path that has not yet
+been compacted into the base table (the active/frozen in-memory memtables and
+the SSTables), deduplicated by primary key; a table without a spec
+reads the base table.
+
+#### Parameters
+
+* **enable**: `boolean`
+    `true` forces the LSM scanner and errors if the table has no
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
+    even when a spec is present.
+    Note: the LSM scanner does not support every query shape (e.g. reranking,
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
+
+#### Returns
+
+`this`
+
+#### Inherited from
+
+`StandardQueryBase.useRTE`
 
 ***
 
@@ -471,6 +562,9 @@ x > 5 OR y = 'test'
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
+
+Calling this multiple times combines the filters with a logical AND rather
+than replacing the previous filter.
 ```
 
 #### Inherited from

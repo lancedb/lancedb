@@ -6,51 +6,151 @@ import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any
-import warnings
+from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
 __version__ = importlib.metadata.version("lancedb")
 
 from ._lancedb import connect as lancedb_connect
+from ._lancedb import FtsToken
+from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
+from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
+from ._lancedb import FunctionErrors as FunctionErrors
+from ._lancedb import RTEWriteSpec
+from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
+from urllib.parse import urlparse
 from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
-from .schema import vector
-from .table import AsyncTable
+from .expr import Expr, col, lit, func
+from .schema import blob, vector
+from .job import AsyncJob, Job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
+from .functions import (
+    AssignmentMapping as AssignmentMapping,
+    FunctionArtifactRequest as FunctionArtifactRequest,
+    FunctionApplication as FunctionApplication,
+    FunctionBinding as FunctionBinding,
+    FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionVersion as FunctionVersion,
+    PythonRuntimeSpec as PythonRuntimeSpec,
+    RefreshColumnResult as RefreshColumnResult,
+    UdfDefinition as UdfDefinition,
+    udf as udf,
+)
+from .secrets import EnvVarSecret as EnvVarSecret
+from .secrets import SecretInfo as SecretInfo
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
+)
+from .view import ViewDescription as ViewDescription
+from .table import AsyncTable, Table
+from .types import BaseTokenizerType
 from ._lancedb import Session
-from .namespace import connect_namespace, LanceNamespaceDBConnection
+from .namespace import (
+    connect_namespace,
+    connect_namespace_async,
+    LanceNamespaceDBConnection,
+    AsyncLanceNamespaceDBConnection,
+)
+
+from .catalog import (
+    AsyncCatalog,
+    Catalog,
+    connect_catalog,
+    connect_catalog_async,
+)
+
+
+if TYPE_CHECKING:
+    from lance.blob import BlobType as BlobType
+
+
+def __getattr__(name: str):
+    if name == "BlobType":
+        from .schema import BlobType
+
+        globals()["BlobType"] = BlobType
+        return BlobType
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def _check_s3_bucket_with_dots(
+    uri: str, storage_options: Optional[Dict[str, str]]
+) -> None:
+    """
+    Check if an S3 URI has a bucket name containing dots and warn if no region
+    is specified. S3 buckets with dots cannot use virtual-hosted-style URLs,
+    which breaks automatic region detection.
+
+    See: https://github.com/lancedb/lancedb/issues/1898
+    """
+    if not isinstance(uri, str) or not uri.startswith("s3://"):
+        return
+
+    parsed = urlparse(uri)
+    bucket = parsed.netloc
+
+    if "." not in bucket:
+        return
+
+    # Check if region is provided in storage_options
+    region_keys = {"region", "aws_region"}
+    has_region = storage_options and any(k in storage_options for k in region_keys)
+
+    if not has_region:
+        raise ValueError(
+            f"S3 bucket name '{bucket}' contains dots, which prevents automatic "
+            f"region detection. Please specify the region explicitly via "
+            f"storage_options={{'region': '<your-region>'}} or "
+            f"storage_options={{'aws_region': '<your-region>'}}. "
+            f"See https://github.com/lancedb/lancedb/issues/1898 for details."
+        )
 
 
 def connect(
-    uri: URI,
+    uri: Optional[URI] = None,
     *,
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_impl: Optional[str] = None,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+    namespace_client_pushdown_operations: Optional[List[str]] = None,
     **kwargs: Any,
 ) -> DBConnection:
     """Connect to a LanceDB database.
 
     Parameters
     ----------
-    uri: str or Path
-        The uri of the database.
+    uri: str or Path, optional
+        The uri of the database. When ``namespace_client_impl`` is provided you may
+        omit ``uri`` and connect through a namespace client instead.
     api_key: str, optional
         If presented, connect to LanceDB cloud.
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
+        OAuth configuration is currently supported only by ``connect_async``;
+        synchronous LanceDB Cloud connections require an API key.
     region: str, default "us-east-1"
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -60,19 +160,39 @@ def connect(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://docs.lancedb.com/storage/>
+    manifest_enabled : bool, default False
+        When true for local/native connections, use directory namespace
+        manifests as the source of truth for table metadata. Existing
+        directory-listed root tables are migrated into the manifest on access.
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    namespace_client_impl : str, optional
+        When provided along with ``namespace_client_properties``, ``connect``
+        returns a namespace-backed connection by delegating to
+        :func:`connect_namespace`. The value identifies which namespace
+        implementation to load (e.g., ``"dir"`` or ``"rest"``).
+    namespace_client_properties : dict, optional
+        Configuration to pass to the namespace client implementation. Required
+        when ``namespace_client_impl`` is set.
+    namespace_client_pushdown_operations : list[str], optional
+        Only used when ``namespace_client_properties`` is provided. Forwards to
+        :func:`connect_namespace` to control which operations are executed on the
+        namespace service (e.g., ``["QueryTable", "CreateTable"]``).
 
     Examples
     --------
@@ -84,19 +204,81 @@ def connect(
 
     For object storage, use a URI prefix:
 
-    >>> db = lancedb.connect("s3://my-bucket/lancedb",
-    ...                      storage_options={"aws_access_key_id": "***"})
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "s3://my-bucket/lancedb",
+    ...     storage_options={
+    ...         "aws_access_key_id": "***",
+    ...         "aws_secret_access_key": "***",
+    ...         "aws_region": "us-east-1",
+    ...     },
+    ... )
+
+    For Azure Blob Storage, credentials can be passed directly without setting
+    environment variables:
+
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "az://my-container/my-database",
+    ...     storage_options=azure_storage_options,
+    ... )
+
+    For tests and temporary data, use an in-memory database:
+
+    >>> db = lancedb.connect("memory://")
+
+    In-memory databases are not persisted. Tables are dropped when the last
+    connection or table handle referencing them is closed.
 
     Connect to LanceDB cloud:
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
     ...                      client_config={"retry_config": {"retries": 5}})
 
+    Connect to a namespace-backed database:
+
+    >>> db = lancedb.connect(namespace_client_impl="dir",
+    ...                      namespace_client_properties={"root": "/tmp/ns"})
+
     Returns
     -------
     conn : DBConnection
         A connection to a LanceDB database.
     """
+    if namespace_client_impl is not None:
+        if namespace_client_properties is None:
+            raise ValueError(
+                "namespace_client_properties must be provided when "
+                "namespace_client_impl is set"
+            )
+        if kwargs:
+            raise ValueError(f"Unknown keyword arguments: {kwargs}")
+        return connect_namespace(
+            namespace_client_impl,
+            namespace_client_properties,
+            read_consistency_interval=read_consistency_interval,
+            storage_options=storage_options,
+            session=session,
+            namespace_client_pushdown_operations=namespace_client_pushdown_operations,
+        )
+
+    if namespace_client_properties is not None and not manifest_enabled:
+        raise ValueError(
+            "namespace_client_impl must be provided when using "
+            "namespace_client_properties unless manifest_enabled=True"
+        )
+
+    if namespace_client_pushdown_operations is not None:
+        raise ValueError(
+            "namespace_client_pushdown_operations is only valid when "
+            "connecting through a namespace"
+        )
+    if uri is None:
+        raise ValueError(
+            "uri is required when not connecting through a namespace client"
+        )
     if isinstance(uri, str) and uri.startswith("db://"):
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
@@ -109,21 +291,157 @@ def connect(
             api_key,
             region,
             host_override,
+            sql_host_override=sql_host_override,
             # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
             client_config=client_config,
             storage_options=storage_options,
+            read_consistency_interval=read_consistency_interval,
             **kwargs,
         )
+    _check_s3_bucket_with_dots(str(uri), storage_options)
 
     if kwargs:
         raise ValueError(f"Unknown keyword arguments: {kwargs}")
+
     return LanceDBConnection(
         uri,
         read_consistency_interval=read_consistency_interval,
         storage_options=storage_options,
         session=session,
+        manifest_enabled=manifest_enabled,
+        namespace_client_properties=namespace_client_properties,
     )
+
+
+def tokenize(
+    query: str,
+    *,
+    base_tokenizer: BaseTokenizerType = "simple",
+    language: str = "English",
+    max_token_length: Optional[int] = 40,
+    lower_case: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
+    custom_stop_words: Optional[List[str]] = None,
+    ascii_folding: bool = True,
+    ngram_min_length: int = 3,
+    ngram_max_length: int = 3,
+    prefix_only: bool = False,
+) -> Iterable[FtsToken]:
+    """Tokenize a full-text search query using an explicit tokenizer.
+
+    This does not require an FTS index. The tokenizer options match
+    :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
+    When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
+    applies: False for ``code`` and ``ngram``, True otherwise.
+    """
+
+    return _tokenize(
+        query,
+        base_tokenizer=base_tokenizer,
+        language=language,
+        max_token_length=max_token_length,
+        lower_case=lower_case,
+        stem=stem,
+        remove_stop_words=remove_stop_words,
+        custom_stop_words=custom_stop_words,
+        ascii_folding=ascii_folding,
+        ngram_min_length=ngram_min_length,
+        ngram_max_length=ngram_max_length,
+        prefix_only=prefix_only,
+    )
+
+
+WORKER_PROPERTY_PREFIX = "_lancedb_worker_"
+
+
+def _apply_worker_overrides(props: dict[str, str]) -> dict[str, str]:
+    """Apply worker property overrides.
+
+    Any key starting with ``_lancedb_worker_`` is extracted, the prefix
+    is stripped, and the resulting key-value pair is put back into the
+    map (overriding the existing value if present).  The original
+    prefixed key is removed.
+    """
+    worker_keys = [k for k in props if k.startswith(WORKER_PROPERTY_PREFIX)]
+    if not worker_keys:
+        return props
+    result = dict(props)
+    for key in worker_keys:
+        value = result.pop(key)
+        real_key = key[len(WORKER_PROPERTY_PREFIX) :]
+        result[real_key] = value
+    return result
+
+
+def deserialize_conn(
+    data: str,
+    *,
+    for_worker: bool = False,
+) -> DBConnection:
+    """Reconstruct a DBConnection from a serialized string.
+
+    The string must have been produced by
+    :meth:`DBConnection.serialize`.
+
+    Parameters
+    ----------
+    data : str
+        String produced by ``serialize()``.
+    for_worker : bool, default False
+        When ``True``, any namespace client property whose key starts
+        with ``_lancedb_worker_`` has that prefix stripped and the
+        value overrides the corresponding property.  For example,
+        ``_lancedb_worker_uri`` replaces ``uri``.
+
+    Returns
+    -------
+    DBConnection
+        A new connection matching the serialized state.
+    """
+    import json
+
+    parsed = json.loads(data)
+    connection_type = parsed.get("connection_type")
+
+    rci_secs = parsed.get("read_consistency_interval_seconds")
+    rci = timedelta(seconds=rci_secs) if rci_secs is not None else None
+    storage_options = parsed.get("storage_options")
+
+    if connection_type == "namespace":
+        props = dict(parsed.get("namespace_client_properties") or {})
+        if for_worker:
+            props = _apply_worker_overrides(props)
+        return connect_namespace(
+            namespace_client_impl=parsed["namespace_client_impl"],
+            namespace_client_properties=props,
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+            namespace_client_pushdown_operations=parsed.get(
+                "namespace_client_pushdown_operations"
+            ),
+        )
+    elif connection_type == "local":
+        return LanceDBConnection(
+            parsed["uri"],
+            read_consistency_interval=rci,
+            storage_options=storage_options,
+            manifest_enabled=parsed.get("manifest_enabled", False),
+            namespace_client_properties=parsed.get("namespace_client_properties"),
+        )
+    elif connection_type == "remote":
+        return RemoteDBConnection(
+            parsed["db_url"],
+            parsed["api_key"],
+            parsed.get("region", "us-east-1"),
+            host_override=parsed.get("host_override"),
+            sql_host_override=parsed.get("sql_host_override"),
+            client_config=parsed.get("client_config"),
+            storage_options=storage_options,
+        )
+    else:
+        raise ValueError(f"Unknown connection_type: {connection_type}")
 
 
 async def connect_async(
@@ -132,10 +450,14 @@ async def connect_async(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
     session: Optional[Session] = None,
+    manifest_enabled: bool = False,
+    namespace_client_properties: Optional[Dict[str, str]] = None,
+    oauth_config=None,
 ) -> AsyncConnection:
     """Connect to a LanceDB database.
 
@@ -151,8 +473,10 @@ async def connect_async(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
-        (For LanceDB OSS only)
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
         reasons, this is the default. For strong consistency, set this to
@@ -162,24 +486,43 @@ async def connect_async(
         the last check, then the table will be checked for updates. Note: this
         consistency only applies to read operations. Write operations are
         always consistent.
+
+        Stronger consistency is not free. The smaller the interval, the more
+        often each read pays the cost of checking for updates against object
+        storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
         Configuration options for the LanceDB Cloud HTTP client. If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
-        <https://lancedb.github.io/lancedb/guides/storage/>
+        <https://docs.lancedb.com/storage/>
     session: Session, optional
         (For LanceDB OSS only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
+    manifest_enabled : bool, default False
+        When true for local/native connections, use directory namespace
+        manifests as the source of truth for table metadata. Existing
+        directory-listed root tables are migrated into the manifest on access.
+    namespace_client_properties : dict, optional
+        Additional directory namespace client properties to use with
+        ``manifest_enabled=True``.
+    oauth_config : OAuthConfig, optional
+        OAuth configuration for LanceDB Cloud/Enterprise. This is supported by
+        ``connect_async`` only; synchronous ``connect`` uses API key
+        authentication for ``db://`` URIs.
 
     Examples
     --------
 
     >>> import lancedb
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
     >>> async def doctest_example():
     ...     # For a local directory, provide a path to the database
     ...     db = await lancedb.connect_async("~/.lancedb")
@@ -187,6 +530,13 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # Azure credentials can also be passed directly
+    ...     db = await lancedb.connect_async(
+    ...         "az://my-container/my-database",
+    ...         storage_options=azure_storage_options,
+    ...     )
+    ...     # For tests and temporary data, use an in-memory database
+    ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
     ...     db = await lancedb.connect_async("db://my_database", api_key="ldb_...",
     ...                                      client_config={
@@ -205,43 +555,64 @@ async def connect_async(
     if isinstance(client_config, dict):
         client_config = ClientConfig(**client_config)
 
+    _check_s3_bucket_with_dots(str(uri), storage_options)
+
     return AsyncConnection(
         await lancedb_connect(
             sanitize_uri(uri),
             api_key,
             region,
             host_override,
+            sql_host_override,
             read_consistency_interval_secs,
             client_config,
             storage_options,
             session,
+            manifest_enabled,
+            namespace_client_properties,
+            oauth_config,
         )
     )
 
 
 __all__ = [
+    "Catalog",
+    "AsyncCatalog",
+    "connect_catalog",
+    "connect_catalog_async",
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
+    "ViewDescription",
     "connect",
     "connect_async",
+    "tokenize",
     "connect_namespace",
+    "connect_namespace_async",
     "AsyncConnection",
+    "AsyncJob",
+    "AsyncSqlQuery",
+    "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "FtsToken",
+    "col",
+    "Expr",
+    "func",
+    "lit",
     "URI",
     "sanitize_uri",
+    "blob",
+    "BlobType",
     "vector",
     "DBConnection",
+    "Job",
+    "QueryDescription",
+    "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
+    "Table",
     "__version__",
 ]
-
-
-def __warn_on_fork():
-    warnings.warn(
-        "lance is not fork-safe. If you are using multiprocessing, use spawn instead.",
-    )
-
-
-if hasattr(os, "register_at_fork"):
-    os.register_at_fork(before=__warn_on_fork)  # type: ignore[attr-defined]

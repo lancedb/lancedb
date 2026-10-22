@@ -6,7 +6,7 @@
 
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-parent</artifactId>
-    <version>0.21.4-beta.1</version>
+    <version>0.41.0-beta.13</version>
     <packaging>pom</packaging>
     <name>${project.artifactId}</name>
     <description>LanceDB Java SDK Parent POM</description>
@@ -28,7 +28,8 @@
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <arrow.version>15.0.0</arrow.version>
-        <lance-namespace.verison>0.0.1</lance-namespace.verison>
+        <lance-core.version>15.0.0-beta.1</lance-core.version>
+        <jackson.version>2.18.11</jackson.version>
         <spotless.skip>false</spotless.skip>
         <spotless.version>2.30.0</spotless.version>
         <spotless.java.googlejavaformat.version>1.7</spotless.java.googlejavaformat.version>
@@ -51,8 +52,7 @@
     </properties>
 
     <modules>
-        <module>core</module>
-        <module>lance-namespace</module>
+        <module>lancedb-core</module>
     </modules>
 
     <scm>
@@ -63,10 +63,19 @@
 
     <dependencyManagement>
         <dependencies>
+            <!-- Pin every Jackson artifact, including ones pulled in transitively
+                 (e.g. jackson-core), to a single patched version. -->
             <dependency>
-                <groupId>com.lancedb</groupId>
-                <artifactId>lance-namespace-core</artifactId>
-                <version>${lance-namespace.verison}</version>
+                <groupId>com.fasterxml.jackson</groupId>
+                <artifactId>jackson-bom</artifactId>
+                <version>${jackson.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>org.lance</groupId>
+                <artifactId>lance-core</artifactId>
+                <version>${lance-core.version}</version>
             </dependency>
             <dependency>
                 <groupId>org.apache.arrow</groupId>
@@ -89,22 +98,22 @@
                 <version>${arrow.version}</version>
             </dependency>
             <dependency>
-                <groupId>org.questdb</groupId>
-                <artifactId>jar-jni</artifactId>
-                <version>1.1.1</version>
-            </dependency>
-            <dependency>
                 <groupId>org.junit.jupiter</groupId>
                 <artifactId>junit-jupiter</artifactId>
                 <version>5.10.1</version>
             </dependency>
-            <dependency>
-                <groupId>org.json</groupId>
-                <artifactId>json</artifactId>
-                <version>20210307</version>
-            </dependency>
         </dependencies>
     </dependencyManagement>
+
+    <repositories>
+        <repository>
+            <id>lance</id>
+            <url>https://maven.lance.org</url>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
 
     <distributionManagement>
         <snapshotRepository>
@@ -122,7 +131,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-source-plugin</artifactId>
-                <version>2.2.1</version>
+                <version>3.3.1</version>
                 <executions>
                     <execution>
                         <id>attach-sources</id>
@@ -135,7 +144,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>2.9.1</version>
+                <version>3.11.2</version>
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
@@ -171,20 +180,33 @@
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>
             </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>license-maven-plugin</artifactId>
+                <version>2.4.0</version>
+                <configuration>
+                    <outputDirectory>${project.basedir}</outputDirectory>
+                    <thirdPartyFilename>JAVA_THIRD_PARTY_LICENSES.md</thirdPartyFilename>
+                    <fileTemplate>/org/codehaus/mojo/license/third-party-file-groupByLicense.ftl</fileTemplate>
+                    <includedScopes>compile,runtime</includedScopes>
+                    <excludedScopes>test,provided</excludedScopes>
+                    <sortArtifactByName>true</sortArtifactByName>
+                </configuration>
+            </plugin>
         </plugins>
         <pluginManagement>
             <plugins>
                 <plugin>
                     <artifactId>maven-clean-plugin</artifactId>
-                    <version>3.1.0</version>
+                    <version>3.4.1</version>
                 </plugin>
                 <plugin>
                     <artifactId>maven-resources-plugin</artifactId>
-                    <version>3.0.2</version>
+                    <version>3.3.1</version>
                 </plugin>
                 <plugin>
                     <artifactId>maven-compiler-plugin</artifactId>
-                    <version>3.8.1</version>
+                    <version>3.14.0</version>
                     <configuration>
                         <compilerArgs>
                             <arg>-h</arg>
@@ -203,11 +225,11 @@
                 </plugin>
                 <plugin>
                     <artifactId>maven-jar-plugin</artifactId>
-                    <version>3.0.2</version>
+                    <version>3.4.2</version>
                 </plugin>
                 <plugin>
                     <artifactId>maven-install-plugin</artifactId>
-                    <version>2.5.2</version>
+                    <version>3.1.3</version>
                 </plugin>
                 <plugin>
                     <groupId>com.diffplug.spotless</groupId>
@@ -303,11 +325,12 @@
                     <plugin>
                         <groupId>org.sonatype.central</groupId>
                         <artifactId>central-publishing-maven-plugin</artifactId>
-                        <version>0.4.0</version>
+                        <version>0.8.0</version>
                         <extensions>true</extensions>
                         <configuration>
                             <publishingServerId>ossrh</publishingServerId>
                             <tokenAuth>true</tokenAuth>
+                            <autoPublish>true</autoPublish>
                         </configuration>
                     </plugin>
                     <plugin>
@@ -324,7 +347,7 @@
                     <plugin>
                         <groupId>org.apache.maven.plugins</groupId>
                         <artifactId>maven-gpg-plugin</artifactId>
-                        <version>1.5</version>
+                        <version>3.2.7</version>
                         <executions>
                             <execution>
                                 <id>sign-artifacts</id>

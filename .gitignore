@@ -1,4 +1,5 @@
 .idea
+*.swp
 **/*.whl
 *.egg-info
 **/__pycache__
@@ -26,6 +27,7 @@ python/dist
 *.so
 *.dylib
 *.dll
+*.pdb
 
 ## Javascript
 *.node
@@ -38,3 +40,6 @@ dist
 target
 
 **/sccache.log
+
+# Vale styles installed by `vale sync`
+/.vale/

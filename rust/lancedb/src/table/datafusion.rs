@@ -2,51 +2,81 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
+
+mod blob_coerce;
+pub mod cast;
+pub mod insert;
+pub mod reject_nan;
+pub mod scannable_exec;
+pub mod udtf;
+
 use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, RecordBatchOptions};
 use arrow_schema::Schema as ArrowSchema;
 use async_trait::async_trait;
 use datafusion_catalog::{Session, TableProvider};
 use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics};
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
-use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType};
+use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType, dml::InsertOp};
 use datafusion_physical_plan::{
-    stream::RecordBatchStreamAdapter, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execution_plan::CardinalityEffect,
+    stream::RecordBatchStreamAdapter,
 };
 use futures::{TryFutureExt, TryStreamExt};
+use lance::dataset::{WriteMode, WriteParams};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
     Result,
+    query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
 };
+use arrow_schema::{DataType, Field};
+use lance_index::scalar::FullTextSearchQuery;
 
-/// Datafusion attempts to maintain batch metadata
+/// An execution plan that erases Arrow schema-level metadata from its input's batches.
 ///
-/// This is needless and it triggers bugs in DF.  This operator erases metadata from the batches.
+/// DataFusion attempts to maintain batch metadata. This is needless and it triggers bugs in
+/// DF, so [`BaseTableAdapter::scan`] wraps every scan it produces in one of these.
+///
+/// ```
+/// use std::sync::Arc;
+///
+/// use datafusion_physical_plan::ExecutionPlan;
+/// use lancedb::table::datafusion::MetadataEraserExec;
+///
+/// # fn erase_metadata(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+/// Arc::new(MetadataEraserExec::new(scan))
+/// # }
+/// ```
 #[derive(Debug)]
-struct MetadataEraserExec {
+pub struct MetadataEraserExec {
     input: Arc<dyn ExecutionPlan>,
     schema: Arc<ArrowSchema>,
-    properties: PlanProperties,
+    properties: Arc<PlanProperties>,
 }
 
 impl MetadataEraserExec {
     fn compute_properties_from_input(
         input: &Arc<dyn ExecutionPlan>,
         schema: &Arc<ArrowSchema>,
-    ) -> PlanProperties {
+    ) -> Arc<PlanProperties> {
         let input_properties = input.properties();
         let eq_properties = input_properties
             .eq_properties
             .clone()
             .with_new_schema(schema.clone())
             .unwrap();
-        input_properties.clone().with_eq_properties(eq_properties)
+        Arc::new(
+            input_properties
+                .as_ref()
+                .clone()
+                .with_eq_properties(eq_properties),
+        )
     }
 
-    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
+    /// Wrap `input` in an operator that strips schema-level metadata from its batches.
+    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         let schema = Arc::new(
             input
                 .schema()
@@ -73,11 +103,7 @@ impl ExecutionPlan for MetadataEraserExec {
         "MetadataEraserExec"
     }
 
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
-    fn properties(&self) -> &PlanProperties {
+    fn properties(&self) -> &Arc<PlanProperties> {
         &self.properties
     }
 
@@ -98,12 +124,11 @@ impl ExecutionPlan for MetadataEraserExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         assert_eq!(children.len(), 1);
-        let new_properties = Self::compute_properties_from_input(&children[0], &self.schema);
-        Ok(Arc::new(Self {
-            input: children[0].clone(),
-            schema: self.schema.clone(),
-            properties: new_properties,
-        }))
+        Ok(Arc::new(Self::new(children[0].clone())))
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
     }
 
     fn execute(
@@ -114,12 +139,25 @@ impl ExecutionPlan for MetadataEraserExec {
         let stream = self.input.execute(partition, context)?;
         let schema = self.schema.clone();
         let stream = stream.map_ok(move |batch| {
-            RecordBatch::try_new(schema.clone(), batch.columns().to_vec()).unwrap()
+            RecordBatch::try_new_with_options(
+                schema.clone(),
+                batch.columns().to_vec(),
+                &RecordBatchOptions::new().with_row_count(Some(batch.num_rows())),
+            )
+            .unwrap()
         });
         Ok(
             Box::pin(RecordBatchStreamAdapter::new(self.schema.clone(), stream))
                 as SendableRecordBatchStream,
         )
+    }
+
+    fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<Statistics>> {
+        self.input.partition_statistics(partition)
+    }
+
+    fn supports_limit_pushdown(&self) -> bool {
+        true
     }
 }
 
@@ -127,28 +165,52 @@ impl ExecutionPlan for MetadataEraserExec {
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
+    fts_query: Option<FullTextSearchQuery>,
+    use_rte: Option<bool>,
 }
 
 impl BaseTableAdapter {
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = Arc::new(
-            table
-                .schema()
-                .await?
-                .as_ref()
-                .clone()
-                .with_metadata(HashMap::default()),
-        );
-        Ok(Self { table, schema })
+        let schema = table
+            .schema()
+            .await?
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::default());
+
+        Ok(Self {
+            table,
+            schema: Arc::new(schema),
+            fts_query: None,
+            use_rte: None,
+        })
+    }
+
+    /// Set the RTE read routing of every scan; see [`QueryRequest::use_rte`].
+    pub fn with_use_rte(mut self, use_rte: Option<bool>) -> Self {
+        self.use_rte = use_rte;
+        self
+    }
+
+    /// Create a new adapter with an FTS query applied.
+    pub fn with_fts_query(&self, fts_query: FullTextSearchQuery) -> Self {
+        // Add _score column to the schema
+        let score_field = Field::new("_score", DataType::Float32, true);
+        let mut fields = self.schema.fields().to_vec();
+        fields.push(Arc::new(score_field));
+        let schema = Arc::new(ArrowSchema::new(fields));
+
+        Self {
+            table: self.table.clone(),
+            schema,
+            fts_query: Some(fts_query),
+            use_rte: self.use_rte,
+        }
     }
 }
 
 #[async_trait]
 impl TableProvider for BaseTableAdapter {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> Arc<ArrowSchema> {
         self.schema.clone()
     }
@@ -164,11 +226,20 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        let mut query = QueryRequest::default();
+        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
+        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+
+        let mut query = QueryRequest {
+            full_text_search: self.fts_query.clone(),
+            disable_scoring_autoprojection: disable_scoring,
+            use_rte: self.use_rte,
+            ..Default::default()
+        };
+
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()
-                .map(|i| self.schema.field(*i).name().to_string())
+                .map(|i| self.schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
         }
@@ -210,6 +281,33 @@ impl TableProvider for BaseTableAdapter {
         // TODO
         None
     }
+
+    async fn insert_into(
+        &self,
+        _state: &dyn Session,
+        input: Arc<dyn ExecutionPlan>,
+        insert_op: InsertOp,
+    ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        let mode = match insert_op {
+            InsertOp::Append => WriteMode::Append,
+            InsertOp::Overwrite => WriteMode::Overwrite,
+            InsertOp::Replace => {
+                return Err(DataFusionError::NotImplemented(
+                    "Replace mode is not supported for LanceDB tables".to_string(),
+                ));
+            }
+        };
+
+        let write_params = WriteParams {
+            mode,
+            ..Default::default()
+        };
+
+        self.table
+            .create_insert_exec(input, write_params)
+            .await
+            .map_err(|e| DataFusionError::External(e.into()))
+    }
 }
 
 #[cfg(test)]
@@ -218,8 +316,7 @@ pub mod tests {
 
     use arrow::array::AsArray;
     use arrow_array::{
-        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, RecordBatchIterator,
-        RecordBatchReader, StringArray, UInt32Array,
+        BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     };
     use arrow_schema::{DataType, Field, Schema};
     use datafusion::{
@@ -227,18 +324,19 @@ pub mod tests {
         prelude::{SessionConfig, SessionContext},
     };
     use datafusion_catalog::TableProvider;
+    use datafusion_common::stats::Precision;
     use datafusion_execution::SendableRecordBatchStream;
-    use datafusion_expr::{col, lit, LogicalPlan, LogicalPlanBuilder};
+    use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, col, lit};
     use futures::{StreamExt, TryStreamExt};
     use tempfile::tempdir;
 
     use crate::{
         connect,
-        index::{scalar::BTreeIndexBuilder, Index},
+        index::{Index, scalar::BTreeIndexBuilder},
         table::datafusion::BaseTableAdapter,
     };
 
-    fn make_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -247,19 +345,17 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int32Array::from_iter_values(0..10)),
-                    Arc::new(UInt32Array::from_iter_values(0..10)),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..10)),
+                Arc::new(UInt32Array::from_iter_values(0..10)),
+            ],
         )
+        .unwrap()
     }
 
-    fn make_tbl_two_test_batches() -> impl RecordBatchReader + Send + Sync + 'static {
+    fn make_tbl_two_test_batches() -> RecordBatch {
         let metadata = HashMap::from_iter(vec![("foo".to_string(), "bar".to_string())]);
         let schema = Arc::new(
             Schema::new(vec![
@@ -272,28 +368,26 @@ pub mod tests {
             ])
             .with_metadata(metadata),
         );
-        RecordBatchIterator::new(
-            vec![RecordBatch::try_new(
-                schema.clone(),
-                vec![
-                    Arc::new(Int64Array::from_iter_values(0..1000)),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                    Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
-                    )),
-                    Arc::new(BinaryArray::from_iter_values(
-                        (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
-                    )),
-                    Arc::new(StringArray::from_iter_values(
-                        (0..1000).map(|i| i.to_string()),
-                    )),
-                ],
-            )],
+        RecordBatch::try_new(
             schema,
+            vec![
+                Arc::new(Int64Array::from_iter_values(0..1000)),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+                Arc::new(Float64Array::from_iter_values((0..1000).map(|i| i as f64))),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| format!("{{\"i\":{}}}", i)),
+                )),
+                Arc::new(BinaryArray::from_iter_values(
+                    (0..1000).map(|i| (i as u32).to_be_bytes().to_vec()),
+                )),
+                Arc::new(StringArray::from_iter_values(
+                    (0..1000).map(|i| i.to_string()),
+                )),
+            ],
         )
+        .unwrap()
     }
 
     struct TestFixture {
@@ -478,6 +572,60 @@ pub mod tests {
         }
     }
 
+    /// A scan with an EMPTY projection (the shape a filtered `COUNT(*)` feeds in) yields
+    /// zero-column batches. `MetadataEraserExec::execute` rebuilt each batch with
+    /// `RecordBatch::try_new(schema, cols).unwrap()`; for a column-less batch that errors with
+    /// "must either specify a row count or at least one column" and the `.unwrap()` panics.
+    #[tokio::test]
+    async fn test_metadata_eraser_empty_projection_preserves_row_count() {
+        let fixture = TestFixture::new().await;
+
+        // Empty projection => zero output columns over N rows. Table "foo" has 10 rows.
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter), Some(vec![]))
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let mut stream = TestFixture::plan_to_stream(plan).await;
+
+        let mut rows = 0usize;
+        while let Some(batch) = stream.try_next().await.unwrap() {
+            assert_eq!(
+                batch.num_columns(),
+                0,
+                "empty projection must yield zero columns"
+            );
+            rows += batch.num_rows();
+        }
+        assert_eq!(
+            rows, 10,
+            "row count must survive MetadataEraserExec on a zero-column batch"
+        );
+
+        // End-to-end SQL regression for the previous panic.
+        let fixture = TestFixture::new().await;
+
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT COUNT(*) FROM foo WHERE i < 5")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+
+        let count = batches[0]
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(count, 5, "COUNT(*) WHERE i < 5 over 0..10 must be 5");
+    }
+
     #[tokio::test]
     async fn test_filter_pushdown() {
         let fixture = TestFixture::new().await;
@@ -495,6 +643,7 @@ pub mod tests {
             plan,
             "MetadataEraserExec
              ProjectionExec:...
+             CooperativeExec...
              LanceRead:...",
         )
         .await;
@@ -508,5 +657,118 @@ pub mod tests {
             .unwrap();
 
         TestFixture::check_plan(plan, "").await;
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_propagates_statistics() {
+        let fixture = TestFixture::new().await;
+
+        let plan =
+            LogicalPlanBuilder::scan("foo", provider_as_source(fixture.adapter.clone()), None)
+                .unwrap()
+                .build()
+                .unwrap();
+
+        let ctx = SessionContext::new();
+        let physical_plan = ctx.state().create_physical_plan(&plan).await.unwrap();
+
+        assert_eq!(physical_plan.name(), "MetadataEraserExec");
+
+        let partition_stats = physical_plan.partition_statistics(None).unwrap();
+
+        assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
+    }
+
+    #[tokio::test]
+    async fn test_count_pushdown_through_metadata_eraser() {
+        let fixture = TestFixture::new().await;
+        let state = datafusion::execution::SessionStateBuilder::new()
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(lance::io::exec::count_pushdown::CountPushdown))
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let df = ctx
+            .sql("SELECT COUNT(*) FROM foo WHERE indexed > 2")
+            .await
+            .unwrap();
+        let plan = df.clone().create_physical_plan().await.unwrap();
+        let plan = datafusion_physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(plan.contains("CountFromMask"), "{plan}");
+
+        let batches = df.collect().await.unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .value(0),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn test_topk_late_materialization_over_table_adapter() {
+        use lance::io::exec::topk_late_materialization::TopKLateMaterialization;
+
+        let fixture = TestFixture::new().await;
+        let run = |rule: Option<TopKLateMaterialization>| {
+            let adapter = fixture.adapter2.clone();
+            async move {
+                let mut state =
+                    datafusion::execution::SessionStateBuilder::new().with_default_features();
+                if let Some(rule) = rule {
+                    state = state.with_physical_optimizer_rule(Arc::new(rule));
+                }
+                let ctx = SessionContext::new_with_state(state.build());
+                ctx.register_table("tbl2", adapter).unwrap();
+                let df = ctx
+                    .sql("SELECT ints, strings, jsons FROM tbl2 WHERE floats > 10 ORDER BY ints DESC LIMIT 5")
+                    .await
+                    .unwrap();
+                let plan = df.clone().create_physical_plan().await.unwrap();
+                let plan = datafusion_physical_plan::displayable(plan.as_ref())
+                    .indent(true)
+                    .to_string();
+                (plan, df.collect().await.unwrap())
+            }
+        };
+
+        let (plan, expected) = run(None).await;
+        assert!(!plan.contains("Take"), "{plan}");
+
+        // The sort lands below `MetadataEraserExec`, so the rule needs no
+        // certification for it.
+        let (plan, batches) = run(Some(TopKLateMaterialization::new())).await;
+        assert!(plan.contains("Take"), "{plan}");
+        assert_eq!(batches, expected);
+        assert!(batches[0].schema().metadata().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_with_new_children_takes_child_schema() {
+        let fixture = TestFixture::new().await;
+        let ctx = SessionContext::new();
+        let scan = |adapter: Arc<BaseTableAdapter>, name: &str| {
+            LogicalPlanBuilder::scan(name, provider_as_source(adapter), None)
+                .unwrap()
+                .build()
+                .unwrap()
+        };
+        let foo = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter.clone(), "foo"))
+            .await
+            .unwrap();
+        let tbl2 = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter2.clone(), "tbl2"))
+            .await
+            .unwrap();
+
+        let rewired = foo.with_new_children(vec![tbl2.clone()]).unwrap();
+        assert_eq!(rewired.schema(), tbl2.schema());
     }
 }

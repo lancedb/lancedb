@@ -2,11 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from ._lancedb import (
     IndexConfig,
 )
+from .query import DocumentGranularity
+from .types import BaseTokenizerType
 
 lang_mapping = {
     "ar": "Arabic",
@@ -93,12 +95,70 @@ class LabelList:
 
 
 @dataclass
+class Fm:
+    """Describe an FM-Index configuration.
+
+    `Fm` is a scalar index on string or binary columns that accelerates
+    substring search, i.e. `contains(col, 'needle')`. Unlike the tokenized
+    `FTS` index, it matches arbitrary substrings of the raw bytes.
+
+    For example, it works with `url`, `path`, `content`, etc.
+    """
+
+    pass
+
+
+@dataclass
 class FTS:
     """Describe a FTS index configuration.
 
-    `FTS` is a full-text search index that can be used on `String` columns
+    `FTS` supports string columns, lists of strings, and JSON columns created
+    from PyArrow ``pa.json_()``. JSON columns use Lance's JSON-aware tokenizer
+    and are stored as ``LargeBinary`` with the ``lance.json`` logical type.
+    Arbitrary binary columns are not supported.
 
-    For example, it works with `title`, `description`, `content`, etc.
+    JSON queries use ``path,str,value`` triples. Paths are relative to the JSON
+    column and use dots for nested object keys. For example,
+    ``meta.tag,str,nature`` matches the string value at ``$.meta.tag``;
+    it does not search other paths or JSON key names. The value is processed
+    with the configured text tokenizer. Use ``str``, not ``string``.
+
+    Create and query a JSON index through the modern API::
+
+        import pyarrow as pa
+        from lancedb.index import FTS
+
+        table = db.create_table(
+            "documents",
+            pa.table({"doc": pa.array(
+                ['{"meta":{"tag":"nature"}}'], type=pa.json_()
+            )}),
+        )
+        table.create_index("doc", config=FTS())
+        table.search(
+            "meta.tag,str,nature", query_type="fts", fts_columns="doc"
+        ).to_list()
+
+    Create the index on the JSON column itself, not a JSON subpath such as
+    ``doc.meta.tag``. JSON-path scalar indexes do not provide FTS path scoping.
+    Plain text such as ``nature`` is not a valid JSON FTS query. The current
+    Lance tokenizer can panic on malformed triples; see
+    https://github.com/lance-format/lance/issues/8812.
+
+    Remote tables use the same ``FTS()`` configuration and require a server
+    that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
+    before searching a newly created remote index with its default name.
+
+    Examples
+    --------
+    Create an index configuration that uses 256-document posting blocks:
+
+    >>> config = FTS(block_size=256)
+
+    Create an index that treats each deepest-list element as one document:
+
+    >>> from lancedb.query import DocumentGranularity
+    >>> config = FTS(document_granularity=DocumentGranularity.LIST_ELEMENT)
 
     Attributes
     ----------
@@ -111,35 +171,81 @@ class FTS:
         - "simple": Splits text by whitespace and punctuation.
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
+        - "code": Tokenizes source code and identifiers.
+        - "ngram": N-gram tokenizer for substring-style matching.
+        - "icu": ICU dictionary-based word segmentation.
+        - "icu/split": ICU segmentation with simple-style delimiter splitting.
+        - "jieba/*": Jieba tokenizer loaded from Lance's language model home.
+        - "lindera/*": Lindera tokenizer loaded from Lance's language model home.
     language : str, default "English"
-        The language to use for tokenization.
+        The language to use for stemming and stop-word removal. This is not the
+        primary way to enable CJK tokenization.
     max_token_length : int, default 40
         The maximum token length to index. Tokens longer than this length will be
         ignored.
     lower_case : bool, default True
         Whether to convert the token to lower case. This makes queries case-insensitive.
-    stem : bool, default True
+    stem : bool, optional
         Whether to stem the token. Stemming reduces words to their root form.
         For example, in English "running" and "runs" would both be reduced to "run".
-    remove_stop_words : bool, default True
+        ``None`` uses the base tokenizer's default: False for ``code`` and
+        ``ngram``, True otherwise.
+    remove_stop_words : bool, optional
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
+        ``None`` uses the base tokenizer's default: False for ``code`` and
+        ``ngram``, True otherwise.
+    custom_stop_words : list of str, optional
+        Custom words replace the built-in language stop words
+        and only take effect when ``remove_stop_words`` is True. ``None`` uses
+        the built-in language list, while an empty list explicitly uses no
+        stop words.
     ascii_folding : bool, default True
         Whether to fold ASCII characters. This converts accented characters to
         their ASCII equivalent. For example, "café" would be converted to "cafe".
+    block_size : int, default 128
+        The number of documents per compressed posting block. Supported values
+        are 128 and 256. A value of 256 uses the experimental FTS V3 format
+        and may introduce breaking changes.
+    memory_limit : int, optional
+        The total memory limit in MiB for the local FTS build stage. The limit
+        is divided evenly among indexing workers. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
+    num_workers : int, optional
+        The number of workers for a local FTS build. By default Lance uses
+        roughly half of the available CPU cores. The effective value is
+        limited by the available compute capacity. This build-only setting is
+        not persisted with the index and does not apply to remote tables.
+    document_granularity : DocumentGranularity, default ROW
+        ``ROW`` treats the selected text in one table row as one document.
+        ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
+        field path as one document and returns its physical coordinates in
+        ``_doc_index`` for matching queries.
+
+    Notes
+    -----
+    Model-backed tokenizers such as ``jieba/default`` and ``lindera/ipadic``
+    require tokenizer models in Lance's language model home. Set
+    ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
+    directory under ``lance/language_models``.
     """
 
     with_position: bool = False
-    base_tokenizer: Literal["simple", "raw", "whitespace"] = "simple"
+    base_tokenizer: BaseTokenizerType = "simple"
     language: str = "English"
     max_token_length: Optional[int] = 40
     lower_case: bool = True
-    stem: bool = True
-    remove_stop_words: bool = True
+    stem: Optional[bool] = None
+    remove_stop_words: Optional[bool] = None
     ascii_folding: bool = True
     ngram_min_length: int = 3
     ngram_max_length: int = 3
     prefix_only: bool = False
+    block_size: int = 128
+    custom_stop_words: Optional[List[str]] = None
+    memory_limit: Optional[int] = None
+    num_workers: Optional[int] = None
+    document_granularity: DocumentGranularity = DocumentGranularity.ROW
 
 
 @dataclass
@@ -174,7 +280,7 @@ class HnswPq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -183,7 +289,7 @@ class HnswPq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    num_sub_vectors, default is vector dimension / 16
+    num_sub_vectors: int, default is vector dimension / 16
 
         Number of sub-vectors of PQ.
 
@@ -199,13 +305,13 @@ class HnswPq:
         If the dimension is not visible by 8 then we use 1 subvector.  This is not
         ideal and will likely result in poor performance.
 
-     num_bits: int, default 8
+    num_bits: int, default 8
         Number of bits to encode each sub-vector.
 
         This value controls how much the sub-vectors are compressed.  The more bits
         the more accurate the index but the slower search. Only 4 and 8 are supported.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -218,7 +324,7 @@ class HnswPq:
         those cases it is unlikely that setting this larger will lead to the index
         converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -234,14 +340,14 @@ class HnswPq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -251,6 +357,13 @@ class HnswPq:
         results. In most cases, there is no benefit to setting this higher than 500.
         This value should be set to a value that is not less than `ef` in the
         search phase.
+
+    target_partition_size: int, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -261,6 +374,10 @@ class HnswPq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -295,7 +412,7 @@ class HnswSq:
         distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
         l2 norm is 1), then dot distance is equivalent to the cosine distance.
 
-    num_partitions, default sqrt(num_rows)
+    num_partitions: int, default sqrt(num_rows)
 
         The number of IVF partitions to create.
 
@@ -304,7 +421,7 @@ class HnswSq:
         will require too much memory. Each partition becomes its own HNSW graph, so
         setting this value higher reduces the peak memory use of training.
 
-    max_iterations, default 50
+    max_iterations: int, default 50
 
         Max iterations to train kmeans.
 
@@ -317,7 +434,7 @@ class HnswSq:
         In those cases it is unlikely that setting this larger will lead to
         the index converging anyways.
 
-    sample_rate, default 256
+    sample_rate: int, default 256
 
         The rate used to calculate the number of training vectors for kmeans.
 
@@ -333,14 +450,14 @@ class HnswSq:
         Increasing this value might improve the quality of the index but in
         most cases the default should be sufficient.
 
-    m, default 20
+    m: int, default 20
 
         The number of neighbors to select for each vector in the HNSW graph.
 
         This value controls the tradeoff between search speed and accuracy.
         The higher the value the more accurate the search but the slower it will be.
 
-    ef_construction, default 300
+    ef_construction: int, default 300
 
         The number of candidates to evaluate during the construction of the HNSW graph.
 
@@ -351,6 +468,12 @@ class HnswSq:
         This value should be set to a value that is not less than `ef` in the search
         phase.
 
+    target_partition_size: int, default is 1,048,576
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -359,6 +482,104 @@ class HnswSq:
     sample_rate: int = 256
     m: int = 20
     ef_construction: int = 300
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
+
+
+@dataclass
+class HnswFlat:
+    """Describe a HNSW-FLAT index configuration.
+
+    HNSW-FLAT stands for Hierarchical Navigable Small World without quantization.
+    It stores raw vectors in the HNSW graph, providing the highest recall among
+    the IVF_HNSW family at the cost of more memory and disk space compared to
+    :class:`HnswSq` or :class:`HnswPq`.
+
+    Parameters
+    ----------
+
+    distance_type: str, default "l2"
+
+        The distance metric used to train the index.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance. This is a very common distance metric that
+        accounts for both magnitude and direction when determining the distance
+        between vectors. l2 distance has a range of [0, ∞).
+
+        "cosine" - Cosine distance.  Cosine distance is a distance metric
+        calculated from the cosine similarity between two vectors. Cosine
+        similarity is a measure of similarity between two non-zero vectors of an
+        inner product space. It is defined to equal the cosine of the angle
+        between them.  Unlike l2, the cosine distance is not affected by the
+        magnitude of the vectors.  Cosine distance has a range of [0, 2].
+
+        "dot" - Dot product. Dot distance is the dot product of two vectors. Dot
+        distance has a range of (-∞, ∞). If the vectors are normalized (i.e. their
+        l2 norm is 1), then dot distance is equivalent to the cosine distance.
+
+    num_partitions: int, default sqrt(num_rows)
+
+        The number of IVF partitions to create.
+
+        For HNSW, we recommend a small number of partitions. Setting this to 1
+        works well for most tables. For very large tables, training just one HNSW
+        graph will require too much memory. Each partition becomes its own HNSW
+        graph, so setting this value higher reduces the peak memory use of
+        training.
+
+    max_iterations: int, default 50
+
+        Max iterations to train kmeans.
+
+        When training an IVF index we use kmeans to calculate the partitions.
+        This parameter controls how many iterations of kmeans to run.
+
+    sample_rate: int, default 256
+
+        The rate used to calculate the number of training vectors for kmeans.
+
+    m: int, default 20
+
+        The number of neighbors to select for each vector in the HNSW graph.
+
+        This value controls the tradeoff between search speed and accuracy.
+        The higher the value the more accurate the search but the slower it
+        will be.
+
+    ef_construction: int, default 300
+
+        The number of candidates to evaluate during the construction of the HNSW
+        graph.
+
+        This value controls the tradeoff between build speed and accuracy.
+        The higher the value the more accurate the build but the slower it will
+        be.  150 to 300 is the typical range. 100 is a minimum for good quality
+        search results. In most cases, there is no benefit to setting this higher
+        than 500.  This value should be set to a value that is not less than `ef`
+        in the search phase.
+
+    target_partition_size: int, default is 1,048,576
+
+        The target size of each partition.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    max_iterations: int = 50
+    sample_rate: int = 256
+    m: int = 20
+    ef_construction: int = 300
+    target_partition_size: Optional[int] = None
+
+
+# Backwards-compatible aliases
+IvfHnswPq = HnswPq
+IvfHnswSq = HnswSq
+IvfHnswFlat = HnswFlat
 
 
 @dataclass
@@ -444,12 +665,56 @@ class IvfFlat:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size: int, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot", "hamming"] = "l2"
     num_partitions: Optional[int] = None
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
+
+
+@dataclass
+class IvfSq:
+    """Describes an IVF Scalar Quantization (SQ) index.
+
+    This index applies scalar quantization to compress vectors and organizes the
+    quantized vectors into IVF partitions. It offers a balance between search
+    speed and storage efficiency while keeping good recall.
+
+    Attributes
+    ----------
+    distance_type: str, default "l2"
+        The distance metric used to train and search the index. Supported values
+        are "l2", "cosine", and "dot".
+    num_partitions: int, default sqrt(num_rows)
+        Number of IVF partitions to create.
+    max_iterations: int, default 50
+        Maximum iterations for kmeans during partition training.
+    sample_rate: int, default 256
+        Controls the number of training vectors: sample_rate * num_partitions.
+    target_partition_size: int, optional
+        Target size for each partition; adjusts the balance between speed and accuracy.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    max_iterations: int = 50
+    sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
 @dataclass
@@ -524,7 +789,7 @@ class IvfPq:
         This value controls how much the vector is compressed during the
         quantization step.  The more sub vectors there are the less the vector is
         compressed.  The default is the dimension of the vector divided by 16.  If
-        the dimension is not evenly divisible by 16 we use the dimension divded by
+        the dimension is not evenly divisible by 16 we use the dimension divided by
         8.
 
         The above two cases are highly preferred.  Having 8 or 16 values per
@@ -564,6 +829,13 @@ class IvfPq:
         cases the default should be sufficient.
 
         The default value is 256.
+
+    target_partition_size: int, default is 8192
+
+        The target size of each partition.
+
+        This value controls the tradeoff between search performance and accuracy.
+        faster search but less accurate results as higher value.
     """
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
@@ -572,16 +844,86 @@ class IvfPq:
     num_bits: int = 8
     max_iterations: int = 50
     sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
 
 
+@dataclass
+class IvfRq:
+    """Describes an IVF RQ Index
+
+    IVF-RQ (RabitQ Quantization) compresses vectors using RabitQ quantization
+    and organizes them into IVF partitions.
+
+    The compression scheme is called RabitQ quantization. Each dimension is
+    quantized into a small number of bits. The parameters `num_bits` and
+    `num_partitions` control this process, providing a tradeoff between
+    index size (and thus search speed) and index accuracy.
+
+    The partitioning process is called IVF and the `num_partitions` parameter
+    controls how many groups to create.
+
+    Note that training an IVF RQ index on a large dataset is a slow operation
+    and currently is also a memory intensive operation.
+
+    Attributes
+    ----------
+    distance_type: str, default "l2"
+        Distance metric used to train the index and for quantization.
+
+        The following distance types are available:
+
+        "l2" - Euclidean distance.
+        "cosine" - Cosine distance.
+        "dot" - Dot product.
+
+    num_partitions: int, default sqrt(num_rows)
+        Number of IVF partitions to create.
+
+    num_bits: int, default 1
+        Number of bits to encode each dimension in the RabitQ codebook.
+
+    max_iterations: int, default 50
+        Max iterations to train kmeans when computing IVF partitions.
+
+    sample_rate: int, default 256
+        Controls the number of training vectors: sample_rate * num_partitions.
+
+    target_partition_size: int, default is 8192
+        Target size of each partition.
+    """
+
+    distance_type: Literal["l2", "cosine", "dot"] = "l2"
+    num_partitions: Optional[int] = None
+    num_bits: int = 1
+    max_iterations: int = 50
+    sample_rate: int = 256
+    target_partition_size: Optional[int] = None
+    # Name of the accelerator (e.g. "cuda") to use for IVF training. When set,
+    # create_index() dispatches to pylance to build the index on the accelerator.
+    accelerator: Optional[str] = None
+
+
+# The API reference renders this module with a single mkdocstrings directive,
+# which only picks up names listed here. New public names must be added to this
+# list, or they will silently go undocumented.
 __all__ = [
     "BTree",
     "IvfPq",
+    "IvfHnswPq",
+    "IvfHnswSq",
+    "IvfHnswFlat",
+    "IvfSq",
+    "IvfRq",
     "IvfFlat",
     "HnswPq",
     "HnswSq",
+    "HnswFlat",
     "IndexConfig",
     "FTS",
     "Bitmap",
     "LabelList",
+    "Fm",
 ]

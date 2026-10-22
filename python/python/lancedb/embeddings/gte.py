@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import warnings
 from typing import List, Union
 
 import numpy as np
@@ -15,21 +16,23 @@ from .utils import weak_lru
 @register("gte-text")
 class GteEmbeddings(TextEmbeddingFunction):
     """
+    Deprecated: GTE embeddings should be used through sentence-transformers.
+
     An embedding function that uses GTE-LARGE MLX format(for Apple silicon devices only)
     as well as the standard cpu/gpu version from: https://huggingface.co/thenlper/gte-large.
 
-    For Apple users, you will need the mlx package insalled, which can be done with:
+    For Apple users, you will need the mlx package installed, which can be done with:
         pip install mlx
 
     Parameters
     ----------
-    name: str, default "thenlper/gte-large"
+    name : str, default "thenlper/gte-large"
         The name of the model to use.
-    device: str, default "cpu"
+    device : str, default "cpu"
         Sets the device type for the model.
-    normalize: str, default "True"
+    normalize : str, default "True"
         Controls normalize param in encode function for the transformer.
-    mlx: bool, default False
+    mlx : bool, default False
         Controls which model to use. False for gte-large,True for the mlx version.
 
     Examples
@@ -61,6 +64,13 @@ class GteEmbeddings(TextEmbeddingFunction):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        warnings.warn(
+            "GTE embeddings as a standalone embedding function are deprecated. "
+            "Use the 'sentence-transformers' embedding function with a GTE model "
+            "instead.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
         self._ndims = None
         if kwargs:
             self.mlx = kwargs.get("mlx", False)

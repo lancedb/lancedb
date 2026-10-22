@@ -7,8 +7,16 @@ on:
   pull_request:
     paths:
       - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
+      - deny.toml
       - rust/**
+      - nodejs/Cargo.toml
+      - python/Cargo.toml
       - .github/workflows/rust.yml
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -18,11 +26,7 @@ env:
   # This env var is used by Swatinem/rust-cache@v2 for the cache
   # key, so we set it to make sure it is always consistent.
   CARGO_TERM_COLOR: always
-  # Disable full debug symbol generation to speed up CI build and keep memory down
-  # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
   RUST_BACKTRACE: "1"
-  CARGO_INCREMENTAL: 0
 
 jobs:
   lint:
@@ -36,7 +40,7 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -45,7 +49,10 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
           sudo apt update
@@ -53,7 +60,20 @@ jobs:
       - name: Run format
         run: cargo fmt --all -- --check
       - name: Run clippy
-        run: cargo clippy --workspace --tests --all-features -- -D warnings
+        run: cargo clippy --profile ci --workspace --tests --all-features -- -D warnings
+      - name: Run clippy (without remote feature)
+        run: cargo clippy --profile ci --workspace --tests -- -D warnings
+
+  deny:
+    # Supply-chain checks: advisories, licenses, banned crates, and source
+    # restrictions. Configuration lives in `deny.toml` at the workspace root.
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
 
   build-no-lock:
     runs-on: ubuntu-24.04
@@ -63,7 +83,7 @@ jobs:
       CC: clang
       CXX: clang++
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       # Building without a lock file often requires the latest Rust version since downstream
       # dependencies may have updated their minimum Rust version.
       - uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -74,16 +94,21 @@ jobs:
         run: rm -f Cargo.lock
       - uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - name: Build all
         run: |
-          cargo build --benches --all-features --tests
+          cargo build --profile ci --benches --all-features --tests
 
   linux:
-    timeout-minutes: 30
+    timeout-minutes: 60
     # To build all features, we need more disk space than is available
     # on the free OSS github runner. This is mostly due to the the
     # sentence-transformers feature.
@@ -97,48 +122,97 @@ jobs:
       CC: clang-18
       CXX: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: |
-          # This shaves 2 minutes off this step in CI. This doesn't seem to be
-          # necessary in standard runners, but it is in the 4x runners.
-          sudo rm /var/lib/man-db/auto-update
+          sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
       - name: Make Swap
         run: |
-          sudo fallocate -l 16G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-      - name: Start S3 integration test environment
-        working-directory: .
-        run: docker compose up --detach --wait
+          swapfile=/swapfile
+          min_swap_bytes=$((15 * 1024 * 1024 * 1024))
+          active_swap_bytes="$(sudo swapon --show=NAME,SIZE --bytes --noheadings | awk '$1 == "/swapfile" { print $2 }')"
+          if [ -n "$active_swap_bytes" ]; then
+            if [ "$active_swap_bytes" -ge "$min_swap_bytes" ]; then
+              echo "/swapfile is already active with enough space; skipping swap creation"
+              exit 0
+            fi
+            echo "/swapfile is already active but smaller than 16G; using /mnt/lancedb-swapfile"
+            swapfile=/mnt/lancedb-swapfile
+          fi
+          if sudo swapon --show=NAME --noheadings | grep -Fxq "$swapfile"; then
+            echo "$swapfile is already active; skipping swap creation"
+            exit 0
+          fi
+          sudo rm -f "$swapfile"
+          sudo fallocate -l 16G "$swapfile"
+          sudo chmod 600 "$swapfile"
+          sudo mkswap "$swapfile"
+          sudo swapon "$swapfile"
       - name: Build
-        run: cargo build --all-features --tests --locked --examples
-      - name: Run tests
-        run: cargo test --all-features --locked
+        run: cargo build --profile ci --all-features --tests --locked --examples
+      - name: Run feature tests
+        run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
-        run: cargo run --example simple --locked
+        run: cargo run --profile ci --all-features --example simple --locked
+
+  remote:
+    timeout-minutes: 30
+    # Running this requires access to secrets, so skip if this is a PR from a
+    # fork. Keep it separate from the all-features build so Cargo does not
+    # retain both dependency graphs in one target directory.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-2404-4x-x64
+    defaults:
+      run:
+        shell: bash
+        working-directory: rust
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      GH_TOKEN: ${{ github.token }}
+      SOPHON_READ_TOKEN: ${{ secrets.SOPHON_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Remote tests use a different feature graph from the main Linux
+          # job. Cache downloads, but build into a fresh target directory.
+          cache-targets: false
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y protobuf-compiler libssl-dev
+      - uses: rui314/setup-mold@v1
+      - name: Run remote tests
+        run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 
   macos:
-    timeout-minutes: 30
+    timeout-minutes: 60
     strategy:
       matrix:
-        mac-runner: ["macos-13", "macos-14"]
+        mac-runner: ["macos-14", "macos-15"]
     runs-on: "${{ matrix.mac-runner }}"
     defaults:
       run:
         shell: bash
         working-directory: rust
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           lfs: true
@@ -146,7 +220,10 @@ jobs:
         run: sysctl -a | grep cpu
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install dependencies
         run: brew install protobuf
       - name: Run tests
@@ -156,36 +233,51 @@ jobs:
           ALL_FEATURES=`cargo metadata --format-version=1 --no-deps \
             | jq -r '.packages[] | .features | keys | .[]' \
             | grep -v s3-test | sort | uniq | paste -s -d "," -`
-          cargo test --features $ALL_FEATURES --locked
+          # Run doctests before test binaries fill the runner disk. Examples are
+          # already built by the Linux job, so avoid retaining them here.
+          cargo test --profile ci --features $ALL_FEATURES --locked --doc
+          cargo test --profile ci --features $ALL_FEATURES --locked --lib --tests
 
   windows:
-    runs-on: windows-2022
     strategy:
+      fail-fast: false
       matrix:
-        target:
-          - x86_64-pc-windows-msvc
-          - aarch64-pc-windows-msvc
+        include:
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2022
+          # windows-11-arm is a standard runner, so it is free on public repos.
+          # Running natively lets the aarch64 tests actually execute -- this
+          # job used to cross-compile them and then skip the test step, paying
+          # full codegen and link cost for a compile check.
+          - target: aarch64-pc-windows-msvc
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
     defaults:
       run:
         working-directory: rust/lancedb
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - name: Set target
+        run: rustup target add ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: rust
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install Protoc v21.12
         run: choco install --no-progress protoc
       - name: Build
         run: |
-          rustup target add ${{ matrix.target }}
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo build --features remote --tests --locked --target ${{ matrix.target }}
+          cargo build --profile ci --features aws,remote --tests --locked --target ${{ matrix.target }}
       - name: Run tests
-        # Can only run tests when target matches host
-        if: ${{ matrix.target == 'x86_64-pc-windows-msvc' }}
         run: |
           $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
-          cargo test --features remote --locked
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
 
   msrv:
     # Check the minimum supported Rust version
@@ -193,13 +285,13 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        msrv: ["1.78.0"] # This should match up with rust-version in Cargo.toml
+        msrv: ["1.94.0"] # This should match up with rust-version in Cargo.toml
     env:
       # Need up-to-date compilers for kernels
       CC: clang-18
       CXX: clang++-18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           submodules: true
       - name: Install dependencies
@@ -210,17 +302,16 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.msrv }}
-      - name: Downgrade  dependencies
-        # These packages have newer requirements for MSRV
-        run: |
-          cargo update -p aws-sdk-bedrockruntime --precise 1.64.0
-          cargo update -p aws-sdk-dynamodb --precise 1.55.0
-          cargo update -p aws-config --precise 1.5.10
-          cargo update -p aws-sdk-kms --precise 1.51.0
-          cargo update -p aws-sdk-s3 --precise 1.65.0
-          cargo update -p aws-sdk-sso --precise 1.50.0
-          cargo update -p aws-sdk-ssooidc --precise 1.51.0
-          cargo update -p aws-sdk-sts --precise 1.51.0
-          cargo update -p home --precise 0.5.9
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Downgrade dependencies
+        # aws-smithy-types 1.6.1+ requires rustc 1.94.1
+        run: cargo update -p aws-smithy-types --precise 1.5.0
       - name: cargo +${{ matrix.msrv }} check
-        run: cargo check --workspace --tests --benches --all-features
+        env:
+          RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
+        run: cargo check --profile ci --workspace --tests --benches --all-features

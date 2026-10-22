@@ -40,10 +40,10 @@ class JinaEmbeddings(EmbeddingFunction):
 
     Parameters
     ----------
-    name: str, default "jina-clip-v1". Note that some models support both image
+    name : str, default "jina-clip-v1". Note that some models support both image
         and text embeddings and some just text embedding
 
-    api_key: str, default None
+    api_key : str, default None
         The api key to access Jina API. If you pass None, you can set JINA_API_KEY
         environment variable
 
@@ -77,8 +77,8 @@ class JinaEmbeddings(EmbeddingFunction):
             if isinstance(inputs, list):
                 inputs = inputs
             else:
-                PIL = attempt_import_or_raise("PIL", "pillow")
-                if isinstance(inputs, PIL.Image.Image):
+                PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
+                if isinstance(inputs, PIL_Image.Image):
                     inputs = [inputs]
         return inputs
 
@@ -87,15 +87,16 @@ class JinaEmbeddings(EmbeddingFunction):
         if isinstance(image, bytes):
             image_dict = {"image": base64.b64encode(image).decode("utf-8")}
         elif isinstance(image, (str, Path)):
-            parsed = urlparse.urlparse(image)
-            # TODO handle drive letter on windows.
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            parsed = urlparse(str(image))
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
             if parsed.scheme == "file":
-                pil_image = PIL.Image.open(parsed.path)
-            elif parsed.scheme == "":
-                pil_image = PIL.Image.open(image if os.name == "nt" else parsed.path)
+                pil_image = PIL_Image.open(parsed.path)
+            elif parsed.scheme == "" or (os.name == "nt" and len(parsed.scheme) == 1):
+                # A Windows drive letter parses as a one-character scheme
+                # ("C:\\img.png" -> scheme="c"), so treat it as a local path.
+                pil_image = PIL_Image.open(image if os.name == "nt" else parsed.path)
             elif parsed.scheme.startswith("http"):
-                pil_image = PIL.Image.open(io.BytesIO(url_retrieve(image)))
+                pil_image = PIL_Image.open(io.BytesIO(url_retrieve(image)))
             else:
                 raise NotImplementedError("Only local and http(s) urls are supported")
             buffered = io.BytesIO()
@@ -103,9 +104,9 @@ class JinaEmbeddings(EmbeddingFunction):
             image_bytes = buffered.getvalue()
             image_dict = {"image": base64.b64encode(image_bytes).decode("utf-8")}
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
 
-            if isinstance(image, PIL.Image.Image):
+            if isinstance(image, PIL_Image.Image):
                 buffered = io.BytesIO()
                 image.save(buffered, format="PNG")
                 image_bytes = buffered.getvalue()
@@ -136,9 +137,9 @@ class JinaEmbeddings(EmbeddingFunction):
         elif isinstance(query, (Path, bytes)):
             return [self.generate_image_embedding(query)]
         else:
-            PIL = attempt_import_or_raise("PIL", "pillow")
+            PIL_Image = attempt_import_or_raise("PIL.Image", "pillow")
 
-            if isinstance(query, PIL.Image.Image):
+            if isinstance(query, PIL_Image.Image):
                 return [self.generate_image_embedding(query)]
             else:
                 raise TypeError(

@@ -3,28 +3,39 @@
 
 //! Provides the `ListingDatabase`, a simple database where tables are folders in a directory
 
+use std::collections::HashSet;
 use std::fs::create_dir_all;
 use std::path::Path;
 use std::{collections::HashMap, sync::Arc};
 
-use lance::dataset::{ReadParams, WriteMode};
+use lance::dataset::refs::Ref;
+use lance::dataset::{ReadParams, WriteMode, builder::DatasetBuilder};
 use lance::io::{ObjectStore, ObjectStoreParams, WrappingObjectStore};
 use lance_datafusion::utils::StreamingWriteSource;
-use lance_encoding::version::LanceFileVersion;
+use lance_file::version::LanceFileVersion;
+use lance_io::object_store::{ReadDirOptions, StorageOptionsAccessor, StorageOptionsProvider};
 use lance_table::io::commit::commit_handler_from_url;
 use object_store::local::LocalFileSystem;
 use snafu::ResultExt;
 
+use crate::blob::ensure_blob_storage_version;
 use crate::connection::ConnectRequest;
+use crate::database::ReadConsistency;
+use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
+use lance_namespace::models::{
+    CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+};
+
 use super::{
-    BaseTable, CreateNamespaceRequest, CreateTableMode, CreateTableRequest, Database,
-    DatabaseOptions, DropNamespaceRequest, ListNamespacesRequest, OpenTableRequest,
-    TableNamesRequest,
+    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest, Database, DatabaseOptions,
+    OpenTableRequest, TableNamesRequest,
 };
 
 /// File extension to indicate a lance table
@@ -32,6 +43,7 @@ pub const LANCE_FILE_EXTENSION: &str = "lance";
 
 pub const OPT_NEW_TABLE_STORAGE_VERSION: &str = "new_table_data_storage_version";
 pub const OPT_NEW_TABLE_V2_MANIFEST_PATHS: &str = "new_table_enable_v2_manifest_paths";
+pub const OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS: &str = "new_table_enable_stable_row_ids";
 
 /// Controls how new tables should be created
 #[derive(Clone, Debug, Default)]
@@ -45,6 +57,12 @@ pub struct NewTableConfig {
     /// V2 manifest paths are more efficient than V2 manifest paths but are not
     /// supported by old clients.
     pub enable_v2_manifest_paths: Option<bool>,
+    /// Whether to enable stable row IDs for new tables
+    ///
+    /// When enabled, row IDs remain stable after compaction, update, delete,
+    /// and merges. This is useful for materialized views and other use cases
+    /// that need to track source rows across these operations.
+    pub enable_stable_row_ids: Option<bool>,
 }
 
 /// Options specific to the listing database
@@ -57,7 +75,7 @@ pub struct ListingDatabaseOptions {
     /// These are used to create/list tables and they are inherited by all tables
     /// opened by this database.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub storage_options: HashMap<String, String>,
 }
 
@@ -84,6 +102,14 @@ impl ListingDatabaseOptions {
                     })
                 })
                 .transpose()?,
+            enable_stable_row_ids: map
+                .get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS)
+                .map(|s| {
+                    s.parse::<bool>().map_err(|_| Error::InvalidInput {
+                        message: format!("enable_stable_row_ids must be a boolean, received {}", s),
+                    })
+                })
+                .transpose()?,
         };
         // We just assume that any options that are not new table config options are storage options
         let storage_options = map
@@ -91,6 +117,7 @@ impl ListingDatabaseOptions {
             .filter(|(key, _)| {
                 key.as_str() != OPT_NEW_TABLE_STORAGE_VERSION
                     && key.as_str() != OPT_NEW_TABLE_V2_MANIFEST_PATHS
+                    && key.as_str() != OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -113,6 +140,12 @@ impl DatabaseOptions for ListingDatabaseOptions {
             map.insert(
                 OPT_NEW_TABLE_V2_MANIFEST_PATHS.to_string(),
                 enable_v2_manifest_paths.to_string(),
+            );
+        }
+        if let Some(enable_stable_row_ids) = self.new_table_config.enable_stable_row_ids {
+            map.insert(
+                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                enable_stable_row_ids.to_string(),
             );
         }
     }
@@ -154,7 +187,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set an option for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_option(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.options
             .storage_options
@@ -164,7 +197,7 @@ impl ListingDatabaseOptionsBuilder {
 
     /// Set multiple options for the storage layer.
     ///
-    /// See available options at <https://lancedb.github.io/lancedb/guides/storage/>
+    /// See available options at <https://docs.lancedb.com/storage/>
     pub fn storage_options(
         mut self,
         pairs: impl IntoIterator<Item = (impl Into<String>, impl Into<String>)>,
@@ -216,11 +249,17 @@ pub struct ListingDatabase {
     // Storage options to be inherited by tables created from this connection
     storage_options: HashMap<String, String>,
 
+    // Dynamic storage options provider for automatic credential refresh
+    pub(crate) storage_options_provider: Option<Arc<dyn StorageOptionsProvider>>,
+
     // Options for tables created by this connection
     new_table_config: NewTableConfig,
 
     // Session for object stores and caching
     session: Arc<lance::session::Session>,
+
+    // Namespace-backed database for child namespace operations
+    namespace_database: Arc<LanceNamespaceDatabase>,
 }
 
 impl std::fmt::Display for ListingDatabase {
@@ -242,11 +281,209 @@ impl std::fmt::Display for ListingDatabase {
 }
 
 const LANCE_EXTENSION: &str = "lance";
+
+/// The table a listed child of the database names, or `None` if the child is not a table.
+///
+/// A table is the directory `<name>.lance`; a loose file or any other directory under the
+/// database prefix belongs to something else. `dir_suffix` is `.lance`, built once by the
+/// caller rather than per child.
+/// The table a listed child directory holds, or `None` if it is not a table at all.
+///
+/// Only directories are considered, so a loose object named like a table is not one.
+fn table_name(location: &object_store::path::Path, dir_suffix: &str) -> Option<String> {
+    location
+        .filename()?
+        .strip_suffix(dir_suffix)
+        .map(String::from)
+        .filter(|name| !name.is_empty())
+}
 const ENGINE: &str = "engine";
 const MIRRORED_STORE: &str = "mirroredStore";
 
 /// A connection to LanceDB
 impl ListingDatabase {
+    pub(crate) fn build_namespace_client_properties(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut properties = namespace_client_properties;
+        properties.insert("root".to_string(), uri.to_string());
+        for (key, value) in storage_options {
+            properties.insert(format!("storage.{}", key), value.clone());
+        }
+        properties
+    }
+
+    pub(crate) fn build_manifest_enabled_namespace_client_properties(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+    ) -> HashMap<String, String> {
+        let mut properties = Self::build_namespace_client_properties(
+            uri,
+            storage_options,
+            namespace_client_properties,
+        );
+        properties.insert("manifest_enabled".to_string(), "true".to_string());
+        properties.insert(
+            "dir_listing_to_manifest_migration_enabled".to_string(),
+            "true".to_string(),
+        );
+        properties
+    }
+
+    async fn connect_namespace_database(
+        uri: &str,
+        storage_options: HashMap<String, String>,
+        namespace_client_properties: HashMap<String, String>,
+        read_consistency_interval: Option<std::time::Duration>,
+        session: Arc<lance::session::Session>,
+    ) -> Result<Arc<LanceNamespaceDatabase>> {
+        let ns_properties = Self::build_namespace_client_properties(
+            uri,
+            &storage_options,
+            namespace_client_properties,
+        );
+        Ok(Arc::new(
+            LanceNamespaceDatabase::connect(
+                "dir",
+                ns_properties,
+                storage_options,
+                read_consistency_interval,
+                Some(session),
+                HashSet::new(),
+            )
+            .await?,
+        ))
+    }
+
+    fn storage_base_uri(uri: &str) -> String {
+        let Ok(mut url) = url::Url::parse(uri) else {
+            return uri.to_string();
+        };
+        url.set_query(None);
+        let Some((storage_scheme, _commit_scheme)) = url.scheme().split_once('+') else {
+            return url.to_string();
+        };
+        let storage_scheme = storage_scheme.to_string();
+        let _ = url.set_scheme(&storage_scheme);
+        url.to_string()
+    }
+
+    async fn prepare_namespace_root(
+        uri: &str,
+        storage_options: &HashMap<String, String>,
+        session: Arc<lance::session::Session>,
+    ) -> Result<String> {
+        match url::Url::parse(uri) {
+            Ok(url) if url.scheme().len() == 1 && cfg!(windows) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+            Ok(mut url) => {
+                if url.scheme().contains('+') {
+                    return Err(Error::NotSupported {
+                        message: "commit engine URI schemes are not supported for manifest-enabled namespace connections".to_string(),
+                    });
+                }
+
+                for (key, value) in url.query_pairs() {
+                    if key == ENGINE {
+                        return Err(Error::NotSupported {
+                            message: format!(
+                                "commit engine '{}' is not supported for manifest-enabled namespace connections",
+                                value
+                            ),
+                        });
+                    } else if key == MIRRORED_STORE {
+                        return Err(Error::NotSupported {
+                            message: "mirrored store is not supported for manifest-enabled namespace connections"
+                                .to_string(),
+                        });
+                    }
+                }
+
+                url.set_query(None);
+                let plain_uri = url.to_string();
+
+                let os_params = ObjectStoreParams {
+                    storage_options_accessor: if storage_options.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                            storage_options.clone(),
+                        )))
+                    },
+                    ..Default::default()
+                };
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    &plain_uri,
+                    &os_params,
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu {
+                        path: plain_uri.clone(),
+                    })?;
+                }
+
+                Ok(plain_uri)
+            }
+            Err(_) => {
+                let (object_store, _) = ObjectStore::from_uri_and_params(
+                    session.store_registry(),
+                    uri,
+                    &ObjectStoreParams::default(),
+                )
+                .await?;
+                if object_store.is_local() {
+                    Self::try_create_dir(uri).context(CreateDirSnafu { path: uri })?;
+                }
+                Ok(uri.to_string())
+            }
+        }
+    }
+
+    pub(crate) async fn connect_manifest_enabled_namespace_database(
+        request: &ConnectRequest,
+    ) -> Result<LanceNamespaceDatabase> {
+        let options = ListingDatabaseOptions::parse_from_map(&request.options)?;
+        let session = request
+            .session
+            .clone()
+            .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
+        let namespace_root =
+            Self::prepare_namespace_root(&request.uri, &options.storage_options, session.clone())
+                .await?;
+        let ns_properties = Self::build_manifest_enabled_namespace_client_properties(
+            &namespace_root,
+            &options.storage_options,
+            request.namespace_client_properties.clone(),
+        );
+
+        LanceNamespaceDatabase::connect_with_new_table_config(
+            "dir",
+            ns_properties,
+            options.storage_options,
+            request.read_consistency_interval,
+            Some(session),
+            HashSet::new(),
+            options.new_table_config,
+        )
+        .await
+        .map(|db| db.with_uri(request.uri.clone()))
+    }
+
     /// Connect to a listing database
     ///
     /// The URI should be a path to a directory where the tables are stored.
@@ -266,6 +503,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -274,7 +512,7 @@ impl ListingDatabase {
                 // iter thru the query params and extract the commit store param
                 let mut engine = None;
                 let mut mirrored_store = None;
-                let mut filtered_querys = vec![];
+                let mut filtered_queries = vec![];
 
                 // WARNING: specifying engine is NOT a publicly supported feature in lancedb yet
                 // THE API WILL CHANGE
@@ -290,19 +528,28 @@ impl ListingDatabase {
                         mirrored_store = Some(value.to_string());
                     } else {
                         // to owned so we can modify the url
-                        filtered_querys.push((key.to_string(), value.to_string()));
+                        filtered_queries.push((key.to_string(), value.to_string()));
                     }
                 }
 
                 // Filter out the commit store query param -- it's a lancedb param
                 url.query_pairs_mut().clear();
-                url.query_pairs_mut().extend_pairs(filtered_querys);
-                // Take a copy of the query string so we can propagate it to lance
-                let query_string = url.query().map(|s| s.to_string());
+                url.query_pairs_mut().extend_pairs(filtered_queries);
+                // Take a copy of the query string so we can propagate it to lance.
+                // `query_pairs_mut()` leaves the URL with `Some("")` even when no
+                // pairs survive (or none existed in the first place), so an empty
+                // string here must be treated the same as "no query" — otherwise
+                // every table URI ends up with a trailing `?`, which makes downstream
+                // sub-paths (e.g. RTE gen paths) re-parse as path=<base table> +
+                // query=<sub-path>, causing Lance to find the base table dataset
+                // when looking up the sub-path.
+                let query_string = url.query().filter(|q| !q.is_empty()).map(|s| s.to_string());
                 // clear the query string so we can use the url as the base uri
                 // use .set_query(None) instead of .set_query("") because the latter
                 // will add a trailing '?' to the url
                 url.set_query(None);
+
+                let storage_base_uri = Self::storage_base_uri(url.as_str());
 
                 let table_base_uri = if let Some(store) = engine {
                     static WARN_ONCE: std::sync::Once = std::sync::Once::new();
@@ -316,24 +563,30 @@ impl ListingDatabase {
                     url.to_string()
                 };
 
-                let plain_uri = url.to_string();
-
                 let session = request
                     .session
                     .clone()
                     .unwrap_or_else(|| Arc::new(lance::session::Session::default()));
                 let os_params = ObjectStoreParams {
-                    storage_options: Some(options.storage_options.clone()),
+                    storage_options_accessor: if options.storage_options.is_empty() {
+                        None
+                    } else {
+                        Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                            options.storage_options.clone(),
+                        )))
+                    },
                     ..Default::default()
                 };
                 let (object_store, base_path) = ObjectStore::from_uri_and_params(
                     session.store_registry(),
-                    &plain_uri,
+                    &storage_base_uri,
                     &os_params,
                 )
                 .await?;
                 if object_store.is_local() {
-                    Self::try_create_dir(&plain_uri).context(CreateDirSnafu { path: plain_uri })?;
+                    Self::try_create_dir(&storage_base_uri).context(CreateDirSnafu {
+                        path: storage_base_uri.clone(),
+                    })?;
                 }
 
                 let write_store_wrapper = match mirrored_store {
@@ -345,6 +598,15 @@ impl ListingDatabase {
                     None => None,
                 };
 
+                let namespace_database = Self::connect_namespace_database(
+                    &storage_base_uri,
+                    options.storage_options.clone(),
+                    request.namespace_client_properties.clone(),
+                    request.read_consistency_interval,
+                    session.clone(),
+                )
+                .await?;
+
                 Ok(Self {
                     uri: table_base_uri,
                     query_string,
@@ -353,8 +615,10 @@ impl ListingDatabase {
                     store_wrapper: write_store_wrapper,
                     read_consistency_interval: request.read_consistency_interval,
                     storage_options: options.storage_options,
+                    storage_options_provider: None,
                     new_table_config: options.new_table_config,
                     session,
+                    namespace_database,
                 })
             }
             Err(_) => {
@@ -362,6 +626,7 @@ impl ListingDatabase {
                     uri,
                     request.read_consistency_interval,
                     options.new_table_config,
+                    request.namespace_client_properties.clone(),
                     request.session.clone(),
                 )
                 .await
@@ -373,6 +638,7 @@ impl ListingDatabase {
         path: &str,
         read_consistency_interval: Option<std::time::Duration>,
         new_table_config: NewTableConfig,
+        namespace_client_properties: HashMap<String, String>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
         let session = session.unwrap_or_else(|| Arc::new(lance::session::Session::default()));
@@ -386,6 +652,15 @@ impl ListingDatabase {
             Self::try_create_dir(path).context(CreateDirSnafu { path })?;
         }
 
+        let namespace_database = Self::connect_namespace_database(
+            path,
+            HashMap::new(),
+            namespace_client_properties,
+            read_consistency_interval,
+            session.clone(),
+        )
+        .await?;
+
         Ok(Self {
             uri: path.to_string(),
             query_string: None,
@@ -394,14 +669,29 @@ impl ListingDatabase {
             store_wrapper: None,
             read_consistency_interval,
             storage_options: HashMap::new(),
+            storage_options_provider: None,
             new_table_config,
             session,
+            namespace_database,
         })
     }
 
     /// Try to create a local directory to store the lancedb dataset
     fn try_create_dir(path: &str) -> core::result::Result<(), std::io::Error> {
-        let path = Path::new(path);
+        // Strip file:// or file:/ scheme if present to get the actual filesystem path
+        // Note: file:///path becomes file:/path after url.to_string(), so we need to handle both
+        let fs_path = if let Some(stripped) = path.strip_prefix("file://") {
+            // file:///path or file://host/path format
+            stripped
+        } else if let Some(stripped) = path.strip_prefix("file:") {
+            // file:/path format (from url.to_string() on file:///path)
+            // The path after "file:" should already start with "/" for absolute paths
+            stripped
+        } else {
+            path
+        };
+
+        let path = Path::new(fs_path);
         if !path.try_exists()? {
             create_dir_all(path)?;
         }
@@ -413,9 +703,20 @@ impl ListingDatabase {
         validate_table_name(name)?;
 
         let mut uri = self.uri.clone();
-        // If the URI does not end with a slash, add one
-        if !uri.ends_with('/') {
-            uri.push('/');
+        // If the URI does not end with a path separator, add one
+        // Use forward slash for URIs (http://, s3://, gs://, file://, etc.)
+        // Use platform-specific separator for local paths without scheme
+        let has_scheme = uri.contains("://");
+        let ends_with_separator = uri.ends_with('/') || uri.ends_with('\\');
+
+        if !ends_with_separator {
+            if has_scheme {
+                // URIs always use forward slash
+                uri.push('/');
+            } else {
+                // Local path without scheme - use platform separator
+                uri.push(std::path::MAIN_SEPARATOR);
+            }
         }
         // Append the table name with the lance file extension
         uri.push_str(&format!("{}.{}", name, LANCE_FILE_EXTENSION));
@@ -429,9 +730,19 @@ impl ListingDatabase {
         Ok(uri)
     }
 
+    fn namespace_database(&self) -> Arc<LanceNamespaceDatabase> {
+        self.namespace_database.clone()
+    }
+
     async fn drop_tables(&self, names: Vec<String>) -> Result<()> {
         let object_store_params = ObjectStoreParams {
-            storage_options: Some(self.storage_options.clone()),
+            storage_options_accessor: if self.storage_options.is_empty() {
+                None
+            } else {
+                Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                    self.storage_options.clone(),
+                )))
+            },
             ..Default::default()
         };
         let mut uri = self.uri.clone();
@@ -441,7 +752,7 @@ impl ListingDatabase {
         let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
-            let full_path = self.base_path.child(dir_name.clone());
+            let full_path = self.base_path.clone().join(dir_name.clone());
 
             commit_handler.delete(&full_path).await?;
 
@@ -452,7 +763,8 @@ impl ListingDatabase {
                     // this error is not lance::Error::DatasetNotFound, as the method
                     // `remove_dir_all` may be used to remove something not be a dataset
                     lance::Error::NotFound { .. } => Error::TableNotFound {
-                        name: name.to_owned(),
+                        name: name.clone(),
+                        source: Box::new(err),
                     },
                     _ => Error::from(err),
                 })?;
@@ -469,47 +781,13 @@ impl ListingDatabase {
         }
     }
 
-    /// Extract storage option overrides from the request
-    fn extract_storage_overrides(
-        &self,
-        request: &CreateTableRequest,
-    ) -> Result<(Option<LanceFileVersion>, Option<bool>)> {
-        let storage_options = request
-            .write_options
-            .lance_write_params
-            .as_ref()
-            .and_then(|p| p.store_params.as_ref())
-            .and_then(|sp| sp.storage_options.as_ref());
-
-        let storage_version_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
-            .map(|s| s.parse::<LanceFileVersion>())
-            .transpose()?;
-
-        let v2_manifest_override = storage_options
-            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
-            .map(|s| s.parse::<bool>())
-            .transpose()
-            .map_err(|_| Error::InvalidInput {
-                message: "enable_v2_manifest_paths must be a boolean".to_string(),
-            })?;
-
-        Ok((storage_version_override, v2_manifest_override))
-    }
-
     /// Prepare write parameters for table creation
     fn prepare_write_params(
         &self,
         request: &CreateTableRequest,
-        storage_version_override: Option<LanceFileVersion>,
-        v2_manifest_override: Option<bool>,
+        mut write_params: lance::dataset::WriteParams,
+        overrides: NewTableConfig,
     ) -> lance::dataset::WriteParams {
-        let mut write_params = request
-            .write_options
-            .lance_write_params
-            .clone()
-            .unwrap_or_default();
-
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
         // storage_options=Some({}). Using storage_options=None will cause the
@@ -517,27 +795,43 @@ impl ListingDatabase {
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() {
-            let storage_options = write_params
+        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
+            let store_params = write_params
                 .store_params
-                .get_or_insert_with(Default::default)
-                .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
+            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+            if !self.storage_options.is_empty() {
+                self.inherit_storage_options(&mut storage_options);
+            }
+            let accessor = if let Some(ref provider) = self.storage_options_provider {
+                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider.clone())
+            } else {
+                StorageOptionsAccessor::with_static_options(storage_options)
+            };
+            store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
-        write_params.data_storage_version = self
-            .new_table_config
+        write_params.data_storage_version = overrides
             .data_storage_version
-            .or(storage_version_override);
+            .or(write_params.data_storage_version)
+            .or(self.new_table_config.data_storage_version);
 
-        if let Some(enable_v2_manifest_paths) = self
-            .new_table_config
+        if let Some(enable_v2_manifest_paths) = overrides
             .enable_v2_manifest_paths
-            .or(v2_manifest_override)
+            .or(self.new_table_config.enable_v2_manifest_paths)
         {
             write_params.enable_v2_manifest_paths = enable_v2_manifest_paths;
         }
+
+        let data_schema = request.data.arrow_schema();
+        if let Some(enable_stable_row_ids) = overrides
+            .enable_stable_row_ids
+            .or(self.new_table_config.enable_stable_row_ids)
+        {
+            write_params.enable_stable_row_ids = enable_stable_row_ids;
+        }
+
+        ensure_blob_storage_version(&data_schema, &mut write_params);
 
         if matches!(&request.mode, CreateTableMode::Overwrite) {
             write_params.mode = WriteMode::Overwrite;
@@ -552,7 +846,7 @@ impl ListingDatabase {
     async fn handle_table_exists(
         &self,
         table_name: &str,
-        namespace: Vec<String>,
+        namespace_path: Vec<String>,
         mode: CreateTableMode,
         data_schema: &arrow_schema::Schema,
     ) -> Result<Arc<dyn BaseTable>> {
@@ -563,9 +857,12 @@ impl ListingDatabase {
             CreateTableMode::ExistOk(callback) => {
                 let req = OpenTableRequest {
                     name: table_name.to_string(),
-                    namespace: namespace.clone(),
+                    namespace_path: namespace_path.clone(),
                     index_cache_size: None,
                     lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
                 };
                 let req = (callback)(req);
                 let table = self.open_table(req).await?;
@@ -587,27 +884,51 @@ impl ListingDatabase {
 
 #[async_trait::async_trait]
 impl Database for ListingDatabase {
-    async fn list_namespaces(&self, _request: ListNamespacesRequest) -> Result<Vec<String>> {
-        Ok(Vec::new())
+    async fn list_namespaces(
+        &self,
+        request: ListNamespacesRequest,
+    ) -> Result<ListNamespacesResponse> {
+        self.namespace_database().list_namespaces(request).await
     }
 
-    async fn create_namespace(&self, _request: CreateNamespaceRequest) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
-        })
+    fn uri(&self) -> &str {
+        &self.uri
     }
 
-    async fn drop_namespace(&self, _request: DropNamespaceRequest) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "Namespace operations are not supported for listing database".into(),
-        })
+    async fn read_consistency(&self) -> Result<ReadConsistency> {
+        if let Some(interval) = self.read_consistency_interval {
+            if interval.is_zero() {
+                Ok(ReadConsistency::Strong)
+            } else {
+                Ok(ReadConsistency::Eventual(interval))
+            }
+        } else {
+            Ok(ReadConsistency::Manual)
+        }
     }
 
+    async fn create_namespace(
+        &self,
+        request: CreateNamespaceRequest,
+    ) -> Result<CreateNamespaceResponse> {
+        self.namespace_database().create_namespace(request).await
+    }
+
+    async fn drop_namespace(&self, request: DropNamespaceRequest) -> Result<DropNamespaceResponse> {
+        self.namespace_database().drop_namespace(request).await
+    }
+
+    async fn describe_namespace(
+        &self,
+        request: DescribeNamespaceRequest,
+    ) -> Result<DescribeNamespaceResponse> {
+        self.namespace_database().describe_namespace(request).await
+    }
+
+    #[allow(deprecated)]
     async fn table_names(&self, request: TableNamesRequest) -> Result<Vec<String>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
-            });
+        if !request.namespace_path.is_empty() {
+            return self.namespace_database().table_names(request).await;
         }
         let mut f = self
             .object_store
@@ -638,29 +959,105 @@ impl Database for ListingDatabase {
         Ok(f)
     }
 
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if !request.namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
+    /// List the tables in the database, a page at a time.
+    ///
+    /// The page_token is opaque, unlike the `start_after` parameter of [`Self::table_names()`].
+    ///
+    /// When there are no more results, the returned page_token will be None.
+    ///
+    /// `limit` is the maximum number of tables to return in the response. But it is possible
+    /// for the response to contain fewer than `limit` tables, even when there are more tables
+    /// to return. Clients should check the returned page_token to determine if there are
+    /// more results, rather than relying on the number of tables returned.
+    ///
+    /// The order that results are returned in not guaranteed to be stable across calls,
+    /// so clients should not rely on it.
+    async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
+        if request.id.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+            return self.namespace_database().list_tables(request).await;
+        }
+        let limit = request.limit.map(|limit| limit.max(0) as usize);
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let mut tables = Vec::new();
+        let mut page_token = request.page_token.filter(|token| !token.is_empty());
+
+        // A page of nothing: the store rejects a limit of zero, and no table was handed over
+        // for a token to resume after.
+        if limit == Some(0) {
+            return Ok(ListTablesResponse {
+                context: None,
+                tables,
+                page_token: None,
             });
         }
-        let table_uri = self.table_uri(&request.name)?;
 
-        let (storage_version_override, v2_manifest_override) =
-            self.extract_storage_overrides(&request)?;
+        loop {
+            // Ask only for what the page still has room for, so a database holding more
+            // than one page costs one request per page rather than one per table.
+            let listing = self
+                .object_store
+                .read_dir_page(
+                    self.base_path.clone(),
+                    ReadDirOptions {
+                        page_token: page_token.take(),
+                        limit: limit.map(|limit| limit - tables.len()),
+                    },
+                )
+                .await?;
+            page_token = listing.page_token;
+            // Only child directories can be tables, and the store already separates them
+            // out, so the objects in the page are not looked at.
+            tables.extend(
+                listing
+                    .result
+                    .common_prefixes
+                    .iter()
+                    .filter_map(|location| table_name(location, &dir_suffix)),
+            );
+            // Children that are not tables leave the page short of the limit, so keep
+            // going until the page is full or the database runs out.
+            if page_token.is_none() || limit.is_none_or(|limit| tables.len() >= limit) {
+                break;
+            }
+        }
 
-        let write_params =
-            self.prepare_write_params(&request, storage_version_override, v2_manifest_override);
+        Ok(ListTablesResponse {
+            context: None,
+            tables,
+            page_token,
+        })
+    }
+
+    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.namespace_path.is_empty() {
+            return self.namespace_database().create_table(request).await;
+        }
+        // Use provided location if available, otherwise derive from table name
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
+
+        let mut write_params = request
+            .write_options
+            .lance_write_params
+            .clone()
+            .unwrap_or_default();
+        let overrides = take_request_creation_overrides(&mut write_params)?;
+        let write_params = self.prepare_write_params(&request, write_params, overrides);
 
         let data_schema = request.data.arrow_schema();
 
         match NativeTable::create(
             &table_uri,
             &request.name,
+            request.namespace_path.clone(),
             request.data,
             self.store_wrapper.clone(),
             Some(write_params),
             self.read_consistency_interval,
+            request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
         )
         .await
         {
@@ -668,7 +1065,7 @@ impl Database for ListingDatabase {
             Err(Error::TableAlreadyExists { .. }) => {
                 self.handle_table_exists(
                     &request.name,
-                    request.namespace.clone(),
+                    request.namespace_path.clone(),
                     request.mode,
                     &data_schema,
                 )
@@ -678,13 +1075,98 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
-        if !request.namespace.is_empty() {
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.target_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
             });
         }
-        let table_uri = self.table_uri(&request.name)?;
+
+        // TODO: support deep clone
+        if !request.is_shallow {
+            return Err(Error::NotSupported {
+                message: "Deep clone is not yet implemented".to_string(),
+            });
+        }
+
+        validate_table_name(&request.target_table_name)?;
+
+        let storage_params = ObjectStoreParams {
+            storage_options_accessor: if self.storage_options.is_empty() {
+                None
+            } else {
+                Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                    self.storage_options.clone(),
+                )))
+            },
+            ..Default::default()
+        };
+        let read_params = ReadParams {
+            store_options: Some(storage_params.clone()),
+            session: Some(self.session.clone()),
+            ..Default::default()
+        };
+
+        let target_uri = self.table_uri(&request.target_table_name)?;
+        match DatasetBuilder::from_uri(&target_uri)
+            .with_read_params(read_params.clone())
+            .load()
+            .await
+        {
+            Ok(_) => {
+                return Err(Error::TableAlreadyExists {
+                    name: request.target_table_name,
+                });
+            }
+            Err(lance::Error::DatasetNotFound { .. }) => {}
+            Err(err) => return Err(err.into()),
+        }
+
+        let mut source_dataset = DatasetBuilder::from_uri(&request.source_uri)
+            .with_read_params(read_params.clone())
+            .load()
+            .await
+            .map_err(|e| -> Error { e.into() })?;
+
+        let version_ref = match (request.source_version, request.source_tag) {
+            (Some(v), None) => Ok(Ref::Version(None, Some(v))),
+            (None, Some(tag)) => Ok(Ref::Tag(tag)),
+            (None, None) => Ok(Ref::Version(None, Some(source_dataset.version().version))),
+            _ => Err(Error::InvalidInput {
+                message: "Cannot specify both source_version and source_tag".to_string(),
+            }),
+        }?;
+
+        source_dataset
+            .shallow_clone(&target_uri, version_ref, Some(storage_params))
+            .await
+            .map_err(|e| -> Error { e.into() })?;
+
+        let cloned_table = NativeTable::open_with_params(
+            &target_uri,
+            &request.target_table_name,
+            request.target_namespace_path,
+            self.store_wrapper.clone(),
+            None,
+            self.read_consistency_interval,
+            request.namespace_client,
+            HashSet::new(), // listing database doesn't support server-side queries
+            None,           // managed_versioning - will be queried if namespace_client is provided
+        )
+        .await?;
+
+        Ok(Arc::new(cloned_table))
+    }
+
+    async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        if !request.namespace_path.is_empty() {
+            return self.namespace_database().open_table(request).await;
+        }
+        // Use provided location if available, otherwise derive from table name
+        let table_uri = match request.location.clone() {
+            Some(location) => location,
+            None => self.table_uri(&request.name)?,
+        };
 
         // Only modify the storage options if we actually have something to
         // inherit. There is a difference between storage_options=None and
@@ -693,15 +1175,28 @@ impl Database for ListingDatabase {
         // will cause a new connection to be created, and that connection will
         // be dropped from the cache when python GCs the table object, which
         // confounds reuse across tables.
-        if !self.storage_options.is_empty() {
-            let storage_options = request
+        if !self.storage_options.is_empty() || self.storage_options_provider.is_some() {
+            let store_params = request
                 .lance_read_params
                 .get_or_insert_with(Default::default)
                 .store_options
-                .get_or_insert_with(Default::default)
-                .storage_options
                 .get_or_insert_with(Default::default);
-            self.inherit_storage_options(storage_options);
+            let mut storage_options = store_params.storage_options().cloned().unwrap_or_default();
+            if !self.storage_options.is_empty() {
+                self.inherit_storage_options(&mut storage_options);
+            }
+            // Preserve request-level provider if no connection-level provider exists
+            let request_provider = store_params
+                .storage_options_accessor
+                .as_ref()
+                .and_then(|a| a.provider().cloned());
+            let provider = self.storage_options_provider.clone().or(request_provider);
+            let accessor = if let Some(provider) = provider {
+                StorageOptionsAccessor::with_initial_and_provider(storage_options, provider)
+            } else {
+                StorageOptionsAccessor::with_static_options(storage_options)
+            };
+            store_params.storage_options_accessor = Some(Arc::new(accessor));
         }
 
         // Some ReadParams are exposed in the OpenTableBuilder, but we also
@@ -724,9 +1219,13 @@ impl Database for ListingDatabase {
             NativeTable::open_with_params(
                 &table_uri,
                 &request.name,
+                request.namespace_path,
                 self.store_wrapper.clone(),
                 Some(read_params),
                 self.read_consistency_interval,
+                request.namespace_client,
+                HashSet::new(), // listing database doesn't support server-side queries
+                request.managed_versioning, // Pass through managed_versioning from request
             )
             .await?,
         );
@@ -737,15 +1236,15 @@ impl Database for ListingDatabase {
         &self,
         _cur_name: &str,
         _new_name: &str,
-        cur_namespace: &[String],
-        new_namespace: &[String],
+        cur_namespace_path: &[String],
+        new_namespace_path: &[String],
     ) -> Result<()> {
-        if !cur_namespace.is_empty() {
+        if !cur_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
         }
-        if !new_namespace.is_empty() {
+        if !new_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database.".into(),
             });
@@ -755,21 +1254,24 @@ impl Database for ListingDatabase {
         })
     }
 
-    async fn drop_table(&self, name: &str, namespace: &[String]) -> Result<()> {
-        if !namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database.".into(),
-            });
+    async fn drop_table(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        if !namespace_path.is_empty() {
+            return self
+                .namespace_database()
+                .drop_table(name, namespace_path)
+                .await;
         }
         self.drop_tables(vec![name.to_string()]).await
     }
 
-    async fn drop_all_tables(&self, namespace: &[String]) -> Result<()> {
+    #[allow(deprecated)]
+    async fn drop_all_tables(&self, namespace_path: &[String]) -> Result<()> {
         // Check if namespace parameter is provided
-        if !namespace.is_empty() {
-            return Err(Error::NotSupported {
-                message: "Namespace parameter is not supported for listing database.".into(),
-            });
+        if !namespace_path.is_empty() {
+            return self
+                .namespace_database()
+                .drop_all_tables(namespace_path)
+                .await;
         }
         let tables = self.table_names(TableNamesRequest::default()).await?;
         self.drop_tables(tables).await
@@ -777,5 +1279,2231 @@ impl Database for ListingDatabase {
 
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    async fn namespace_client(&self) -> Result<Arc<dyn lance_namespace::LanceNamespace>> {
+        self.namespace_database.namespace_client().await
+    }
+
+    async fn namespace_client_config(&self) -> Result<(String, HashMap<String, String>)> {
+        self.namespace_database.namespace_client_config().await
+    }
+}
+
+/// Parse the request-level `new_table_*` creation keys into overrides and
+/// strip them from the store options in one step: every create path that
+/// honors them must also keep them out of the object store.
+pub(crate) fn take_request_creation_overrides(
+    params: &mut lance::dataset::WriteParams,
+) -> Result<NewTableConfig> {
+    let storage_options = params
+        .store_params
+        .as_ref()
+        .and_then(|sp| sp.storage_options());
+    let overrides = NewTableConfig {
+        data_storage_version: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_STORAGE_VERSION))
+            .map(|s| s.parse::<LanceFileVersion>())
+            .transpose()?,
+        enable_v2_manifest_paths: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_V2_MANIFEST_PATHS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_v2_manifest_paths must be a boolean".to_string(),
+            })?,
+        enable_stable_row_ids: storage_options
+            .and_then(|opts| opts.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS))
+            .map(|s| s.parse::<bool>())
+            .transpose()
+            .map_err(|_| Error::InvalidInput {
+                message: "enable_stable_row_ids must be a boolean".to_string(),
+            })?,
+    };
+    if let Some(store_params) = params.store_params.as_mut() {
+        strip_new_table_creation_keys(store_params);
+    }
+    Ok(overrides)
+}
+
+/// Strip the `new_table_*` creation keys from request store options: they are
+/// creation config, not credentials, and left in place they fork a fresh
+/// store connection for the request.
+fn strip_new_table_creation_keys(store_params: &mut ObjectStoreParams) {
+    let mut options = store_params.storage_options().cloned().unwrap_or_default();
+    let mut removed = false;
+    for key in [
+        OPT_NEW_TABLE_STORAGE_VERSION,
+        OPT_NEW_TABLE_V2_MANIFEST_PATHS,
+        OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS,
+    ] {
+        removed |= options.remove(key).is_some();
+    }
+    if !removed {
+        return;
+    }
+    let provider = store_params
+        .storage_options_accessor
+        .as_ref()
+        .and_then(|accessor| accessor.provider().cloned());
+    store_params.storage_options_accessor = match (options.is_empty(), provider) {
+        (true, None) => None,
+        (true, Some(provider)) => Some(Arc::new(StorageOptionsAccessor::with_provider(provider))),
+        (false, Some(provider)) => Some(Arc::new(
+            StorageOptionsAccessor::with_initial_and_provider(options, provider),
+        )),
+        (false, None) => Some(Arc::new(StorageOptionsAccessor::with_static_options(
+            options,
+        ))),
+    };
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn request_level_creation_keys_do_not_fork_the_store() {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let db = crate::connect("memory://").execute().await.unwrap();
+        let batch = arrow_array::record_batch!(("x", Int32, [1, 2])).unwrap();
+        let store_params = ObjectStoreParams {
+            storage_options_accessor: Some(Arc::new(StorageOptionsAccessor::with_static_options(
+                HashMap::from([(
+                    OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                    "true".to_string(),
+                )]),
+            ))),
+            ..Default::default()
+        };
+        db.create_table("t", batch)
+            .write_options(crate::table::WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(store_params),
+                    ..Default::default()
+                }),
+            })
+            .execute()
+            .await
+            .unwrap();
+
+        let table = db.open_table("t").execute().await.unwrap();
+        let rows: usize = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 2, "the table must live in the session's store");
+    }
+
+    mod strip_new_table_creation_keys {
+        use super::super::*;
+
+        #[derive(Debug)]
+        struct EmptyProvider;
+
+        #[async_trait::async_trait]
+        impl StorageOptionsProvider for EmptyProvider {
+            async fn fetch_storage_options(
+                &self,
+            ) -> lance_core::Result<Option<HashMap<String, String>>> {
+                Ok(Some(HashMap::new()))
+            }
+
+            fn provider_id(&self) -> String {
+                "empty-test-provider".into()
+            }
+        }
+
+        fn params_with_static(options: &[(&str, &str)]) -> ObjectStoreParams {
+            ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_static_options(
+                        options
+                            .iter()
+                            .map(|(k, v)| (k.to_string(), v.to_string()))
+                            .collect(),
+                    ),
+                )),
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn creation_keys_are_removed_and_store_keys_kept() {
+            let mut params = params_with_static(&[
+                ("region", "us-west-2"),
+                (OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true"),
+            ]);
+            strip_new_table_creation_keys(&mut params);
+            let options = params.storage_options().cloned().unwrap();
+            assert_eq!(options.get("region").map(String::as_str), Some("us-west-2"));
+            assert!(!options.contains_key(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS));
+
+            // Creation keys alone: no accessor survives to fork a store.
+            let mut params = params_with_static(&[(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")]);
+            strip_new_table_creation_keys(&mut params);
+            assert!(params.storage_options_accessor.is_none());
+        }
+
+        /// A provider must survive every shape of strip: untouched accessors
+        /// keep their identity, emptied ones still fetch, and residual
+        /// statics ride along.
+        #[test]
+        fn provider_accessors_survive_the_strip() {
+            let accessor = Arc::new(StorageOptionsAccessor::with_provider(Arc::new(
+                EmptyProvider,
+            )));
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(accessor.clone()),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            assert!(Arc::ptr_eq(
+                params.storage_options_accessor.as_ref().unwrap(),
+                &accessor
+            ));
+
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([
+                            ("region".to_string(), "us-west-2".to_string()),
+                            (
+                                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                                "true".to_string(),
+                            ),
+                        ]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert_eq!(
+                accessor
+                    .initial_storage_options()
+                    .and_then(|o| o.get("region").cloned())
+                    .as_deref(),
+                Some("us-west-2")
+            );
+
+            // Emptied entirely: a first-fetch accessor, not one caching {}.
+            let mut params = ObjectStoreParams {
+                storage_options_accessor: Some(Arc::new(
+                    StorageOptionsAccessor::with_initial_and_provider(
+                        HashMap::from([(
+                            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+                            "true".to_string(),
+                        )]),
+                        Arc::new(EmptyProvider),
+                    ),
+                )),
+                ..Default::default()
+            };
+            strip_new_table_creation_keys(&mut params);
+            let accessor = params.storage_options_accessor.unwrap();
+            assert!(accessor.has_provider());
+            assert!(accessor.initial_storage_options().is_none());
+        }
+    }
+
+    use super::*;
+    use crate::Table;
+    use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+    use crate::connection::ConnectRequest;
+    use crate::data::scannable::Scannable;
+    use crate::database::{CreateTableMode, CreateTableRequest};
+    use crate::query::QueryRequest;
+    use crate::table::{AnyQuery, WriteOptions};
+    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema, SchemaRef};
+    use futures::{TryStreamExt, future::try_join_all, stream::once};
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::sync::Barrier;
+    use tokio::time::timeout;
+
+    async fn create_tables(db: &ListingDatabase, names: &[&str]) {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        for name in names {
+            db.create_table(CreateTableRequest {
+                name: name.to_string(),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+        }
+    }
+
+    /// Every table in the database, taken `limit` at a time, which is how a caller walks a
+    /// listing: the token ends the walk, never a short page.
+    async fn walk(db: &ListingDatabase, limit: Option<i32>) -> Vec<String> {
+        let mut seen = Vec::new();
+        let mut page_token = None;
+        loop {
+            let page = db
+                .list_tables(ListTablesRequest {
+                    limit,
+                    page_token,
+                    ..Default::default()
+                })
+                .await
+                .unwrap();
+            seen.extend(page.tables);
+            page_token = page.page_token;
+            if page_token.is_none() {
+                return seen;
+            }
+            assert!(
+                seen.len() < 100,
+                "the walk is serving tables more than once"
+            );
+        }
+    }
+
+    /// Paging with the returned token has to visit every table exactly once, whatever the
+    /// page size, with nothing lost or repeated at a boundary.
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_list_tables_pages_over_every_table_once(#[values(1, 2, 3, 5, 10)] limit: i32) {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c", "d", "e"]).await;
+
+        assert_eq!(walk(&db, Some(limit)).await, vec!["a", "b", "c", "d", "e"]);
+    }
+
+    /// The token is opaque: it is whatever resumes the store the database sits on, not a
+    /// table name. Callers hand it back and nothing else.
+    ///
+    /// Nothing validates a token, so one invented by a caller is read as a position rather
+    /// than refused — which is why the token has to come back from a previous page.
+    #[tokio::test]
+    async fn test_the_page_token_is_not_a_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b", "c"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a"]);
+        let token = page.page_token.expect("two tables are still to come");
+        assert_ne!(token, "a");
+
+        // Handing it back is the only thing a caller does with it, and it resumes.
+        let rest = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(token),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(rest.tables, vec!["b", "c"]);
+    }
+
+    /// A limit the listing does not fill leaves no token behind, so a caller paging by token
+    /// stops without asking for an empty page.
+    #[tokio::test]
+    async fn test_a_listing_that_runs_out_has_no_token() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(10),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+        assert_eq!(page.page_token, None);
+    }
+
+    /// An empty page token means "from the start", which is how a client looping on a token
+    /// spells its first request.
+    #[tokio::test]
+    async fn test_an_empty_page_token_lists_from_the_start() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                page_token: Some(String::new()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["a", "b"]);
+    }
+
+    /// Listing follows the order the object store lists directories in, so a name that
+    /// extends another comes first: the `-` of `users-archive.lance` sorts below the `.` of
+    /// `users.lance`. Pagination pushes its cursor into the list request, so it cannot report
+    /// an order other than the one it resumes in.
+    #[tokio::test]
+    async fn test_listing_order_follows_the_store_not_the_table_name() {
+        let (_tempdir, db) = setup_database().await;
+        create_tables(&db, &["users", "users-archive", "users.old"]).await;
+
+        assert_eq!(
+            walk(&db, None).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+        // And paging reports the same order, so a walk sees each table once.
+        assert_eq!(
+            walk(&db, Some(1)).await,
+            vec!["users-archive", "users", "users.old"]
+        );
+    }
+
+    /// Only directories named `<name>.lance` are tables; loose files and other directories
+    /// under the database prefix are not. A page spent on them is filled from the next one,
+    /// so a page holding only non-tables does not read as an empty database.
+    #[tokio::test]
+    async fn test_listing_ignores_non_table_children() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["real"]).await;
+        std::fs::write(tempdir.path().join("aaa-loose.lance"), b"not a table").unwrap();
+        create_dir_all(tempdir.path().join("aaa-scratch")).unwrap();
+
+        let page = db
+            .list_tables(ListTablesRequest {
+                limit: Some(1),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(page.tables, vec!["real"]);
+    }
+
+    #[tokio::test]
+    async fn listing_ignores_empty_table_name() {
+        let (tempdir, db) = setup_database().await;
+        create_dir_all(tempdir.path().join(".lance")).unwrap();
+        let page = db.list_tables(ListTablesRequest::default()).await.unwrap();
+        assert!(
+            page.tables.is_empty(),
+            "invalid empty table name was listed"
+        );
+    }
+
+    /// The names a table cannot have. A name is what the database builds the table's
+    /// location out of, so one it cannot build a location from is refused rather than
+    /// turned into some other path.
+    const INVALID_TABLE_NAMES: [&str; 4] = ["", "has space", "bad/name", "a!b"];
+
+    /// Creating a table under an invalid name is an error the caller can handle, not a
+    /// panic: the name comes from the caller, and the bindings turn the error into their
+    /// own (`ValueError` in Python).
+    #[tokio::test]
+    async fn test_create_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .create_table(CreateTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                    mode: CreateTableMode::Create,
+                    write_options: Default::default(),
+                    location: None,
+                    namespace_client: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "creating {name:?} did not report an invalid table name"
+            );
+        }
+    }
+
+    /// Opening a table under an invalid name is likewise an error rather than a panic.
+    #[tokio::test]
+    async fn test_open_table_rejects_invalid_names() {
+        let (_tempdir, db) = setup_database().await;
+
+        for name in INVALID_TABLE_NAMES {
+            let result = db
+                .open_table(OpenTableRequest {
+                    name: name.to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(Error::InvalidTableName { .. })),
+                "opening {name:?} did not report an invalid table name"
+            );
+        }
+    }
+
+    async fn setup_database() -> (tempfile::TempDir, ListingDatabase) {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        (tempdir, db)
+    }
+
+    struct BarrierScannable {
+        batch: RecordBatch,
+        barrier: Arc<Barrier>,
+    }
+
+    impl Scannable for BarrierScannable {
+        fn schema(&self) -> SchemaRef {
+            self.batch.schema()
+        }
+
+        fn scan_as_stream(&mut self) -> SendableRecordBatchStream {
+            let batch = self.batch.clone();
+            let schema = batch.schema();
+            let barrier = self.barrier.clone();
+            Box::pin(SimpleRecordBatchStream {
+                schema,
+                stream: once(async move {
+                    barrier.wait().await;
+                    Ok(batch)
+                }),
+            })
+        }
+    }
+
+    fn create_request(name: &str, data: Box<dyn Scannable>) -> CreateTableRequest {
+        CreateTableRequest {
+            name: name.to_string(),
+            namespace_path: vec![],
+            data,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_ignores_uncommitted_storage_without_manifest() {
+        let (tmp_dir, db) = setup_database().await;
+        let data_dir = tmp_dir.path().join("test.lance/data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+
+        let table = db
+            .create_table(create_request("test", Box::new(batch)))
+            .await
+            .unwrap();
+        assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_create_is_arbitrated_by_manifest_commit() {
+        let uri = format!("memory:///concurrent-create-{}", uuid::Uuid::new_v4());
+        let db = crate::connect(&uri).execute().await.unwrap();
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let table_url = url::Url::parse("memory:///database/test.lance").unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+
+        #[allow(deprecated)]
+        let request = |batch, barrier| {
+            let mut request = create_request("test", Box::new(BarrierScannable { batch, barrier }));
+            request.write_options = WriteOptions {
+                lance_write_params: Some(lance::dataset::WriteParams {
+                    store_params: Some(ObjectStoreParams {
+                        object_store: Some((store.clone(), table_url.clone())),
+                        ..Default::default()
+                    }),
+                    commit_handler: Some(Arc::new(
+                        lance_table::io::commit::ConditionalPutCommitHandler,
+                    )),
+                    ..Default::default()
+                }),
+            };
+            request
+        };
+
+        let left = db
+            .database()
+            .create_table(request(batch.clone(), barrier.clone()));
+        let right = db.database().create_table(request(batch, barrier));
+        let (left, right) = timeout(Duration::from_secs(30), async { tokio::join!(left, right) })
+            .await
+            .expect("concurrent creates deadlocked");
+
+        let results = [left, right];
+        assert_eq!(
+            results.iter().filter(|result| result.is_ok()).count(),
+            1,
+            "expected one successful create, got {results:?}"
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|result| matches!(result, Err(Error::TableAlreadyExists { .. })))
+                .count(),
+            1,
+            "expected one manifest conflict, got {results:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let session = Arc::new(lance::session::Session::default());
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session.clone()),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before = session.store_registry().stats();
+        let opened_tables = try_join_all((0..32).map(|_| {
+            db.open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+        }))
+        .await
+        .unwrap();
+        let after = session.store_registry().stats();
+
+        assert_eq!(opened_tables.len(), 32);
+        assert_eq!(after.misses, before.misses);
+        assert_eq!(after.active_stores, before.active_stores);
+        assert!(after.hits >= before.hits + 32);
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_root_ops_do_not_create_manifest() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert!(!tempdir.path().join("__manifest").exists());
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.open_table(OpenTableRequest {
+            name: "root_table".to_string(),
+            namespace_path: vec![],
+            index_cache_size: None,
+            lance_read_params: None,
+            location: None,
+            namespace_client: None,
+            managed_versioning: None,
+        })
+        .await
+        .unwrap();
+
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+
+        assert_eq!(table_names, vec!["root_table".to_string()]);
+        assert!(!tempdir.path().join("__manifest").exists());
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/1600.
+    ///
+    /// Opening a table used to create a separate object-store client instead of
+    /// reusing the one that successfully connected to the database.  Repeating
+    /// credential discovery made S3 table opens intermittent, especially in AWS
+    /// Lambda, and the failed open was reported as `TableNotFound`.
+    #[tokio::test]
+    async fn test_open_table_reuses_connection_object_store() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+        let registry = Arc::new(lance_io::object_store::ObjectStoreRegistry::default());
+        let session = Arc::new(lance::session::Session::new(16, 16, registry.clone()));
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: Some(session),
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let before_open = registry.stats();
+        for _ in 0..3 {
+            let table = db
+                .open_table(OpenTableRequest {
+                    name: "test".to_string(),
+                    namespace_path: vec![],
+                    index_cache_size: None,
+                    lance_read_params: None,
+                    location: None,
+                    namespace_client: None,
+                    managed_versioning: None,
+                })
+                .await
+                .unwrap();
+            assert_eq!(table.count_rows(None).await.unwrap(), 0);
+        }
+
+        let after_open = registry.stats();
+        assert_eq!(after_open.misses, before_open.misses);
+        assert!(after_open.hits >= before_open.hits + 3);
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/3197.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_open_table_follows_hugging_face_symlinks() {
+        let (tempdir, db) = setup_database().await;
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        db.create_table(CreateTableRequest {
+            name: "test".to_string(),
+            namespace_path: vec![],
+            data: Box::new(
+                RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1, 2, 3]))])
+                    .unwrap(),
+            ) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let table_dir = tempdir.path().join("test.lance");
+        let versions_dir = table_dir.join("_versions");
+        let manifest_path = std::fs::read_dir(&versions_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "manifest"))
+            .unwrap();
+        let data_path = std::fs::read_dir(table_dir.join("data"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.extension().is_some_and(|ext| ext == "lance"))
+            .unwrap();
+
+        // Hugging Face snapshots keep dataset objects in a separate blob directory and
+        // expose them through relative symlinks.
+        let blobs_dir = tempdir.path().join("blobs");
+        std::fs::create_dir(&blobs_dir).unwrap();
+        let manifest_blob = "9b603c63d0e692e05d58be25605f2f2064cc781e5ff94fe983a405059547b816";
+        let data_blob = "be64f20e5723bd0a27cfdbdb41cf7d6fad94cd572a71973b717fb8340f4310c5";
+        std::fs::rename(&manifest_path, blobs_dir.join(manifest_blob)).unwrap();
+        std::fs::rename(&data_path, blobs_dir.join(data_blob)).unwrap();
+        std::os::unix::fs::symlink(Path::new("../../blobs").join(manifest_blob), &manifest_path)
+            .unwrap();
+        std::os::unix::fs::symlink(Path::new("../../blobs").join(data_blob), &data_path).unwrap();
+        let symlink_len = std::fs::symlink_metadata(&manifest_path).unwrap().len();
+        let target_len = std::fs::metadata(&manifest_path).unwrap().len();
+        assert_ne!(symlink_len, target_len);
+
+        drop(db);
+        let db = ListingDatabase::connect_with_options(&ConnectRequest {
+            uri: tempdir.path().to_str().unwrap().to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        })
+        .await
+        .unwrap();
+
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "test".to_string(),
+                namespace_path: vec![],
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        let batches = table
+            .query(
+                &AnyQuery::Query(QueryRequest::default()),
+                Default::default(),
+            )
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_basic() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_table".to_string(),
+                namespace_path: vec![],
+                data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Get the source table URI
+        let source_uri = db.table_uri("source_table").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_table".to_string(),
+                target_namespace_path: vec![],
+                source_uri: source_uri.clone(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify both tables exist
+        #[allow(deprecated)]
+        let table_names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(table_names.contains(&"source_table".to_string()));
+        assert!(table_names.contains(&"cloned_table".to_string()));
+
+        // Verify schemas match
+        assert_eq!(
+            source_table.schema().await.unwrap(),
+            cloned_table.schema().await.unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_data() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with actual data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "source_with_data".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        let source_uri = db.table_uri("source_with_data").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_with_data".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify data counts match
+        let source_count = source_table.count_rows(None).await.unwrap();
+        let cloned_count = cloned_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, cloned_count);
+        assert_eq!(source_count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_storage_options() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with storage options
+        let mut options = HashMap::new();
+        options.insert("test_option".to_string(), "test_value".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: options.clone(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Create source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Clone should work with storage options
+        let cloned = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(cloned.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_deep_not_supported() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try deep clone (should fail)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: false, // Request deep clone
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NotSupported { message } if message.contains("Deep clone")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_namespace_not_supported() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with namespace (should fail for listing database)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace_path: vec!["namespace".to_string()], // Non-empty namespace
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::NotSupported { message } if message.contains("Namespace parameter is not supported")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_invalid_target_name() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with invalid target name
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "invalid/name".to_string(), // Invalid name with slash
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_source_not_found() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Try to clone from non-existent source
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace_path: vec![],
+                source_uri: "/nonexistent/table.lance".to_string(),
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_version_and_tag_error() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        db.create_table(CreateTableRequest {
+            name: "source".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let source_uri = db.table_uri("source").unwrap();
+
+        // Try clone with both version and tag (should fail)
+        let result = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: Some(1),
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("Cannot specify both source_version and source_tag")
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_specific_version() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "versioned_source".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch1) as Box<dyn Scannable>,
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Get the initial version
+        let initial_version = source_table.version().await.unwrap();
+
+        // Add more data to create a new version
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let db = Arc::new(db);
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
+        source_table_obj.add(batch2).execute().await.unwrap();
+
+        // Verify source table now has 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let source_uri = db.table_uri("versioned_source").unwrap();
+
+        // Clone from the initial version (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_from_version".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: Some(initial_version),
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the initial 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Source table should still have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn test_clone_table_with_tag() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "tagged_source".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch1),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Create a tag for the current version
+        let db = Arc::new(db);
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
+        let mut tags = source_table_obj.tags().await.unwrap();
+        tags.create("v1.0", source_table.version().await.unwrap())
+            .await
+            .unwrap();
+
+        // Add more data after the tag
+        let batch2 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4])),
+                Arc::new(StringArray::from(vec!["c", "d"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone(), db.clone());
+        source_table_obj.add(batch2).execute().await.unwrap();
+
+        // Source table should have 4 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4);
+
+        let source_uri = db.table_uri("tagged_source").unwrap();
+
+        // Clone from the tag (should have only 2 rows)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_from_tag".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: Some("v1.0".to_string()),
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify cloned table has only the tagged version's 2 rows
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_cloned_tables_evolve_independently() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("value", DataType::Utf8, false),
+        ]));
+
+        let batch1 = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 2])),
+                Arc::new(StringArray::from(vec!["a", "b"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "independent_source".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch1),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        let source_uri = db.table_uri("independent_source").unwrap();
+
+        // Clone the table
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "independent_clone".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Both should start with 2 rows
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 2);
+
+        // Add data to the cloned table
+        let batch_clone = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![3, 4, 5])),
+                Arc::new(StringArray::from(vec!["c", "d", "e"])),
+            ],
+        )
+        .unwrap();
+
+        let db = Arc::new(db);
+        let cloned_table_obj = Table::new(cloned_table.clone(), db.clone());
+        cloned_table_obj.add(batch_clone).execute().await.unwrap();
+
+        // Add different data to the source table
+        let batch_source = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from(vec![10, 11])),
+                Arc::new(StringArray::from(vec!["x", "y"])),
+            ],
+        )
+        .unwrap();
+
+        let source_table_obj = Table::new(source_table.clone(), db);
+        source_table_obj.add(batch_source).execute().await.unwrap();
+
+        // Verify they have evolved independently
+        assert_eq!(source_table.count_rows(None).await.unwrap(), 4); // 2 + 2
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 5); // 2 + 3
+    }
+
+    #[tokio::test]
+    async fn test_clone_latest_version() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create a source table with initial data
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch1 =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))])
+                .unwrap();
+
+        let source_table = db
+            .create_table(CreateTableRequest {
+                name: "latest_version_source".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch1),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Add more data to create new versions
+        let db = Arc::new(db);
+        for i in 0..3 {
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from(vec![i * 10, i * 10 + 1]))],
+            )
+            .unwrap();
+
+            let source_table_obj = Table::new(source_table.clone(), db.clone());
+            source_table_obj.add(batch).execute().await.unwrap();
+        }
+
+        // Source should have 8 rows total (2 + 2 + 2 + 2)
+        let source_count = source_table.count_rows(None).await.unwrap();
+        assert_eq!(source_count, 8);
+
+        let source_uri = db.table_uri("latest_version_source").unwrap();
+
+        // Clone without specifying version or tag (should get latest)
+        let cloned_table = db
+            .clone_table(CloneTableRequest {
+                target_table_name: "cloned_latest".to_string(),
+                target_namespace_path: vec![],
+                source_uri,
+                source_version: None,
+                source_tag: None,
+                is_shallow: true,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Cloned table should have all 8 rows from the latest version
+        assert_eq!(cloned_table.count_rows(None).await.unwrap(), 8);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_connection_level() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        // Verify the config was parsed correctly
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create a table - it should inherit the stable row IDs setting
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch),
+                mode: CreateTableMode::Create,
+                write_options: Default::default(),
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_with_stable_row_ids_table_level() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Verify connection has no stable row IDs config
+        assert_eq!(db.new_table_config.enable_stable_row_ids, None);
+
+        // Create a table with stable row IDs enabled at table level via storage_options
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options_accessor: Some(Arc::new(
+                        StorageOptionsAccessor::with_static_options(storage_options),
+                    )),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_stable_table_level".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_create_table_stable_row_ids_table_overrides_connection() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Create database with stable row IDs enabled at connection level
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert_eq!(db.new_table_config.enable_stable_row_ids, Some(true));
+
+        // Create table with stable row IDs disabled at table level (overrides connection)
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+
+        let mut storage_options = HashMap::new();
+        storage_options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let write_options = WriteOptions {
+            lance_write_params: Some(lance::dataset::WriteParams {
+                store_params: Some(lance::io::ObjectStoreParams {
+                    storage_options_accessor: Some(Arc::new(
+                        StorageOptionsAccessor::with_static_options(storage_options),
+                    )),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+        };
+
+        let table = db
+            .create_table(CreateTableRequest {
+                name: "test_override".to_string(),
+                namespace_path: vec![],
+                data: Box::new(batch),
+                mode: CreateTableMode::Create,
+                write_options,
+                location: None,
+                namespace_client: None,
+            })
+            .await
+            .unwrap();
+
+        // Verify table was created successfully
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_stable_row_ids_invalid_value() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        // Try to create database with invalid stable row IDs value
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "not_a_boolean".to_string(),
+        );
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options,
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let result = ListingDatabase::connect_with_options(&request).await;
+
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidInput { message } if message.contains("enable_stable_row_ids must be a boolean")
+        ));
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_serialization() {
+        // Test that ListingDatabaseOptions correctly serializes stable_row_ids
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "true".to_string(),
+        );
+
+        // Parse the options
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(true)
+        );
+
+        // Serialize back to map
+        let mut serialized = HashMap::new();
+        db_options.serialize_into_map(&mut serialized);
+
+        assert_eq!(
+            serialized.get(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS),
+            Some(&"true".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_parse_false() {
+        let mut options = HashMap::new();
+        options.insert(
+            OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
+            "false".to_string(),
+        );
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(
+            db_options.new_table_config.enable_stable_row_ids,
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn test_stable_row_ids_config_not_set() {
+        let options = HashMap::new();
+
+        let db_options = ListingDatabaseOptions::parse_from_map(&options).unwrap();
+        assert_eq!(db_options.new_table_config.enable_stable_row_ids, None);
+    }
+
+    #[tokio::test]
+    async fn test_table_uri() {
+        let (_tempdir, mut db) = setup_database().await;
+
+        let mut pb = PathBuf::new();
+        pb.push(db.uri.clone());
+        pb.push("test.lance");
+
+        let expected = pb.to_str().unwrap();
+        let uri = db.table_uri("test").ok().unwrap();
+        assert_eq!(uri, expected);
+
+        // URI paths always use forward slashes, even on Windows. Using
+        // `Path::join` here used to produce `az://container/prefix\\test.lance`,
+        // which Azure treated as a different object from the table returned by
+        // `table_names` (https://github.com/lancedb/lancedb/issues/1072).
+        for base_uri in ["az://container/prefix", "az://container/prefix/"] {
+            db.uri = base_uri.to_string();
+            assert_eq!(
+                db.table_uri("test").unwrap(),
+                "az://container/prefix/test.lance"
+            );
+        }
+    }
+
+    /// Regression test for https://github.com/lancedb/lancedb/issues/2283.
+    ///
+    /// Object-store URIs must use `/` on every platform. In particular, joining
+    /// with `std::path::Path` used to insert a `\\` into Azure blob keys on
+    /// Windows.
+    #[tokio::test]
+    async fn test_table_uri_uses_forward_slashes_for_azure() {
+        let (_tempdir, mut db) = setup_database().await;
+        db.uri = "az://test/db/test".to_string();
+
+        let uri = db.table_uri("test").unwrap();
+
+        assert_eq!(uri, "az://test/db/test/test.lance");
+    }
+
+    /// Regression: connecting via a URL-style URI (which goes through
+    /// `url::Url::parse` and the `query_pairs_mut()` path) must not
+    /// append a trailing `?` to per-table URIs when the input URI has
+    /// no query string.
+    ///
+    /// Earlier, `query_pairs_mut().clear()` left the URL with
+    /// `query=Some("")`, which then propagated as a trailing `?` on
+    /// every table URI. Sub-path lookups against that URI (e.g. RTE
+    /// `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parsed as
+    /// `path=<base table>` + `query=/_mem_wal/...`, causing
+    /// `Dataset::write` to find the base table dataset and falsely
+    /// report `Dataset already exists`.
+    /// Mirrors the URL-mutation step from
+    /// [`ListingDatabase::connect_with_options`] so we can assert the
+    /// fix without going through filesystem setup (which is awkward
+    /// across platforms — see the `file://` test below).
+    fn capture_query_like_connect(input_uri: &str) -> Option<String> {
+        let mut url = url::Url::parse(input_uri).unwrap();
+        let mut filtered_queries = Vec::new();
+        for (key, value) in url.query_pairs() {
+            if key == ENGINE || key == MIRRORED_STORE {
+                continue;
+            }
+            filtered_queries.push((key.to_string(), value.to_string()));
+        }
+        url.query_pairs_mut().clear();
+        url.query_pairs_mut().extend_pairs(filtered_queries);
+        url.query().filter(|q| !q.is_empty()).map(|s| s.to_string())
+    }
+
+    #[test]
+    fn test_capture_query_treats_empty_as_none() {
+        // No query at all. With the bug, `query_pairs_mut()` left the
+        // URL with `query=Some("")` and we used to propagate that.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/"),
+            None,
+            "empty query after mutation must be treated as no query"
+        );
+
+        // Real query is propagated.
+        assert_eq!(
+            capture_query_like_connect("s3://bucket/prefix/?foo=bar"),
+            Some("foo=bar".to_string())
+        );
+
+        // lancedb-internal `engine=` is stripped; nothing remains, so
+        // query_string is None — not Some("").
+        assert_eq!(
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem", ENGINE)),
+            None
+        );
+
+        // Mixed: drop `engine=`, keep the rest.
+        let captured =
+            capture_query_like_connect(&format!("s3://bucket/prefix/?{}=mem&foo=bar", ENGINE));
+        assert_eq!(captured.as_deref(), Some("foo=bar"));
+    }
+
+    #[test]
+    fn test_storage_base_uri_strips_commit_engine_scheme() {
+        assert_eq!(
+            ListingDatabase::storage_base_uri("s3+ddb://bucket/prefix?ddbTableName=commit_table"),
+            "s3://bucket/prefix"
+        );
+
+        assert_eq!(
+            ListingDatabase::storage_base_uri("s3://bucket/prefix?foo=bar"),
+            "s3://bucket/prefix"
+        );
+
+        assert_eq!(
+            ListingDatabase::storage_base_uri("/tmp/lancedb"),
+            "/tmp/lancedb"
+        );
+    }
+
+    /// Regression: connecting via a URL-style URI (which goes through
+    /// `url::Url::parse` and the `query_pairs_mut()` path) must not
+    /// append a trailing `?` to per-table URIs when the input URI has
+    /// no query string. Sub-path lookups against such a URI (e.g.
+    /// RTE `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// as `path=<base table>` + `query=/_mem_wal/...`, causing
+    /// `Dataset::write` to find the base table dataset and falsely
+    /// report `Dataset already exists`.
+    ///
+    /// Skipped on Windows: `try_create_dir` does not understand
+    /// `file:///C:/…` paths so `connect_with_options` fails before
+    /// even reaching the URL-mutation logic. The pure URL-mutation
+    /// invariant is covered by
+    /// `test_capture_query_treats_empty_as_none` above, which runs
+    /// on all platforms.
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn test_table_uri_url_path_has_no_trailing_question_mark() {
+        let tempdir = tempdir().unwrap();
+        let uri = format!("file://{}", tempdir.path().to_str().unwrap());
+
+        let request = ConnectRequest {
+            uri: uri.clone(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.query_string, None,
+            "no input query → no captured query_string"
+        );
+
+        let table_uri = db.table_uri("test").unwrap();
+        assert!(
+            !table_uri.ends_with('?'),
+            "table_uri must not have a trailing `?`: {}",
+            table_uri
+        );
+        assert_eq!(table_uri, format!("{}/test.lance", uri));
+
+        // A real query string should still be propagated.
+        let with_query = format!("{}?foo=bar", uri);
+        let request_with_query = ConnectRequest {
+            uri: with_query,
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties: Default::default(),
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+        let db_with_query = ListingDatabase::connect_with_options(&request_with_query)
+            .await
+            .unwrap();
+        assert_eq!(db_with_query.query_string.as_deref(), Some("foo=bar"));
+        let table_uri = db_with_query.table_uri("test").unwrap();
+        assert_eq!(table_uri, format!("{}/test.lance?foo=bar", uri));
+    }
+
+    #[tokio::test]
+    async fn test_namespace_client() {
+        let (_tempdir, db) = setup_database().await;
+
+        // Create some tables first
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "table1".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema.clone())) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        db.create_table(CreateTableRequest {
+            name: "table2".to_string(),
+            namespace_path: vec![],
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        // Get the namespace client
+        let namespace_client = db.namespace_client().await;
+        assert!(namespace_client.is_ok());
+        let namespace_client = namespace_client.unwrap();
+
+        // Verify the namespace client can list the tables we created
+        // Use empty vec for root namespace
+        let list_result = namespace_client
+            .list_tables(lance_namespace::models::ListTablesRequest {
+                id: Some(vec![]),
+                ..Default::default()
+            })
+            .await;
+        assert!(
+            list_result.is_ok(),
+            "list_tables failed: {:?}",
+            list_result.err()
+        );
+
+        let tables = list_result.unwrap().tables;
+        assert_eq!(tables.len(), 2);
+        assert!(tables.contains(&"table1".to_string()));
+        assert!(tables.contains(&"table2".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_namespace_operations() {
+        let (_tempdir, db) = setup_database().await;
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string(), "child".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let root_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                id: Some(vec![]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(root_namespaces.namespaces.contains(&"parent".to_string()));
+
+        let child_namespaces = db
+            .list_namespaces(ListNamespacesRequest {
+                id: Some(vec!["parent".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(child_namespaces.namespaces.contains(&"child".to_string()));
+
+        db.describe_namespace(DescribeNamespaceRequest {
+            id: Some(vec!["parent".to_string(), "child".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(not(windows))] // TODO: support Windows once directory namespace-backed listing DB tests are supported.
+    async fn test_listing_database_with_namespace_client_properties() {
+        let tempdir = tempdir().unwrap();
+        let uri = tempdir.path().to_str().unwrap();
+
+        let mut namespace_client_properties = HashMap::new();
+        namespace_client_properties.insert(
+            "table_version_tracking_enabled".to_string(),
+            "true".to_string(),
+        );
+        namespace_client_properties.insert("manifest_enabled".to_string(), "true".to_string());
+
+        let request = ConnectRequest {
+            uri: uri.to_string(),
+            #[cfg(feature = "remote")]
+            client_config: Default::default(),
+            options: Default::default(),
+            namespace_client_properties,
+            manifest_enabled: false,
+            read_consistency_interval: None,
+            session: None,
+        };
+
+        let db = ListingDatabase::connect_with_options(&request)
+            .await
+            .unwrap();
+        let namespace_path = vec!["test_ns".to_string()];
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "managed_table".to_string(),
+            namespace_path: namespace_path.clone(),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let namespace_client = db.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(vec!["test_ns".to_string(), "managed_table".to_string()]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(describe.managed_versioning, Some(true));
+    }
+
+    #[tokio::test]
+    async fn test_listing_database_nested_namespace_table_ops() {
+        let (_tempdir, db) = setup_database().await;
+        let namespace_path = vec!["parent".to_string(), "child".to_string()];
+
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(vec!["parent".to_string()]),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        db.create_namespace(CreateNamespaceRequest {
+            id: Some(namespace_path.clone()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        db.create_table(CreateTableRequest {
+            name: "nested_table".to_string(),
+            namespace_path: namespace_path.clone(),
+            data: Box::new(RecordBatch::new_empty(schema)) as Box<dyn Scannable>,
+            mode: CreateTableMode::Create,
+            write_options: Default::default(),
+            location: None,
+            namespace_client: None,
+        })
+        .await
+        .unwrap();
+
+        let namespace_client = db.namespace_client().await.unwrap();
+        let describe = namespace_client
+            .describe_table(lance_namespace::models::DescribeTableRequest {
+                id: Some(vec![
+                    "parent".to_string(),
+                    "child".to_string(),
+                    "nested_table".to_string(),
+                ]),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(describe.location.is_some());
+
+        let table = db
+            .open_table(OpenTableRequest {
+                name: "nested_table".to_string(),
+                namespace_path: namespace_path.clone(),
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table.name(), "nested_table");
+
+        #[allow(deprecated)]
+        let table_names = db
+            .table_names(TableNamesRequest {
+                namespace_path: namespace_path.clone(),
+                start_after: None,
+                limit: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(table_names, vec!["nested_table".to_string()]);
+
+        let list_tables = db
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path.clone()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(list_tables.tables, vec!["nested_table".to_string()]);
+
+        db.drop_table("nested_table", &namespace_path)
+            .await
+            .unwrap();
+
+        let post_drop = db
+            .list_tables(ListTablesRequest {
+                id: Some(namespace_path),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+        assert!(post_drop.tables.is_empty());
     }
 }

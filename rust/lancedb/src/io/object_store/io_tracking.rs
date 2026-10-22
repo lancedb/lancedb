@@ -10,8 +10,9 @@ use bytes::Bytes;
 use futures::stream::BoxStream;
 use lance::io::WrappingObjectStore;
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as OSResult, UploadPart,
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result as OSResult,
+    UploadPart, list::PaginatedListStore, path::Path,
 };
 
 #[derive(Debug, Default)]
@@ -50,11 +51,19 @@ impl IoStatsHolder {
 }
 
 impl WrappingObjectStore for IoStatsHolder {
-    fn wrap(&self, target: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
+    fn wrap(&self, _store_prefix: &str, target: Arc<dyn ObjectStore>) -> Arc<dyn ObjectStore> {
         Arc::new(IoTrackingStore {
             target,
             stats: self.0.clone(),
         })
+    }
+
+    fn wrap_paginated(
+        &self,
+        _store_prefix: &str,
+        original: Arc<dyn PaginatedListStore>,
+    ) -> Option<Arc<dyn PaginatedListStore>> {
+        Some(original)
     }
 }
 
@@ -65,13 +74,13 @@ impl IoTrackingStore {
     }
 
     fn record_read(&self, num_bytes: u64) {
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.read_iops += 1;
         stats.read_bytes += num_bytes;
     }
 
     fn record_write(&self, num_bytes: u64) {
-        let mut stats = self.stats.lock().unwrap();
+        let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
         stats.write_iops += 1;
         stats.write_bytes += num_bytes;
     }
@@ -80,11 +89,6 @@ impl IoTrackingStore {
 #[async_trait::async_trait]
 #[deny(clippy::missing_trait_methods)]
 impl ObjectStore for IoTrackingStore {
-    async fn put(&self, location: &Path, bytes: PutPayload) -> OSResult<PutResult> {
-        self.record_write(bytes.content_length() as u64);
-        self.target.put(location, bytes).await
-    }
-
     async fn put_opts(
         &self,
         location: &Path,
@@ -95,18 +99,10 @@ impl ObjectStore for IoTrackingStore {
         self.target.put_opts(location, bytes, opts).await
     }
 
-    async fn put_multipart(&self, location: &Path) -> OSResult<Box<dyn MultipartUpload>> {
-        let target = self.target.put_multipart(location).await?;
-        Ok(Box::new(IoTrackingMultipartUpload {
-            target,
-            stats: self.stats.clone(),
-        }))
-    }
-
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        opts: PutMultipartOpts,
+        opts: PutMultipartOptions,
     ) -> OSResult<Box<dyn MultipartUpload>> {
         let target = self.target.put_multipart_opts(location, opts).await?;
         Ok(Box::new(IoTrackingMultipartUpload {
@@ -115,28 +111,11 @@ impl ObjectStore for IoTrackingStore {
         }))
     }
 
-    async fn get(&self, location: &Path) -> OSResult<GetResult> {
-        let result = self.target.get(location).await;
-        if let Ok(result) = &result {
-            let num_bytes = result.range.end - result.range.start;
-            self.record_read(num_bytes);
-        }
-        result
-    }
-
     async fn get_opts(&self, location: &Path, options: GetOptions) -> OSResult<GetResult> {
         let result = self.target.get_opts(location, options).await;
         if let Ok(result) = &result {
             let num_bytes = result.range.end - result.range.start;
             self.record_read(num_bytes);
-        }
-        result
-    }
-
-    async fn get_range(&self, location: &Path, range: std::ops::Range<u64>) -> OSResult<Bytes> {
-        let result = self.target.get_range(location, range).await;
-        if let Ok(result) = &result {
-            self.record_read(result.len() as u64);
         }
         result
     }
@@ -153,20 +132,11 @@ impl ObjectStore for IoTrackingStore {
         result
     }
 
-    async fn head(&self, location: &Path) -> OSResult<ObjectMeta> {
-        self.record_read(0);
-        self.target.head(location).await
-    }
-
-    async fn delete(&self, location: &Path) -> OSResult<()> {
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, OSResult<Path>>,
+    ) -> BoxStream<'static, OSResult<Path>> {
         self.record_write(0);
-        self.target.delete(location).await
-    }
-
-    fn delete_stream<'a>(
-        &'a self,
-        locations: BoxStream<'a, OSResult<Path>>,
-    ) -> BoxStream<'a, OSResult<Path>> {
         self.target.delete_stream(locations)
     }
 
@@ -189,24 +159,14 @@ impl ObjectStore for IoTrackingStore {
         self.target.list_with_delimiter(prefix).await
     }
 
-    async fn copy(&self, from: &Path, to: &Path) -> OSResult<()> {
+    async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> OSResult<()> {
         self.record_write(0);
-        self.target.copy(from, to).await
+        self.target.copy_opts(from, to, options).await
     }
 
-    async fn rename(&self, from: &Path, to: &Path) -> OSResult<()> {
+    async fn rename_opts(&self, from: &Path, to: &Path, options: RenameOptions) -> OSResult<()> {
         self.record_write(0);
-        self.target.rename(from, to).await
-    }
-
-    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> OSResult<()> {
-        self.record_write(0);
-        self.target.rename_if_not_exists(from, to).await
-    }
-
-    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> OSResult<()> {
-        self.record_write(0);
-        self.target.copy_if_not_exists(from, to).await
+        self.target.rename_opts(from, to, options).await
     }
 }
 
@@ -228,10 +188,63 @@ impl MultipartUpload for IoTrackingMultipartUpload {
 
     fn put_part(&mut self, payload: PutPayload) -> UploadPart {
         {
-            let mut stats = self.stats.lock().unwrap();
+            let mut stats = self.stats.lock().unwrap_or_else(|e| e.into_inner());
             stats.write_iops += 1;
             stats.write_bytes += payload.content_length() as u64;
         }
         self.target.put_part(payload)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Helper: poison a Mutex<IoStats> by panicking while holding the lock.
+    fn poison_stats(stats: &Arc<Mutex<IoStats>>) {
+        let stats_clone = stats.clone();
+        let handle = std::thread::spawn(move || {
+            let _guard = stats_clone.lock().unwrap();
+            panic!("intentional panic to poison stats mutex");
+        });
+        let _ = handle.join();
+        assert!(stats.lock().is_err(), "mutex should be poisoned");
+    }
+
+    #[test]
+    fn test_record_read_recovers_from_poisoned_lock() {
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target: Arc::new(object_store::memory::InMemory::new()),
+            stats: stats.clone(),
+        };
+
+        poison_stats(&stats);
+
+        // record_read should not panic
+        store.record_read(1024);
+
+        // Verify the stats were updated despite poisoning
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.read_iops, 1);
+        assert_eq!(s.read_bytes, 1024);
+    }
+
+    #[test]
+    fn test_record_write_recovers_from_poisoned_lock() {
+        let stats = Arc::new(Mutex::new(IoStats::default()));
+        let store = IoTrackingStore {
+            target: Arc::new(object_store::memory::InMemory::new()),
+            stats: stats.clone(),
+        };
+
+        poison_stats(&stats);
+
+        // record_write should not panic
+        store.record_write(2048);
+
+        let s = stats.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(s.write_iops, 1);
+        assert_eq!(s.write_bytes, 2048);
     }
 }

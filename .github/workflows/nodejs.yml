@@ -6,18 +6,23 @@ on:
       - main
   pull_request:
     paths:
+      - Cargo.toml
+      - Cargo.lock
+      - rust-toolchain.toml
       - nodejs/**
+      - rust/**
+      - docs/src/js/**
       - .github/workflows/nodejs.yml
       - docker-compose.yml
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  # Disable full debug symbol generation to speed up CI build and keep memory down
-  # "1" means line tables only, which is useful for panic tracebacks.
-  RUSTFLAGS: "-C debuginfo=1"
   RUST_BACKTRACE: "1"
 
 jobs:
@@ -33,120 +38,238 @@ jobs:
       CC: gcc-12
       CXX: g++-12
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: actions/setup-node@v3
+    - uses: pnpm/action-setup@v6
       with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
-    - uses: Swatinem/rust-cache@v2
+        version: 11.1.1
+    - uses: actions/setup-node@v6
+      with:
+        # Build on a supported LTS; the matrix job below covers every
+        # Node version the library claims to support.
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
+    - uses: actions-rust-lang/setup-rust-toolchain@v1
+      with:
+        components: rustfmt, clippy
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
-    - uses: actions-rust-lang/setup-rust-toolchain@v1
+    - uses: Swatinem/rust-cache@v2
       with:
-        components: rustfmt, clippy
-    - name: Lint
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - name: Format Rust
+      run: cargo fmt --all -- --check
+    - name: Lint Rust
+      run: cargo clippy --profile ci --all --all-features -- -D warnings
+    - name: Lint Typescript
       run: |
-        cargo fmt --all -- --check
-        cargo clippy --all --all-features -- -D warnings
-        npm ci
-        npm run lint-ci
+        pnpm install --frozen-lockfile
+        pnpm lint-ci
     - name: Lint examples
       working-directory: nodejs/examples
-      run: npm ci && npm run lint-ci
+      # The `@lancedb/lancedb` dep points at file:../dist; pnpm errors if
+      # that dir is missing, so create an empty one for lint-only runs.
+      run: mkdir -p ../dist && pnpm install --frozen-lockfile && pnpm lint-ci
   linux:
     name: Linux (NodeJS ${{ matrix.node-version }})
     timeout-minutes: 30
     strategy:
       matrix:
-        node-version: [ "18", "20" ]
+        node-version: [ "22", "24", "26" ]
     runs-on: "ubuntu-22.04"
     defaults:
       run:
         shell: bash
         working-directory: nodejs
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: actions/setup-node@v3
+    - uses: pnpm/action-setup@v6
       with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
+        version: 11.1.1
+    - uses: actions/setup-node@v6
+      name: Setup Node.js 24 for build
+      with:
+        # Build and install once on a fixed version so the generated docs
+        # are identical across matrix legs; the tests below then run on each
+        # supported Node version.
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
+      with:
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
         sudo apt update
         sudo apt install -y protobuf-compiler libssl-dev
-        npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
-        npm run build
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+        pnpm tsc
+    - name: Setup examples
+      working-directory: nodejs/examples
+      run: pnpm install --frozen-lockfile
+    - name: Check docs
+      run: |
+        # We run this as part of the job because the binary needs to be built
+        # first to export the types of the native code.
+        set -e
+        # `pnpm docs` would invoke pnpm's built-in `docs` command, not
+        # the script — use `pnpm run docs`.
+        pnpm run docs
+        if ! git diff --exit-code -- ../ ':(exclude)Cargo.lock'; then
+          echo "Docs need to be updated"
+          echo "Run 'pnpm run docs', fix any warnings, and commit the changes."
+          exit 1
+        fi
+    - uses: actions/setup-node@v6
+      name: Setup Node.js ${{ matrix.node-version }} for test
+      with:
+        node-version: ${{ matrix.node-version }}
     - name: Setup localstack
       working-directory: .
       run: docker compose up --detach --wait
     - name: Test
       env:
         S3_TEST: "1"
-      run: npm run test
-    - name: Setup examples
-      working-directory: nodejs/examples
-      run: npm ci
+        # Newer @smithy/core uses dynamic ESM imports.
+        NODE_OPTIONS: "--experimental-vm-modules"
+      # Invoke the installed jest binary directly; the pnpm shim is set up
+      # against the build-phase Node, not the version selected above.
+      run: node_modules/.bin/jest --verbose
     - name: Test examples
       working-directory: ./
       env:
         OPENAI_API_KEY: test
         OPENAI_BASE_URL: http://0.0.0.0:8000
+        NODE_OPTIONS: "--experimental-vm-modules"
       run: |
         python ci/mock_openai.py &
         cd nodejs/examples
-        npm test
-    - name: Check docs
-      run: |
-        # We run this as part of the job because the binary needs to be built
-        # first to export the types of the native code.
-        set -e
-        npm ci
-        npm run docs
-        if ! git diff --exit-code -- . ':(exclude)Cargo.lock'; then
-          echo "Docs need to be updated"
-          echo "Run 'npm run docs', fix any warnings, and commit the changes."
-          exit 1
-        fi
-  macos:
+        node_modules/.bin/jest --testEnvironment jest-environment-node-single-context --verbose
+  arrow-compat:
+    # The main jobs resolve `apache-arrow` to the version pinned in
+    # devDependencies (the newest supported release). This job re-runs the
+    # suite with the library itself running on each older Arrow release the
+    # peer range still accepts, which is what a consumer on that version gets.
+    name: Linux (Arrow ${{ matrix.arrow-version }})
     timeout-minutes: 30
-    runs-on: "macos-14"
+    strategy:
+      matrix:
+        arrow-version: [ "19.0.1", "20.0.0" ]
+    runs-on: "ubuntu-22.04"
     defaults:
       run:
         shell: bash
         working-directory: nodejs
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v6
       with:
         fetch-depth: 0
         lfs: true
-    - uses: actions/setup-node@v3
+    - uses: pnpm/action-setup@v6
       with:
-        node-version: 20
-        cache: 'npm'
-        cache-dependency-path: nodejs/package-lock.json
+        version: 11.1.1
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
     - uses: Swatinem/rust-cache@v2
+      with:
+        # Same crate, profile and target as the `linux` job above, so reuse
+        # its cache: rust-cache keys on the job id by default, and this job
+        # would otherwise start cold on every run until it had saved its own.
+        shared-key: linux
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+    - name: Install dependencies
+      run: |
+        sudo apt update
+        sudo apt install -y protobuf-compiler libssl-dev
+    - name: Build
+      run: |
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+    - name: Resolve apache-arrow to ${{ matrix.arrow-version }}
+      run: |
+        # The older releases are already installed as the `apache-arrow-NN`
+        # test aliases. With pnpm's hoisted linker each alias is a complete,
+        # self-contained directory, so swap it in for the library's own
+        # `apache-arrow` instead of running a second install, which has been
+        # seen to hang after printing "Done" in CI. A copy, not a symlink: the
+        # cross-version tests rely on the alias being a separate module
+        # instance from the one the library loads.
+        major="$(echo '${{ matrix.arrow-version }}' | cut -d. -f1)"
+        mv node_modules/apache-arrow node_modules/apache-arrow.pinned
+        cp -R "node_modules/apache-arrow-${major}" node_modules/apache-arrow
+        # `require("apache-arrow/package.json")` is blocked by the package's exports map.
+        node -p "'apache-arrow resolved to ' + JSON.parse(require('fs').readFileSync('node_modules/apache-arrow/package.json')).version"
+        pnpm tsc
+    - name: Test
+      env:
+        # Newer @smithy/core uses dynamic ESM imports.
+        NODE_OPTIONS: "--experimental-vm-modules"
+      run: node_modules/.bin/jest --verbose
+  macos:
+    timeout-minutes: 30
+    # macos-15 ships a newer linker; the older macos-14 linker fails to insert
+    # branch islands when the debug cdylib's __text section exceeds the 128 MB
+    # AArch64 B/BL branch range.
+    runs-on: "macos-15"
+    defaults:
+      run:
+        shell: bash
+        working-directory: nodejs
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+        lfs: true
+    - uses: pnpm/action-setup@v6
+      with:
+        version: 11.1.1
+    - uses: actions/setup-node@v6
+      with:
+        # pnpm 11 requires Node >= 22.13.
+        node-version: 24
+        cache: 'pnpm'
+        cache-dependency-path: nodejs/pnpm-lock.yaml
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+      with:
+        # Restore everywhere, but only save from main. Per-PR saves are
+        # unreadable outside their own branch anyway, since GitHub scopes
+        # caches to the creating ref.
+        save-if: ${{ github.ref == 'refs/heads/main' }}
     - name: Install dependencies
       run: |
         brew install protobuf
-        npm install -g @napi-rs/cli
     - name: Build
       run: |
-        npm ci
-        npm run build
+        pnpm install --frozen-lockfile
+        # No `--` separator: pnpm forwards it literally, which would
+        # make napi-rs treat `--profile ci` as a cargo passthrough arg.
+        pnpm build:debug --profile ci
+        pnpm tsc
     - name: Test
       run: |
-        npm run test
+        pnpm test --runInBand

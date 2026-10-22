@@ -1,0 +1,270 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: Copyright The LanceDB Authors
+
+//! PyO3 bindings for the LanceDB expression builder API.
+//!
+//! This module exposes [`PyExpr`] and helper free functions so Python can
+//! build type-safe filter / projection expressions that map directly to
+//! DataFusion [`Expr`] nodes, bypassing SQL string parsing.
+
+use std::ops::{Add, Div, Mul, Not, Sub};
+
+use arrow::{datatypes::DataType, pyarrow::PyArrowType};
+use datafusion_common::ScalarValue;
+use lancedb::expr::{
+    DfExpr, col as ldb_col, contains, expr_cast, is_in, lit as df_lit, lower, upper,
+};
+use pyo3::types::{PyBytes, PyDate, PyDateTime};
+use pyo3::{Bound, PyAny, PyResult, exceptions::PyValueError, prelude::*, pyfunction};
+
+/// A type-safe DataFusion expression.
+///
+/// Instances are constructed via the free functions [`expr_col`] and
+/// [`expr_lit`] and combined with the methods on this struct.  On the Python
+/// side a thin wrapper class (`lancedb.expr.Expr`) delegates to these methods
+/// and adds Python operator overloads.
+#[pyclass(name = "PyExpr", from_py_object)]
+#[derive(Clone)]
+pub struct PyExpr(pub DfExpr);
+
+#[pymethods]
+impl PyExpr {
+    // ── comparisons ──────────────────────────────────────────────────────────
+
+    fn eq(&self, other: &Self) -> Self {
+        Self(self.0.clone().eq(other.0.clone()))
+    }
+
+    fn ne(&self, other: &Self) -> Self {
+        Self(self.0.clone().not_eq(other.0.clone()))
+    }
+
+    fn lt(&self, other: &Self) -> Self {
+        Self(self.0.clone().lt(other.0.clone()))
+    }
+
+    fn lte(&self, other: &Self) -> Self {
+        Self(self.0.clone().lt_eq(other.0.clone()))
+    }
+
+    fn gt(&self, other: &Self) -> Self {
+        Self(self.0.clone().gt(other.0.clone()))
+    }
+
+    fn gte(&self, other: &Self) -> Self {
+        Self(self.0.clone().gt_eq(other.0.clone()))
+    }
+
+    // ── logical ──────────────────────────────────────────────────────────────
+
+    fn and_(&self, other: &Self) -> Self {
+        Self(self.0.clone().and(other.0.clone()))
+    }
+
+    fn or_(&self, other: &Self) -> Self {
+        Self(self.0.clone().or(other.0.clone()))
+    }
+
+    /// Logical NOT.
+    fn not_(&self) -> Self {
+        Self(self.0.clone().not())
+    }
+
+    // ── arithmetic ───────────────────────────────────────────────────────────
+
+    /// Add expressions.
+    fn add(&self, other: &Self) -> Self {
+        Self(self.0.clone().add(other.0.clone()))
+    }
+
+    /// Subtract expressions.
+    fn sub(&self, other: &Self) -> Self {
+        Self(self.0.clone().sub(other.0.clone()))
+    }
+
+    /// Multiply expressions.
+    fn mul(&self, other: &Self) -> Self {
+        Self(self.0.clone().mul(other.0.clone()))
+    }
+
+    /// Divide expressions.
+    fn div(&self, other: &Self) -> Self {
+        Self(self.0.clone().div(other.0.clone()))
+    }
+
+    // ── string functions ─────────────────────────────────────────────────────
+
+    /// Convert string column to lowercase.
+    fn lower(&self) -> Self {
+        Self(lower(self.0.clone()))
+    }
+
+    /// Convert string column to uppercase.
+    fn upper(&self) -> Self {
+        Self(upper(self.0.clone()))
+    }
+
+    /// Test whether the string contains `substr`.
+    fn contains(&self, substr: &Self) -> Self {
+        Self(contains(self.0.clone(), substr.0.clone()))
+    }
+
+    // ── membership ───────────────────────────────────────────────────────────
+
+    /// Return true where the value is one of the given expressions (SQL ``IN``).
+    fn isin(&self, list: Vec<Self>) -> Self {
+        let items: Vec<DfExpr> = list.into_iter().map(|e| e.0).collect();
+        Self(is_in(self.0.clone(), items))
+    }
+
+    // ── type cast ────────────────────────────────────────────────────────────
+
+    /// Cast the expression to `data_type`.
+    ///
+    /// `data_type` must be a PyArrow `DataType` (e.g. `pa.int32()`).
+    /// On the Python side, `lancedb.expr.Expr.cast` also accepts type name
+    /// strings via `pa.lib.ensure_type` before forwarding here.
+    fn cast(&self, data_type: PyArrowType<DataType>) -> Self {
+        Self(expr_cast(self.0.clone(), data_type.0))
+    }
+
+    // ── utilities ────────────────────────────────────────────────────────────
+
+    /// Return the referenced column name for a bare column expression.
+    fn column_name(&self) -> Option<String> {
+        match &self.0 {
+            DfExpr::Column(column) if column.relation.is_none() => Some(column.name.clone()),
+            _ => None,
+        }
+    }
+
+    /// Render the expression as a SQL string (useful for debugging).
+    fn to_sql(&self) -> PyResult<String> {
+        lancedb::expr::expr_to_sql_string(&self.0).map_err(|e| PyValueError::new_err(e.to_string()))
+    }
+
+    fn __repr__(&self) -> PyResult<String> {
+        let sql =
+            lancedb::expr::expr_to_sql_string(&self.0).unwrap_or_else(|_| "<expr>".to_string());
+        Ok(format!("PyExpr({})", sql))
+    }
+}
+
+// ── free functions ────────────────────────────────────────────────────────────
+
+/// Create a column reference expression.
+///
+/// The column name is preserved exactly as given (case-sensitive), so
+/// `col("firstName")` correctly references a field named `firstName`.
+#[pyfunction]
+pub fn expr_col(name: &str) -> PyExpr {
+    PyExpr(ldb_col(name))
+}
+
+/// Create a literal value expression.
+///
+/// Supported Python types: `bool`, `int`, `float`, `str`, `bytes`, `date`,
+/// `datetime`, `Decimal`.
+#[pyfunction]
+pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
+    // bool must be checked before int because bool is a subclass of int in Python
+    if let Ok(b) = value.extract::<bool>() {
+        return Ok(PyExpr(df_lit(b)));
+    }
+    if let Ok(i) = value.extract::<i64>() {
+        return Ok(PyExpr(df_lit(i)));
+    }
+    // Decimal must be checked before f64: Python's Decimal implements __float__,
+    // so value.extract::<f64>() would succeed and silently truncate the value to
+    // f64, losing precision. Build a Decimal128 scalar to preserve it instead.
+    if value.get_type().name()? == "Decimal" {
+        let s = value.call_method0("__str__")?.extract::<String>()?;
+        // Parse the decimal string into an i128 value, precision, and scale.
+        let (val, precision, scale) = parse_decimal(&s)?;
+        return Ok(PyExpr(df_lit(ScalarValue::Decimal128(
+            Some(val),
+            precision,
+            scale,
+        ))));
+    }
+    if let Ok(f) = value.extract::<f64>() {
+        return Ok(PyExpr(df_lit(f)));
+    }
+    if let Ok(s) = value.extract::<String>() {
+        return Ok(PyExpr(df_lit(s)));
+    }
+    if value.is_instance_of::<PyBytes>() {
+        let bytes = value.extract::<Vec<u8>>()?;
+        return Ok(PyExpr(df_lit(ScalarValue::Binary(Some(bytes)))));
+    }
+
+    // datetime.datetime is a subclass of datetime.date, so it must be checked first.
+    //
+    // Python's datetime.timestamp() treats *naive* datetimes as local wall time.
+    // PyArrow (and therefore Lance table storage) encodes naive timestamps as
+    // UTC wall-clock microseconds. Using .timestamp() for naive values therefore
+    // shifts the literal by the local UTC offset on non-UTC machines, so
+    // `col("ts") == lit(naive_dt)` fails against a table that holds the same
+    // naive value. Fix: treat naive datetimes as UTC wall clock (match Arrow);
+    // keep aware datetimes on the real .timestamp() path (correct epoch).
+    if let Ok(dt) = value.cast::<PyDateTime>() {
+        let ts: f64 = if dt.getattr("tzinfo")?.is_none() {
+            // Force UTC interpretation of the naive wall clock.
+            let utc = pyo3::types::PyModule::import(value.py(), "datetime")?
+                .getattr("timezone")?
+                .getattr("utc")?;
+            let kwargs = pyo3::types::PyDict::new(value.py());
+            kwargs.set_item("tzinfo", utc)?;
+            let aware = dt.call_method("replace", (), Some(&kwargs))?;
+            aware.call_method0("timestamp")?.extract()?
+        } else {
+            dt.call_method0("timestamp")?.extract()?
+        };
+        let micros = (ts * 1_000_000.0).round() as i64;
+        return Ok(PyExpr(df_lit(ScalarValue::TimestampMicrosecond(
+            Some(micros),
+            None,
+        ))));
+    }
+    if let Ok(d) = value.cast::<PyDate>() {
+        let ordinal: i32 = d.call_method0("toordinal")?.extract()?;
+        let days = ordinal - 719163; // Unix epoch is 1970-01-01
+        return Ok(PyExpr(df_lit(ScalarValue::Date32(Some(days)))));
+    }
+
+    Err(PyValueError::new_err(format!(
+        "unsupported literal type: {}. Supported: bool, int, float, str, bytes, date, datetime, Decimal",
+        value.get_type().name()?
+    )))
+}
+
+fn parse_decimal(s: &str) -> PyResult<(i128, u8, i8)> {
+    let s = s.trim();
+    let dot_pos = s.find('.');
+    let scale = if let Some(pos) = dot_pos {
+        (s.len() - pos - 1) as i8
+    } else {
+        0
+    };
+
+    let digits = s.replace('.', "");
+    let val = digits
+        .parse::<i128>()
+        .map_err(|e| PyValueError::new_err(format!("failed to parse decimal digits: {}", e)))?;
+
+    // Precision is total number of digits
+    let precision = digits.trim_start_matches('-').len() as u8;
+
+    Ok((val, precision, scale))
+}
+
+/// Call an arbitrary registered SQL function by name.
+///
+/// See `lancedb::expr::func` for the list of supported function names.
+#[pyfunction]
+pub fn expr_func(name: &str, args: Vec<PyExpr>) -> PyResult<PyExpr> {
+    let df_args: Vec<DfExpr> = args.into_iter().map(|e| e.0).collect();
+    lancedb::expr::func(name, df_args)
+        .map(PyExpr)
+        .map_err(|e| PyValueError::new_err(e.to_string()))
+}

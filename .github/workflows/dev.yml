@@ -8,6 +8,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   labeler:
     permissions:
@@ -15,7 +18,7 @@ jobs:
     name: Label PR
     runs-on: ubuntu-latest
     steps:
-      - uses: srvaroa/labeler@master
+      - uses: srvaroa/labeler@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   commitlint:
@@ -24,14 +27,16 @@ jobs:
     name: Verify PR title / description conforms to semantic-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/setup-node@v3
+      - uses: actions/setup-node@v6
         with:
-          node-version: "18"
+          node-version: "24"
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 11.1.1
       # These rules are disabled because Github will always ensure there
       # is a blank line between the title and the body and Github will
       # word wrap the description field to ensure a reasonable max line
       # length.
-      - run: npm install @commitlint/config-conventional
       - run: >
           echo 'module.exports = {
             "rules": {
@@ -40,18 +45,22 @@ jobs:
               "body-leading-blank": [0, "always"]
             }
           }' > .commitlintrc.js
-      - run: npx commitlint --extends @commitlint/config-conventional --verbose <<< $COMMIT_MSG
+      - run: >
+          pnpm dlx
+          --package @commitlint/cli@21.2.2
+          --package @commitlint/config-conventional@21.2.2
+          commitlint --extends @commitlint/config-conventional --verbose <<< $COMMIT_MSG
         env:
           COMMIT_MSG: >
             ${{ github.event.pull_request.title }}
 
             ${{ github.event.pull_request.body }}
       - if: failure()
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           script: |
             const message = `**ACTION NEEDED**
-              
+
               Lance follows the [Conventional Commits specification](https://www.conventionalcommits.org/en/v1.0.0/) for release automation.
 
               The PR title and description are used as the merge commit message.\
