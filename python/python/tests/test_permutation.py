@@ -741,6 +741,13 @@ def test_rename_column(some_permutation: Permutation):
         some_permutation.rename_column("non_existent", "new_value")
 
 
+def test_rename_column_keeps_position(some_permutation: Permutation):
+    renamed = some_permutation.rename_column("id", "new_id")
+    assert renamed.schema == pa.schema([("new_id", pa.int64()), ("value", pa.int64())])
+    batch = renamed.with_format("arrow").__getitems__([0])
+    assert batch.schema.names == ["new_id", "value"]
+
+
 def test_rename_columns(some_permutation: Permutation):
     assert some_permutation.rename_columns({"value": "new_value"}).schema == pa.schema(
         [("id", pa.int64()), ("new_value", pa.int64())]
