@@ -82,6 +82,7 @@ if TYPE_CHECKING:
 
 T = TypeVar("T", bound="LanceModel")
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+_SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
 # Number of rows a hybrid query returns when no limit was set on it. This
 # mirrors the default the Rust query builder applies to its sub-queries.
@@ -126,6 +127,11 @@ def _blob_bytes_without_snapshot_error() -> NotImplementedError:
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
+
+
+def _is_remote_query_table(table: Any) -> bool:
+    async_table = getattr(table, "_table", table)
+    return not async_table._inner._is_native()
 
 
 def _query_needs_lance_scanner(builder: Any) -> bool:
@@ -345,6 +351,28 @@ def _finish_plain_scan_pandas(
     if strip_auto_row_id and "_rowid" in df.columns:
         return df.drop(columns=["_rowid"])
     return df
+
+
+def _finish_remote_pandas(
+    tbl: pa.Table,
+    *,
+    blob_mode: BlobMode,
+    blob_paths: Iterable[str],
+    flatten: Optional[Union[int, bool]],
+    **kwargs,
+) -> pd.DataFrame:
+    # A live remote table can be replaced between query and blob fetch.
+    # Row ids and version numbers do not identify the producing table.
+    if not blob_column_paths(tbl.schema):
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    if blob_mode == "descriptions":
+        tbl = strip_auto_row_ids(tbl, blob_paths)
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
+    raise NotImplementedError(
+        f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
+        "blob columns without a stable table snapshot; "
+        "use blob_mode='descriptions'"
+    )
 
 
 async def _finish_plain_scan_pandas_async(
@@ -860,10 +888,10 @@ class Query(pydantic.BaseModel):
     # if true, will only search the indexed data
     fast_search: Optional[bool] = None
 
-    # MemWAL LSM read routing: None auto-routes when the table carries a write
+    # RTE LSM read routing: None auto-routes when the table carries a write
     # spec, True forces the LSM scanner (errors without a spec), False reads the
     # base table only
-    use_lsm: Optional[bool] = None
+    use_rte: Optional[bool] = None
 
     # size of the nearest neighbor list maintained during HNSW search
     ef: Optional[int] = None
@@ -883,9 +911,9 @@ class Query(pydantic.BaseModel):
         query.full_text_query = req.full_text_search
         query.columns = req.select
         query.with_row_id = req.with_row_id
-        # use_lsm is a genuine tri-state (None / True / False); preserve it as-is
+        # use_rte is a genuine tri-state (None / True / False); preserve it as-is
         # so a round-tripped query keeps an explicit False.
-        query.use_lsm = req.use_lsm
+        query.use_rte = req.use_rte
         query.vector_column = req.column
         query.vector = req.query_vector
         query.distance_type = req.distance_type
@@ -997,10 +1025,12 @@ class LanceQueryBuilder(ABC):
                 fast_search=fast_search,
             )
 
-        if isinstance(query, list):
+        if isinstance(query, (list, tuple)):
             query = np.array(query, dtype=np.float32)
         elif isinstance(query, np.ndarray):
             query = query.astype(np.float32)
+        elif isinstance(query, (pa.Array, pa.ChunkedArray)):
+            query = np.array(query.to_pylist(), dtype=np.float32)
         else:
             raise TypeError(f"Unsupported query type: {type(query)}")
 
@@ -1022,7 +1052,7 @@ class LanceQueryBuilder(ABC):
             query = cls._query_to_vector(table, query, vector_column_name)
             return query, query_type
         elif query_type == "auto":
-            if isinstance(query, (list, np.ndarray)):
+            if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
                 return query, "vector"
             else:
                 conf = table.embedding_functions.get(vector_column_name)
@@ -1038,7 +1068,7 @@ class LanceQueryBuilder(ABC):
 
     @classmethod
     def _query_to_vector(cls, table, query, vector_column_name):
-        if isinstance(query, (list, np.ndarray)):
+        if isinstance(query, _SYNC_VECTOR_QUERY_TYPES):
             return query
         conf = table.embedding_functions.get(vector_column_name)
         if conf is not None:
@@ -1058,7 +1088,7 @@ class LanceQueryBuilder(ABC):
         self._with_row_address = None
         self._fragments = None
         self._fragment_ids = None
-        self._use_lsm = None
+        self._use_rte = None
         self._vector = None
         self._text = None
         self._ef = None
@@ -1107,34 +1137,50 @@ class LanceQueryBuilder(ABC):
             The maximum time to wait for the query to complete.
             If None, wait indefinitely.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. ``"lazy"`` returns
-            :class:`~lancedb._blob.BlobFile` handles and needs a plain scan.
-            ``"descriptions"`` and ``"bytes"`` work for every query shape. A
-            plain scan without ``timeout`` reads the local dataset through
-            Lance's scanner, which also returns legacy blob columns as bytes.
-            Other shapes use :meth:`to_arrow` with the same ``blob_mode``.
+            Controls how blob columns are returned. Eligible local plain scans
+            use Lance's scanner, which returns lazy blob handles in ``"lazy"``
+            mode and also supports legacy blob columns. Other local blob v2
+            queries return descriptors in ``"lazy"`` and ``"descriptions"``
+            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            Remote blob queries support only ``"descriptions"`` until a stable
+            table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
         """
         validate_blob_mode(blob_mode)
+        if _is_remote_query_table(self._table):
+            blob_sources = self._validated_blob_sources(blob_mode)
+            return _finish_remote_pandas(
+                self.to_arrow(timeout=timeout),
+                blob_mode=blob_mode,
+                blob_paths=blob_sources,
+                flatten=flatten,
+                **kwargs,
+            )
+
         output_schema = getattr(self, "output_schema", None)
         if output_schema is not None and schema_has_blob_field(output_schema()):
             if (flatten is None or blob_mode != "lazy") and timeout is None:
                 df = self._plain_scan_to_pandas(blob_mode, flatten=flatten, **kwargs)
                 if df is not None:
                     return df
-            if blob_mode == "lazy" or _query_needs_lance_scanner(self):
+            if _query_needs_lance_scanner(self):
                 raise _unsupported_blob_pandas_error(
                     "this query shape cannot use Lance native pandas conversion"
                 )
 
-        tbl = flatten_columns(self._to_arrow_in_mode(timeout, blob_mode), flatten)
-        if blob_mode == "lazy" and schema_has_blob_field(tbl.schema):
+        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
+        tbl = self._to_arrow_in_mode(timeout, arrow_mode)
+        if (
+            blob_mode == "lazy"
+            and schema_has_blob_field(tbl.schema)
+            and not blob_v2_projection_sources(self._table.schema, self._columns)
+        ):
             raise _unsupported_blob_pandas_error(
-                "this query shape cannot use Lance native pandas conversion"
+                "the query has no fetchable blob v2 source"
             )
-        return tbl.to_pandas(**kwargs)
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
 
     @abstractmethod
     def to_arrow(
@@ -1477,20 +1523,20 @@ class LanceQueryBuilder(ABC):
         self._fragment_ids = fragment_ids
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
-        """Control MemWAL LSM read routing for this query.
+    def use_rte(self, enable: bool) -> Self:
+        """Control RTE LSM read routing for this query.
 
-        By default (unset), a query against a table with an LSM write spec is
+        By default (unset), a query against a table with an RTE write spec is
         routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
-        table (active/frozen memtables + flushed generations); a table without a
+        table (active/frozen memtables + SSTables); a table without a
         spec reads the base table.
 
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no LSM
-            write spec. ``False`` bypasses the MemWAL and reads the base table
+            ``True`` forces the LSM scanner and errors if the table has no RTE
+            write spec. ``False`` bypasses the RTE and reads the base table
             only, even when a spec is present.
 
         Returns
@@ -1498,7 +1544,7 @@ class LanceQueryBuilder(ABC):
         LanceQueryBuilder
             The LanceQueryBuilder object.
         """
-        self._use_lsm = enable
+        self._use_rte = enable
         return self
 
     def explain_plan(self, verbose: Optional[bool] = False) -> str:
@@ -1835,7 +1881,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
         probing may continue when too few candidates are found. Any explicit
         effort, including 0.5, overrides nprobes in either call order. Explicit
         minimum and maximum bounds still apply. This is not a recall guarantee
-        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        and does not change refinement or HNSW ef. RTE LSM queries do not
         yet support this option.
 
         Examples
@@ -2012,7 +2058,7 @@ class LanceVectorQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_rte=self._use_rte,
             offset=self._offset,
             fast_search=self._fast_search,
             ef=self._ef,
@@ -2237,7 +2283,7 @@ class LanceFtsQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_rte=self._use_rte,
             full_text_query=FullTextSearchQuery(
                 query=self._query_with_phrase_semantics(), columns=self._fts_columns
             ),
@@ -2319,7 +2365,7 @@ class LanceEmptyQueryBuilder(LanceQueryBuilder):
             with_row_address=self._with_row_address,
             fragments=self._fragments,
             fragment_ids=self._fragment_ids,
-            use_lsm=self._use_lsm,
+            use_rte=self._use_rte,
             offset=self._offset,
             order_by=self._order_by,
         )
@@ -2395,7 +2441,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if query is not None and (vector is not None or text is not None):
             raise ValueError(
                 "You can either provide a string query in search() method "
-                "or set `vector()` and `text()` explicitly for hybrid search."
+                "or set `vector()` and `text()` explicitly for hybrid search. "
                 "But not both."
             )
 
@@ -2415,7 +2461,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         """Set whether to return row ids.
 
         Recorded separately from `_with_row_id`, which `rerank(return_score=
-        "all")` also sets for its own use — on a MemWAL table only a caller who
+        "all")` also sets for its own use — on an RTE table only a caller who
         asked is refused, and the reranker still falls back to the primary key.
         """
         self._caller_requested_row_id = with_row_id
@@ -2529,10 +2575,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         with_row_ids: bool,
         offset: Optional[int] = None,
     ) -> pa.Table:
-        if norm == "rank":
-            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
-            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
-
         # If both result sets are empty (e.g. after hard filtering),
         # return early to avoid errors in reranking or score restoration.
         if vector_results.num_rows == 0 and fts_results.num_rows == 0:
@@ -2559,15 +2601,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         original_score_row_ids = None
         # normalize the scores to be between 0 and 1, 0 being most relevant
         # We check whether the results (vector and FTS) are empty, because when
-        # they are, they often are missing the _rowid column, which causes an error
+        # they are, they often are missing the _rowid column, which causes an error.
+        # The original values are captured before any rank conversion so that
+        # they can be restored after reranking.
         if vector_results.num_rows > 0:
             distance_i = vector_results.column_names.index("_distance")
             original_distances = vector_results.column(distance_i)
             original_distance_row_ids = vector_results.column("_rowid")
+            if norm == "rank":
+                vector_results = LanceHybridQueryBuilder._rank(
+                    vector_results, "_distance"
+                )
             vector_results = vector_results.set_column(
                 distance_i,
                 vector_results.field(distance_i),
-                LanceHybridQueryBuilder._normalize_scores(original_distances),
+                LanceHybridQueryBuilder._normalize_scores(
+                    vector_results.column(distance_i)
+                ),
             )
 
         # In fts higher scores represent relevance. Not inverting them here as
@@ -2576,10 +2626,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = fts_results.column_names.index("_score")
             original_scores = fts_results.column(score_i)
             original_score_row_ids = fts_results.column("_rowid")
+            if norm == "rank":
+                fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
             fts_results = fts_results.set_column(
                 score_i,
                 fts_results.field(score_i),
-                LanceHybridQueryBuilder._normalize_scores(original_scores),
+                LanceHybridQueryBuilder._normalize_scores(fts_results.column(score_i)),
             )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
@@ -2685,7 +2737,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if reranker.score == "all":
             # WAL-PK-FUSION: without the fallback, `self.with_row_id(True)`.
             # Not through `with_row_id`, which records caller intent: the
-            # reranker's need for row ids must not refuse a MemWAL table.
+            # reranker's need for row ids must not refuse an RTE table.
             self._with_row_id = True
 
         return self
@@ -2723,7 +2775,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         probing may continue when too few candidates are found. Any explicit
         effort, including 0.5, overrides nprobes in either call order. Explicit
         minimum and maximum bounds still apply. This is not a recall guarantee
-        and does not change refinement or HNSW ef. MemWAL LSM queries do not
+        and does not change refinement or HNSW ef. RTE LSM queries do not
         yet support this option.
 
         Examples
@@ -2997,7 +3049,7 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         # WAL-PK-FUSION: without the fallback, select `self._columns` as is.
         self._pk_fusion = None
         columns = self._columns
-        if _wal_hybrid.pk_fusion_learned(self._table, self._use_lsm):
+        if _wal_hybrid.pk_fusion_learned(self._table, self._use_rte):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 self._table.schema,
                 self._columns,
@@ -3014,9 +3066,9 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if self._with_row_id and self._pk_fusion is None:
             self._vector_query.with_row_id(True)
             self._fts_query.with_row_id(True)
-        if self._use_lsm is not None:
-            self._vector_query.use_lsm(self._use_lsm)
-            self._fts_query.use_lsm(self._use_lsm)
+        if self._use_rte is not None:
+            self._vector_query.use_rte(self._use_rte)
+            self._fts_query.use_rte(self._use_rte)
         if self._phrase_query:
             self._fts_query.phrase_query(True)
         if self._distance_type:
@@ -3364,13 +3416,13 @@ class AsyncQueryBase(object):
             If not specified, no timeout is applied. If the query does not
             complete within the specified time, an error will be raised.
         blob_mode: str, default "lazy"
-            Controls how blob columns are returned. ``"lazy"`` returns
-            :class:`~lancedb._blob.BlobFile` handles and needs a plain scan.
-            ``"descriptions"`` and ``"bytes"`` work for every query shape. A
-            plain scan without ``timeout`` reads the local dataset through
-            Lance's scanner, which also returns legacy blob columns as bytes.
-            Other shapes use :meth:`to_arrow` with the same ``blob_mode``.
-            Remote queries support ``"descriptions"`` only.
+            Controls how blob columns are returned. Eligible local plain scans
+            use Lance's scanner, which returns lazy blob handles in ``"lazy"``
+            mode and also supports legacy blob columns. Other local blob v2
+            queries return descriptors in ``"lazy"`` and ``"descriptions"``
+            modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
+            Remote blob queries support only ``"descriptions"`` until a stable
+            table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
             optional flattening.
@@ -3391,19 +3443,22 @@ class AsyncQueryBase(object):
                 )
                 if df is not None:
                     return df
-            if blob_mode == "lazy" or _query_needs_lance_scanner(self):
+            if _query_needs_lance_scanner(self):
                 raise _unsupported_blob_pandas_error(
                     "this query shape cannot use Lance native pandas conversion"
                 )
 
-        tbl = flatten_columns(
-            await self.to_arrow(timeout=timeout, blob_mode=blob_mode), flatten
-        )
-        if blob_mode == "lazy" and schema_has_blob_field(tbl.schema):
+        arrow_mode = "descriptions" if blob_mode == "lazy" else blob_mode
+        tbl = await self.to_arrow(timeout=timeout, blob_mode=arrow_mode)
+        if (
+            blob_mode == "lazy"
+            and schema_has_blob_field(tbl.schema)
+            and not await self._validated_blob_sources("descriptions")
+        ):
             raise _unsupported_blob_pandas_error(
-                "this query shape cannot use Lance native pandas conversion"
+                "the query has no fetchable blob v2 source"
             )
-        return tbl.to_pandas(**kwargs)
+        return flatten_columns(tbl, flatten).to_pandas(**kwargs)
 
     async def _remote_to_pandas(
         self,
@@ -3413,21 +3468,13 @@ class AsyncQueryBase(object):
         blob_mode: BlobMode,
         **kwargs,
     ) -> "pd.DataFrame":
-        # A live remote table can be replaced between query and blob fetch.
-        # Row ids and version numbers do not identify the producing table.
         tbl = await self.to_arrow(timeout=timeout)
-        projected_blob_paths = set(blob_column_paths(tbl.schema))
-        if not projected_blob_paths:
-            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
-
-        if blob_mode == "descriptions":
-            tbl = strip_auto_row_ids(tbl, self._blob_paths)
-            return flatten_columns(tbl, flatten).to_pandas(**kwargs)
-
-        raise NotImplementedError(
-            f"remote to_pandas(blob_mode={blob_mode!r}) cannot safely materialize "
-            "blob columns without a stable table snapshot; "
-            "use blob_mode='descriptions'"
+        return _finish_remote_pandas(
+            tbl,
+            blob_mode=blob_mode,
+            blob_paths=self._blob_paths,
+            flatten=flatten,
+            **kwargs,
         )
 
     async def _plain_scan_to_pandas(
@@ -3685,25 +3732,25 @@ class AsyncStandardQuery(AsyncQueryBase):
         self._inner.fast_search()
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
+    def use_rte(self, enable: bool) -> Self:
         """
-        Control MemWAL LSM read routing for this query.
+        Control RTE LSM read routing for this query.
 
-        By default (unset), a query against a table with an LSM write spec (see
-        [AsyncTable.set_lsm_write_spec][lancedb.table.AsyncTable.set_lsm_write_spec])
+        By default (unset), a query against a table with an RTE write spec (see
+        [AsyncTable.enable_rte][lancedb.table.AsyncTable.enable_rte])
         is routed through the LSM scanner so it also returns data written via the
         ``merge_insert`` LSM path that has not yet been compacted into the base
-        table (the active/frozen in-memory memtables and the flushed generations),
+        table (the active/frozen in-memory memtables and the SSTables),
         deduplicated by primary key; a table without a spec reads the base table.
 
         Parameters
         ----------
         enable : bool
-            ``True`` forces the LSM scanner and errors if the table has no LSM
-            write spec. ``False`` bypasses the MemWAL and reads the base table
+            ``True`` forces the LSM scanner and errors if the table has no RTE
+            write spec. ``False`` bypasses the RTE and reads the base table
             only, even when a spec is present.
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_rte(enable)
         return self
 
     def postfilter(self) -> Self:
@@ -4026,7 +4073,7 @@ class AsyncVectorQueryBase:
         minimum and maximum bounds remain effective. Zero starts at the caller
         minimum and one searches all partitions within the maximum. Later
         probing may continue to obtain enough candidates. This is not a recall
-        guarantee and does not change refinement or HNSW ef. MemWAL LSM queries
+        guarantee and does not change refinement or HNSW ef. RTE LSM queries
         do not yet support this option.
 
         Examples
@@ -4350,7 +4397,7 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
         # WAL-PK-FUSION: without the fallback, keep only the two `with_row_id`
         # calls.
         self._pk_fusion = None
-        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_lsm):
+        if _wal_hybrid.pk_fusion_learned(self._table, fts_req.use_rte):
             self._pk_fusion = _wal_hybrid.PkFusion.for_query(
                 await self._table.schema(),
                 _query_request_projection(fts_req),
@@ -4539,13 +4586,13 @@ class AsyncTakeQuery(AsyncQueryBase):
     def __init__(self, inner: LanceTakeQuery, table: Optional["AsyncTable"] = None):
         super().__init__(inner, table)
 
-    def use_lsm(self, enable: bool) -> "AsyncTakeQuery":
-        """Control MemWAL LSM read routing for this take query.
+    def use_rte(self, enable: bool) -> "AsyncTakeQuery":
+        """Control RTE LSM read routing for this take query.
 
-        ``False`` bypasses the MemWAL and reads the base table only — the escape
+        ``False`` bypasses the RTE and reads the base table only — the escape
         hatch, since take-by-row-id/offset is not supported on the LSM scanner.
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_rte(enable)
         return self
 
     async def _plain_scan_to_pandas(
@@ -4606,14 +4653,14 @@ class BaseQueryBuilder(object):
         self._inner.with_row_id()
         return self
 
-    def use_lsm(self, enable: bool) -> Self:
+    def use_rte(self, enable: bool) -> Self:
         """
-        Control MemWAL LSM read routing for this query.
+        Control RTE LSM read routing for this query.
 
-        ``False`` bypasses the MemWAL and reads the base table only, the escape
+        ``False`` bypasses the RTE and reads the base table only, the escape
         hatch for shapes the LSM scanner cannot honor (e.g. take-by-row-id).
         """
-        self._inner.use_lsm(enable)
+        self._inner.use_rte(enable)
         return self
 
     def with_row_address(self, with_row_address: bool = True) -> Self:
