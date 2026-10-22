@@ -11,10 +11,10 @@ from typing import Any, Dict, Literal, Optional
 class StorageIntegrationInfo:
     """Registered S3 configuration and policies to give to your AWS administrator.
 
-    ``configuration_instructions`` contains the account-specific trust policy and
-    prefix-scoped permission policy. Creating this object does not verify AWS
-    access or configure a storage operation to use it. No field contains AWS
-    access credentials.
+    ``configuration_instructions`` is a single sentence of setup guidance for
+    display; its wording may change. Use the structured identity and policy fields
+    instead of parsing that text. Creating this object does not verify AWS access
+    or configure a storage operation to use it. No field contains AWS credentials.
     """
 
     name: str

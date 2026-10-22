@@ -909,6 +909,10 @@ for name in catalog.list_storage_integrations():
 catalog.drop_storage_integration("platform/raw")
 ```
 
+`configuration_instructions` is one sentence of display guidance whose wording
+may change. Use the structured identity, `trust_policy` and `permissions_policy`
+fields for programmatic access instead of parsing the guidance.
+
 AsyncCatalog provides the same methods; await create, describe and drop, and use
 `async for` for listing. Registration returns a stable external ID and account-specific
 trust policy, plus an example prefix-scoped S3 read policy. AWS access remains unverified,
