@@ -3821,10 +3821,7 @@ impl BaseTable for NativeTable {
         let mut indices: Vec<IndexConfig> = descriptions
             .iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = idx_desc
-                    .index_type()
-                    .parse()
-                    .unwrap_or(crate::index::IndexType::Unknown);
+                let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
                 if index_type == crate::index::IndexType::Unknown {
                     // Internal or future index types that this version doesn't recognize
                     // (e.g. Lance's internal FragReuseIndex) are silently excluded from
@@ -3960,10 +3957,7 @@ impl BaseTable for NativeTable {
             return Ok(None);
         };
 
-        let index_type: crate::index::IndexType = description
-            .index_type()
-            .parse()
-            .unwrap_or(crate::index::IndexType::Unknown);
+        let index_type = crate::index::IndexType::from_description(description.as_ref());
 
         let is_vector = matches!(
             index_type,
