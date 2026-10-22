@@ -84,7 +84,14 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
-export type { BlobOptions } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,
@@ -115,6 +122,7 @@ export {
   VectorQuery,
   TakeQuery,
   AnalyzePlanDistributedMetrics,
+  BlobMode,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,
@@ -160,10 +168,10 @@ export {
   WriteProgress,
   FtsToken,
   TokenizeTableOptions,
-  LsmWriteSpec,
-  LsmStats,
-  BucketStats,
-  GenerationStats,
+  RTEWriteSpec,
+  RTEStats,
+  TableShardStats,
+  SsTableStats,
   MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
@@ -195,6 +203,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -638,6 +647,8 @@ export async function connectNamespace(
 export {
   Catalog,
   CatalogOptions,
-  ListDatabasesResponse,
+  DatabaseNames,
   connectCatalog,
 } from "./catalog";
+
+export { Listing, ListingOptions } from "./listing";

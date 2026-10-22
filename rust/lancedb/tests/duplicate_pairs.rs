@@ -76,7 +76,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             .to_str()
             .unwrap()
             .to_string();
-        let n = 1025;
+        let n = 8193;
         let vectors = (0..n * 2)
             .flat_map(|i| {
                 let i = i % n;
@@ -196,6 +196,89 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             );
             let actual = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&actual), pairs(&expected));
+            use lancedb::table::datafusion::udtf::{
+                duplicate_pairs::DuplicatePairsOutput,
+                vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+            };
+            let query_options = VectorQueryOptions {
+                column: "vector".into(),
+                distance_threshold: threshold,
+                selection: PartitionSelection::All,
+                output: DuplicatePairsOutput {
+                    scope: true,
+                    id_column: Some("id".into()),
+                },
+                dedup: false,
+            };
+            let provider = VectorQueryTable::try_new(ds.clone(), query_options.clone()).await?;
+            let extended = ctx.read_table(Arc::new(provider))?.collect().await?;
+            assert_eq!(pairs(&extended), pairs(&expected));
+            for batch in &extended {
+                let rowids = batch
+                    .column_by_name("row_id_a")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<UInt64Array>()
+                    .unwrap();
+                let ids = batch
+                    .column_by_name("id_a")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for i in 0..batch.num_rows() {
+                    let expected_id = (rowids.value(i) >> 32) as i64 * n as i64
+                        + (rowids.value(i) & 0xffffffff) as i64;
+                    assert_eq!(ids.value(i), expected_id);
+                }
+            }
+            let mut sampled_options = query_options.clone();
+            sampled_options.selection = PartitionSelection::Random { count: 1, seed: 42 };
+            let sample = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), sampled_options.clone()).await?,
+                ))?
+                .collect()
+                .await?;
+            let replay = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), sampled_options).await?,
+                ))?
+                .collect()
+                .await?;
+            assert_eq!(sample, replay);
+            let scopes = sample
+                .iter()
+                .flat_map(|batch| {
+                    let segments = batch
+                        .column_by_name("segment_id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<arrow_array::StringArray>()
+                        .unwrap();
+                    let partitions = batch
+                        .column_by_name("partition_id")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<UInt64Array>()
+                        .unwrap();
+                    (0..batch.num_rows())
+                        .map(|i| (segments.value(i).to_string(), partitions.value(i)))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<std::collections::BTreeSet<_>>();
+            assert!(scopes.len() <= 1);
+            let mut dedup_options = query_options;
+            dedup_options.dedup = true;
+            dedup_options.output = DuplicatePairsOutput::default();
+            let clean_query = ctx
+                .read_table(Arc::new(
+                    VectorQueryTable::try_new(ds.clone(), dedup_options).await?,
+                ))?
+                .select(vec![datafusion::prelude::col("id")])?
+                .collect()
+                .await?;
+
             assert_eq!(
                 pairs(&actual).len(),
                 match threshold {
@@ -206,127 +289,6 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
             );
             let retry = ctx.sql(&sql).await?.collect().await?;
             assert_eq!(pairs(&retry), pairs(&actual));
-            // The same table function can be maintained through the MV unit
-            // lifecycle. Staging attempts do not make any rows visible.
-            use lancedb::materialized_view::{
-                MaterializedViewDefinition, commit_partitioned_refresh, plan_partitioned_refresh,
-                prepare_definition, write_refresh_partition,
-            };
-            let view_name = format!("pairs_{}", threshold.to_bits());
-            let view = prepare_definition(&table, MaterializedViewDefinition::from_sql(&sql)?)
-                .await?
-                .create(&view_name)
-                .await?;
-            assert_eq!(view.table().schema().await?.fields().len(), 3);
-            let plan = plan_partitioned_refresh(view.table(), Some(version))
-                .await?
-                .unwrap();
-            assert_eq!(plan.units() as usize, tasks.len());
-            let plan = serde_json::from_slice(&serde_json::to_vec(&plan)?)?;
-            let first = write_refresh_partition(view.table(), 0, &plan).await?;
-            assert_eq!(view.table().count_rows(None).await?, 0);
-            assert!(
-                commit_partitioned_refresh(
-                    view.table(),
-                    &plan,
-                    vec![first.clone(), first.clone()],
-                    view.incarnation()
-                )
-                .await
-                .is_err()
-            );
-            // Lost receipt: its files remain unreferenced; the retry writes
-            // another attempt, of which only one receipt is ever committed.
-            drop(write_refresh_partition(view.table(), 0, &plan).await?);
-            let mut units = vec![first];
-            for unit in 1..plan.units() {
-                units.push(write_refresh_partition(view.table(), unit, &plan).await?);
-            }
-            assert_eq!(view.table().count_rows(None).await?, 0);
-            let outcome =
-                commit_partitioned_refresh(view.table(), &plan, units.clone(), view.incarnation())
-                    .await?;
-            assert_eq!(outcome.rows_written as usize, pairs(&expected).len());
-            assert!(
-                commit_partitioned_refresh(view.table(), &plan, units, view.incarnation())
-                    .await
-                    .is_err()
-            );
-            use lancedb::query::ExecutableQuery;
-            let written = view
-                .table()
-                .query()
-                .execute()
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            assert_eq!(pairs(&written), pairs(&expected));
-            // Repeating a refresh replaces the view rather than appending.
-            view.refresh().execute().await?;
-            assert_eq!(
-                view.table().count_rows(None).await? as usize,
-                pairs(&expected).len()
-            );
-            // The complete declarative pipeline keeps direct representatives
-            // and materializes original rows, including isolated source rows.
-            use lancedb::materialized_view::write_refresh_partition_with_inputs;
-            use lancedb::query::QueryBase;
-            let definition = MaterializedViewDefinition::from_sql(&format!(
-                "SELECT * FROM vector_dedup('source', {version}, 'vector', {threshold})"
-            ))?;
-            let clean = prepare_definition(&table, definition)
-                .await?
-                .create(&format!("clean_{}", threshold.to_bits()))
-                .await?;
-            let clean_plan = plan_partitioned_refresh(clean.table(), Some(version))
-                .await?
-                .unwrap();
-            assert_eq!(clean_plan.dependency_units() as usize, tasks.len());
-            assert_eq!(clean_plan.units() as usize, tasks.len() + 2);
-            let clean_plan: lancedb::materialized_view::PartitionedRefreshPlan =
-                serde_json::from_slice(&serde_json::to_vec(&clean_plan)?)?;
-            assert!(
-                write_refresh_partition(clean.table(), tasks.len() as u32, &clean_plan)
-                    .await
-                    .is_err()
-            );
-            let mut receipts = Vec::new();
-            for unit in 0..clean_plan.units() {
-                let dependencies = &receipts[..receipts.len().min(tasks.len())];
-                if unit == 0 || unit == tasks.len() as u32 {
-                    // Both selection and materialization can lose a receipt.
-                    drop(
-                        write_refresh_partition_with_inputs(
-                            clean.table(),
-                            unit,
-                            &clean_plan,
-                            dependencies,
-                        )
-                        .await?,
-                    );
-                }
-                let receipt = write_refresh_partition_with_inputs(
-                    clean.table(),
-                    unit,
-                    &clean_plan,
-                    dependencies,
-                )
-                .await?;
-                receipts.push(serde_json::from_slice(&serde_json::to_vec(&receipt)?)?);
-            }
-            assert_eq!(clean.table().count_rows(None).await?, 0);
-            assert!(
-                commit_partitioned_refresh(
-                    clean.table(),
-                    &clean_plan,
-                    receipts[..receipts.len() - 1].to_vec(),
-                    clean.incarnation()
-                )
-                .await
-                .is_err()
-            );
-            commit_partitioned_refresh(clean.table(), &clean_plan, receipts, clean.incarnation())
-                .await?;
             let mut edges = pairs(&expected)
                 .into_iter()
                 .map(|(a, b, _)| (a.min(b), a.max(b)))
@@ -366,36 +328,26 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                     }
                 }
             }
-            let kept = clean
-                .table()
-                .query()
-                .select(lancedb::query::Select::columns(&["id"]))
-                .execute()
-                .await?
-                .try_collect::<Vec<_>>()
-                .await?;
-            let mut actual_ids = kept
+            expected_ids.sort_unstable();
+            let mut query_ids = clean_query
                 .iter()
-                .flat_map(|b| {
-                    b.column(0)
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .unwrap()
                         .values()
-                        .iter()
-                        .copied()
+                        .to_vec()
                 })
                 .collect::<Vec<_>>();
-            actual_ids.sort_unstable();
-            expected_ids.sort_unstable();
-            assert_eq!(actual_ids, expected_ids);
+            query_ids.sort_unstable();
+            assert_eq!(query_ids, expected_ids);
+
             if threshold == 1.0 {
-                assert!(actual_ids.contains(&0) && actual_ids.contains(&2));
-                assert!(!actual_ids.contains(&1), "A-B-C retains A and C");
+                assert!(query_ids.contains(&0) && query_ids.contains(&2));
+                assert!(!query_ids.contains(&1), "A-B-C retains A and C");
             }
-            clean.refresh().execute().await?;
-            assert_eq!(clean.table().count_rows(None).await?, expected_ids.len());
-            assert_eq!(table.count_rows(None).await?, n * 2);
             assert!(
                 DuplicatePairsExec::try_new(
                     ds.clone(),
@@ -429,10 +381,8 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
 }
 
 #[tokio::test]
-async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() -> anyhow::Result<()>
-{
+async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Result<()> {
     use arrow_array::{LargeBinaryArray, StringArray, StructArray, types::Float32Type};
-    use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
     for stable in [false, true] {
         let dir = tempfile::tempdir()?;
         let conn = lancedb::connect(dir.path().to_str().unwrap())
@@ -460,6 +410,8 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
                     (0..6).map(|id| vec![id; 4096]),
                 )),
                 Arc::new(StringArray::from(vec![None::<&str>; 6])),
+                Arc::new(UInt64Array::new_null(6)),
+                Arc::new(UInt64Array::new_null(6)),
             ],
             None,
         );
@@ -509,29 +461,75 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
             true,
         )
         .await?;
-        let version = ds.version().version;
-        let definition = MaterializedViewDefinition::from_sql(&format!(
-            "SELECT * FROM vector_dedup('source', {version}, 'vector', 1)"
-        ))?;
-        let clean = prepare_definition(&table, definition)
-            .await?
-            .create("clean")
+        use lancedb::table::datafusion::udtf::{
+            duplicate_pairs::DuplicatePairsOutput,
+            vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+        };
+        let options = VectorQueryOptions {
+            column: "vector".into(),
+            distance_threshold: 1.0,
+            selection: PartitionSelection::All,
+            output: DuplicatePairsOutput::default(),
+            dedup: true,
+        };
+        let mapped = VectorQueryTable::try_new(
+            Arc::new(ds.clone()),
+            VectorQueryOptions {
+                dedup: false,
+                output: DuplicatePairsOutput {
+                    scope: true,
+                    id_column: Some("id".into()),
+                },
+                ..options.clone()
+            },
+        )
+        .await?;
+        let mapped = SessionContext::new()
+            .read_table(Arc::new(mapped))?
+            .collect()
             .await?;
-        // A later source delete does not change the declared result snapshot.
-        table.delete("id = 0").await?;
-        clean.refresh().execute().await?;
-        assert_eq!(clean.table().count_rows(None).await?, 4);
-        let output = Dataset::open(&clean.table().uri().await?).await?;
-        let batches = output
-            .scan()
-            .blob_handling(lance_core::datatypes::BlobHandling::AllBinary)
-            .try_into_stream()
-            .await?
-            .try_collect::<Vec<_>>()
+        let mut mapped_edges = Vec::new();
+        for batch in mapped {
+            let a = batch
+                .column_by_name("id_a")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let b = batch
+                .column_by_name("id_b")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                mapped_edges.push((a.value(i).min(b.value(i)), a.value(i).max(b.value(i))));
+            }
+        }
+        mapped_edges.sort_unstable();
+        assert_eq!(mapped_edges, [(0, 1), (1, 2)]);
+        let provider = VectorQueryTable::try_new(Arc::new(ds.clone()), options).await?;
+        let query_rows = SessionContext::new()
+            .read_table(Arc::new(provider))?
+            .collect()
             .await?;
-        let mut ids = Vec::new();
-        for batch in batches {
-            let row_ids = batch
+        let mut query_ids = query_rows
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("id")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .to_vec()
+            })
+            .collect::<Vec<_>>();
+        query_ids.sort_unstable();
+        assert_eq!(query_ids, [0, 2, 3, 4]);
+        for batch in &query_rows {
+            let ids = batch
                 .column_by_name("id")
                 .unwrap()
                 .as_any()
@@ -544,18 +542,9 @@ async fn dedup_materializes_blob_payloads_null_vectors_and_snapshot_deletions() 
                 .downcast_ref::<LargeBinaryArray>()
                 .unwrap();
             for i in 0..batch.num_rows() {
-                let id = row_ids.value(i);
-                assert_eq!(images.value(i), vec![id as u8; 4096]);
-                ids.push(id);
+                assert_eq!(images.value(i), vec![ids.value(i) as u8; 4096]);
             }
         }
-        ids.sort_unstable();
-        assert_eq!(ids, [0, 2, 3, 4]);
-        assert_eq!(
-            table.count_rows(None).await?,
-            4,
-            "refresh must not mutate the source"
-        );
     }
     Ok(())
 }

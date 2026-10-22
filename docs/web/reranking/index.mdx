@@ -1,0 +1,536 @@
+---
+title: "Reranking Search Results"
+sidebarTitle: "Reranking"
+description: "Choose a reranker, apply it to search candidates and evaluate relevance and latency."
+icon: "sort-amount-down"
+keywords: ["re-ranking", "reranker", "rerank"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Reranking is available with OSS and Enterprise.
+---
+
+import {
+    PyRerankingLinearCombinationUsage,
+    PyRerankingRrfUsage,
+    PyRerankingMrrUsage,
+    PyRerankingCrossEncoderUsage,
+} from '/snippets/integrations.mdx';
+import { PyRerankingCohereUsage } from '/snippets/provider_examples.mdx';
+
+import { PyHybridSearch, TsHybridSearchBody, TsHybridSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsHybridSearchBody, RsExampleTail as RsHybridSearchTail } from '/snippets/search_hybrid_search.mdx';
+
+Reranking changes the order of records returned by an initial search. It can
+combine several ranked lists or use a model to score each candidate against
+the query. It cannot recover records that the initial searches did not retrieve.
+
+## Choose a reranker
+
+- **Rank fusion:** start with RRF for hybrid search. It combines vector and
+  full-text rankings without a model or a provider API call.
+- **Model-based reranking:** try a cross encoder or hosted reranking model
+  when you need a different relevance judgment over the retrieved text.
+  Compare the relevance gain with added latency and provider cost.
+- **Custom ranking:** implement the reranker interface when your application
+  needs its own scoring policy.
+
+<span id="quickstart"></span>
+
+<Accordion title="Run a complete RRF example in Python, TypeScript or Rust">
+
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
+
+- **Python:** Install with `pip install lancedb`, save as `rerank_search.py`, then run `python rerank_search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `rerank_search.mts`, then run `node rerank_search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin hybrid_search` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyHybridSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsHybridSearchBody + "\n" + TsHybridSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsHybridSearchBody + "\n" + RsHybridSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+The result includes `_relevance_score` in descending order. RRF is already the
+hybrid-search default; passing it explicitly shows where to substitute another
+reranker. These scores express a ranking, not a probability of correctness.
+
+</Accordion>
+
+## Supported rerankers {#supported-rerankers}
+
+Use rank fusion to combine search results without a model, or a model-based
+reranker to score each document against the query. Reranking runs in your
+application after retrieval, including when the table is in Enterprise.
+
+| Reranker | Method | SDK |
+|:---------|:-------|:----|
+| `RRFReranker` | Reciprocal rank fusion | Python, TypeScript, Rust |
+| `MRRReranker` | Weighted reciprocal rank fusion | Python |
+| `LinearCombinationReranker` (deprecated) | Blend normalized scores | Python |
+| `CrossEncoderReranker` | Score query-document pairs with a local cross encoder | Python |
+| `ColbertReranker`, `AnswerdotaiRerankers` | Local model reranking | Python |
+| Provider rerankers | Call a hosted model, such as Cohere, Jina or Voyage AI | Python |
+
+Local model rerankers need their model runtime packages. Hosted rerankers need
+provider credentials and make API calls. See [reranking integrations](/integrations/reranking)
+for provider setup and model selection; specify a model supported by your provider.
+
+Rerankers add `_relevance_score` and return rows ordered by descending relevance. Python rerankers
+accept a `return_score` option; use `"all"` where supported to keep the
+original vector distance or FTS score columns for debugging. Model-based rerankers read from
+`column="text"` by default, so either return that column in the search results or pass a different
+column.
+
+`refine_factor` expands the vector index's internal candidate pool and rescores
+those candidates using full vectors before keeping the requested limit. It
+can improve the candidates available for reranking, but it does not multiply
+the final result count. Compare retrieval recall and total query latency.
+
+<Note>
+**SDK coverage differs across languages**
+
+The provider-specific rerankers in the table above
+(`CohereReranker`, `CrossEncoderReranker`, `ColbertReranker`, and others under `lancedb.rerankers`)
+are currently **Python-only**. The TypeScript and Rust SDKs currently expose hybrid reranking through
+the generic `Reranker` interface (`rerankHybrid` / `rerank_hybrid`) and the built-in `RRFReranker`.
+In TypeScript, create the built-in RRF reranker with `await RRFReranker.create(k)`. To use a
+model-based reranker from TypeScript or Rust, you must implement the hybrid reranker interface
+yourself.
+</Note>
+
+
+### Multi-vector reranking {#multi-vector-reranking}
+Use `rerank_multivector()` to combine result sets from several vector queries.
+The example below assumes `table` has three vector columns with embedding
+metadata and uses a cross encoder to rerank their candidates.
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb.rerankers import CrossEncoderReranker
+
+reranker = CrossEncoderReranker()
+
+query = "hello"
+
+# `deduplicate=True` requires `_rowid` on every input result set,
+# so call `.with_row_id(True)` on each search before passing it in.
+res1 = table.search(query, vector_column_name="vector").limit(3).with_row_id(True)
+res2 = table.search(query, vector_column_name="text_vector").limit(3).with_row_id(True)
+res3 = table.search(query, vector_column_name="meta_vector").limit(3).with_row_id(True)
+
+reranked = reranker.rerank_multivector([res1, res2, res3], deduplicate=True)
+```
+</CodeGroup>
+
+- Passing `deduplicate=True` to `rerank_multivector(...)` raises a `ValueError` if any of the
+input result sets is missing the `_rowid` column. Therefore, it's recommended to add `.with_row_id(True)` to every
+`table.search(...)` call before reranking, or omit `deduplicate=True` if you don't need it.
+- `RRFReranker.rerank_multivector(...)` always requires `_rowid` on its inputs, regardless of
+the `deduplicate` flag.
+
+## Implement a custom ranking policy {#creating-custom-rerankers}
+
+Python custom rerankers implement `rerank_hybrid()` and can optionally implement
+`rerank_vector()` and `rerank_fts()`. TypeScript and Rust expose hybrid reranking
+interfaces. See [the interface requirements](#custom) before implementing one.
+
+## Algorithm options
+
+The following sections describe the Python constructor options and examples.
+Provider and local-model examples require their additional packages and model
+or credential setup. They are separate programs, not steps to concatenate.
+
+## Reciprocal rank fusion {#rrf}
+
+<Accordion title="RRF options and examples">
+
+
+<span id="reciprocal-rank-fusion-reranker"></span>
+
+**Reciprocal Rank Fusion (RRF)** is a model-free way to merge several ranked result lists into a
+single ordering. Rather than comparing raw similarity scores (which aren't directly comparable
+across, say, a vector search and a full-text search), RRF looks only at each document's *rank
+position* in each list. It scores every document with the formula `1 / (rank + K)`, sums those
+contributions across the lists, and re-sorts by the total. Documents that rank highly in more than
+one search rise to the top. Because there's no model to load or call, it's fast and cheap, which is
+why it's the default reranker for LanceDB hybrid search. The implementation follows the
+[Cormack et al. paper](https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf).
+
+> **Supported query types:** hybrid search and [multi-vector reranking](/reranking#multi-vector-reranking).
+> Because RRF fuses two or more ranked lists, it can't rerank a single vector or full-text result set
+> on its own. Calling `rerank_vector` or `rerank_fts` on an `RRFReranker` raises `NotImplementedError`.
+
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingRrfUsage}
+  </CodeBlock>
+</CodeGroup>
+
+### Python arguments {#rrf-accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `K` | `int` | `60` | A constant used in the RRF formula (default is 60). Larger values reduce the difference in contribution between nearby rank positions. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score`. If "all", will return all scores from the vector and FTS search along with the relevance score. |
+
+`K` must be greater than `0`. In TypeScript, construct the built-in reranker with
+`await RRFReranker.create(k)` before passing it to `.rerank(...)`.
+
+### Multi-vector reranking {#rrf-multi-vector-reranking}
+
+`RRFReranker` can also fuse the results of several vector searches with `rerank_multivector`, applying
+the same rank-fusion algorithm across more than two lists. Every input result set must include the
+`_rowid` column, so add `.with_row_id(True)` to each `table.search(...)` call before reranking,
+otherwise the call raises a `ValueError`. See [multi-vector reranking](/reranking#multi-vector-reranking)
+for a full example.
+
+### Supported Scores for each query type {#rrf-supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+#### Hybrid Search {#rrf-hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` as the score column alongside the selected data columns. |
+| `all` | ✅ Supported | Returned rows have vector(`_distance`) and FTS(`_score`) along with Hybrid Search score(`_relevance_score`). |
+
+
+</Accordion>
+
+## Linear combination {#linear-combination}
+
+<Accordion title="Linear combination options (deprecated)">
+
+
+<span id="linear-combination-reranker"></span>
+
+> **Note:** This reranker is deprecated. Use `RRFReranker` to combine vector and full-text rankings.
+
+The Linear Combination Reranker combines the results of semantic and full-text search using a linear combination of the scores. The weights for the linear combination can be specified, and defaults to 0.7, i.e, 70% weight for semantic search and 30% weight for full-text search.
+
+> **Note:** Supported query type: Hybrid search only.
+
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingLinearCombinationUsage}
+  </CodeBlock>
+</CodeGroup>
+
+### Python arguments {#linear-combination-accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `weight` | `float` | `0.7` | The weight to use for the semantic search score. The weight for the full-text search score is `1 - weight`. |
+| `fill` | `float` | `1.0` | Score used when a result is missing from one side of the hybrid query. The default strongly penalizes missing vector or FTS matches. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", returns only `_relevance_score`. If "all", returns all scores from the vector and FTS search along with the relevance score. |
+
+`weight` must be between `0` and `1`. If either the vector or FTS side returns no rows, the reranker
+returns the non-empty side with `_relevance_score` attached rather than failing.
+
+
+### Supported Scores for each query type {#linear-combination-supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+#### Hybrid Search {#linear-combination-hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns |
+| `all` | ✅ Supported | Results have vector(`_distance`) and FTS(`_score`) along with Hybrid Search score(`_relevance_score`) |
+
+
+</Accordion>
+
+## MRR {#mrr}
+
+<Accordion title="MRR options and examples">
+
+
+<span id="mrr-reranker"></span>
+
+This reranker uses the Mean Reciprocal Rank (MRR) algorithm to combine and rerank search results from vector and full-text search. You can use this reranker by passing `MRRReranker()` to the `rerank()` method. The MRR algorithm calculates the average of reciprocal ranks across different search results, providing a balanced way to merge results from multiple ranking systems.
+
+> **Note:** Supported query types: Hybrid and Multivector search.
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingMrrUsage}
+  </CodeBlock>
+</CodeGroup>
+
+### Python arguments {#mrr-accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `weight_vector` | `float` | `0.5` | Weight for vector search results (0.0 to 1.0). |
+| `weight_fts` | `float` | `0.5` | Weight for FTS search results (0.0 to 1.0). |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score`. If "all", will return all scores from the vector and FTS search along with the relevance score. |
+
+**Note:** `weight_vector` + `weight_fts` must equal 1.0.
+
+For multivector reranking, input result sets need `_rowid` so LanceDB can identify the same row
+across the ranked lists. Add `.with_row_id(True)` to each vector search before passing the results
+to the reranker.
+
+### Supported Scores for each query type {#mrr-supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+#### Hybrid Search {#mrr-hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns. |
+| `all` | ✅ Supported | Results have vector(`_distance`) and FTS(`_score`) along with Hybrid Search score(`_relevance_score`). |
+
+#### Multivector Search {#mrr-multivector-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns. |
+| `all` | ✅ Supported | Results have vector distances from all searches along with `_relevance_score`. |
+
+
+</Accordion>
+
+## Cross encoder {#cross-encoder}
+
+<Accordion title="Cross-encoder options and examples">
+
+
+<span id="cross-encoder-reranker"></span>
+
+This reranker uses Cross Encoder models from sentence-transformers to rerank the search results. You can use this reranker by passing `CrossEncoderReranker()` to the `rerank()` method. 
+> **Note:** Supported query types: Hybrid, Vector, and FTS.
+
+
+<CodeGroup>
+  <CodeBlock filename="Python" language="Python" icon="python">
+    {PyRerankingCrossEncoderUsage}
+  </CodeBlock>
+</CodeGroup>
+
+### Python arguments {#cross-encoder-accepted-arguments}
+| Argument | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model_name` | `str` | `"cross-encoder/ms-marco-TinyBERT-L-6"` | The name of the reranker model to use.|
+| `column` | `str` | `"text"` | The name of the column to use as input to the cross encoder model. |
+| `device` | `str` | `None` | The device to use for the cross encoder model. If None, will use "cuda" if available, otherwise "cpu". |
+| `trust_remote_code` | `bool` | `True` | Passed to Sentence Transformers model loading. Set this to `False` when you only want to load models that do not require custom repository code. |
+| `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", returns only `_relevance_score`. If "all" is supported, returns relevance score along with the vector and/or FTS scores depending on query type. |
+
+The reranker loads the model locally through `sentence-transformers`, so install the local model
+runtime dependencies you need, such as PyTorch and any device-specific acceleration packages.
+
+### Supported Scores for each query type {#cross-encoder-supported-scores-for-each-query-type}
+You can specify the type of scores you want the reranker to return. The following are the supported scores for each query type:
+
+#### Hybrid Search {#cross-encoder-hybrid-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns. |
+| `all` | ✅ Supported | Keeps `_distance`, `_score` and `_relevance_score` alongside the data columns. |
+
+#### Vector Search {#cross-encoder-vector-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns. |
+| `all` | ✅ Supported | Results have vector(`_distance`) along with Hybrid Search score(`_relevance_score`). |
+
+#### FTS Search {#cross-encoder-fts-search}
+|`return_score`| Status | Description |
+| --- | --- | --- |
+| `relevance` | ✅ Supported | Keeps `_relevance_score` alongside the selected data columns. |
+| `all` | ✅ Supported | Results have FTS(`_score`) along with Hybrid Search score(`_relevance_score`). |
+
+
+</Accordion>
+
+## Building a custom reranker {#custom}
+
+You can build your own custom reranker in LanceDB by subclassing the base `Reranker` class. At a
+minimum, you need to implement `rerank_hybrid()`, which is the logic that combines vector and
+full-text search results. Beyond that, you can optionally implement `rerank_vector()` and
+`rerank_fts()` if you want your reranker to also handle pure vector or pure full-text searches.
+
+Implement the hooks your query paths call. The base class raises
+`NotImplementedError` for vector-only or FTS-only reranking unless you
+implement those methods.
+
+The Python base class exposes hybrid, vector-only, and FTS-only rerank hooks. TypeScript and Rust
+currently expose the custom reranker interface for hybrid reranking. In Rust, a custom reranker must
+also satisfy the trait bounds `Debug + Send + Sync`.
+
+### Interface {#custom-interface}
+
+The `Reranker` base interface comes with a `merge_results()` method that can be used to combine the
+results of semantic and full-text search. This is a vanilla merging algorithm that simply concatenates
+the results and removes the duplicates without taking the scores into consideration. It only keeps the
+first copy of the row encountered. This works well in cases that don't require the scores of semantic
+and full-text search to combine the results. If you want to use the scores or want to support
+`return_score="all"`, you'll need to implement your own merging algorithm. The base
+`return_score` option accepts only `"relevance"` and `"all"`.
+
+Whichever methods you override, your reranker has one job on the way out: attach a
+`_relevance_score` column with the most relevant rows at the top. LanceDB will reject the result
+if that column is missing, and downstream `.limit(...)` calls trust the order you return, so
+sort descending before handing the table back.
+
+For vector-only reranking in Python, pass a text query to `.rerank(..., query_string="...")`.
+The vector query itself may be numeric, but `rerank_vector(query, vector_results)` still receives
+a string query so your reranker can score each candidate against the user's text intent.
+
+The method contract is:
+
+| Method | Input | Required output |
+|:-------|:------|:----------------|
+| `rerank_hybrid` | Query text, vector results and FTS results | A merged Arrow table ordered by descending `_relevance_score` |
+| `rerank_vector` | Query text and vector results | An Arrow table ordered by descending `_relevance_score` |
+| `rerank_fts` | Query text and FTS results | An Arrow table ordered by descending `_relevance_score` |
+
+Implement only the single-search hooks your application uses. The base class
+raises `NotImplementedError` for those hooks until they are implemented.
+
+### Extend an existing reranker {#custom-example}
+
+This class definition extends `CohereReranker` to exclude text patterns after
+reranking. It requires the Cohere package and credentials when instantiated.
+It can return fewer results because exclusions happen after retrieval; use a
+query predicate instead when a metadata filter expresses the same restriction.
+
+<CodeGroup>
+```python Python icon="python"
+from typing import List, Union
+import pyarrow as pa
+from lancedb.rerankers import CohereReranker
+
+class ModifiedCohereReranker(CohereReranker):
+    def __init__(self, filters: Union[str, List[str]], **kwargs):
+        super().__init__(**kwargs)
+        filters = filters if isinstance(filters, list) else [filters]
+        self.filters = filters
+
+    def rerank_hybrid(self, query: str, vector_results: pa.Table, fts_results: pa.Table)-> pa.Table:
+        combined_result = super().rerank_hybrid(query, vector_results, fts_results)
+        df = combined_result.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+
+    def rerank_vector(self, query: str, vector_results: pa.Table)-> pa.Table:
+        vector_results = super().rerank_vector(query, vector_results)
+        df = vector_results.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+
+    def rerank_fts(self, query: str, fts_results: pa.Table)-> pa.Table:
+        fts_results = super().rerank_fts(query, fts_results)
+        df = fts_results.to_pandas()
+        for filter in self.filters:
+            df = df.query("not text.str.contains(@filter)")
+
+        return pa.Table.from_pandas(df)
+```
+</CodeGroup>
+
+The reranker receives and returns PyArrow tables. Use `to_pandas()` for a
+DataFrame transformation and `pa.Table.from_pandas()` to convert the result
+back, preserving `_relevance_score` and the desired row order.
+
+
+## Evaluate relevance, latency and cost {#eval}
+
+Compare rerankers on the same candidate inputs so you can distinguish ranking
+changes from retrieval changes. For hybrid retrieval, prepare the text index
+and query vectors before collecting those candidates.
+
+### Reranking strategies {#eval-reranking-strategies}
+
+Compare these approaches:
+
+- **Rank fusion:** RRF and MRR combine rank positions from multiple result lists.
+- **Score blending:** linear combination mixes normalized vector and text scores.
+- **Model-based reranking:** a model scores each query-document pair.
+
+Hybrid search uses RRF by default. You do not need to call `rerank()` to select
+it. Pass a reranker when you want a different algorithm or configuration.
+
+By default, rerankers return `_relevance_score`. Pass `return_score="all"` when a reranker
+supports it, and you also need the original vector or FTS scores for debugging.
+Evaluation code can rely on returned rows being ordered by descending `_relevance_score`. Empty
+reranked result sets still include the `_relevance_score` column.
+
+The synchronous Python hybrid `rerank(...)` method also accepts a `normalize` argument that controls how the raw
+vector and FTS scores are made comparable before reranking:
+
+- `normalize="score"` (the default); normalizes the raw vector and FTS scores directly.
+- `normalize="rank"`; converts each result list to ranks first, then normalizes.
+
+Normalization matters for algorithms that use raw scores, such as linear
+combination. RRF uses rank positions instead. Compare normalization settings
+only when the chosen reranker uses those scores.
+
+For score-based evaluation, the main built-in knobs are:
+
+- `RRFReranker(K=60)`: rank fusion with a positive smoothing constant.
+- `MRRReranker(weight_vector=0.5, weight_fts=0.5)`: weighted reciprocal rank fusion where the weights must sum to `1.0`.
+- `LinearCombinationReranker(weight=0.7, fill=1.0)`: blends vector and FTS scores directly; `fill` controls how strongly to penalize a result missing from one side.
+
+A result on one dataset does not establish which reranker will work best on
+another. Include representative queries and measure both retrieval quality
+and ranking quality.
+
+### Historical evaluation example {#eval-example-evaluation}
+
+The tables below preserve an earlier experiment comparing multiple rerankers on
+~800 hybrid search queries. This is a modified version of an evaluation script by
+[LlamaIndex](https://github.com/run-llama/finetune-embedding/blob/main/evaluate.ipynb) that measures
+hit-rate \@ top-k. The recorded results do not establish performance for
+current models, SDK releases or your dataset; treat them as an example of an
+evaluation format.
+
+#### Using OpenAI `text-embedding-ada-002` {#eval-using-openai-text-embedding-ada-002}
+
+Vector Search baseline: **0.64**
+
+| Reranker | Top-3 | Top-5 | Top-10 |
+| --- | --- | --- | --- |
+| Linear Combination | `0.73` | `0.74` | `0.85` |
+| Cross Encoder | `0.71` | `0.70` | `0.77` |
+| Cohere | `0.81` | `0.81` | `0.85` |
+| ColBERT | `0.68` | `0.68` | `0.73` |
+
+<img src="https://github.com/AyushExel/assets/assets/15766192/d57b1780-ef27-414c-a5c3-73bee7808a45" />
+
+
+#### Using OpenAI `text-embedding-3-small` {#eval-using-openai-text-embedding-3-small}
+
+Vector Search baseline: **0.59**
+
+| Reranker | Top-3 | Top-5 | Top-10 |
+| --- | --- | --- | --- |
+| Linear Combination | `0.68` | `0.70` | `0.84` |
+| Cross Encoder | `0.72` | `0.72` | `0.79` |
+| Cohere | `0.79` | `0.79` | `0.84` |
+| ColBERT | `0.70` | `0.70` | `0.76` |
+
+<img src="https://github.com/AyushExel/assets/assets/15766192/259adfd2-6ec6-4df6-a77d-1456598970dd" />
+
+### Compare results on your workload {#eval-conclusion}
+
+Build a set of representative queries with known relevant records. Compare
+retrieval alone with each reranker using the same candidate inputs and result
+limit. Record a relevance metric such as recall or nDCG alongside latency and
+provider cost. Include queries with no useful matches and queries containing
+exact names or identifiers.
+
+If the relevant records never reach the reranker, adjust retrieval first.
+Then change one ranking setting at a time and retain the configuration that
+meets your application's quality and latency requirements.

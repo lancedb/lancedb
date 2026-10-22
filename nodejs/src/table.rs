@@ -11,11 +11,12 @@ use lancedb::table::{
     FieldMetadataUpdate as LanceFieldMetadataUpdate, FtsToken as LanceDbFtsToken,
     NewColumnTransform, OptimizeAction, OptimizeOptions, Ref, Table as LanceDbTable,
 };
+use napi::Env;
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids};
+use crate::blob::{BlobFile, copy_blob_buffers, parse_row_ids, spawn_abortable};
 use crate::error::NapiErrorExt;
 use crate::index::Index;
 use crate::merge::NativeMergeInsertBuilder;
@@ -74,13 +75,14 @@ impl Table {
 
     #[napi(
         catch_unwind,
-        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void"
+        ts_args_type = "buf: Buffer, mode: string, progressCallback?: (progress: WriteProgressInfo) => void, allowExternalBlobOutsideBases?: boolean"
     )]
     pub async fn add(
         &self,
         buf: Buffer,
         mode: String,
         progress_callback: Option<ProgressFn>,
+        allow_external_blob_outside_bases: Option<bool>,
     ) -> napi::Result<AddResult> {
         let batches = ipc_file_to_batches(buf.to_vec())
             .map_err(|e| napi::Error::from_reason(format!("Failed to read IPC file: {}", e)))?;
@@ -104,6 +106,9 @@ impl Table {
         } else {
             return Err(napi::Error::from_reason(format!("Invalid mode: {}", mode)));
         };
+
+        op = op
+            .allow_external_blob_outside_bases(allow_external_blob_outside_bases.unwrap_or(false));
 
         if let Some(tsfn) = progress_callback {
             op = op.progress(move |p| {
@@ -336,36 +341,44 @@ impl Table {
     }
 
     #[napi(catch_unwind)]
-    pub async fn fetch_blobs(
+    pub fn fetch_blobs<'env>(
         &self,
+        env: &'env Env,
         column: String,
         row_ids: Vec<BigInt>,
-    ) -> napi::Result<Vec<Option<Buffer>>> {
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<Buffer>>>> {
         let row_ids = parse_row_ids(row_ids)?;
-        let array = self
-            .inner_ref()?
-            .fetch_blobs(column.as_str(), &row_ids)
-            .await
-            .default_error()?;
-        Ok(copy_blob_buffers(array))
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let array = table
+                .fetch_blobs(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(copy_blob_buffers(array))
+        })
     }
 
     #[napi(catch_unwind)]
-    pub async fn fetch_blob_files(
+    pub fn fetch_blob_files<'env>(
         &self,
+        env: &'env Env,
         column: String,
         row_ids: Vec<BigInt>,
-    ) -> napi::Result<Vec<Option<BlobFile>>> {
+        signal: Option<AbortSignal>,
+    ) -> napi::Result<PromiseRaw<'env, Vec<Option<BlobFile>>>> {
         let row_ids = parse_row_ids(row_ids)?;
-        let files = self
-            .inner_ref()?
-            .fetch_blob_files(column.as_str(), &row_ids)
-            .await
-            .default_error()?;
-        Ok(files
-            .into_iter()
-            .map(|file| file.map(BlobFile::new))
-            .collect())
+        let table = self.inner_ref()?.clone();
+        spawn_abortable(env, signal, async move {
+            let files = table
+                .fetch_blob_files(column.as_str(), &row_ids)
+                .await
+                .default_error()?;
+            Ok(files
+                .into_iter()
+                .map(|file| file.map(BlobFile::new))
+                .collect())
+        })
     }
 
     #[napi(catch_unwind)]
@@ -456,13 +469,12 @@ impl Table {
     #[napi(catch_unwind)]
     pub async fn refresh_materialized_view(
         &self,
-        full: Option<bool>,
         source_version: Option<i64>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh().full(full.unwrap_or(false));
+        let mut builder = view.refresh();
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -479,11 +491,9 @@ impl Table {
         let view = lancedb::MaterializedView::from_table(inner)
             .await
             .default_error()?;
-        view.definition().to_json().map_err(|err| {
-            napi::Error::from_reason(format!(
-                "failed to serialize materialized-view definition: {err}"
-            ))
-        })
+        Ok(lancedb::materialized_view::definition_metadata_from_sql(
+            view.definition_sql(),
+        ))
     }
 
     #[napi(catch_unwind)]
@@ -570,64 +580,57 @@ impl Table {
             .default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> napi::Result<()> {
-        let native_spec = lancedb::table::LsmWriteSpec::try_from(spec)?;
+    #[napi(catch_unwind, js_name = "enableRTE")]
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::RTEWriteSpec::try_from(spec)?;
         self.inner_ref()?
-            .set_lsm_write_spec(native_spec)
+            .enable_rte(native_spec)
             .await
             .default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn unset_lsm_write_spec(&self) -> napi::Result<()> {
-        self.inner_ref()?
-            .unset_lsm_write_spec()
-            .await
-            .default_error()
+    #[napi(catch_unwind, js_name = "disableRTE")]
+    pub async fn disable_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.disable_rte().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn get_lsm_write_spec(&self) -> napi::Result<Option<LsmWriteSpec>> {
-        let spec = self
-            .inner_ref()?
-            .get_lsm_write_spec()
-            .await
-            .default_error()?;
-        Ok(spec.map(LsmWriteSpec::from))
+    #[napi(catch_unwind, js_name = "getRTESpec")]
+    pub async fn get_rte_spec(&self) -> napi::Result<Option<RTEWriteSpec>> {
+        let spec = self.inner_ref()?.get_rte_spec().await.default_error()?;
+        Ok(spec.map(RTEWriteSpec::from))
     }
 
-    #[napi(catch_unwind)]
-    pub async fn close_lsm_writers(&self) -> napi::Result<()> {
-        self.inner_ref()?.close_lsm_writers().await.default_error()
+    #[napi(catch_unwind, js_name = "closeRTEWriters")]
+    pub async fn close_rte_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_rte_writers().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn flush_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.flush_lsm().await.default_error()
+    #[napi(catch_unwind, js_name = "flushRTE")]
+    pub async fn flush_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_rte().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn compact_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.compact_lsm().await.default_error()
+    #[napi(catch_unwind, js_name = "compactRTE")]
+    pub async fn compact_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_rte().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn checkpoint_lsm(&self) -> napi::Result<()> {
-        self.inner_ref()?.checkpoint_lsm().await.default_error()
+    #[napi(catch_unwind, js_name = "checkpointRTE")]
+    pub async fn checkpoint_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_rte().await.default_error()
     }
 
-    #[napi(catch_unwind)]
-    pub async fn get_lsm_stats(
+    #[napi(catch_unwind, js_name = "getRTEStats")]
+    pub async fn get_rte_stats(
         &self,
-        include_generation_rows: bool,
-    ) -> napi::Result<Option<LsmStats>> {
+        include_sstable_rows: bool,
+    ) -> napi::Result<Option<RTEStats>> {
         let stats = self
             .inner_ref()?
-            .get_lsm_stats(include_generation_rows)
+            .get_rte_stats(include_sstable_rows)
             .await
             .default_error()?;
-        Ok(stats.map(LsmStats::from))
+        Ok(stats.map(RTEStats::from))
     }
 
     #[napi(catch_unwind)]
@@ -826,7 +829,10 @@ impl Table {
     pub async fn uses_v2_manifest_paths(&self) -> napi::Result<bool> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .uses_v2_manifest_paths()
             .await
             .default_error()
@@ -836,7 +842,10 @@ impl Table {
     pub async fn migrate_manifest_paths_v2(&self) -> napi::Result<()> {
         self.inner_ref()?
             .as_native()
-            .ok_or_else(|| napi::Error::from_reason("This cannot be run on a remote table"))?
+            .ok_or_else(|| lancedb::Error::NotSupported {
+                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+            })
+            .default_error()?
             .migrate_manifest_paths_v2()
             .await
             .default_error()
@@ -934,53 +943,53 @@ impl From<LanceDbFtsToken> for FtsToken {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `mergeInsert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `mergeInsert` through Lance's MemWAL LSM-style write path.
 ///
 /// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
 /// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
 /// `column` is required.
-#[napi(object)]
+#[napi(object, js_name = "RTEWriteSpec")]
 #[derive(Clone, Debug)]
-pub struct LsmWriteSpec {
+pub struct RTEWriteSpec {
     /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
     pub spec_type: String,
     /// Bucket and identity variants: the sharding column.
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// Indexes the RTE keeps up to date. Omitted resolves every
     /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
 }
 
-impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
+impl TryFrom<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
     type Error = napi::Error;
 
-    fn try_from(value: LsmWriteSpec) -> napi::Result<Self> {
+    fn try_from(value: RTEWriteSpec) -> napi::Result<Self> {
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec bucket requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `column`")
                 })?;
                 let num_buckets = value.num_buckets.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec bucket requires `numBuckets`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `numBuckets`")
                 })?;
                 Self::bucket(column, num_buckets)
             }
             "identity" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("LsmWriteSpec identity requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec identity requires `column`")
                 })?;
                 Self::identity(column)
             }
             "unsharded" => Self::unsharded(),
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "LsmWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    "RTEWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
                     other
                 )));
             }
@@ -991,9 +1000,9 @@ impl TryFrom<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
     }
 }
 
-impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
-    fn from(spec: lancedb::table::LsmWriteSpec) -> Self {
-        use lancedb::table::LsmWriteSpec as Native;
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(spec: lancedb::table::RTEWriteSpec) -> Self {
+        use lancedb::table::RTEWriteSpec as Native;
         match spec {
             Native::Bucket {
                 column,
@@ -1032,21 +1041,21 @@ impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
     }
 }
 
-/// One flushed L0 generation.
+/// One SSTable.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct GenerationStats {
-    /// The generation number. Increases as memtables are sealed into L0.
+pub struct SsTableStats {
+    /// The generation number. Increases as memtables are frozen into SSTables.
     pub generation: i64,
-    /// On-disk size of the generation.
+    /// On-disk size of the SSTable.
     pub bytes: i64,
-    /// Present only when `includeGenerationRows` was requested. Off by default
+    /// Present only when `includeSstableRows` was requested. Off by default
     /// because each count opens an uncached Lance dataset.
     pub rows: Option<i64>,
 }
 
-impl From<lancedb::table::GenerationStats> for GenerationStats {
-    fn from(g: lancedb::table::GenerationStats) -> Self {
+impl From<lancedb::table::SsTableStats> for SsTableStats {
+    fn from(g: lancedb::table::SsTableStats) -> Self {
         Self {
             generation: g.generation as i64,
             bytes: g.bytes as i64,
@@ -1059,7 +1068,7 @@ impl From<lancedb::table::GenerationStats> for GenerationStats {
 #[napi(object)]
 #[derive(Clone, Debug)]
 pub struct MemtableStats {
-    /// The generation this memtable will become once sealed.
+    /// The generation this memtable will become once frozen.
     pub generation: i64,
     /// Rows currently buffered.
     pub rows: i64,
@@ -1084,13 +1093,13 @@ impl From<lancedb::table::MemtableStats> for MemtableStats {
     }
 }
 
-/// Live state of one bucket. A table is N buckets on one node; flattening to a
-/// single number hides the one hot bucket that is usually why someone opened
+/// Live state of one table shard. A table is N table shards on one node; flattening to a
+/// single number hides the one hot table shard that is usually why someone opened
 /// this endpoint.
 #[napi(object)]
 #[derive(Clone, Debug)]
-pub struct BucketStats {
-    /// The shard this bucket writes.
+pub struct TableShardStats {
+    /// The id of this table shard.
     pub shard_id: String,
     /// `"Active"` or `"Sealed"` (drop-table 2PC in flight).
     pub status: String,
@@ -1105,20 +1114,20 @@ pub struct BucketStats {
     /// Highest WAL position the writer has seen. The difference against
     /// `replayAfterWalEntryPosition` is the WAL lag.
     pub wal_entry_position_last_seen: i64,
-    /// Flushed L0 generations not yet merged into the base table.
-    pub generations: Vec<GenerationStats>,
-    /// Whether a pass owns this bucket's compaction latch right now. Says *a*
+    /// SSTables not yet merged into the base table.
+    pub sstables: Vec<SsTableStats>,
+    /// Whether a pass owns this table shard's compaction latch right now. Says *a*
     /// driver is running, not *whose*, and the latch is held from dispatch —
     /// including while the pass queues for a pod-wide compactor permit. Read it
     /// as "do not pile on", never as "mine is progressing".
     pub compacting: bool,
-    /// Oldest first, active last. Absent for a `"Sealed"` bucket, whose
+    /// Oldest first, active last. Absent for a `"Sealed"` table shard, whose
     /// in-memory state is torn down.
     pub memtables: Option<Vec<MemtableStats>>,
 }
 
-impl From<lancedb::table::BucketStats> for BucketStats {
-    fn from(b: lancedb::table::BucketStats) -> Self {
+impl From<lancedb::table::TableShardStats> for TableShardStats {
+    fn from(b: lancedb::table::TableShardStats) -> Self {
         Self {
             shard_id: b.shard_id,
             status: b.status,
@@ -1127,7 +1136,7 @@ impl From<lancedb::table::BucketStats> for BucketStats {
             current_generation: b.current_generation as i64,
             replay_after_wal_entry_position: b.replay_after_wal_entry_position as i64,
             wal_entry_position_last_seen: b.wal_entry_position_last_seen as i64,
-            generations: b.generations.into_iter().map(Into::into).collect(),
+            sstables: b.sstables.into_iter().map(Into::into).collect(),
             compacting: b.compacting,
             memtables: b
                 .memtables
@@ -1136,21 +1145,21 @@ impl From<lancedb::table::BucketStats> for BucketStats {
     }
 }
 
-/// Live per-bucket LSM state, as returned by `Table#getLsmStats`.
+/// Live per-table-shard RTE state, as returned by `Table#getRTEStats`.
 ///
-/// Nothing here is derived: sums and differences (total L0 bytes, WAL lag) are
+/// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
-#[napi(object)]
+#[napi(object, js_name = "RTEStats")]
 #[derive(Clone, Debug)]
-pub struct LsmStats {
-    /// One entry per bucket backing this table.
-    pub buckets: Vec<BucketStats>,
+pub struct RTEStats {
+    /// One entry per table shard backing this table.
+    pub table_shards: Vec<TableShardStats>,
 }
 
-impl From<lancedb::table::LsmStats> for LsmStats {
-    fn from(stats: lancedb::table::LsmStats) -> Self {
+impl From<lancedb::table::RTEStats> for RTEStats {
+    fn from(stats: lancedb::table::RTEStats) -> Self {
         Self {
-            buckets: stats.buckets.into_iter().map(Into::into).collect(),
+            table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }
     }
 }
@@ -1352,6 +1361,16 @@ pub struct TableStatistics {
     /// The number of rows in the table
     pub num_rows: i64,
 
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// These rows are not included in `numRows`, but still occupy space on disk
+    /// until the table is compacted, so a large value here indicates that the
+    /// table should be optimized. Fragments in which every row was deleted are
+    /// dropped outright, so their rows are not counted here.
+    ///
+    /// Absent (`undefined`) when the backend does not report deletion counts.
+    pub num_deleted_rows: Option<i64>,
+
     /// The number of indices in the table
     pub num_indices: i64,
 
@@ -1400,6 +1419,7 @@ impl From<lancedb::table::TableStatistics> for TableStatistics {
         Self {
             total_bytes: v.total_bytes as i64,
             num_rows: v.num_rows as i64,
+            num_deleted_rows: v.num_deleted_rows.map(|n| n as i64),
             num_indices: v.num_indices as i64,
             fragment_stats: FragmentStatistics {
                 num_fragments: v.fragment_stats.num_fragments as i64,
@@ -1595,7 +1615,7 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild", "incremental" or "no_op".
+    /// How the view was brought up to date: "rebuild".
     pub mode: String,
     pub rows_written: i64,
     pub source_version: i64,
@@ -1606,8 +1626,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match value.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),

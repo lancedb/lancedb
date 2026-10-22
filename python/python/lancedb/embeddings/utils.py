@@ -304,6 +304,11 @@ def _is_non_retryable_error(error: Exception) -> bool:
     Returns:
         True if the error should not be retried, False otherwise
     """
+    from .base import UntrustedEmbeddingConfigError
+
+    if isinstance(error, UntrustedEmbeddingConfigError):
+        return True
+
     # Check for OpenAI authentication errors
     error_type = type(error).__name__
     if error_type == "AuthenticationError":

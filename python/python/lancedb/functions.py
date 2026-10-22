@@ -356,16 +356,23 @@ _ObjectVersion = Annotated[
 
 
 class FunctionVersion(_RemoteValue):
-    """A pinned object revision, independent of its executable image digest."""
+    """A pinned object revision, independent of its executable image digest.
+
+    ``name`` and ``namespace_path`` are the Function's parts, as a
+    [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
+    they are what [get_function][lancedb.db.DBConnection.get_function] takes.
+    An empty ``namespace_path`` is the root namespace.
+    """
 
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
     image: FunctionImage
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
-    created_at: str
+    created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
 
@@ -444,6 +451,7 @@ class FunctionVersion(_RemoteValue):
         return FunctionApplication(
             function=FunctionVersionRef(
                 name=self.name,
+                namespace_path=self.namespace_path,
                 object_id=self.object_id,
                 location=self.location,
                 version=self.version,
@@ -502,6 +510,7 @@ class FunctionRegistrationRequest(_RemoteValue):
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
@@ -688,6 +697,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.string(), "utf8"),
     (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
+    (pa.large_binary(), "large_binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
@@ -837,11 +847,7 @@ def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
             {
                 "name": child.name,
                 "nullable": child.nullable,
-                "type": (
-                    {"type": "large_binary"}
-                    if pa.types.is_large_binary(child.type)
-                    else _exact_arrow_type(child.type)
-                ),
+                "type": _exact_arrow_type(child.type),
             }
             for child in storage
         ],

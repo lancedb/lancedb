@@ -1,0 +1,61 @@
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Large scale vector search (1.5B)</title>
+  <desc id="desc">Abstract visualization of billions of vectors clustered and searched</desc>
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#030712" />
+      <stop offset="50%" stop-color="#111827" />
+      <stop offset="100%" stop-color="#1f2937" />
+    </linearGradient>
+    <radialGradient id="pulse" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity="1" />
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="node" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc" />
+      <stop offset="100%" stop-color="#22d3ee" />
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="512" height="512" rx="36" fill="url(#bg)" />
+
+  <g opacity="0.4" stroke="#1f2937">
+    <path d="M64 128h384M64 224h384M64 320h384M64 416h384" stroke-width="1.5" />
+    <path d="M128 64v384M224 64v384M320 64v384M416 64v384" stroke-width="1.5" />
+  </g>
+
+  <circle cx="256" cy="256" r="170" fill="url(#pulse)" opacity="0.45" />
+
+  <g stroke="rgba(255,255,255,0.15)" stroke-width="2" fill="none">
+    <path d="M140 180 Q256 120 372 180" />
+    <path d="M120 260 Q256 360 392 260" />
+    <path d="M160 340 Q256 220 352 340" />
+  </g>
+
+  <g fill="url(#node)" filter="url(#glow)">
+    <circle cx="140" cy="180" r="8" />
+    <circle cx="256" cy="120" r="10" />
+    <circle cx="372" cy="180" r="8" />
+    <circle cx="120" cy="260" r="7" />
+    <circle cx="392" cy="260" r="7" />
+    <circle cx="160" cy="340" r="9" />
+    <circle cx="352" cy="340" r="9" />
+    <circle cx="256" cy="256" r="14" />
+    <circle cx="210" cy="210" r="6" />
+    <circle cx="300" cy="210" r="6" />
+    <circle cx="210" cy="302" r="6" />
+    <circle cx="300" cy="302" r="6" />
+  </g>
+
+  <g fill="#e2e8f0" font-family="'Inter', 'Segoe UI', sans-serif" text-anchor="middle">
+    <text x="256" y="420" font-size="26" font-weight="600">1.5B vectors</text>
+    <text x="256" y="452" font-size="16" opacity="0.8">Large scale LanceDB search</text>
+  </g>
+</svg>

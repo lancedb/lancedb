@@ -395,6 +395,38 @@ def test_mrr_multivector_rewards_consensus():
     assert result["_rowid"].to_pylist()[0] == 2
 
 
+def test_rrf_multivector_ranks_each_result_list():
+    # RRF scores a document by its rank *within each* result list. The top hit
+    # of the second list must score the same as the top hit of the first list,
+    # not as if it were ranked after every row of the first list.
+    reranker = RRFReranker(K=60)
+
+    def ranking(row_ids):
+        return pa.table({"_rowid": pa.array(row_ids, type=pa.int64())})
+
+    rs1 = ranking([1, 2, 3])
+    rs2 = ranking([4, 5, 6])
+
+    result = reranker.rerank_multivector([rs1, rs2])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+
+    assert scores[1] == pytest.approx(1 / 61)
+    assert scores[4] == pytest.approx(1 / 61)
+    assert scores[5] == pytest.approx(1 / 62)
+    # the second-ranked hit of the second list beats the third hit of the first
+    assert scores[5] > scores[3]
+
+    # A document found by both lists sums its reciprocal ranks from each list.
+    result = reranker.rerank_multivector([ranking([1, 2]), ranking([2, 3])])
+    scores = dict(
+        zip(result["_rowid"].to_pylist(), result["_relevance_score"].to_pylist())
+    )
+    assert scores[2] == pytest.approx(1 / 62 + 1 / 61)
+    assert result["_rowid"].to_pylist() == [2, 1, 3]
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
@@ -791,6 +823,114 @@ def test_hybrid_return_all_restores_original_scores(norm):
     assert rows[0]["_score"] == 1.75
     assert rows[1]["_score"] == 3.25
     assert rows[2]["_score"] is None
+
+
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+@pytest.mark.parametrize("first_row_id", [1, 2**63])
+@pytest.mark.parametrize("score_type", [pa.float32(), pa.float64()])
+def test_model_reranker_preserves_arrow_schema(
+    mocker, return_score, first_row_id, score_type
+):
+    common_schema = pa.schema(
+        [
+            pa.field("_rowid", pa.uint64()),
+            pa.field("text", pa.string()),
+            pa.field("vector", pa.list_(pa.float32(), 2)),
+        ],
+        metadata={b"source": b"reranker-test"},
+    )
+    vector_results = pa.Table.from_pylist(
+        [
+            {
+                "_rowid": first_row_id,
+                "text": "vector",
+                "vector": [1, 0],
+                "_distance": 0.1,
+            },
+            {
+                "_rowid": first_row_id + 1,
+                "text": "both",
+                "vector": [0, 1],
+                "_distance": 0.2,
+            },
+        ],
+        schema=common_schema.append(pa.field("_distance", score_type)),
+    )
+    fts_results = pa.Table.from_pylist(
+        [
+            {
+                "_rowid": first_row_id + 1,
+                "text": "both",
+                "vector": [0, 1],
+                "_score": 0.9,
+            },
+            {
+                "_rowid": first_row_id + 2,
+                "text": "fts",
+                "vector": [1, 1],
+                "_score": 0.8,
+            },
+        ],
+        schema=common_schema.append(pa.field("_score", score_type)),
+    )
+    reranker = CohereReranker(return_score=return_score)
+    reranker._client = mocker.Mock()
+    reranker._client.rerank.return_value.results = [
+        mocker.Mock(index=index, relevance_score=score)
+        for index, score in [(2, 0.9), (1, 0.8), (0, 0.7)]
+    ]
+
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert result.select(common_schema.names).schema.equals(
+        common_schema, check_metadata=True
+    )
+    assert result["_rowid"].to_pylist() == [
+        first_row_id + 2,
+        first_row_id + 1,
+        first_row_id,
+    ]
+    assert result["text"].to_pylist() == ["fts", "both", "vector"]
+    if return_score == "all":
+        assert (
+            result["_distance"]
+            .combine_chunks()
+            .equals(pa.array([None, 0.2, 0.1], type=score_type))
+        )
+        assert (
+            result["_score"]
+            .combine_chunks()
+            .equals(pa.array([0.8, 0.9, None], type=score_type))
+        )
+
+
+@pytest.mark.parametrize("return_score", ["relevance", "all"])
+def test_model_reranker_empty_results_preserve_schema(mocker, return_score):
+    common_schema = pa.schema(
+        [
+            ("_rowid", pa.uint64()),
+            ("text", pa.string()),
+            ("vector", pa.list_(pa.float32(), 2)),
+        ],
+        metadata={b"source": b"reranker-test"},
+    )
+    vector_results = pa.Table.from_pylist(
+        [], schema=common_schema.append(pa.field("_distance", pa.float32()))
+    )
+    fts_results = pa.Table.from_pylist(
+        [], schema=common_schema.append(pa.field("_score", pa.float32()))
+    )
+    reranker = CohereReranker(return_score=return_score)
+    reranker._client = mocker.Mock()
+
+    result = reranker.rerank_hybrid("query", vector_results, fts_results)
+
+    assert len(result) == 0
+    assert result.select(common_schema.names).schema.equals(
+        common_schema, check_metadata=True
+    )
+    assert result.schema.field("_relevance_score").type == pa.float32()
+    reranker._client.rerank.assert_not_called()
 
 
 def test_cross_encoder_reranker_return_all(tmp_path):

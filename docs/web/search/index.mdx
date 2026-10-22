@@ -1,0 +1,118 @@
+---
+title: Search
+sidebarTitle: Overview
+description: "Choose vector, full-text or hybrid search and return the records your application needs."
+icon: "list"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Vector, full-text and hybrid search are available in OSS and Enterprise.
+---
+
+import { PyVectorSearch, TsVectorSearchBody, TsVectorSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsVectorSearchBody, RsExampleTail as RsVectorSearchTail } from '/snippets/search_vector_search.mdx';
+
+LanceDB supports vector, full-text and hybrid search. Use vector search to find
+similar content, full-text search to match words, or hybrid search to combine
+both. Filters narrow the results to records that match your criteria.
+
+## Choose a search method
+
+| You want to find | Use | Prepare |
+|:----------------|:----|:--------|
+| Items similar to a query, such as related passages or images | [Vector search](/search/vector-search) | Stored vectors and a compatible query vector |
+| Documents represented by several embeddings | [Multivector search](/search/vector-search#multivector) | A multivector column and compatible query vectors |
+| Records containing particular words or phrases | [Full-text search](/search/full-text-search) | An FTS index on the text column |
+| Relevant meaning alongside keyword matches | [Hybrid search](/search/hybrid-search) | Vectors and an FTS index |
+| Rows matching a condition, without similarity ranking | [Filtering](/search/filtering) | A predicate over table columns |
+
+Vector search can run without an index. An approximate nearest-neighbor index
+reduces the work needed for larger tables, with a tradeoff between recall and
+latency. Full-text search needs an FTS index before you query it.
+
+## Before you search {#before-you-search}
+
+For vector search, generate stored and query vectors with the same embedding
+model and compatible settings. Their dimensions must match. Keep the fields
+you want to return, such as document text or an item ID, in the same table.
+
+For full-text search, choose the text column and build its index. Enterprise
+builds indexes in the background, so wait for the index to be ready before
+querying it. Phrase queries also need token positions in the index. See
+[FTS indexes](/indexing/fts-index).
+
+<span id="run-a-first-query"></span>
+
+<Accordion title="Run a complete search example in Python, TypeScript or Rust">
+
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
+
+- **Python:** Install with `pip install lancedb`, save as `search.py`, then run `python search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `search.mts`, then run `node search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin vector_search` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyVectorSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsVectorSearchBody + "\n" + TsVectorSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsVectorSearchBody + "\n" + RsVectorSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+This query returns the puppy and dog records, ordered by vector distance.
+It searches the three-row table directly, without an ANN index or an embedding
+service. For connection options, see [Connect](/basics/connect).
+
+</Accordion>
+
+## Read the results
+
+Use `select()` to choose the columns your application needs and `limit()` to
+set the maximum number of results. The search also returns a ranking value:
+
+| Search method | Ranking column | Order |
+|:--------------|:---------------|:------|
+| Vector | `_distance` | Smaller distance first |
+| Full-text | `_score` | Higher text relevance first |
+| Hybrid | `_relevance_score` | Higher combined relevance first |
+
+These values have different meanings. Do not compare a vector distance directly
+with a full-text score or treat a reranker score as a probability.
+
+## Add filters and reranking {#performance}
+
+[Filters](/search/filtering) restrict which rows qualify, such as documents
+from a particular collection. Prefiltering searches within those rows.
+Postfiltering removes nonmatching rows from the candidates already retrieved,
+so it can leave fewer results than requested.
+
+[Reranking](/reranking) reorders the candidates returned by retrieval. Start
+with representative queries and expected results, then compare changes to
+relevance and latency. A reranker cannot recover a relevant row that retrieval
+never returned.
+
+## Read large result sets in batches {#avoid-materializing-the-whole-table}
+
+Materializing all rows at once can exhaust application memory. For exports and
+training reads, use bounded queries or the batch-reading interfaces described
+in [Data loading](/training/data-loading). The SDK buffers Enterprise
+query responses before exposing batches. Set a query limit rather than relying
+on batch iteration alone to bound memory.
+
+Direct Lance dataset access through Python's `table.to_lance()` is an OSS
+interface. Use the SDK query builders for reads that need to work with both
+OSS and Enterprise.
+
+## Investigate a slow query {#diagnostics}
+
+Use [query plans](/search/explain) to see the scans, filters and indexes selected
+for a query. `explain_plan()` inspects the plan; `analyze_plan()` executes the
+query and reports measurements. Compare one change at a time, such as adding
+an index, returning fewer columns, or adjusting search parameters.

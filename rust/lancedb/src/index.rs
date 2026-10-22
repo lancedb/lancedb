@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
+use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -74,6 +75,17 @@ pub enum Index {
     RTree(RTreeIndexBuilder),
 
     /// Full text search index using BM25.
+    ///
+    /// Supports strings, lists of strings, and `lance.json` logical fields
+    /// stored as `LargeBinary`. Raw binary fields are not supported. Lance
+    /// selects its JSON-aware tokenizer from the field metadata.
+    ///
+    /// JSON queries use `path,str,value` triples, where the dotted path is
+    /// relative to the indexed column. For example, `meta.tag,str,nature`
+    /// searches the string value at `$.meta.tag`, not other paths or key names.
+    /// Create the index on the JSON column, not on a JSON subpath. Plain text
+    /// queries are invalid for this tokenizer; malformed triples can panic in
+    /// the current Lance dependency (see [lance#8812](https://github.com/lance-format/lance/issues/8812)).
     ///
     /// The posting block size defaults to 128. Supported values are 128 and 256;
     /// a value of 256 uses the experimental FTS V3 format and may introduce
@@ -371,8 +383,36 @@ pub enum IndexType {
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
+    /// A registered scalar index plugin's display name, preserved verbatim.
+    ///
+    /// For example, `Custom("Sketch".into()).to_string()` returns `"Sketch"`.
+    Custom(String),
     /// Catch-all for index types not recognized by this version of LanceDB.
     Unknown,
+}
+
+impl IndexType {
+    pub(crate) fn from_description(
+        description: &dyn lance_index::traits::IndexDescription,
+    ) -> Self {
+        let index_type = description.index_type().parse().unwrap_or(Self::Unknown);
+        if index_type != Self::Unknown {
+            return index_type;
+        }
+        let Some(metadata) = description.segments().first() else {
+            return Self::Unknown;
+        };
+        if lance_index::is_system_index(metadata) {
+            return Self::Unknown;
+        }
+        let Some(details) = metadata.index_details.as_ref() else {
+            return Self::Unknown;
+        };
+        IndexDetails(details.clone())
+            .get_plugin()
+            .map(|plugin| Self::Custom(plugin.name().to_string()))
+            .unwrap_or(Self::Unknown)
+    }
 }
 
 impl std::fmt::Display for IndexType {
@@ -394,6 +434,7 @@ impl std::fmt::Display for IndexType {
             Self::BloomFilter => write!(f, "BLOOM_FILTER"),
             Self::RTree => write!(f, "RTREE"),
             Self::FTS => write!(f, "FTS"),
+            Self::Custom(name) => f.write_str(name),
             Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
