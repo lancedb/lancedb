@@ -145,6 +145,8 @@ def sanitize_text_input(inputs: TEXT) -> List[str]:
     """
     if isinstance(inputs, str):
         inputs = [inputs]
+    elif isinstance(inputs, (list, np.ndarray)):
+        inputs = list(inputs)
     elif isinstance(inputs, pa.Array):
         inputs = inputs.to_pylist()
     elif isinstance(inputs, pa.ChunkedArray):

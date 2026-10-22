@@ -45,6 +45,8 @@ Supported parameters (to be passed in `create` method) are:
 | `output_dimension` | `int` | `None` | Output embedding dimension. Only supported by `voyage-multimodal-3.5`. Valid options: 256, 512, 1024 (default), 2048. |
 
 
+For text models, `compute_source_embeddings()` accepts a single string, a list of strings, a one-dimensional NumPy array, or a PyArrow `Array` or `ChunkedArray`. Batch inputs retain their order.
+
 Usage Example:
 
 <CodeGroup>
