@@ -567,9 +567,17 @@ impl Splitter {
     /// regardless of how many (filtered) input rows it draws from. Callers that need
     /// to validate or pre-size `apply`'s output (e.g. the shuffler) must use this
     /// instead of assuming the input and output row counts match.
+    ///
+    /// For `Bootstrap`, this is `sizes.to_counts(num_samples)`'s sum, not
+    /// `num_samples` itself: `to_counts` can emit less than its input (e.g.
+    /// `Fixed(n)` when `n` does not divide `num_samples` evenly, or explicit
+    /// `counts`/`ratios` that do not use every sample) and `apply_bootstrap` only
+    /// ever emits exactly what `to_counts` returns.
     pub fn output_row_count(&self, num_rows: u64) -> u64 {
         match &self.strategy {
-            SplitStrategy::Bootstrap { num_samples, .. } => *num_samples,
+            SplitStrategy::Bootstrap {
+                num_samples, sizes, ..
+            } => sizes.to_counts(*num_samples).iter().sum(),
             _ => num_rows,
         }
     }
@@ -1099,9 +1107,9 @@ mod tests {
 
     #[test]
     fn test_output_row_count() {
-        // Bootstrap's output row count is num_samples, independent of the input size --
-        // every other strategy's output matches its input. The shuffler relies on this
-        // (see builder.rs) instead of assuming input and output row counts always match.
+        // Bootstrap's output row count is independent of the input size -- every
+        // other strategy's output matches its input. The shuffler relies on this
+        // (see builder.rs) instead of assuming input and output row counts match.
         let bootstrap = Splitter::new(
             TemporaryDirectory::None,
             SplitStrategy::Bootstrap {
@@ -1111,6 +1119,19 @@ mod tests {
             },
         );
         assert_eq!(bootstrap.output_row_count(50), 1000);
+
+        // Not num_samples itself: `Fixed(3)` doesn't divide 1000 evenly, so
+        // `to_counts` emits 333 * 3 = 999, one short of num_samples --
+        // `apply_bootstrap` only ever emits exactly what `to_counts` returns.
+        let bootstrap_uneven = Splitter::new(
+            TemporaryDirectory::None,
+            SplitStrategy::Bootstrap {
+                num_samples: 1000,
+                sizes: SplitSizes::Fixed(3),
+                seed: Some(42),
+            },
+        );
+        assert_eq!(bootstrap_uneven.output_row_count(50), 999);
 
         let sequential = Splitter::new(
             TemporaryDirectory::None,

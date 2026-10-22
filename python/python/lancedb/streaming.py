@@ -628,6 +628,12 @@ class StreamingDataset(IterableDataset):
             ).execute()
         else:
             self._perm_table = builder.split_sequential(fixed=num_splits).execute()
+        # Only the split_strategy path needs a permutation fingerprint in the
+        # checkpoint (see `_checkpoint_snapshot`): split_random/split_sequential are
+        # already fully pinned by shuffle_seed/num_splits, and a fingerprint over raw
+        # row ids would spuriously reject an otherwise-valid resume after those row
+        # ids get renumbered by compaction (row ids are not stable by default).
+        self._uses_split_strategy = split_strategy is not None
         # Lazily computed and cached by `_perm_fingerprint` -- `_perm_table` never
         # changes after construction, so this is correct to compute once.
         self._perm_fingerprint_cache: Optional[str] = None
@@ -1443,13 +1449,20 @@ class StreamingDataset(IterableDataset):
         """Cheap identity check for the built permutation, computed once and cached
         (``_perm_table`` never changes after construction).
 
-        ``num_splits``/``shuffle_seed`` alone cannot detect a `load_state_dict`
-        resuming saved per-split progress against a *different* permutation than
-        the one that produced it: a ``split_strategy`` callable ignores
-        ``shuffle_seed`` entirely, so e.g. a ``bootstrap_sample`` with no seed (or
-        any changed callable) can rebuild a completely different permutation on
-        the next run while ``shuffle_seed`` keeps its same default value and the
-        existing check passes anyway.
+        Only meaningful -- and only recorded in a checkpoint -- for the
+        ``split_strategy`` path (see ``_checkpoint_snapshot``): ``num_splits``/
+        ``shuffle_seed`` alone cannot detect a `load_state_dict` resuming saved
+        per-split progress against a *different* permutation than the one that
+        produced it, since a ``split_strategy`` callable ignores ``shuffle_seed``
+        entirely -- e.g. a ``bootstrap_sample`` with no seed (or any changed
+        callable) can rebuild a completely different permutation on the next run
+        while ``shuffle_seed`` keeps its same default value and the existing check
+        passes anyway. ``split_random``/``split_sequential`` are already fully
+        pinned by ``shuffle_seed``/``num_splits`` and must *not* additionally be
+        fingerprinted: this hashes physical row ids, which are not stable across
+        compaction by default, so checking it on those paths would reject an
+        otherwise-valid resume after the table gets compacted between save and
+        load even though the seeded permutation itself is unchanged.
         """
         if self._perm_fingerprint_cache is None:
             arrow_tbl = self._perm_table.to_arrow()
@@ -1462,11 +1475,20 @@ class StreamingDataset(IterableDataset):
         return self._perm_fingerprint_cache
 
     def _checkpoint_snapshot(self) -> dict:
+        # Only recorded for split_strategy: split_random/split_sequential are
+        # already fully pinned by shuffle_seed/num_splits below, and row ids are not
+        # stable across compaction by default, so fingerprinting them unconditionally
+        # would reject an otherwise-valid resume after the table got compacted.
+        perm_fingerprint = (
+            {"perm_fingerprint": self._perm_fingerprint}
+            if (self._uses_split_strategy)
+            else {}
+        )
         if self._pack_sequences is not None:
             return {
                 "shuffle_seed": self._shuffle_seed,
                 "num_splits": self._num_splits,
-                "perm_fingerprint": self._perm_fingerprint,
+                **perm_fingerprint,
                 "epoch": self._epoch,
                 "pack_sequences": self._pack_sequences,
                 "eos_id": self._eos_id,
@@ -1487,7 +1509,7 @@ class StreamingDataset(IterableDataset):
         return {
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
-            "perm_fingerprint": self._perm_fingerprint,
+            **perm_fingerprint,
             "epoch": self._epoch,
             "samples_consumed_per_split": samples,
             "positions_consumed_per_split": positions,
@@ -1618,12 +1640,15 @@ class StreamingDataset(IterableDataset):
         Raises ``ValueError`` if ``num_splits`` or ``shuffle_seed`` differ
         from the checkpoint, since a different split structure or shuffle order
         makes mid-epoch resumption meaningless. Also raises if the checkpoint
-        records a permutation fingerprint (every checkpoint saved by this
-        version does) that does not match the current dataset's permutation --
-        this catches a changed or non-deterministically-reseeded
-        ``split_strategy`` that ``num_splits``/``shuffle_seed`` alone cannot
-        detect, since ``shuffle_seed`` is unused on that path. Packed
-        checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
+        was built with ``split_strategy`` and records a permutation fingerprint
+        that does not match the current dataset's permutation -- this catches a
+        changed or non-deterministically-reseeded ``split_strategy`` that
+        ``num_splits``/``shuffle_seed`` alone cannot detect, since ``shuffle_seed``
+        is unused on that path. Checkpoints from ``split_random``/
+        ``split_sequential`` never carry this fingerprint (row ids are not stable
+        across compaction, so it would reject an otherwise-valid resume), and
+        continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
+        Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
         ``blocks_per_epoch``, and ``epoch``.
         """
         if state["num_splits"] != self._num_splits:

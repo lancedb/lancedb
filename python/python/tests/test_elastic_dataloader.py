@@ -3347,3 +3347,61 @@ def test_split_strategy_resume_with_matching_permutation_succeeds(lance_table):
     remaining_resumed = [row["id"] for row in ds2]
 
     assert remaining_original == remaining_resumed
+
+
+def test_default_checkpoint_omits_perm_fingerprint(lance_table):
+    """split_random/split_sequential checkpoints must not carry a
+    perm_fingerprint -- see test_default_checkpoint_resumes_after_compaction for
+    why checking one on this path would be wrong, not just unnecessary."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert "perm_fingerprint" not in ds.state_dict()
+
+
+def test_split_strategy_checkpoint_includes_perm_fingerprint(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    assert "perm_fingerprint" in ds.state_dict()
+
+
+def test_default_checkpoint_resumes_after_compaction(lance_table):
+    """split_random/split_sequential checkpoints must resume normally even after
+    the table is compacted between save and load. Lance row ids are not stable
+    across compaction by default (confirmed empirically: a 2-fragment table's
+    row ids differ before and after `optimize()`), so fingerprinting raw row ids
+    on this path -- instead of relying on shuffle_seed/num_splits alone, as it
+    does -- would reject this resume even though the seeded permutation itself
+    is unchanged."""
+    lance_table.add(pa.table({"id": [NUM_ROWS]}))  # a second fragment to compact
+
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    assert "perm_fingerprint" not in checkpoint
+
+    before_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    lance_table.optimize()
+    after_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    assert before_compaction != after_compaction, (
+        "test setup didn't actually renumber row ids -- fix the fixture, not "
+        "the assertion below"
+    )
+
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)  # must not raise
