@@ -28,7 +28,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import _register_optional_converters, to_scannable
+from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
 from ._blob import (
@@ -400,7 +400,7 @@ def _into_pyarrow_reader(
     if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
-            return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
+            return pa.RecordBatchReader.from_batches(schema, _hf_batches(data))
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
             schema = _schema_from_hf(data, None)
             if "split" not in schema.names:
@@ -469,7 +469,7 @@ def _into_pyarrow_reader(
     ):
         return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_reader(data)
+        return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -479,10 +479,19 @@ def _into_pyarrow_reader(
         )
 
 
-def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+def _iterator_to_reader(
+    data: Iterable, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
-    first = _into_pyarrow_reader(next(data))
+    data = iter(data)
+    try:
+        first_batch = next(data)
+    except StopIteration:
+        if schema is None:
+            raise ValueError("Cannot create table from empty iterable without a schema")
+        return pa.RecordBatchReader.from_batches(schema, [])
+    first = _into_pyarrow_reader(first_batch)
     schema = first.schema
 
     def gen():
@@ -1195,7 +1204,7 @@ def _to_batches_with_split(data):
     with an extra `split` column
     """
     for key, dataset in data.items():
-        for batch in dataset.data.to_batches():
+        for batch in _hf_batches(dataset):
             table = pa.Table.from_batches([batch])
             if "split" not in table.column_names:
                 table = table.append_column(
@@ -2558,7 +2567,11 @@ class Table(ABC):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
 
     @abstractmethod
@@ -4818,7 +4831,11 @@ class LanceTable(Table):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -5321,6 +5338,11 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     else:
         values_has_nan = pc.is_nan(values)
     values_indices = pc.list_parent_indices(arr)
+    if arr.null_count:
+        # Match flatten(), which excludes child spans under null parent lists.
+        values_indices = pc.filter(
+            values_indices, pc.take(pc.is_valid(arr), values_indices)
+        )
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
@@ -5409,6 +5431,7 @@ def _infer_target_schema(
                 field.name,  # preserve original field name
                 target_type,
                 nullable=field.nullable,
+                metadata=field.metadata,
             )
 
             schema = schema.set(i, new_field)
@@ -7509,7 +7532,11 @@ class AsyncTable:
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return await self._inner.tokenize(query, column=column, index_name=index_name)
 
