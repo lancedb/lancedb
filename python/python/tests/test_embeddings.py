@@ -896,6 +896,8 @@ def test_transient_embedding_error_is_retried_in_table_add(tmp_path):
     assert len(calls) == 3
     assert mock_sleep.call_count == 2
     assert all(call.args[0] <= 60 for call in mock_sleep.call_args_list)
+
+
 @patch("time.sleep")
 @pytest.mark.parametrize(
     "error",
@@ -941,6 +943,8 @@ def test_retry_on_wrapped_provider_error(mock_sleep):
     assert wrapped_func() == [0.1]
     assert mock_func.call_count == 2
     assert mock_sleep.call_count == 1
+
+
 def test_openai_bad_request_partial_batch_recovery():
     # Regression test for issue #1677
 
