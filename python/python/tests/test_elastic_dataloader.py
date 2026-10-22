@@ -3285,6 +3285,23 @@ def test_split_strategy_num_splits_mismatch_raises(lance_table):
         )
 
 
+def test_split_strategy_unequal_split_sizes_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose splits
+    all exist (ids 0..num_splits-1) but aren't the same size. The round-robin
+    iteration (see _iter_owned) assumes every owned split has the same row count
+    and stops as soon as any one is exhausted -- `ratios`/`counts` (unlike
+    `fixed`) can produce unequal split sizes, which would otherwise silently
+    drop rows from the larger splits."""
+    with pytest.raises(ValueError, match="unequal split sizes"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                100, ratios=[0.7, 0.3], seed=SHUFFLE_SEED
+            ),
+            num_splits=2,
+        )
+
+
 def test_split_strategy_permutation_mismatch_on_resume_raises(lance_table):
     """load_state_dict must reject resuming against a different permutation than
     the one that produced the checkpoint. num_splits/shuffle_seed alone can't catch

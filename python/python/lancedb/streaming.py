@@ -609,17 +609,41 @@ class StreamingDataset(IterableDataset):
             # fixed=num_splits) -- a split_strategy callable has no such guarantee, and
             # a mismatch would otherwise silently drop rows (ids >= num_splits) or leave
             # some ranks reading an empty split (missing ids < num_splits).
-            actual_splits = set(
-                self._perm_table.to_arrow().column("split_id").unique().to_pylist()
+            split_value_counts = (
+                self._perm_table.to_arrow().column("split_id").value_counts()
+            )
+            counts_by_split = dict(
+                zip(
+                    split_value_counts.field("values").to_pylist(),
+                    split_value_counts.field("counts").to_pylist(),
+                )
             )
             expected_splits = set(range(num_splits))
-            if actual_splits != expected_splits:
+            if set(counts_by_split) != expected_splits:
                 raise ValueError(
-                    f"split_strategy produced split ids {sorted(actual_splits)}, but "
-                    f"num_splits={num_splits} requires exactly "
+                    f"split_strategy produced split ids {sorted(counts_by_split)}, "
+                    f"but num_splits={num_splits} requires exactly "
                     f"{{0, ..., {num_splits - 1}}}. Pass num_splits matching the "
                     "strategy's own split count (e.g. `fixed=num_splits` on "
                     "bootstrap_sample/split_random/etc.)."
+                )
+            # The round-robin iteration below (and in _iter_owned) assumes every
+            # split has the same row count -- it stops as soon as any one owned
+            # split is exhausted (see its own comment: "all splits exhaust
+            # simultaneously"). Every other path guarantees this by always building
+            # with fixed=num_splits; a split_strategy using ratios/counts/split_hash
+            # weights has no such guarantee, and unequal sizes would otherwise
+            # silently drop rows from the larger splits -- or, with world_size > 1
+            # where each rank owns different splits, end ranks after different row
+            # counts and desync or hang a distributed run's end-of-epoch collectives.
+            if len(set(counts_by_split.values())) > 1:
+                raise ValueError(
+                    f"split_strategy produced unequal split sizes "
+                    f"{counts_by_split} (split id -> row count). Every split must "
+                    "have the same row count. Use `fixed=num_splits` rather than "
+                    "`ratios`/`counts`/weighted `split_hash`, which can produce "
+                    "unequal sizes, or split unevenly-sized groups into separate "
+                    "StreamingDatasets instead."
                 )
         elif shuffle:
             perm_seed = shuffle_seed + epoch * _EPOCH_PRIME
