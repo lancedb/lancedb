@@ -49,6 +49,18 @@ impl Connection {
     }
 }
 
+fn parse_read_consistency_interval(interval: Option<f64>) -> PyResult<Option<Duration>> {
+    interval
+        .map(|seconds| {
+            Duration::try_from_secs_f64(seconds).map_err(|_| {
+                PyValueError::new_err(
+                    "read_consistency_interval must be finite, non-negative, and within the supported range",
+                )
+            })
+        })
+        .transpose()
+}
+
 fn parse_namespace_client_pushdown_operations(
     operations: Option<Vec<String>>,
 ) -> PyResult<HashSet<NamespaceClientPushdownOperation>> {
@@ -412,7 +424,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view(
         self_: PyRef<'_, Self>,
         name: String,
@@ -421,10 +434,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -440,7 +461,8 @@ impl Connection {
         })
     }
 
-    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false))]
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (name, source, projections=None, filter=None, limit=None, with_no_data=false, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn create_materialized_view_async(
         self_: PyRef<'_, Self>,
         name: String,
@@ -449,10 +471,18 @@ impl Connection {
         filter: Option<String>,
         limit: Option<u64>,
         with_no_data: bool,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<f64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.get_inner()?.clone();
         future_into_py(self_.py(), async move {
             let mut builder = inner.create_materialized_view(name, source);
+            if let Some(enabled) = auto_refresh_enabled {
+                builder = builder.auto_refresh_enabled(enabled);
+            }
+            if let Some(seconds) = auto_refresh_interval_seconds {
+                builder = builder.auto_refresh_interval_seconds(seconds);
+            }
             if let Some(projections) = projections {
                 builder = builder.select(projections);
             }
@@ -1059,6 +1089,7 @@ pub fn connect(
     namespace_client_properties: Option<HashMap<String, String>>,
     oauth_config: Option<crate::oauth::PyOAuthConfig>,
 ) -> PyResult<Bound<'_, PyAny>> {
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     future_into_py(py, async move {
         let mut builder = lancedb::connect(&uri);
         if let Some(api_key) = api_key {
@@ -1077,7 +1108,6 @@ pub fn connect(
         #[cfg(not(feature = "remote"))]
         let _ = sql_host_override;
         if let Some(read_consistency_interval) = read_consistency_interval {
-            let read_consistency_interval = Duration::from_secs_f64(read_consistency_interval);
             builder = builder.read_consistency_interval(read_consistency_interval);
         }
         if let Some(storage_options) = storage_options {
@@ -1126,7 +1156,7 @@ pub fn connect_namespace_client(
     namespace_client_impl: Option<String>,
     namespace_client_properties: Option<HashMap<String, String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
     let ns_properties = namespace_client_properties.unwrap_or_default();
@@ -1183,7 +1213,7 @@ pub fn connect_namespace(
     session: Option<crate::session::Session>,
     namespace_client_pushdown_operations: Option<Vec<String>>,
 ) -> PyResult<Connection> {
-    let read_consistency_interval = read_consistency_interval.map(Duration::from_secs_f64);
+    let read_consistency_interval = parse_read_consistency_interval(read_consistency_interval)?;
     let namespace_client_pushdown_operations =
         parse_namespace_client_pushdown_operations(namespace_client_pushdown_operations)?;
 
@@ -1220,6 +1250,7 @@ pub struct PyClientConfig {
     user_agent: String,
     retry_config: Option<PyClientRetryConfig>,
     timeout_config: Option<PyClientTimeoutConfig>,
+    blob_request_concurrency: Option<usize>,
     extra_headers: Option<HashMap<String, String>>,
     id_delimiter: Option<String>,
     tls_config: Option<PyClientTlsConfig>,
@@ -1305,6 +1336,7 @@ impl From<PyClientConfig> for lancedb::remote::ClientConfig {
             user_agent: value.user_agent,
             retry_config: value.retry_config.map(Into::into).unwrap_or_default(),
             timeout_config: value.timeout_config.map(Into::into).unwrap_or_default(),
+            blob_request_concurrency: value.blob_request_concurrency,
             extra_headers: value.extra_headers.unwrap_or_default(),
             id_delimiter: value.id_delimiter,
             tls_config: value.tls_config.map(Into::into),

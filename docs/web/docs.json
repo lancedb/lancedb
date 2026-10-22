@@ -64,10 +64,6 @@
       "destination": "/feature-engineering/add-computed-column"
     },
     {
-      "source": "/feature-engineering/functions",
-      "destination": "/management/function"
-    },
-    {
       "source": "/tables/create",
       "destination": "/ingestion"
     },
@@ -164,10 +160,6 @@
       "destination": "/deployment/monitoring"
     },
     {
-      "source": "/enterprise/deployment",
-      "destination": "/enterprise/deployment/index"
-    },
-    {
       "source": "/search/sql",
       "destination": "/sql"
     },
@@ -253,6 +245,8 @@
             "group": "Getting Started",
             "pages": [
               "index",
+              "basics/offerings",
+              "basics/connect",
               "quickstart",
               "architecture",
               "basics/sdk",
@@ -270,7 +264,8 @@
               "basics/jobs",
               "tables/consistency",
               "basics/guarantees",
-              "basics/limits"
+              "basics/limits",
+              "basics/naming"
             ]
           },
           {
@@ -332,9 +327,9 @@
               "management/namespace",
               "management/table",
               "tables/branching",
+              "tables/realtime-engine",
               "management/materialized-view",
-              "management/view",
-              "management/function"
+              "management/view"
             ]
           },
           {
@@ -384,7 +379,6 @@
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
                   "sql/ddl/index",
-                  "sql/ddl/function",
                   "sql/ddl/job"
                 ],
                 "icon": "sitemap"

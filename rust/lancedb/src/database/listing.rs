@@ -540,7 +540,7 @@ impl ListingDatabase {
                 // pairs survive (or none existed in the first place), so an empty
                 // string here must be treated the same as "no query" — otherwise
                 // every table URI ends up with a trailing `?`, which makes downstream
-                // sub-paths (e.g. MemWAL gen paths) re-parse as path=<base table> +
+                // sub-paths (e.g. RTE gen paths) re-parse as path=<base table> +
                 // query=<sub-path>, causing Lance to find the base table dataset
                 // when looking up the sub-path.
                 let query_string = url.query().filter(|q| !q.is_empty()).map(|s| s.to_string());
@@ -750,26 +750,39 @@ impl ListingDatabase {
             uri.push_str(&format!("?{}", query_string));
         }
         let commit_handler = commit_handler_from_url(&uri, &Some(object_store_params)).await?;
+        // One name that cannot be dropped must not strand the names after it: a caller
+        // dropping every table would otherwise be left with a partly dropped database that
+        // the same call cannot finish. Every name is attempted and the first failure is
+        // still what the call reports, so a caller matching on the error sees what it saw
+        // before.
+        let mut first_error = None;
         for name in names {
             let dir_name = format!("{}.{}", name, LANCE_EXTENSION);
             let full_path = self.base_path.clone().join(dir_name.clone());
 
-            commit_handler.delete(&full_path).await?;
+            let dropped: Result<()> = async {
+                commit_handler.delete(&full_path).await?;
 
-            self.object_store
-                .remove_dir_all(full_path.clone())
-                .await
-                .map_err(|err| match err {
-                    // this error is not lance::Error::DatasetNotFound, as the method
-                    // `remove_dir_all` may be used to remove something not be a dataset
-                    lance::Error::NotFound { .. } => Error::TableNotFound {
-                        name: name.clone(),
-                        source: Box::new(err),
-                    },
-                    _ => Error::from(err),
-                })?;
+                self.object_store
+                    .remove_dir_all(full_path.clone())
+                    .await
+                    .map_err(|err| match err {
+                        // this error is not lance::Error::DatasetNotFound, as the method
+                        // `remove_dir_all` may be used to remove something not be a dataset
+                        lance::Error::NotFound { .. } => Error::TableNotFound {
+                            name: name.clone(),
+                            source: Box::new(err),
+                        },
+                        _ => Error::from(err),
+                    })
+            }
+            .await;
+
+            if let Err(err) = dropped {
+                first_error.get_or_insert(err);
+            }
         }
-        Ok(())
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Inherit storage options from the connection into the target map
@@ -930,20 +943,18 @@ impl Database for ListingDatabase {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().table_names(request).await;
         }
-        let mut f = self
+        // Only child directories can be tables, the same rule `list_tables` lists by: a
+        // loose object named like a table is not one, and a name handed back for it is a
+        // name the caller can neither open nor drop.
+        let dir_suffix = format!(".{LANCE_EXTENSION}");
+        let listing = self
             .object_store
-            .read_dir(self.base_path.clone())
-            .await?
+            .list_with_delimiter(Some(&self.base_path))
+            .await?;
+        let mut f = listing
+            .common_prefixes
             .iter()
-            .map(Path::new)
-            .filter(|path| {
-                let is_lance = path
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .map(|e| e == LANCE_EXTENSION);
-                is_lance.unwrap_or(false)
-            })
-            .filter_map(|p| p.file_stem().and_then(|s| s.to_str().map(String::from)))
+            .filter_map(|location| table_name(location, &dir_suffix))
             .collect::<Vec<String>>();
         f.sort();
         if let Some(start_after) = request.start_after {
@@ -1697,6 +1708,63 @@ mod tests {
             .unwrap();
 
         assert_eq!(page.tables, vec!["real"]);
+
+        // The deprecated name listing answers the same question and so follows the same
+        // rule: a name it hands back has to be one a caller can open and drop.
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert_eq!(names, vec!["real"]);
+    }
+
+    /// Dropping the database drops its tables and leaves everything else alone. A loose
+    /// `*.lance` object under the database prefix is not a table, so it is neither dropped
+    /// nor allowed to strand the tables that are.
+    #[tokio::test]
+    async fn test_drop_all_tables_leaves_loose_lance_files() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+        // Sorts between the two tables, so a drop that stops at the first failure would
+        // leave `b` behind.
+        let loose = tempdir.path().join("aaa-loose.lance");
+        std::fs::write(&loose, b"not a table").unwrap();
+
+        db.drop_all_tables(&[]).await.unwrap();
+
+        #[allow(deprecated)]
+        let names = db.table_names(TableNamesRequest::default()).await.unwrap();
+        assert!(names.is_empty(), "a table survived the drop: {names:?}");
+        assert!(!tempdir.path().join("a.lance").exists());
+        assert!(!tempdir.path().join("b.lance").exists());
+        assert!(
+            loose.exists(),
+            "a loose object was dropped as if it were a table"
+        );
+    }
+
+    /// A name that cannot be dropped does not strand the names after it: every name is
+    /// attempted, and the failure is still what the call reports.
+    #[tokio::test]
+    async fn test_drop_tables_attempts_every_name() {
+        let (tempdir, db) = setup_database().await;
+        create_tables(&db, &["a", "b"]).await;
+
+        let result = db
+            .drop_tables(vec![
+                "a".to_string(),
+                "missing".to_string(),
+                "b".to_string(),
+            ])
+            .await;
+
+        assert!(
+            matches!(result, Err(Error::TableNotFound { .. })),
+            "dropping a table that is not there did not report it: {result:?}"
+        );
+        assert!(!tempdir.path().join("a.lance").exists());
+        assert!(
+            !tempdir.path().join("b.lance").exists(),
+            "the table after the failing name was left behind"
+        );
     }
 
     #[tokio::test]
@@ -3104,7 +3172,7 @@ mod tests {
     ///
     /// Earlier, `query_pairs_mut().clear()` left the URL with
     /// `query=Some("")`, which then propagated as a trailing `?` on
-    /// every table URI. Sub-path lookups against that URI (e.g. MemWAL
+    /// every table URI. Sub-path lookups against that URI (e.g. RTE
     /// `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parsed as
     /// `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
@@ -3178,7 +3246,7 @@ mod tests {
     /// `url::Url::parse` and the `query_pairs_mut()` path) must not
     /// append a trailing `?` to per-table URIs when the input URI has
     /// no query string. Sub-path lookups against such a URI (e.g.
-    /// MemWAL `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
+    /// RTE `<table_uri>/_mem_wal/<shard>/<rand>_gen_<n>`) re-parse
     /// as `path=<base table>` + `query=/_mem_wal/...`, causing
     /// `Dataset::write` to find the base table dataset and falsely
     /// report `Dataset already exists`.

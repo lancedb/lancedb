@@ -1,21 +1,24 @@
 ---
-title: VoyageAI Reranker
+title: Voyage AI Reranker
 sidebarTitle: "Voyage AI"
-description: Integrate VoyageAI's cutting-edge reranking models with LanceDB. Features model selection, API key management, and comprehensive scoring options for all search types.
+description: Integrate Voyage AI's cutting-edge reranking models with LanceDB. Features model selection, API key management, and comprehensive scoring options for all search types.
 
 ---
 
-import { PyRerankingVoyageaiUsage } from '/snippets/integrations.mdx';
+import { PyRerankingVoyageaiUsage } from '/snippets/provider_examples.mdx';
 
-# VoyageAI Reranker
+# Voyage AI Reranker {#voyageai-reranker}
 
 Voyage AI provides cutting-edge embedding and rerankers.
 
-This reranker uses the [VoyageAI](https://docs.voyageai.com/docs/) API to rerank the search results. You can use this reranker by passing `VoyageAIReranker()` to the `rerank()` method. Note that you'll either need to set the `VOYAGE_API_KEY` environment variable or pass the `api_key` argument to use this reranker.
+This reranker uses the [Voyage AI](https://docs.voyageai.com/docs/) API to rerank the search results. You can use this reranker by passing `VoyageAIReranker()` to the `rerank()` method. Note that you'll either need to set the `VOYAGE_API_KEY` environment variable or pass the `api_key` argument to use this reranker.
 
 
-> **Note:** Supported query types – Hybrid, Vector, and FTS.
+> **Note:** Supported query types: Hybrid, Vector, and FTS.
 
+
+Replace `your-api-key` with your provider API key. In application code, load
+credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

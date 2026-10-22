@@ -5,17 +5,19 @@ description: Rerank LanceDB search results with the IBM watsonx.ai text rerank A
 
 ---
 
-import { PyRerankingWatsonxUsage } from '/snippets/integrations.mdx';
+import { PyRerankingWatsonxUsage } from '/snippets/provider_examples.mdx';
 
 # Watsonx Reranker
 
 This reranker uses the [IBM watsonx.ai](https://cloud.ibm.com/docs/apis/watsonx-ai#text-rerank) text rerank API to reorder search results. Pass `WatsonxReranker()` to the `rerank()` method on a query. Credentials come from the `WATSONX_API_KEY` and `WATSONX_PROJECT_ID` (or `WATSONX_SPACE_ID`) environment variables, or can be passed explicitly as arguments.
 
-> **Note:** Supported query types – Hybrid, Vector, and FTS.
+> **Note:** Supported query types: Hybrid, Vector, and FTS.
 
 ```shell
 pip install ibm-watsonx-ai
 ```
+
+Replace the credential placeholders with your provider credentials. In application code, load credentials from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

@@ -23,6 +23,12 @@ from lancedb.embeddings.utils import retry
 from lancedb.pydantic import LanceModel, Vector
 
 
+@pytest.fixture(autouse=True)
+def isolated_embedding_registry(monkeypatch):
+    registry = get_registry()
+    monkeypatch.setattr(registry, "_functions", registry._functions.copy())
+
+
 def mock_embed_func(input_data):
     return [np.random.randn(128).tolist() for _ in range(len(input_data))]
 
@@ -62,6 +68,37 @@ def test_embedding_function(tmp_path):
     expected = func.compute_query_embeddings("hello world")
 
     assert np.allclose(actual, expected)
+
+
+def test_embedding_function_registered_without_alias(tmp_path):
+    registry = EmbeddingFunctionRegistry.get_instance()
+
+    @registry.register()
+    class NoAliasEmbeddingFunction(TextEmbeddingFunction):
+        def ndims(self):
+            return 2
+
+        def generate_embeddings(self, texts):
+            return [np.array([1.0, 2.0]) for _ in texts]
+
+    assert registry.get("NoAliasEmbeddingFunction") is NoAliasEmbeddingFunction
+
+    func = NoAliasEmbeddingFunction.create()
+
+    class Schema(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(2) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    db.create_table("test", schema=Schema)
+
+    # The class name is written to the table metadata, so the function can be
+    # resolved again when the table is reopened.
+    table = lancedb.connect(tmp_path).open_table("test")
+    table.add([{"text": "hello"}])
+    conf = table.embedding_functions["vector"]
+    assert isinstance(conf.function, NoAliasEmbeddingFunction)
+    assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0]]
 
 
 def test_instructor_ndims_uses_instruction():
@@ -641,6 +678,49 @@ def test_retry_on_wrapped_provider_error(mock_sleep):
     assert wrapped_func() == [0.1]
     assert mock_func.call_count == 2
     assert mock_sleep.call_count == 1
+def test_openai_bad_request_partial_batch_recovery():
+    # Regression test for issue #1677
+
+    # Fake exception types, avoids requiring the optional openai/httpx deps
+    class FakeBadRequestError(Exception):
+        pass
+
+    class FakeAuthenticationError(Exception):
+        pass
+
+    fake_openai_module = MagicMock()
+    fake_openai_module.BadRequestError = FakeBadRequestError
+    fake_openai_module.AuthenticationError = FakeAuthenticationError
+
+    registry = get_registry()
+    model = registry.get("openai").create(name="text-embedding-ada-002")
+
+    def fake_create(input, model=None, **kwargs):
+        # Full batch always rejected
+        if len(input) > 1:
+            raise FakeBadRequestError("bad request")
+        if input[0] == "bad text":
+            raise FakeBadRequestError("bad request")
+        embedding = MagicMock()
+        embedding.embedding = [0.1, 0.2, 0.3]
+        result = MagicMock()
+        result.data = [embedding]
+        return result
+
+    mock_client = MagicMock()
+    mock_client.embeddings.create.side_effect = fake_create
+
+    with (
+        patch(
+            "lancedb.embeddings.openai.attempt_import_or_raise",
+            return_value=fake_openai_module,
+        ),
+        patch.object(type(model), "_openai_client", new_callable=lambda: mock_client),
+    ):
+        embeddings = model.generate_embeddings(["good text", "bad text"])
+
+    assert embeddings[0] == [0.1, 0.2, 0.3]
+    assert embeddings[1] is None
 
 
 def test_ollama_embeddings_pickle():

@@ -6,7 +6,7 @@ icon: function
 keywords: ["functions", "datafusion", "scalar", "aggregate", "window", "fts", "table function"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 LanceDB executes SQL with [Apache DataFusion](https://datafusion.apache.org),
 currently **version 54**. The function set is DataFusion's default registration
@@ -14,9 +14,9 @@ plus what Lance adds.
 
 | | |
 | --- | --- |
-| [Scalar functions](/sql/scalar-functions) | per row — math, string, regex, date/time, array, struct, JSON |
-| [Aggregate functions](/sql/dql/aggregation#functions) | per group — `count`, `sum`, statistical, approximate |
-| [Window functions](/sql/dql/window#functions) | per window — ranking, offset, running aggregates |
+| [Scalar functions](/sql/scalar-functions) | per row: math, string, regex, date/time, array, struct, JSON |
+| [Aggregate functions](/sql/dql/aggregation#functions) | per group: `count`, `sum`, statistical, approximate |
+| [Window functions](/sql/dql/window#functions) | per window: ranking, offset, running aggregates |
 | [Table functions](#table-functions) | produce a relation rather than a value |
 
 <Note>
@@ -51,7 +51,7 @@ and multi-match queries use this JSON encoding.
 
 Its schema contains the dataset's columns plus `_score`, so every stored
 column is available in the result. Projections push into the scan.
-Being a relation is also what makes it compose — join it, filter it, aggregate
+Being a relation is also what makes it compose: join it, filter it, aggregate
 over it. This join additionally requires `my_docs.category_id` and a
 `categories` table with `id` and `name` columns:
 
@@ -73,7 +73,7 @@ multi-match query forms.
 ### `_score` {#score}
 
 A pseudo-column produced by `fts()`, carrying relevance for the row. It behaves
-like any other column — order by it, filter on it, project it — and exists only
+like any other column (order by it, filter on it, project it) and exists only
 in a relation that came from `fts()`. See
 [Data types](/sql/data-types#pseudo-columns).
 

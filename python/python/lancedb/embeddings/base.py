@@ -3,7 +3,7 @@
 
 from abc import ABC, abstractmethod
 import copy
-from typing import List, Union
+from typing import List, Optional, Tuple, Union
 
 from lancedb.util import add_note
 import numpy as np
@@ -11,6 +11,18 @@ import pyarrow as pa
 from pydantic import BaseModel, Field, PrivateAttr
 
 from .utils import TEXT, retry_with_exponential_backoff
+
+
+class UntrustedEmbeddingConfigError(PermissionError):
+    """
+    Raised when using an embedding function restored from table metadata whose
+    settings this process has not approved.
+
+    See
+    [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code]
+    and
+    [allow_endpoint][lancedb.embeddings.EmbeddingFunctionRegistry.allow_endpoint].
+    """
 
 
 class EmbeddingFunction(BaseModel, ABC):
@@ -37,10 +49,28 @@ class EmbeddingFunction(BaseModel, ABC):
         """
         Create an instance of the embedding function
         """
+        from .registry import EmbeddingFunctionRegistry
+
         resolved_kwargs = cls.__resolveVariables(kwargs)
         instance = cls(**resolved_kwargs)
-        instance._original_args = kwargs
+        instance._original_args = dict(kwargs)
+        if (
+            instance.remote_code_model() is not None
+            and "trust_remote_code" in cls.model_fields
+        ):
+            # Record the flag even when left at its default, so a missing flag
+            # in table metadata only ever means a table written before this.
+            instance._original_args.setdefault(
+                "trust_remote_code", instance.trust_remote_code
+            )
+        # The caller wrote this config, so this process trusts it. Without this,
+        # a table created with it could not be reopened in the same process.
+        EmbeddingFunctionRegistry.get_instance()._trust(instance)
         return instance
+
+    @classmethod
+    def _resolve_variables(cls, args: dict) -> dict:
+        return cls.__resolveVariables(args)
 
     @classmethod
     def __resolveVariables(cls, args: dict) -> dict:
@@ -89,6 +119,38 @@ class EmbeddingFunction(BaseModel, ABC):
         """
         Return a list of keys that are sensitive and should not be allowed
         to be set to hardcoded values in the config. For example, API keys.
+        """
+        return []
+
+    def remote_code_model(self) -> Optional[Tuple[str, Optional[str]]]:
+        """
+        Return the model whose repository code this function runs when its
+        `trust_remote_code` field is enabled, as a `(name, revision)` pair.
+
+        Return None if the function never runs code from a model repository.
+        When the function is restored from table metadata, `trust_remote_code`
+        is only enabled for models allowed with
+        [allow_remote_code][lancedb.embeddings.EmbeddingFunctionRegistry.allow_remote_code].
+        """
+        return None
+
+    @classmethod
+    def _legacy_trust_remote_code_default(cls) -> bool:
+        """
+        The `trust_remote_code` to use for table metadata that omits it. Only
+        tables written before the flag was always recorded omit it, so this is
+        the default from that time.
+        """
+        field = cls.model_fields.get("trust_remote_code")
+        return bool(field.default) if field is not None else False
+
+    def endpoints(self) -> List[str]:
+        """
+        Return the non-default URLs this function sends data or credentials to.
+
+        When the function is restored from table metadata, each of these must be
+        allowed with
+        [allow_endpoint][lancedb.embeddings.EmbeddingFunctionRegistry.allow_endpoint].
         """
         return []
 
@@ -177,7 +239,9 @@ class EmbeddingFunction(BaseModel, ABC):
         Creates a pydantic Field that can automatically annotate
         the source column for this embedding function
         """
-        return Field(json_schema_extra={"source_column_for": self}, **kwargs)
+        json_schema_extra = dict(kwargs.pop("json_schema_extra", None) or {})
+        json_schema_extra["source_column_for"] = self
+        return Field(json_schema_extra=json_schema_extra, **kwargs)
 
     def VectorField(self, **kwargs):
         """
@@ -188,7 +252,9 @@ class EmbeddingFunction(BaseModel, ABC):
         static type checkers. LanceDB will infer the fixed vector dimension from
         this embedding function.
         """
-        return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
+        json_schema_extra = dict(kwargs.pop("json_schema_extra", None) or {})
+        json_schema_extra["vector_column_for"] = self
+        return Field(json_schema_extra=json_schema_extra, **kwargs)
 
     def __eq__(self, __value: object) -> bool:
         if not hasattr(__value, "__dict__"):
@@ -233,3 +299,35 @@ class TextEmbeddingFunction(EmbeddingFunction):
     ) -> list[Union[np.array, None]]:
         """Generate the embeddings for the given texts"""
         pass
+
+
+class UntrustedEmbeddingFunction(EmbeddingFunction):
+    """
+    Stands in for an embedding function restored from table metadata whose
+    settings this process has not approved.
+
+    The table stays usable for anything that doesn't compute embeddings, while
+    computing embeddings raises
+    [UntrustedEmbeddingConfigError][lancedb.embeddings.UntrustedEmbeddingConfigError].
+    The real function is never constructed, since some load their model in
+    `__init__`.
+    """
+
+    function_name: str
+    reasons: Tuple[str, ...]
+
+    def _error(self) -> UntrustedEmbeddingConfigError:
+        details = "\n".join(f"  - {reason}" for reason in self.reasons)
+        return UntrustedEmbeddingConfigError(
+            f"Embedding function '{self.function_name}' was restored from table "
+            "metadata with settings this process has not approved:\n" + details
+        )
+
+    def compute_query_embeddings(self, *args, **kwargs):
+        raise self._error()
+
+    def compute_source_embeddings(self, *args, **kwargs):
+        raise self._error()
+
+    def ndims(self) -> int:
+        raise self._error()

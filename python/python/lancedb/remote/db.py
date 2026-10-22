@@ -112,6 +112,7 @@ def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
         "user_agent": config.user_agent,
         "retry_config": _retry_config_to_dict(config.retry_config),
         "timeout_config": _timeout_config_to_dict(config.timeout_config),
+        "blob_request_concurrency": config.blob_request_concurrency,
         "extra_headers": config.extra_headers,
         "id_delimiter": config.id_delimiter,
         "tls_config": _tls_config_to_dict(config.tls_config),
@@ -722,6 +723,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         from .table import RemoteTable
 
@@ -733,6 +736,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(
@@ -754,6 +759,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -763,6 +770,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)

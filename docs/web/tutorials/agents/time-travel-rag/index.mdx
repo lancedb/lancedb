@@ -1,7 +1,7 @@
 ---
 title: "Time-Travel RAG with versioned data"
 sidebarTitle: "Time-travel RAG"
-description: "Learn how to build production-ready RAG systems with LanceDB's time-travel capabilities for regulatory compliance and audit trails."
+description: "Build a RAG example that retrieves documents from a selected table version."
 ---
 
 <Tip>
@@ -11,7 +11,7 @@ All the scripts and code for this tutorial are available in the
 
 ## Use case: Financial services regulatory knowledge base {#use-case-financial-services-regulatory-knowledge-base}
 
-Imagine you're a major investment bank. Your team is tasked with building a critical Retrieval-Augmented Generation (RAG) system. This system must provide instant, accurate answers to compliance officers about ever-changing financial regulations. A wrong or out-of-date answer isn't just an inconvenience—it could lead to multi-million dollar fines, reputational damage, and regulatory audits.
+Imagine you're a major investment bank. Your team is tasked with building a critical Retrieval-Augmented Generation (RAG) system. This system must provide instant, accurate answers to compliance officers about ever-changing financial regulations. A wrong or out-of-date answer isn't just an inconvenience: it could lead to multi-million dollar fines, reputational damage, and regulatory audits.
 
 Your knowledge base is a living entity, constantly evolving with:
 
@@ -32,7 +32,9 @@ vector databases are ill-equipped to handle.
 
 4. "We need to A/B test a new chunking strategy, but we can't disrupt the production system or duplicate the entire dataset." Experimentation is vital for improvement, but it can't come at the cost of production stability or a massive infrastructure bill.
 
-LanceDB's [zero-cost data evolution](/management/table#schema) and [time-travel capabilities](https://docs.lancedb.com/management/table#versioning) directly address these critical enterprise pain points, providing the foundation for a reliable, auditable, and production-ready RAG system.
+LanceDB's [column-based data evolution](/management/table#schema) and [time-travel capabilities](https://docs.lancedb.com/management/table#versioning) help preserve the dataset used for a particular answer. This tutorial demonstrates
+versioned retrieval; production auditing also needs application logs, retention
+policies and access controls.
 
 ## Dataset: The U.S. Federal Register {#dataset-the-us-federal-register}
 
