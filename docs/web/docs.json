@@ -288,7 +288,8 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain"
+              "search/explain",
+              "search/distributed-search"
             ]
           },
           {
