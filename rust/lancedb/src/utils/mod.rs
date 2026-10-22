@@ -38,6 +38,9 @@ const MAX_SECRET_NAME_CHARS: usize = 128;
 /// The maximum length of a function name.
 const MAX_FUNCTION_NAME_CHARS: usize = 128;
 
+/// The maximum length of a property graph name.
+const MAX_PROPERTY_GRAPH_NAME_CHARS: usize = 128;
+
 /// The maximum length of a database name.
 const MAX_DB_NAME_CHARS: usize = 64;
 
@@ -212,6 +215,18 @@ pub fn validate_view_name(name: &str) -> Result<()> {
 pub fn validate_view_reference(name: &str, namespace_path: &[String]) -> Result<()> {
     validate_namespace(namespace_path)?;
     validate_view_name(name)
+}
+
+/// Validate a property graph name.
+pub fn validate_property_graph_name(name: &str) -> Result<()> {
+    validate_view_or_namespace_or_secret(name, "property graph name", MAX_PROPERTY_GRAPH_NAME_CHARS)
+}
+
+/// Validate a property graph name and every segment of the namespace path
+/// holding it.
+pub fn validate_property_graph_reference(name: &str, namespace_path: &[String]) -> Result<()> {
+    validate_namespace(namespace_path)?;
+    validate_property_graph_name(name)
 }
 
 /// Validate a function name. These do not allow dashes or periods.

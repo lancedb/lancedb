@@ -39,6 +39,7 @@ from ..common import DATA
 from lancedb.listing import Listing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
+from ..graph import EdgeTable, NodeTable, PropertyGraph
 from ..job import AsyncJob, Job
 from ..sql import Query as SqlQuery
 from ..sql import QueryDescription, QueryParameters
@@ -1049,6 +1050,61 @@ class RemoteDBConnection(DBConnection):
         """
         return Listing(
             self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
+            )
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List property graphs.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,

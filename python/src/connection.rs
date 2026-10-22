@@ -24,6 +24,7 @@ use lancedb::{
     connection::NamespaceClientPushdownOperation,
     database::namespace::LanceNamespaceDatabase,
     database::{CreateTableMode, Database, ReadConsistency},
+    graph::PropertyGraphDefinition,
 };
 use pyo3::{
     Bound, FromPyObject, Py, PyAny, PyRef, PyResult, Python,
@@ -1009,6 +1010,79 @@ impl Connection {
     ) -> PyResult<crate::listing::NameListing> {
         Ok(crate::listing::NameListing::new(
             self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+
+    /// Create a property graph from its definition's JSON, and return its
+    /// description's JSON. The Python layer names the fields; the JSON keeps
+    /// the binding free of classes kept in step with the Rust structs.
+    #[pyo3(signature = (name, definition_json, namespace_path=None))]
+    pub fn create_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        definition_json: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            let definition = PropertyGraphDefinition::from_json(&definition_json).infer_error()?;
+            inner
+                .create_property_graph(name, &definition, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    /// The JSON description of the property graph named `name`.
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .describe_property_graph(name, &namespace_path)
+                .await
+                .infer_error()?
+                .to_json()
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_property_graph(
+        self_: PyRef<'_, Self>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let namespace_path = namespace_path.unwrap_or_default();
+        future_into_py(self_.py(), async move {
+            inner
+                .drop_property_graph(name, &namespace_path)
+                .await
+                .infer_error()
+        })
+    }
+
+    #[pyo3(signature = (namespace_path=None, *, page_token=None, page_limit=None))]
+    pub fn list_property_graphs(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_property_graphs(
                 &namespace_path.unwrap_or_default(),
                 crate::listing::options(page_token, page_limit),
             ),

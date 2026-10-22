@@ -184,6 +184,7 @@ pub mod embeddings;
 pub mod error;
 pub mod expr;
 pub mod function;
+pub mod graph;
 pub mod index;
 pub mod io;
 pub mod ipc;

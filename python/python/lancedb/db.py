@@ -50,6 +50,13 @@ from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
+from .graph import (
+    AsyncPropertyGraph,
+    EdgeTable,
+    NodeTable,
+    PropertyGraph,
+    _definition_json,
+)
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -1131,6 +1138,99 @@ class DBConnection(EnforceOverrides):
             "View operations are not supported for this connection type"
         )
 
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        """Create a property graph over tables in its namespace.
+
+        Each [NodeTable][lancedb.graph.NodeTable] names the table holding one
+        label's nodes and its key column, and each
+        [EdgeTable][lancedb.graph.EdgeTable] the table holding one label's
+        edges and the node keys its source and destination columns reference
+        -- the shape of SQL/PGQ's ``CREATE PROPERTY GRAPH``. The graph stores
+        nothing else: a query reads its tables through SQL ``GRAPH_TABLE``, as
+        they are when it runs.
+
+        The database checks the definition against the tables now, so one they
+        cannot satisfy is refused here rather than at the first query. A name
+        another property graph holds is an error. Local connections raise
+        ``NotImplementedError``.
+
+        >>> import lancedb
+        >>> from lancedb.graph import EdgeTable, Endpoint, NodeTable
+        >>> db = lancedb.connect("db://my_database")  # doctest: +SKIP
+        >>> graph = db.create_property_graph(
+        ...     "social",
+        ...     nodes=[NodeTable("person", key="person_id", label="Person")],
+        ...     edges=[
+        ...         EdgeTable(
+        ...             "knows",
+        ...             label="KNOWS",
+        ...             source=Endpoint("src_id", references=("person", "person_id")),
+        ...             destination=Endpoint(
+        ...                 "dst_id", references=("person", "person_id")
+        ...             ),
+        ...         )
+        ...     ],
+        ... )  # doctest: +SKIP
+        >>> graph.describe().nodes[0].properties  # doctest: +SKIP
+        ['person_id', 'name']
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        """Open the property graph named ``name``.
+
+        The graph is described to check that it exists, so a name no property
+        graph holds raises [HttpError][lancedb.remote.errors.HttpError] with
+        ``status_code`` 404. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its definition to be deleted.
+
+        The tables it reads are untouched: a property graph holds no rows of
+        its own. Local connections raise ``NotImplementedError``.
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """The names of the property graphs in one namespace.
+
+        Names only; a definition comes from
+        [PropertyGraph.describe][lancedb.graph.PropertyGraph.describe]. Local
+        connections raise ``NotImplementedError``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        raise NotImplementedError(
+            "Property graph operations are not supported for this connection type"
+        )
+
     def open_job(self, job_id: str) -> Job:
         """Open a server-side job by id, returning a handle with its record
         already populated.
@@ -2135,6 +2235,61 @@ class LanceDBConnection(DBConnection):
         """
         return Listing(
             self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.create_property_graph(
+                    name, nodes, edges, namespace_path=namespace_path
+                )
+            )
+        )
+
+    @override
+    def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> PropertyGraph:
+        return PropertyGraph(
+            LOOP.run(
+                self._conn.open_property_graph(name, namespace_path=namespace_path)
+            )
+        )
+
+    @override
+    def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(self._conn.drop_property_graph(name, namespace_path=namespace_path))
+
+    @override
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List property graphs.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,
@@ -3275,6 +3430,67 @@ class AsyncConnection(object):
         """
         return AsyncListing(
             self._inner.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def create_property_graph(
+        self,
+        name: str,
+        nodes: Sequence[NodeTable],
+        edges: Sequence[EdgeTable] = (),
+        *,
+        namespace_path: Optional[List[str]] = None,
+    ) -> AsyncPropertyGraph:
+        """Create a property graph over tables in its namespace.
+
+        See
+        [DBConnection.create_property_graph][lancedb.DBConnection.create_property_graph].
+        """
+        definition = _definition_json(nodes, edges)
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await self._inner.create_property_graph(name, definition, graph.namespace_path)
+        return graph
+
+    async def open_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> AsyncPropertyGraph:
+        """Open the property graph named ``name``, describing it to check that
+        it exists.
+
+        See
+        [DBConnection.open_property_graph][lancedb.DBConnection.open_property_graph].
+        """
+        graph = AsyncPropertyGraph(self._inner, name, namespace_path)
+        await graph.describe()
+        return graph
+
+    async def drop_property_graph(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a property graph and wait for its definition to be deleted.
+
+        The tables it reads are untouched.
+        """
+        await self._inner.drop_property_graph(name, list(namespace_path or []))
+
+    def list_property_graphs(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """The names of the property graphs in one namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_property_graphs(
                 namespace_path=namespace_path,
                 page_token=page_token,
                 page_limit=page_limit,

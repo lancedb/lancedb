@@ -28,6 +28,7 @@ use crate::function::{
     FunctionArtifactRequest, FunctionRegistrationRequest, FunctionSignature, FunctionVersion,
     PythonRuntimeSpec,
 };
+use crate::graph::{PropertyGraphDefinition, PropertyGraphDescription};
 use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
@@ -37,8 +38,8 @@ use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{
-    validate_database_name, validate_function_name, validate_namespace, validate_secret_name,
-    validate_table_name, validate_view_name,
+    validate_database_name, validate_function_name, validate_namespace,
+    validate_property_graph_name, validate_secret_name, validate_table_name, validate_view_name,
 };
 use crate::view::ViewDescription;
 
@@ -685,6 +686,14 @@ fn build_view_identifier(name: &str, namespace: &[String]) -> Result<String> {
     build_compound_identifier(name, namespace)
 }
 
+/// Build a full path to a property graph. Note that we do not need to
+/// percent-encode this when using it in a URL because the validation functions
+/// ensure that only URL-safe characters are present.
+fn build_property_graph_identifier(name: &str, namespace: &[String]) -> Result<String> {
+    validate_property_graph_name(name)?;
+    build_compound_identifier(name, namespace)
+}
+
 /// Build a secure cache key using length prefixes.
 /// This format is completely unambiguous regardless of delimiter or content.
 /// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
@@ -855,6 +864,14 @@ impl RemoteViewDescription {
 struct RemoteListViewsResponse {
     #[serde(default)]
     views: Vec<String>,
+    #[serde(default)]
+    page_token: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct RemoteListPropertyGraphsResponse {
+    #[serde(default)]
+    property_graphs: Vec<String>,
     #[serde(default)]
     page_token: Option<String>,
 }
@@ -1274,6 +1291,103 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         let items = response.views;
         Ok(ListingPage {
             items,
+            page_token: response.page_token,
+        })
+    }
+
+    async fn create_property_graph(
+        &self,
+        name: &str,
+        definition: &PropertyGraphDefinition,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/create"))
+            .json(definition);
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn describe_property_graph(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<PropertyGraphDescription> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/describe"))
+            .json(&serde_json::json!({}));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        response.json().await.err_to_http(request_id)
+    }
+
+    async fn drop_property_graph(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        self.drop_property_graph_async(name, namespace_path)
+            .await?
+            .wait()
+            .await
+    }
+
+    async fn drop_property_graph_async(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let graph_id = build_property_graph_identifier(name, namespace_path)?;
+        let req = self
+            .client
+            .post(&format!("/v1/property_graph/{graph_id}/drop"));
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let status = response.status();
+        let body = response.text().await.err_to_http(request_id.clone())?;
+        match status {
+            // Nothing was bound to the name, so nothing is being deleted.
+            StatusCode::OK => Ok(Job::new_done()),
+            StatusCode::ACCEPTED => {
+                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
+                    source: "property graph drop response did not contain a valid job_id".into(),
+                    request_id,
+                    status_code: Some(status),
+                })?;
+                Ok(Job::new(Box::new(RemoteJob::new(
+                    self.client.clone(),
+                    job_id,
+                ))))
+            }
+            _ => Err(Error::Http {
+                source: "property graph drop must return 200 OK or 202 Accepted".into(),
+                request_id,
+                status_code: Some(status),
+            }),
+        }
+    }
+
+    async fn list_property_graphs(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        let namespace_id = build_namespace_identifier(namespace_path)?;
+        let path = format!("/v1/namespace/{namespace_id}/property_graph/list");
+        let mut req = self.client.get(&path);
+        if let Some(token) = options.page_token {
+            req = req.query(&[("page_token", token)]);
+        }
+        if let Some(limit) = options.page_limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        let (request_id, response) = self.client.send(req).await?;
+        let response = self.client.check_response(&request_id, response).await?;
+        let response: RemoteListPropertyGraphsResponse =
+            response.json().await.err_to_http(request_id)?;
+        Ok(ListingPage {
+            items: response.property_graphs,
             page_token: response.page_token,
         })
     }
@@ -1921,6 +2035,7 @@ mod tests {
 
     use crate::connection::ConnectBuilder;
     use crate::database::Database;
+    use crate::graph::{EdgeTable, Endpoint, NodeTable, PropertyGraphDefinition};
     use crate::materialized_view::CreateMaterializedViewRequest;
     use crate::{
         Connection, Error,
@@ -3787,7 +3902,14 @@ mod tests {
             assert!(items.try_next().await.unwrap().is_none());
             assert!(items.try_next().await.unwrap().is_none());
         }
-        for resource in ["secret", "view", "function", "materialized_view", "jobs"] {
+        for resource in [
+            "secret",
+            "view",
+            "function",
+            "materialized_view",
+            "property_graph",
+            "jobs",
+        ] {
             let count = Arc::new(AtomicUsize::new(0));
             let conn = Connection::new_with_handler({
                 let count = count.clone();
@@ -3828,6 +3950,7 @@ mod tests {
                             "functions",
                             serde_json::json!({"name": "embed", "version": "1", "definition": serde_json::from_str::<serde_json::Value>(include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json")).unwrap()}),
                         ),
+                        "property_graph" => ("property_graphs", serde_json::json!("a")),
                         _ => ("views", serde_json::json!("a")),
                     };
                     let items = if page == 1 {
@@ -3847,6 +3970,9 @@ mod tests {
                 "view" => check(conn.list_views(&namespace, options), count).await,
                 "function" => check(conn.list_functions(&namespace, options), count).await,
                 "materialized_view" => check(conn.list_materialized_views(options), count).await,
+                "property_graph" => {
+                    check(conn.list_property_graphs(&namespace, options), count).await
+                }
                 _ => check(conn.list_jobs(options), count).await,
             }
         }
@@ -4705,6 +4831,253 @@ mod tests {
             // A view is not a table, so the refusal says so.
             assert!(
                 error.contains("view name") || error.contains("namespace component"),
+                "{error}"
+            );
+        }
+    }
+
+    /// The node table names its properties and the edge table leaves them
+    /// out, which means every column.
+    fn social_graph() -> PropertyGraphDefinition {
+        PropertyGraphDefinition {
+            nodes: vec![NodeTable::new("person", "person_id", "Person").properties(["name"])],
+            edges: vec![EdgeTable::new(
+                "knows",
+                "KNOWS",
+                Endpoint::new("src_id", "person", "person_id"),
+                Endpoint::new("dst_id", "person", "person_id"),
+            )],
+        }
+    }
+
+    /// `social_graph` as create resolves it: each table's properties listed,
+    /// the key and endpoint columns among them.
+    fn resolved_social_graph() -> PropertyGraphDefinition {
+        let mut graph = social_graph();
+        graph.nodes[0].properties = Some(vec!["person_id".into(), "name".into()]);
+        graph.edges[0].properties = Some(vec!["src_id".into(), "dst_id".into(), "since".into()]);
+        graph
+    }
+
+    fn property_graph_body(name: &str, namespace: &[&str]) -> String {
+        let mut body = serde_json::to_value(resolved_social_graph()).unwrap();
+        let fields = body.as_object_mut().unwrap();
+        fields.insert("name".into(), name.into());
+        fields.insert("namespace".into(), namespace.into());
+        body.to_string()
+    }
+
+    #[tokio::test]
+    async fn test_create_property_graph_posts_the_definition_and_returns_the_resolved_one() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/create"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
+            // The name and its namespace address the graph in the path, so the
+            // body is the definition alone.
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "nodes": [{"table": "person", "key": "person_id", "label": "Person",
+                               "properties": ["name"]}],
+                    "edges": [{"table": "knows", "label": "KNOWS",
+                               "source": {"column": "src_id",
+                                          "references": {"table": "person",
+                                                         "column": "person_id"}},
+                               "destination": {"column": "dst_id",
+                                               "references": {"table": "person",
+                                                              "column": "person_id"}}}]
+                })
+            );
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_body("social", &["analytics"]))
+                .unwrap()
+        });
+        let graph = conn
+            .create_property_graph("social", &social_graph(), &["analytics".into()])
+            .await
+            .unwrap();
+        assert_eq!(graph.name, "social");
+        assert_eq!(graph.namespace_path, vec!["analytics".to_string()]);
+        assert_eq!(graph.definition, resolved_social_graph());
+    }
+
+    #[tokio::test]
+    async fn test_describe_and_drop_address_the_property_graph_in_the_path() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(request.url().path(), "/v1/property_graph/social/describe");
+            assert_eq!(request.body().unwrap().as_bytes().unwrap(), b"{}");
+            http::Response::builder()
+                .status(200)
+                .body(property_graph_body("social", &[]))
+                .unwrap()
+        });
+        let graph = conn.describe_property_graph("social", &[]).await.unwrap();
+        assert!(graph.namespace_path.is_empty());
+        assert_eq!(graph.definition, resolved_social_graph());
+
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::POST);
+            assert_eq!(
+                request.url().path(),
+                "/v1/property_graph/analytics$social/drop"
+            );
+            assert!(request.body().is_none(), "{:?}", request.body());
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        conn.drop_property_graph("social", &["analytics".into()])
+            .await
+            .unwrap();
+    }
+
+    /// An accepted drop hands back the job deleting the definition, and the
+    /// waiting `drop_property_graph` waits on it.
+    #[tokio::test]
+    async fn test_drop_property_graph_waits_for_the_cleanup_job() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder()
+                .status(202)
+                .body(r#"{"job_id":"j1-pg-drop"}"#)
+                .unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), Some("j1-pg-drop"));
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let conn = Connection::new_with_handler({
+            let requests = requests.clone();
+            move |request| match (
+                requests.fetch_add(1, Ordering::SeqCst),
+                request.url().path(),
+            ) {
+                (0, "/v1/property_graph/social/drop") => http::Response::builder()
+                    .status(202)
+                    .body(r#"{"job_id":"j1-pg-drop"}"#)
+                    .unwrap(),
+                (1, "/v1/jobs/describe") => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    assert_eq!(body, serde_json::json!({"job_id": "j1-pg-drop"}));
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"job_id":"j1-pg-drop","job_state":"DONE"}"#)
+                        .unwrap()
+                }
+                (n, path) => panic!("unexpected request {n}: {path}"),
+            }
+        });
+        conn.drop_property_graph("social", &[]).await.unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn test_drop_property_graph_rejects_an_unexpected_response() {
+        let db = super::RemoteDatabase::new_mock(|_| {
+            http::Response::builder().status(200).body("{}").unwrap()
+        });
+        let job = db.drop_property_graph_async("social", &[]).await.unwrap();
+        assert_eq!(job.id(), None);
+        job.wait().await.unwrap();
+
+        for (status, body, expected) in [
+            (202, "{}", "valid job_id"),
+            (202, r#"{"job_id":""}"#, "valid job_id"),
+            (204, "", "200 OK or 202 Accepted"),
+        ] {
+            let db = super::RemoteDatabase::new_mock(move |_| {
+                http::Response::builder().status(status).body(body).unwrap()
+            });
+            let error = db
+                .drop_property_graph_async("social", &[])
+                .await
+                .err()
+                .unwrap();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    /// A graph the database does not hold is the service's 404, kept as the
+    /// status of the error so a caller can tell it from a refused request.
+    #[tokio::test]
+    async fn test_a_missing_property_graph_reports_not_found() {
+        let conn = Connection::new_with_handler(|_| {
+            http::Response::builder()
+                .status(404)
+                .body("property graph 'social' not found")
+                .unwrap()
+        });
+        let not_found = |error: Error| {
+            assert!(
+                matches!(
+                    error,
+                    Error::Http {
+                        status_code: Some(http::StatusCode::NOT_FOUND),
+                        ..
+                    }
+                ),
+                "{error:?}"
+            );
+        };
+        not_found(
+            conn.describe_property_graph("social", &[])
+                .await
+                .unwrap_err(),
+        );
+        not_found(conn.drop_property_graph("social", &[]).await.unwrap_err());
+    }
+
+    #[tokio::test]
+    async fn test_list_property_graphs_walks_pages() {
+        let conn = Connection::new_with_handler(|request| {
+            assert_eq!(request.method(), &reqwest::Method::GET);
+            assert_eq!(request.url().path(), "/v1/namespace/$/property_graph/list");
+            let page = request
+                .url()
+                .query_pairs()
+                .find(|(key, _)| key == "page_token")
+                .map(|(_, value)| value.into_owned());
+            let body = match page.as_deref() {
+                None => r#"{"property_graphs":["social"],"page_token":"p2"}"#,
+                Some("p2") => r#"{"property_graphs":["payments"]}"#,
+                Some(other) => panic!("unexpected page token: {other}"),
+            };
+            http::Response::builder().status(200).body(body).unwrap()
+        });
+        assert_eq!(
+            conn.list_property_graphs(&[], Default::default())
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap(),
+            vec!["social".to_string(), "payments".to_string()]
+        );
+    }
+
+    /// A name carrying the delimiter would split back apart as a different
+    /// graph, so it is refused before it reaches a route.
+    #[tokio::test]
+    async fn test_property_graph_names_that_would_resplit_are_refused() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
+            panic!("an invalid identifier must not reach the service")
+        });
+        for (name, namespace) in [
+            ("analytics$social", vec![]),
+            ("social", vec!["ana$lytics".to_string()]),
+            ("", vec![]),
+            ("..", vec![]),
+        ] {
+            let error = match conn.describe_property_graph(name, &namespace).await {
+                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
+                Err(error) => error.to_string(),
+            };
+            assert!(
+                error.contains("property graph name") || error.contains("namespace component"),
                 "{error}"
             );
         }
