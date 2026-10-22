@@ -20,13 +20,14 @@ How to return blob v2 columns. Applies to `toArrow()` and `toArray()`.
 
 - `"descriptions"` (default): each blob is a descriptor. Read the bytes
   with [Table.fetchBlobs](../classes/Table.md#fetchblobs) or [Table.fetchBlobFiles](../classes/Table.md#fetchblobfiles).
-- `"bytes"`: each blob column holds the blob bytes as `LargeBinary`,
-  including blobs nested in structs. The query also reads `_rowid` to
-  fetch the bytes, and leaves it out of the result unless
-  [QueryBase.withRowId](../classes/QueryBase.md#withrowid) was called. All the bytes are held in
-  memory.
+- `"bytes"`: each blob column, including blobs nested in structs, holds
+  the bytes as `LargeBinary`. The query also reads `_rowid` to fetch them, and
+  leaves it out of the result unless [QueryBase.withRowId](../classes/QueryBase.md#withrowid) was
+  called. All the bytes are held in memory.
 
-Blobs nested in a list keep their descriptors.
+Selecting a parent struct or directly aliasing a blob or struct also returns
+bytes. Blobs inside lists keep their descriptors. Arbitrary projection
+expressions are not materialized as bytes.
 
 The rows and the bytes come from the same table version. If the table
 changes while the query runs, the query runs again, up to three times.

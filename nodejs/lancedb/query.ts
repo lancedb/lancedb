@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import type { Data as ArrowData } from "apache-arrow";
 import {
-  type ArrowData,
   Table as ArrowTable,
   DataType,
   Field,
@@ -14,7 +14,6 @@ import {
   extractVectorBuffer,
   fromBufferToRecordBatch,
   fromRecordBatchToBuffer,
-  makeData,
   tableFromIPC,
   vectorFromArray,
 } from "./arrow";
@@ -68,84 +67,42 @@ export interface QueryBlobContext {
 
 const BLOB_BYTES_ATTEMPTS = 3;
 
+interface BlobSource {
+  // Output names are literal: an alias containing dots is still one field.
+  output: string;
+  path: string[];
+  source: string;
+}
+
 function blobSources(
   blobColumns: string[],
   projection: [string, string][] | undefined,
-): Map<string, string> {
-  const holds = (source: string) =>
-    blobColumns.some(
-      (column) => column === source || column.startsWith(`${source}.`),
-    );
-  const pairs =
-    projection ??
-    Array.from(new Set(blobColumns.map((column) => column.split(".")[0]))).map(
-      (name): [string, string] => [name, name],
-    );
-  return new Map(pairs.filter(([, source]) => holds(source)));
-}
-
-// Fetched bytes for the blobs under one output column. A blob column is a
-// leaf; a struct holds the blobs nested in it, keyed by field name. A Map
-// keeps struct field names from reaching shared JavaScript prototypes.
-type BlobBytes = (Buffer | null)[] | Map<string, BlobBytes>;
-
-function isLeaf(bytes: BlobBytes): bytes is (Buffer | null)[] {
-  return Array.isArray(bytes);
-}
-
-function nestedFieldType(type: Struct, bytes: Map<string, BlobBytes>): Struct {
-  return new Struct(
-    type.children.map((field) => {
-      const inner = bytes.get(field.name);
-      if (inner === undefined) {
-        return field;
+): BlobSource[] {
+  if (projection === undefined) {
+    return blobColumns.map((source) => {
+      const [output, ...path] = source.split(".");
+      return { output, path, source };
+    });
+  }
+  const sources: BlobSource[] = [];
+  for (const [output, source] of projection) {
+    for (const column of blobColumns) {
+      if (column === source || column.startsWith(`${source}.`)) {
+        sources.push({
+          output,
+          path:
+            column === source ? [] : column.slice(source.length + 1).split("."),
+          source: column,
+        });
       }
-      if (isLeaf(inner)) {
-        return new Field(field.name, new LargeBinary(), true);
-      }
-      return new Field(
-        field.name,
-        nestedFieldType(field.type as Struct, inner),
-        field.nullable,
-      );
-    }),
-  );
-}
-
-// Rebuilds a struct with the blobs under it as bytes. The struct keeps its own
-// validity, so a null struct stays null.
-function nestedData(
-  data: ArrowData,
-  bytes: Map<string, BlobBytes>,
-  offset: number,
-): ArrowData {
-  const type = data.type as Struct;
-  const children = data.children.map((child, index) => {
-    const inner = bytes.get(type.children[index].name);
-    if (inner === undefined) {
-      return child;
     }
-    if (isLeaf(inner)) {
-      return vectorFromArray(
-        inner.slice(offset, offset + data.length),
-        new LargeBinary(),
-      ).data[0];
-    }
-    return nestedData(child, inner, offset);
-  });
-  return makeData({
-    type: nestedFieldType(type, bytes),
-    length: data.length,
-    nullCount: data.nullCount,
-    nullBitmap: data.nullBitmap,
-    children,
-  });
+  }
+  return sources;
 }
 
 async function readBlobBytes(
   table: ArrowTable,
-  sources: Map<string, string>,
-  blobColumns: string[],
+  sources: BlobSource[],
   snapshot: NativeTable,
   dropRowId: boolean,
 ): Promise<ArrowTable> {
@@ -157,42 +114,27 @@ async function readBlobBytes(
     rowIdColumn === null
       ? []
       : Array.from(rowIdColumn.toArray() as BigUint64Array);
-  const fetch = async (column: string) =>
-    (rowIds.length === 0 ? [] : await snapshot.fetchBlobs(column, rowIds)).map(
-      (value) => value ?? null,
+  const outputFields = new Map(
+    table.schema.fields.map((field) => [field.name, field]),
+  );
+  const replacements = new Map<Field, (Buffer | null)[]>();
+  for (const { output, path, source } of sources) {
+    let field = outputFields.get(output);
+    for (const name of path) {
+      field =
+        field !== undefined && DataType.isStruct(field.type)
+          ? field.type.children.find((child) => child.name === name)
+          : undefined;
+    }
+    if (field === undefined) {
+      continue;
+    }
+    const values =
+      rowIds.length === 0 ? [] : await snapshot.fetchBlobs(source, rowIds);
+    replacements.set(
+      field,
+      values.map((value) => value ?? null),
     );
-  const replacements = new Map<number, BlobBytes>();
-  for (const [output, source] of sources) {
-    const index = table.schema.fields.findIndex(
-      (field) => field.name === output,
-    );
-    if (index < 0) {
-      continue;
-    }
-    if (blobColumns.includes(source)) {
-      replacements.set(index, await fetch(source));
-      continue;
-    }
-    if (!DataType.isStruct(table.schema.fields[index].type)) {
-      continue;
-    }
-    const nested = new Map<string, BlobBytes>();
-    for (const column of blobColumns.filter((c) =>
-      c.startsWith(`${source}.`),
-    )) {
-      const path = column.slice(source.length + 1).split(".");
-      let level = nested;
-      for (const name of path.slice(0, -1)) {
-        let next = level.get(name);
-        if (next === undefined) {
-          next = new Map<string, BlobBytes>();
-          level.set(name, next);
-        }
-        level = next as Map<string, BlobBytes>;
-      }
-      level.set(path[path.length - 1], await fetch(column));
-    }
-    replacements.set(index, nested);
   }
   const result = withBinaryColumns(table, replacements);
   if (!dropRowId) {
@@ -205,48 +147,76 @@ async function readBlobBytes(
   );
 }
 
-// A fresh field, not a clone: the descriptor field's metadata must not follow
-// the bytes.
 function withBinaryColumns(
   table: ArrowTable,
-  replacements: Map<number, BlobBytes>,
+  replacements: Map<Field, (Buffer | null)[]>,
 ): ArrowTable {
   if (replacements.size === 0) {
     return table;
   }
-  const fields = table.schema.fields.map((field, index) => {
-    const bytes = replacements.get(index);
-    if (bytes === undefined) {
-      return field;
+  const replaceField = (field: Field): Field => {
+    if (replacements.has(field)) {
+      // The descriptor's extension and encoding metadata must not follow bytes.
+      return new Field(field.name, new LargeBinary(), true);
     }
-    return isLeaf(bytes)
-      ? new Field(field.name, new LargeBinary(), true)
-      : new Field(
-          field.name,
-          nestedFieldType(field.type as Struct, bytes),
-          field.nullable,
-        );
-  });
+    if (DataType.isStruct(field.type)) {
+      const children = field.type.children.map(replaceField);
+      if (children.some((child, i) => child !== field.type.children[i])) {
+        return field.clone({ type: new Struct(children) });
+      }
+    }
+    return field;
+  };
+  const fields = table.schema.fields.map(replaceField);
   const schema = new Schema(fields, table.schema.metadata);
   let offset = 0;
   const batches = table.batches.map((batch) => {
-    const children = batch.data.children.map((child, index) => {
-      const bytes = replacements.get(index);
-      if (bytes === undefined) {
-        return child;
+    const replaceData = (
+      data: ArrowData,
+      field: Field,
+      updated: Field,
+    ): ArrowData => {
+      if (field === updated) {
+        return data;
       }
-      if (!isLeaf(bytes)) {
-        return nestedData(child, bytes, offset);
+      const values = replacements.get(field);
+      if (values !== undefined) {
+        return vectorFromArray(
+          values.slice(offset, offset + batch.numRows),
+          new LargeBinary(),
+        ).data[0];
       }
-      return vectorFromArray(
-        bytes.slice(offset, offset + batch.numRows),
-        new LargeBinary(),
-      ).data[0];
-    });
+      const children = data.children.map((child, index) =>
+        replaceData(
+          child,
+          field.type.children[index],
+          updated.type.children[index],
+        ),
+      );
+      // Keep the struct's validity bitmap and offset, including null parents.
+      return data.clone(
+        updated.type,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        children,
+      );
+    };
+    const children = batch.data.children.map((child, index) =>
+      replaceData(child, table.schema.fields[index], fields[index]),
+    );
     offset += batch.numRows;
     return new RecordBatch(
       schema,
-      makeData({ type: new Struct(fields), length: batch.numRows, children }),
+      batch.data.clone(
+        new Struct(fields),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        children,
+      ),
     );
   });
   return new ArrowTable(schema, batches);
@@ -274,13 +244,14 @@ export interface QueryExecutionOptions {
    *
    * - `"descriptions"` (default): each blob is a descriptor. Read the bytes
    *   with {@link Table.fetchBlobs} or {@link Table.fetchBlobFiles}.
-   * - `"bytes"`: each blob column holds the blob bytes as `LargeBinary`,
-   *   including blobs nested in structs. The query also reads `_rowid` to
-   *   fetch the bytes, and leaves it out of the result unless
-   *   {@link QueryBase.withRowId} was called. All the bytes are held in
-   *   memory.
+   * - `"bytes"`: each blob column, including blobs nested in structs, holds
+   *   the bytes as `LargeBinary`. The query also reads `_rowid` to fetch them, and
+   *   leaves it out of the result unless {@link QueryBase.withRowId} was
+   *   called. All the bytes are held in memory.
    *
-   * Blobs nested in a list keep their descriptors.
+   * Selecting a parent struct or directly aliasing a blob or struct also returns
+   * bytes. Blobs inside lists keep their descriptors. Arbitrary projection
+   * expressions are not materialized as bytes.
    *
    * The rows and the bytes come from the same table version. If the table
    * changes while the query runs, the query runs again, up to three times.
@@ -529,15 +500,17 @@ export class QueryBase<
       // unchanged version afterwards proves it read the snapshot's version.
       const snapshot = await context.table.querySnapshot();
       const version = await snapshot.version();
-      const blobColumns = await snapshot.blobColumns();
-      const sources = blobSources(blobColumns, context.projection);
-      if (sources.size === 0) {
+      const sources = blobSources(
+        await snapshot.blobColumns(),
+        context.projection,
+      );
+      if (sources.length === 0) {
         return this.collect(options, false);
       }
       const addRowId = !context.withRowId;
       const table = await this.collect(options, addRowId);
       if ((await context.table.version()) === version) {
-        return readBlobBytes(table, sources, blobColumns, snapshot, addRowId);
+        return readBlobBytes(table, sources, snapshot, addRowId);
       }
       if (attempt === BLOB_BYTES_ATTEMPTS) {
         throw new Error(
