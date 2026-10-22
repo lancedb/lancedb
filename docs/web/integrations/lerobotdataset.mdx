@@ -143,9 +143,12 @@ class EmbedFromBlob:                    # SigLIP2 loads once per worker
 **Curation** is one query across all of it. Semantic search with a predicate on the derived score, no join, no second system:
 
 ```python
-tbl.search(vec("a gripper closing on an object"), vector_column_name="emb_siglip2") \
-   .where("jerk_score > 1.2875")        # the roughest 1% of frames
-   .limit(4)
+results = (
+    tbl.search(vec("a gripper closing on an object"), vector_column_name="emb_siglip2")
+    .where("jerk_score > 1.2875")  # the roughest 1% of frames
+    .limit(4)
+    .to_arrow()
+)
 ```
 
 **Mining** is the same query pointed at the rare cases. `tbl.search().where("jerk_score > 1.2875 AND success = false")` pulls the rough, failed frames out of 27.6M rows in milliseconds, ready to become a fine-tuning set or a labeling queue.

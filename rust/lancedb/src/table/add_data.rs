@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use lance::dataset::WriteMode;
+use lance_arrow::FieldExt;
 use serde::{Deserialize, Serialize};
 
 use crate::data::scannable::Scannable;
@@ -236,6 +238,7 @@ pub struct PreprocessingOutput {
 /// Fields can be in different orders, so match by name.
 ///
 /// If a column exists in input but not in table, error (no extra columns allowed).
+/// Input field names must be unique within each struct.
 ///
 /// If a column exists in table but not in input, that is okay - it may be filled with nulls.
 ///
@@ -247,7 +250,13 @@ fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
 }
 
 fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
     for field in input {
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("field '{}' is specified more than once", field.name()),
+            });
+        }
         match table.iter().find(|f| f.name() == field.name()) {
             None => {
                 return Err(Error::InvalidInput {
@@ -255,15 +264,31 @@ fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
                 });
             }
             Some(table_field) => {
-                if let (DataType::Struct(in_children), DataType::Struct(tbl_children)) =
-                    (field.data_type(), table_field.data_type())
-                {
-                    validate_fields(in_children, tbl_children)?;
-                }
+                validate_field(field, table_field)?;
             }
         }
     }
     Ok(())
+}
+
+fn validate_field(input: &Field, table: &Field) -> Result<()> {
+    // Blob coercion validates its children and permits dropping only
+    // all-null range fields when targeting a legacy two-field layout.
+    if table.is_blob_v2() {
+        return Ok(());
+    }
+    match (input.data_type(), table.data_type()) {
+        (DataType::Struct(input), DataType::Struct(table)) => validate_fields(input, table),
+        (
+            DataType::List(input) | DataType::LargeList(input) | DataType::FixedSizeList(input, _),
+            DataType::List(table) | DataType::LargeList(table) | DataType::FixedSizeList(table, _),
+        ) => {
+            // Preserve the item's extension metadata, and match nested struct
+            // children by name rather than comparing collection item names.
+            validate_field(input, table)
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +325,81 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
         conn.create_table("test", batch).execute().await.unwrap()
+    }
+
+    #[rstest::rstest]
+    fn test_validate_append_collection_fields(
+        #[values("list", "large_list", "fixed_size_list")] source_kind: &str,
+        #[values("list", "large_list", "fixed_size_list")] target_kind: &str,
+    ) {
+        fn schema(kind: &str, item: Field) -> Schema {
+            let item = Arc::new(item);
+            let data_type = match kind {
+                "list" => DataType::List(item),
+                "large_list" => DataType::LargeList(item),
+                "fixed_size_list" => DataType::FixedSizeList(item, 1),
+                _ => unreachable!(),
+            };
+            Schema::new(vec![Field::new("items", data_type, true)])
+        }
+        let image = crate::blob("image", true);
+        let legacy_image = lance::blob::blob_field("image", true);
+        let caption = Field::new("caption", DataType::Utf8, true);
+        let input = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone()].into()),
+                true,
+            ),
+        );
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&input, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("does not exist"),
+            "{error}"
+        );
+
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![caption.clone(), legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        // Declared siblings can be reordered, but must not occur more than once.
+        super::validate_schema(&input, &target).unwrap();
+        let duplicate = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone(), caption].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&duplicate, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("specified more than once"),
+            "{error}"
+        );
+        // Item names need not match, and blob children still reach range coercion.
+        super::validate_schema(
+            &schema(source_kind, image.with_name("source_item")),
+            &schema(target_kind, legacy_image.with_name("target_item")),
+        )
+        .unwrap();
     }
 
     async fn test_add_with_data<T>(data: T)

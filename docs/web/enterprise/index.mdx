@@ -9,7 +9,7 @@ keywords: ["enterprise", "deployment", "cluster"]
 <Badge color="red">Enterprise</Badge>
 
 This page describes a LanceDB Enterprise capability. The embedded form
-of LanceDB has no server to provide it -- see
+of LanceDB has no server to provide it. See
 [Architecture](/architecture) for what differs between the two.
 
 LanceDB Enterprise runs the lakehouse as a service: a control plane for
@@ -21,9 +21,13 @@ What it adds over the embedded form:
 | | |
 | --- | --- |
 | [SQL](/sql) | an Arrow Flight SQL endpoint |
-| [Functions](/management/function) | Python running on workers |
 | [Jobs](/basics/jobs) | server-side work with ids, status and events |
 | [Authorization](/governance/authorization) | per-object grants |
 | Scale | a cluster rather than your process |
+
+{/*
+Draft for the Functions release. Add this row to the table above, after SQL:
+| [Functions](/management/function) | Python running on workers |
+*/}
 
 See [Architecture](/architecture) for the two shapes side by side.

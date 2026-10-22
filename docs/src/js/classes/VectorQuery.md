@@ -646,6 +646,38 @@ rerank(reranker): VectorQuery
 
 ***
 
+### searchEffort()
+
+```ts
+searchEffort(searchEffort): VectorQuery
+```
+
+Set the initial IVF search effort to a finite value in [0, 1].
+
+The default, null, uses Auto (internally 0.5). Zero starts at the caller
+minimum; one searches all partitions within the caller maximum. Later
+probing may continue when too few candidates are found.
+Any explicit effort, including 0.5, overrides nprobes in either call order.
+Explicit minimum and maximum bounds still apply. This is not a recall
+guarantee and does not change refinement or HNSW ef. The RTE LSM
+scanner does not yet support this option.
+
+#### Parameters
+
+* **searchEffort**: `null` \| `number`
+
+#### Returns
+
+[`VectorQuery`](VectorQuery.md)
+
+#### Example
+
+```ts
+table.vectorSearch([0.1, 0.2]).searchEffort(0.75).limit(10);
+```
+
+***
+
 ### select()
 
 ```ts
@@ -749,31 +781,31 @@ Empty results retain the query's output schema.
 
 ***
 
-### useLsm()
+### useRTE()
 
 ```ts
-useLsm(enable): this
+useRTE(enable): this
 ```
 
-Control MemWAL read routing for this query.
+Control RTE read routing for this query.
 
-By default (unset), when the table carries a MemWAL write spec (see
-[Table#setLsmWriteSpec](Table.md#setlsmwritespec)), reads are routed through the LSM scanner so
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
-the flushed generations), deduplicated by primary key; a table without a spec
+the SSTables), deduplicated by primary key; a table without a spec
 reads the base table.
 
 #### Parameters
 
 * **enable**: `boolean`
     `true` forces the LSM scanner and errors if the table has no
-    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
-    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useLsm(false)` is set, because a base-only read would silently exclude
-    un-compacted MemWAL data.
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
 
 #### Returns
 
@@ -781,7 +813,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useLsm`
+`StandardQueryBase.useRTE`
 
 ***
 

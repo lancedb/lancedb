@@ -36,6 +36,87 @@ describe("when connecting", () => {
   });
 });
 
+describe.each([
+  [
+    "URI overload",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connect(uri, options),
+  ],
+  [
+    "object overload",
+    async (
+      uri: string,
+      options: { storageOptions?: Record<string, string> },
+    ) => {
+      const input = { uri, ...options };
+      if (Object.isFrozen(options)) {
+        Object.freeze(input);
+      }
+      const db = await connect(input);
+      expect(input).toEqual({ uri, ...options });
+      expect(input.storageOptions).toBe(options.storageOptions);
+      return db;
+    },
+  ],
+  [
+    "namespace",
+    (uri: string, options: { storageOptions?: Record<string, string> }) =>
+      connectNamespace("dir", { root: uri }, options),
+  ],
+])("%s connection options", (_name, open) => {
+  let tmpDir: tmp.DirResult;
+  beforeEach(() => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+  });
+  afterEach(() => tmpDir.removeCallback());
+
+  it("should accept frozen options without storage options", async () => {
+    const options = Object.freeze({});
+    const db = await open(tmpDir.name, options);
+    try {
+      await db.createTable("frozen", [{ id: 1 }]);
+      await expect(db.tableNames()).resolves.toContain("frozen");
+      expect(options).toEqual({});
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should accept frozen options with storage options", async () => {
+    const storageOptions = Object.freeze({
+      newTableDataStorageVersion: "stable",
+    });
+    const options = Object.freeze({ storageOptions });
+    const db = await open(tmpDir.name, options);
+    try {
+      const table = await db.createTable("frozen", [{ id: 1 }]);
+      await expect(table.countRows()).resolves.toBe(1);
+      expect(options.storageOptions).toBe(storageOptions);
+      expect(storageOptions).toEqual({ newTableDataStorageVersion: "stable" });
+    } finally {
+      await db.close();
+    }
+  });
+
+  it("should preserve reused options and their storage options", async () => {
+    const storageOptions = { newTableDataStorageVersion: "stable" };
+    const options = { storageOptions };
+    for (let i = 0; i < 2; i++) {
+      const db = await open(tmpDir.name, options);
+      try {
+        const table = await db.createTable(`reused_${i}`, [{ id: i }]);
+        await expect(table.countRows()).resolves.toBe(1);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "stable",
+        });
+      } finally {
+        await db.close();
+      }
+    }
+  });
+});
+
 describe("given a connection", () => {
   let tmpDir: tmp.DirResult;
   let db: Connection;
@@ -117,6 +198,80 @@ describe("given a connection", () => {
     await expect(tbl.countRows()).resolves.toBe(1);
   });
 
+  describe.each([undefined, []])("root namespace %p", (namespacePath) => {
+    it("should preserve createTable options after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }, { id: 2 }]);
+
+      const table = await db.createTable("test", [{ id: 3 }], namespacePath, {
+        mode: "overwrite",
+      });
+
+      const rows = await table.query().toArray();
+      expect(rows.map((row) => row.id)).toEqual([3]);
+    });
+
+    it("should preserve createEmptyTable overwrite after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }]);
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      const table = await db.createEmptyTable("test", schema, namespacePath, {
+        mode: "overwrite",
+      });
+
+      await expect(table.countRows()).resolves.toBe(0);
+    });
+
+    it("should preserve createEmptyTable existOk after the namespace", async () => {
+      await db.createTable("test", [{ id: 1 }]);
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      const table = await db.createEmptyTable("test", schema, namespacePath, {
+        existOk: true,
+      });
+
+      await expect(table.countRows()).resolves.toBe(1);
+    });
+
+    it("should preserve tableNames options after the namespace", async () => {
+      for (const name of ["a", "b", "c"]) {
+        await db.createTable(name, [{ id: 1 }]);
+      }
+
+      await expect(
+        db.tableNames(namespacePath, { limit: 1, startAfter: "a" }),
+      ).resolves.toEqual(["b"]);
+    });
+
+    it("should preserve listTables options after the namespace", async () => {
+      for (const name of ["a", "b", "c"]) {
+        await db.createTable(name, [{ id: 1 }]);
+      }
+
+      const first = await db.listTables(namespacePath, { limit: 1 });
+      expect(first.tables).toEqual(["a"]);
+      expect(first.pageToken).toBeDefined();
+
+      const second = await db.listTables(namespacePath, {
+        limit: 1,
+        pageToken: first.pageToken,
+      });
+      expect(second.tables).toEqual(["b"]);
+    });
+  });
+  it("should keep the existing table when mode is exist_ok", async () => {
+    const created = await db.createTable("test", [{ id: 1 }, { id: 2 }], {
+      mode: "exist_ok",
+    });
+    await expect(created.countRows()).resolves.toBe(2);
+
+    const reopened = await db.createTable("test", [{ id: 9 }], {
+      mode: "exist_ok",
+    });
+    await expect(reopened.countRows()).resolves.toBe(2);
+    const rows = (await reopened.query().toArray()) as { id: number }[];
+    expect(rows.map((row) => row.id).sort()).toEqual([1, 2]);
+  });
+
   it("should respect limit and page token when listing tables", async () => {
     const db = await connect(tmpDir.name);
 
@@ -179,6 +334,56 @@ describe("given a connection", () => {
     } while (pageToken);
 
     expect(seen).toEqual(created);
+  });
+
+  it.each([2 ** 32, 2 ** 32 + 1, Number.MAX_SAFE_INTEGER])(
+    "should not wrap a large table listing limit %s",
+    async (limit) => {
+      await db.createTable("a", [{ id: 1 }]);
+      await db.createTable("b", [{ id: 2 }]);
+      for (const names of [
+        db.tableNames({ limit }),
+        db.tableNames([], { limit }),
+      ]) {
+        await expect(names).resolves.toEqual(["a", "b"]);
+      }
+      for (const page of [
+        db.listTables({ limit }),
+        db.listTables([], { limit }),
+      ]) {
+        await expect(page).resolves.toEqual({ tables: ["a", "b"] });
+      }
+    },
+  );
+
+  it.each([
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])("should reject an invalid table listing limit %s", async (limit) => {
+    await expect(db.tableNames({ limit })).rejects.toThrow(/limit/);
+    await expect(db.tableNames([], { limit })).rejects.toThrow(/limit/);
+    await expect(db.listTables({ limit })).rejects.toThrow(/limit/);
+    await expect(db.listTables([], { limit })).rejects.toThrow(/limit/);
+  });
+
+  it("should preserve zero, small and unsigned-32-bit table listing limits", async () => {
+    await db.createTable("a", [{ id: 1 }]);
+    await db.createTable("b", [{ id: 2 }]);
+    for (const [limit, names] of [
+      [0, []],
+      [1, ["a"]],
+      [2 ** 32 - 1, ["a", "b"]],
+    ] as const) {
+      await expect(db.tableNames({ limit })).resolves.toEqual(names);
+      const page = await db.listTables({ limit });
+      expect(page.tables).toEqual(names);
+    }
+    await expect(db.tableNames()).resolves.toEqual(["a", "b"]);
+    await expect(db.listTables()).resolves.toEqual({ tables: ["a", "b"] });
   });
 
   it("should list all names and use a default page size of 100", async () => {
@@ -292,6 +497,69 @@ describe("given a connection", () => {
         expect(file).toMatch(/^\d{20}\.manifest$/);
       });
   });
+
+  describe.each(["createTable", "createEmptyTable"] as const)(
+    "%s storage options",
+    (method) => {
+      const schema = new Schema([new Field("id", new Float64(), true)]);
+
+      it("should accept frozen creation options without storage options", async () => {
+        const options = Object.freeze({
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_options", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_options", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options).not.toHaveProperty("storageOptions");
+      });
+
+      it("should accept frozen storage options and preserve override precedence", async () => {
+        const storageOptions = Object.freeze({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+        const options = Object.freeze({
+          storageOptions,
+          dataStorageVersion: "stable",
+          enableV2ManifestPaths: true,
+        });
+        const table =
+          method === "createTable"
+            ? await db.createTable("frozen_storage", [{ id: 1 }], options)
+            : await db.createEmptyTable("frozen_storage", schema, options);
+        expect(await (table as LocalTable).usesV2ManifestPaths()).toBe(true);
+        expect(options.storageOptions).toBe(storageOptions);
+        expect(storageOptions).toEqual({
+          newTableDataStorageVersion: "legacy",
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+
+      it("should not retain a previous override when reusing storage options", async () => {
+        const storageOptions = { newTableEnableV2ManifestPaths: "false" };
+        const create = async (name: string, enableV2ManifestPaths?: boolean) =>
+          method === "createTable"
+            ? db.createTable(name, [{ id: 1 }], {
+                storageOptions,
+                enableV2ManifestPaths,
+              })
+            : db.createEmptyTable(name, schema, {
+                storageOptions,
+                enableV2ManifestPaths,
+              });
+        const first = await create("override", true);
+        expect(await (first as LocalTable).usesV2ManifestPaths()).toBe(true);
+        const second = await create("without_override");
+        expect(await (second as LocalTable).usesV2ManifestPaths()).toBe(false);
+        expect(storageOptions).toEqual({
+          newTableEnableV2ManifestPaths: "false",
+        });
+      });
+    },
+  );
 
   it("should be able to migrate tables to the V2 manifest paths", async () => {
     const db = await connect(tmpDir.name);

@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from decimal import Decimal, localcontext
 from typing import Optional
 
 import lance
@@ -28,7 +29,14 @@ import pandas as pd
 import polars as pl
 import pytest
 import lancedb
-from lancedb.util import flatten_columns, get_uri_scheme, join_uri, value_to_sql
+from lancedb.util import (
+    flatten_columns,
+    get_uri_location,
+    get_uri_scheme,
+    inf_vector_column_query,
+    join_uri,
+    value_to_sql,
+)
 from utils import exception_output
 
 
@@ -78,6 +86,22 @@ def test_normalize_uri():
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
         assert parsed_scheme == expected_scheme
+
+
+def test_get_uri_scheme_and_location_pathlib():
+    # Test pathlib.Path instances
+    abs_path = pathlib.Path("/tmp/data")
+    rel_path = pathlib.Path("relative/data")
+
+    assert get_uri_scheme(abs_path) == "file"
+    assert get_uri_scheme(rel_path) == "file"
+
+    assert get_uri_location(abs_path) == str(abs_path)
+    assert get_uri_location(rel_path) == str(rel_path)
+
+    # String URIs still behave identically
+    assert get_uri_scheme("s3://bucket/data") == "s3"
+    assert get_uri_location("s3://bucket/data") == "bucket/data"
 
 
 def test_join_uri_remote():
@@ -156,6 +180,41 @@ def test_value_to_sql_string(tmp_path):
     for value in values:
         table.update(where=f"search = {value_to_sql(value)}", values={"replace": value})
         assert table.to_pandas().query("search == @value")["replace"].item() == value
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("9.99", "'9.99'"),
+        ("-9.99", "'-9.99'"),
+        ("0", "'0'"),
+        ("-0.00", "'-0.00'"),
+        ("1.23E+5", "'123000'"),
+        ("1E-18", "'0.000000000000000001'"),
+        (
+            "12345678901234567890.123456789012345678",
+            "'12345678901234567890.123456789012345678'",
+        ),
+        (
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+            "'12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678'",
+        ),
+    ],
+)
+def test_value_to_sql_decimal(value, expected):
+    with localcontext() as context:
+        context.prec = 6
+        assert value_to_sql(Decimal(value)) == expected
+
+
+@pytest.mark.parametrize("value", ["NaN", "sNaN", "NaN123456", "Infinity", "-Infinity"])
+def test_value_to_sql_decimal_non_finite(value):
+    with pytest.raises(
+        ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
+    ):
+        value_to_sql(Decimal(value))
 
 
 def test_value_to_sql_dict():
@@ -469,6 +528,20 @@ def test_sanitize_vectors_with_only_null_elements(on_bad_vectors):
         "null": [{"vector": None}],
     }
     assert sanitize().to_pylist() == expected[on_bad_vectors]
+
+
+@pytest.mark.parametrize("dtype", [pa.float16(), pa.float32(), pa.float64()])
+@pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_has_nan_values_skips_hidden_children_of_null_lists(dtype, large, chunked):
+    array_type = pa.LargeListArray if large else pa.ListArray
+    values = pa.array([float("nan"), None, float("nan"), 3.0, 4.0, 5.0], type=dtype)
+    arr = array_type.from_arrays(
+        [0, 2, 4, 6], values, mask=pa.array([True, False, False])
+    )
+    if chunked:
+        arr = pa.chunked_array([arr.slice(0, 2), arr.slice(2, 1)])
+    assert has_nan_values(arr).to_pylist() == [False, True, False]
 
 
 def test_handle_bad_vectors_noop():
@@ -992,6 +1065,39 @@ def test_cast_to_target_schema_coerces_binary_to_blob_v2():
     ]
 
 
+@pytest.mark.parametrize(
+    "string_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_cast_to_target_schema_coerces_string_to_blob_v2_uri(string_type):
+    data = pa.table({"image": pa.array(["file:///payload", None], type=string_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    output = _cast_to_target_schema(data.to_reader(), target).read_all()
+
+    image = output["image"].chunk(0)
+    assert type(image.type) is lancedb.BlobType
+    assert image.storage.to_pylist() == [
+        {"data": None, "uri": "file:///payload", "position": None, "size": None},
+        None,
+    ]
+
+
+@pytest.mark.parametrize(
+    "source_type, value",
+    [
+        (pa.binary(4), b"abcd"),
+        (pa.list_(pa.uint8()), [1, 2]),
+        (pa.int64(), 42),
+    ],
+)
+def test_cast_to_target_schema_rejects_unsupported_blob_input(source_type, value):
+    data = pa.table({"image": pa.array([value], type=source_type)})
+    target = pa.schema([lancedb.blob("image")])
+
+    with pytest.raises(ValueError, match="cannot coerce column 'image' with type"):
+        _cast_to_target_schema(data.to_reader(), target)
+
+
 def test_cast_to_target_schema_coerces_binary_to_metadata_blob_struct():
     storage = lancedb.blob("image").type.storage_type
     target = pa.schema(
@@ -1223,3 +1329,41 @@ def test_infer_vector_column_raises_clear_error(tmp_path):
         # Plain vector search on a table with no vector column should raise
         # a clear ValueError, not a cryptic TypeError.
         table.search([1.0, 2.0]).to_list()
+
+
+def test_inf_vector_column_query_dim_mismatch_still_resolves():
+    """Regression: a query dimension that matches no column must not hide an
+    otherwise-unambiguous vector column behind "no vector column in the data".
+
+    `dim` exists to disambiguate between *multiple* vector columns of
+    different sizes. When the schema has exactly one vector column, that
+    column is still the only sensible one to search; a dimension mismatch is
+    a query-execution concern, not a missing-column one. This previously
+    broke remote search (#4409 wired up client-side inference there), which
+    expects the server to reject the mismatched dimension itself.
+    """
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+            pa.field("s", pa.string(), False),
+        ]
+    )
+
+    assert inf_vector_column_query(schema, dim=32) == "vector_col"
+    assert inf_vector_column_query(schema, dim=120) == "vector_col"
+    assert inf_vector_column_query(schema) == "vector_col"
+
+
+def test_inf_vector_column_query_dim_mismatch_with_multiple_columns():
+    """With more than one vector column, a dimension that matches none of
+    them is still ambiguous and must raise, not silently pick one."""
+    schema = pa.schema(
+        [
+            pa.field("vector1", pa.list_(pa.float32(), 10), False),
+            pa.field("vector2", pa.list_(pa.float32(), 20), False),
+        ]
+    )
+
+    with pytest.raises(ValueError, match="more than one vector column"):
+        inf_vector_column_query(schema, dim=99)
