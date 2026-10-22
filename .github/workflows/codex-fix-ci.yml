@@ -47,9 +47,19 @@ jobs:
           fi
           RUN_ID="${BASH_REMATCH[1]}"
 
-          # Only operate on code and logs from branches in this repository. Fork
-          # PRs control both their code and their CI log output.
-          HEAD_REPO=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" --jq '.head_repository.full_name')
+          # Only operate on code and logs from branches in this repository: fork
+          # PRs control both their code and their CI log output. Events like
+          # pull_request_target report this repo as head_repository even when a
+          # fork triggered them, so only accept events where it is reliable.
+          read -r EVENT HEAD_REPO < <(gh api "repos/${REPO}/actions/runs/${RUN_ID}" \
+            --jq '"\(.event) \(.head_repository.full_name)"')
+          case "$EVENT" in
+            push|pull_request|merge_group|schedule|workflow_dispatch) ;;
+            *)
+              echo "::error::Run ${RUN_ID} was triggered by '${EVENT}', which is not supported"
+              exit 1
+              ;;
+          esac
           if [[ "$HEAD_REPO" != "$REPO" ]]; then
             echo "::error::Run ${RUN_ID} is from ${HEAD_REPO}, not ${REPO}"
             exit 1
@@ -79,7 +89,9 @@ jobs:
           node-version: 24
 
       - name: Install Codex CLI
-        run: npm install -g @openai/codex
+        # Pinned because the secret isolation below relies on this version's
+        # CODEX_API_KEY handling and Linux sandbox behavior.
+        run: npm install -g @openai/codex@0.163.0
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -124,16 +136,17 @@ jobs:
           git config user.name "lancedb automation"
           git config user.email "robot@lancedb.com"
 
-      - name: Log in to Codex
-        env:
-          OPENAI_API_KEY: ${{ secrets.CODEX_TOKEN }}
-        run: printenv OPENAI_API_KEY | codex login --with-api-key
-
       - name: Run Codex to fix CI failure
         env:
           WORKFLOW_RUN_URL: ${{ inputs.workflow_run_url }}
           BRANCH: ${{ inputs.branch }}
           GUIDELINES: ${{ inputs.guidelines }}
+          # Passed via env rather than `codex login`, which would write it to
+          # ~/.codex/auth.json where sandboxed tools can read it. Tool
+          # subprocesses don't inherit it: ignore_default_excludes=false strips
+          # *KEY* variables, and the sandbox's PID namespace hides
+          # /proc/<codex>/environ.
+          CODEX_API_KEY: ${{ secrets.CODEX_TOKEN }}
         run: |
           set -euo pipefail
 
@@ -192,9 +205,9 @@ jobs:
           - If any command fails, diagnose and attempt to fix the issue instead of aborting immediately.
           EOF
 
-          # Network stays on so cargo/pip/pnpm can fetch dependencies; no secrets
-          # are in this step's environment.
+          # Network stays on so cargo/pip/pnpm can fetch dependencies.
           codex exec \
+            --config shell_environment_policy.ignore_default_excludes=false \
             --sandbox workspace-write \
             --config sandbox_workspace_write.network_access=true \
             --config 'sandbox_workspace_write.writable_roots=["/tmp"]' \
