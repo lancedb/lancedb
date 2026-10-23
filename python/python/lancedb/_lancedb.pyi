@@ -19,11 +19,9 @@ from .index import (
     FTS,
 )
 from lance_namespace import (
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
 )
 from .remote import ClientConfig
 from .types import BaseTokenizerType
@@ -114,12 +112,12 @@ class Connection(object):
     uri: str
     async def is_open(self): ...
     async def close(self): ...
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse: ...
+    ) -> NameListing: ...
     async def create_namespace(
         self,
         namespace_path: List[str],
@@ -136,12 +134,12 @@ class Connection(object):
         self,
         namespace_path: List[str],
     ) -> DescribeNamespaceResponse: ...
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse: ...
+    ) -> NameListing: ...
     async def table_names(
         self,
         namespace_path: Optional[List[str]],
@@ -270,6 +268,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Table: ...
     async def create_materialized_view_async(
         self,
@@ -279,6 +279,8 @@ class Connection(object):
         filter: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job: ...
     def list_materialized_views(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -501,10 +503,17 @@ class Table:
     async def delete(self, filter: Union[str, PyExpr]) -> DeleteResult: ...
     async def add_columns(self, columns: list[tuple[str, str]]) -> AddColumnsResult: ...
     async def add_computed_columns(
-        self, columns: list[tuple[str, str]]
+        self,
+        columns: list[tuple[str, str]],
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def add_function_columns(
-        self, application_json: str, output_name: Optional[str]
+        self,
+        application_json: str,
+        output_name: Optional[str],
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[int] = None,
     ) -> AddColumnsResult: ...
     async def refresh_column(self, column: str) -> RefreshColumnResult: ...
     async def refresh_column_async(self, column: str) -> Job: ...
@@ -940,6 +949,15 @@ class AsyncPermutationBuilder:
         counts: Optional[List[int]] = None,
         fixed: Optional[int] = None,
     ) -> "AsyncPermutationBuilder": ...
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[List[float]] = None,
+        counts: Optional[List[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+    ) -> "AsyncPermutationBuilder": ...
     def split_calculated(self, calculation: str) -> "AsyncPermutationBuilder": ...
     def shuffle(
         self, seed: Optional[int], clump_size: Optional[int]
@@ -990,6 +1008,7 @@ async def connect_catalog(
 class NameListing:
     def num_page_results(self) -> int: ...
     def page_token(self) -> Optional[str]: ...
+    async def next_page(self) -> Optional[dict[str, Any]]: ...
     def __aiter__(self) -> NameListing: ...
     async def __anext__(self) -> str: ...
 

@@ -316,6 +316,10 @@ impl PermutationBuilder {
         } else {
             self.sort_by_column(rows, ROW_ID).await?
         };
+        // Bootstrap's output row count (num_samples) differs from its input row count
+        // (num_rows); every other strategy's output matches its input. The shuffler
+        // must be told the former, not assume it always equals the latter.
+        let output_rows = splitter.output_row_count(num_rows);
         let split_data = splitter.apply(rows, num_rows).await?;
 
         // Shuffle data if requested
@@ -328,7 +332,7 @@ impl PermutationBuilder {
                     temp_dir: self.config.temp_dir.clone(),
                     max_rows_per_file: 10 * 1024 * 1024,
                 });
-                shuffler.shuffle(split_data, num_rows).await?
+                shuffler.shuffle(split_data, output_rows).await?
             }
         };
 
