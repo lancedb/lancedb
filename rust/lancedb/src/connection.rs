@@ -2024,7 +2024,10 @@ mod tests {
         let (impl_name, properties) = conn.namespace_client_config().await.unwrap();
         assert_eq!(impl_name, "rest");
         assert_eq!(properties["uri"], "https://example.com");
-        assert_eq!(properties["header.x-lancedb-database"], "");
+        assert!(
+            !properties.contains_key("header.x-lancedb-database"),
+            "storage-root connections must not send the x-lancedb-database header"
+        );
 
         let result = ConnectBuilder::new("db://")
             .region("us-east-1")
