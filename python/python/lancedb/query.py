@@ -1226,10 +1226,10 @@ class LanceQueryBuilder(ABC):
         Execute the query and return the results as a pyarrow
         [RecordBatchReader](https://arrow.apache.org/docs/python/generated/pyarrow.RecordBatchReader.html)
 
-        For v2 blob projections, ``to_batches`` keeps the auto ``_rowid``
-        column visible so batch consumers can call ``fetch_blobs``. Use
-        ``to_arrow``, ``to_list``, or ``to_pandas`` if you want LanceDB to hide
-        auto row ids in the final collected result.
+        For v2 blob projections, the default ``blob_mode="lazy"`` keeps the
+        auto ``_rowid`` column visible so batch consumers can call
+        ``fetch_blobs``. The ``"bytes"`` and ``"descriptions"`` modes hide
+        automatic row ids.
 
         Parameters
         ----------
