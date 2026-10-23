@@ -3696,11 +3696,8 @@ def test_sync_remote_blob_pandas_avoids_storage_access(
             assert df["id"].tolist() == [1, 2, 3]
             assert "_rowid" not in df.columns
             assert df["image"][0]["size"] == 5
-        elif blob_mode == "bytes":
-            with pytest.raises(NotImplementedError, match="stable table snapshot"):
-                query.to_pandas(blob_mode=blob_mode)
         else:
-            with pytest.raises(RuntimeError, match="cannot use Lance native"):
+            with pytest.raises(NotImplementedError, match="stable table snapshot"):
                 query.to_pandas(blob_mode=blob_mode)
 
 
