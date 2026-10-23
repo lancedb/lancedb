@@ -80,6 +80,18 @@ ignore = [
     { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
     { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
 
+    # zip < 9.0.0: SUID/SGID bits, symlink targets and permissions applied through
+    # symlinks during archive extraction. Transitive via candle-core (optional
+    # local-embedding feature); every published candle release pins zip < 9
+    # (0.9.x/0.10.x ^7.2, 0.11.0 ^8.6), so no dependency bump clears it.
+    # LanceDB never extracts archives; the zip crate is only linked.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0367
+    # https://rustsec.org/advisories/RUSTSEC-2026-0368
+    # https://rustsec.org/advisories/RUSTSEC-2026-0369
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+
     # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
     # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
     # Pulled in transitively by inferno (dev-only flame-graph dep), lance-namespace-impls

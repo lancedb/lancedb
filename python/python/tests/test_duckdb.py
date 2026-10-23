@@ -22,3 +22,19 @@ def test_basic_query(tmp_path):
 
     results = duck_conn.sql("SELECT SUM(y) FROM adapter").fetchall()
     assert results[0][0] == 26
+
+
+def test_query_with_filter(tmp_path):
+    data = pa.table({"x": [1, 2, 3, 4], "y": [5, 6, 7, 8]})
+    conn = lancedb.connect(tmp_path)
+    tbl = conn.create_table("test", data)
+
+    adapter = PyarrowDatasetAdapter(tbl)  # noqa: F841
+
+    duck_conn = duckdb.connect()
+
+    results = duck_conn.sql("SELECT SUM(y) FROM adapter WHERE x > 2").fetchall()
+    assert results[0][0] == 15
+
+    results = duck_conn.sql("SELECT y FROM adapter WHERE x > 2 ORDER BY y").fetchall()
+    assert results == [(7,), (8,)]

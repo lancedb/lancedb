@@ -4,6 +4,12 @@ import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import * as lancedb from "@lancedb/lancedb";
 import { withTempDirectory } from "./util.ts";
 
+async function collectNames(items: AsyncIterable<string>): Promise<string[]> {
+  const names: string[] = [];
+  for await (const name of items) names.push(name);
+  return names;
+}
+
 test("connect to a local database", async () => {
   await withTempDirectory(async (tempDir) => {
     const cwd = process.cwd();
@@ -13,12 +19,12 @@ test("connect to a local database", async () => {
       const db = await lancedb.connect("ex_lancedb");
       // --8<-- [end:connect]
       await db.createTable("probe", [{ id: 1 }]);
-      expect((await db.listTables()).tables).toEqual(["probe"]);
+      expect(await collectNames(db.listTables())).toEqual(["probe"]);
     } finally {
       process.chdir(cwd);
     }
     const reopened = await lancedb.connect(`${tempDir}/ex_lancedb`);
-    expect((await reopened.listTables()).tables).toEqual(["probe"]);
+    expect(await collectNames(reopened.listTables())).toEqual(["probe"]);
   });
 });
 
@@ -109,8 +115,8 @@ async function namespaceTableOpsExample() {
   );
 
   // Verify
-  console.log((await db.listNamespaces()).namespaces); // ["prod"]
-  console.log((await db.listNamespaces(["prod"])).namespaces); // ["recommendations", "search"]
+  console.log(await collectNames(db.listNamespaces())); // ["prod"]
+  console.log(await collectNames(db.listNamespaces(["prod"]))); // ["recommendations", "search"]
   console.log(await db.tableNames(["prod", "search"])); // ["user"]
   console.log(await db.tableNames(["prod", "recommendations"])); // ["user"]
   // --8<-- [end:namespace_table_ops]
@@ -124,7 +130,7 @@ async function namespaceAdminOpsExample() {
   await db.createNamespace(["prod"]);
   await db.createNamespace(["prod", "search"]);
 
-  const childNamespaces = (await db.listNamespaces(["prod"])).namespaces;
+  const childNamespaces = await collectNames(db.listNamespaces(["prod"]));
   console.log(`Child namespaces under ${JSON.stringify(namespace)}:`, childNamespaces);
   // Child namespaces under ["prod","search"]: [ 'search' ]
 

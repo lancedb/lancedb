@@ -31,9 +31,9 @@ import java.io.UncheckedIOException;
  * specification does not cover.
  *
  * <p>Most table operations reach LanceDB through {@link org.lance.namespace.LanceNamespace}, which
- * is generated from the namespace spec. A handful of routes — the MemWAL write path in
- * particular — are served by the same endpoint but are not part of that spec, so they are issued
- * directly here. See {@link LanceDbTableMemWal}.
+ * is generated from the namespace spec. A handful of routes — the RTE write path in particular —
+ * are served by the same endpoint but are not part of that spec, so they are issued directly here.
+ * See {@link LanceDbTableRTE}.
  *
  * <p>Obtain one from {@link LanceDbNamespaceClientBuilder#buildRestClient()}.
  */
@@ -50,8 +50,8 @@ public class LanceDbRestClient implements Closeable {
     this.apiKey = apiKey;
     this.database = database;
     // Automatic retries off, deliberately. The default strategy retries 429 and 503 —
-    // exactly the two statuses LanceDbTableMemWal.checkpointMemWal() acts on — which would
-    // silently double its explicit retry budget and would also retry compact_memwal in
+    // exactly the two statuses LanceDbTableRTE.checkpointRTE() acts on — which would
+    // silently double its explicit retry budget and would also retry compact_rte in
     // place, where the loop is designed to fall through to a fresh stats poll instead.
     // The checkpoint loop owns the 421/429/503 transitions; the transport must not.
     this.http = HttpClients.custom().disableAutomaticRetries().build();
@@ -98,9 +98,8 @@ public class LanceDbRestClient implements Closeable {
   /**
    * A non-2xx response.
    *
-   * <p>The status is exposed because callers act on it: {@link
-   * LanceDbTableMemWal#checkpointMemWal()} treats 429 and 503 as retryable and 421 as a lost node
-   * claim.
+   * <p>The status is exposed because callers act on it: {@link LanceDbTableRTE#checkpointRTE()}
+   * treats 429 and 503 as retryable and 421 as a lost node claim.
    */
   public static class HttpException extends RuntimeException {
     private static final long serialVersionUID = 1L;

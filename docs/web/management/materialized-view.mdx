@@ -15,7 +15,7 @@ A materialized view is a table whose contents are defined by a query over
 another table. The query is recorded in the view's schema, and a refresh
 brings its stored rows up to date with the source.
 
-The result is an ordinary table -- queryable, indexable, searchable, and present
+The result is an ordinary table: queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.
 
 This page covers creating and managing one. Keeping it current is
@@ -67,7 +67,7 @@ views. On Enterprise, it asks the server for the view listing, as
 </Note>
 
 A view is dropped with `drop_table`, because a materialized view **is** a table.
-That also means dropping one removes stored rows -- unlike dropping a
+That also means dropping one removes stored rows, unlike dropping a
 [view](/management/view), which removes only a saved query.
 
 ## Read the view and its definition {#working}

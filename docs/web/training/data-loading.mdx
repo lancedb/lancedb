@@ -155,7 +155,7 @@ for sample in eval_ds:
 
 ### Parallelism & Elasticity
 
-When loading data, `StreamingDataset` partitions the the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
+When loading data, `StreamingDataset` partitions the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
 
 If using `shuffle=False`, data is allocated to splits naively in ordered contiguous blocks of equal size. With `shuffle=True`
 (the default), the rows of the source dataset are shuffled and distributed among splits such that each split receives the same
