@@ -2197,7 +2197,7 @@ class Table(ABC):
 
     @abstractmethod
     def blob_columns(self) -> list[str]:
-        """Names of blob v2 columns that can be fetched by row id.
+        """Names of blob v1 and v2 columns that can be fetched by row id.
 
         Struct-nested blobs use dotted paths. Blobs inside lists are omitted
         because a row id does not identify an individual list element.
@@ -2211,6 +2211,7 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
+        Local tables support both legacy blob v1 and blob v2 columns.
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
@@ -2234,8 +2235,9 @@ class Table(ABC):
         column: str,
         requests: Sequence[Sequence[int]],
     ) -> pa.LargeBinaryArray:
-        """Materialize row-specific byte ranges from a blob v2 column.
+        """Materialize row-specific byte ranges from a blob column.
 
+        Local tables support both legacy blob v1 and blob v2 columns.
         Each request is a three-item ``(row_id, offset, length)`` sequence.
         Requests may be repeated or reordered, including multiple ranges for
         the same blob.
@@ -2260,6 +2262,7 @@ class Table(ABC):
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
+        Local tables support both legacy blob v1 and blob v2 columns.
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
         a ``list[int]``, an integer Arrow array or chunked array, or a query
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a

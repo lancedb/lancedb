@@ -524,6 +524,9 @@ pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
 still work. Queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
+Local tables support these fetch APIs for both legacy blob v1 columns
+(`lance-encoding:blob`) and blob v2 columns. For legacy columns, obtain row IDs
+with `search().with_row_id(True).to_arrow()` and pass the result to the fetch API.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
