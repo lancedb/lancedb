@@ -52,7 +52,10 @@ class TimeoutConfig:
         `LANCE_CLIENT_CONNECT_TIMEOUT`, as an integer number of seconds.
     read_timeout: Optional[timedelta]
         The timeout for reading data from the server. Default is 300 seconds
-        (5 minutes). This can also be set via the environment variable
+        (5 minutes). This also applies while waiting for response headers during
+        an upload. Increase it for large or slowly produced inputs to
+        `create_table`, even if data is still being uploaded. This can also be
+        set via the environment variable
         `LANCE_CLIENT_READ_TIMEOUT`, as an integer number of seconds.
     pool_idle_timeout: Optional[timedelta]
         The timeout for keeping idle connections in the connection pool. Default

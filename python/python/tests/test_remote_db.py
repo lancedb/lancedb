@@ -802,6 +802,43 @@ def test_create_table_exist_ok_with_mode_overwrite():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout_config",
+    [{"read_timeout": 0.5}, {"timeout": 0.5, "read_timeout": 5}],
+)
+async def test_create_table_timeout_is_actionable(timeout_config):
+    release_response = threading.Event()
+    received = {}
+
+    def handler(request):
+        received["path"] = request.path
+        received["request_id"] = request.headers["x-request-id"]
+        release_response.wait(timeout=5)
+        request.close_connection = True
+
+    async with mock_lancedb_connection_async(
+        handler, timeout_config=timeout_config
+    ) as db:
+        batch = pa.record_batch({"id": [1, 2]})
+        reader = pa.RecordBatchReader.from_batches(batch.schema, [batch])
+        try:
+            with pytest.raises(HttpError) as exc_info:
+                await db.create_table("test", reader)
+        finally:
+            release_response.set()
+
+        error = exc_info.value
+        assert "timed out" in str(error)
+        assert "client_config.timeout_config.read_timeout" in str(error)
+        assert "client_config.timeout_config.timeout" in str(error)
+        assert "LANCE_CLIENT_READ_TIMEOUT" in str(error)
+        assert received["path"] == "/v1/table/test/create/?mode=create"
+        assert error.request_id == received["request_id"]
+        assert error.status_code is None
+        assert isinstance(error.__cause__, HttpError)
+
+
+@pytest.mark.asyncio
 async def test_http_error():
     request_id_holder = {"request_id": None}
 
