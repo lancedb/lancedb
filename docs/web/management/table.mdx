@@ -335,9 +335,8 @@ extension types and pseudo-columns.
 Store images, audio, video, and documents alongside structured columns and
 embeddings in the same versioned table.
 
-Use `blob` columns for these payloads. Small blobs are stored inline by
-default, so you don't need to choose [`binary`](#multimodal-store-binary-data)
-based on size.
+Use `blob` columns for these payloads. Small values stay inline in the data
+file, up to 64 KiB by default, and larger values are stored outside it.
 
 ### Blob columns {#multimodal-blob-v2}
 
@@ -348,25 +347,30 @@ Blob V2 is in early access.
 A `blob` column keeps metadata separate from the payload bytes, so queries can
 filter rows without loading the blobs.
 
-Most queries return descriptors. With pylance installed, Python's
-`to_pandas()` returns `BlobFile` handles on plain scans. You can
-[read bytes in query results](#multimodal-blob-query-results) or
-[fetch blobs by row ID](#multimodal-read-blobs).
+Most queries return descriptors, which contain metadata about the blob instead
+of its bytes. You can
+[read the bytes in the query results](#multimodal-blob-query-results) or
+[fetch them by row ID](#multimodal-read-blobs).
 
-When you write raw bytes, Lance chooses a storage layout from the payload size.
-A descriptor's `kind` reports which one:
+In Python, plain `to_pandas()` scans can also return `BlobFile` handles when
+`pylance` is installed.
 
-| Storage mode | `kind` | Default threshold | Storage behavior |
+When you write raw bytes, Lance chooses a storage layout based on the payload
+size. A descriptor's `kind` tells you which one was used:
+
+| Storage mode | `kind` | Default placement | Storage behavior |
 | --- | --- | --- | --- |
 | `Inline` | `0` | Up to 64 KiB | Stored in the main data file. |
 | `Packed` | `1` | Above 64 KiB, up to 4 MiB | Packed with other blobs into a shared sidecar file, up to 1 GiB per file by default. |
 | `Dedicated` | `2` | Above 4 MiB | Stored in its own raw sidecar file. |
+| `Managed` | `4` or `5` | Out-of-line values when managed storage is enabled | Stored in a Lance-owned object independently of the data file. |
 
-You can change the thresholds when creating the table. Python uses
-`inline_size_threshold` and `dedicated_size_threshold`, TypeScript uses
-`inlineSizeThreshold` and `dedicatedSizeThreshold`, and Rust uses
-`blob_with_options()`. In Python, custom thresholds require `pylance`.
-Appending data doesn't change the table's thresholds.
+Managed storage must be enabled separately. See
+[Managed blobs](#managed-blobs) for details. `kind=5` identifies a Managed
+object using an explicitly registered base.
+
+Lance uses the default thresholds unless you customize them. Explicitly
+configured thresholds are stored in the table schema and preserved on append.
 
 #### Setup {#multimodal-blob-v2-setup}
 
