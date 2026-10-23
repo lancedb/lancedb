@@ -8,6 +8,8 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
+If no wheel is published for your platform, pip builds `lancedb` from the source distribution. That build needs a [Rust toolchain](https://rustup.rs/) and [protoc](https://grpc.io/docs/protoc-installation/) (the Protocol Buffers compiler) on your `PATH`, and can take a while.
+
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
 The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C) for full performance on modern hardware. Pre-Haswell hosts — Intel Sandy Bridge / Ivy Bridge / Westmere; AMD Bulldozer / Piledriver / Steamroller — don't have AVX2 and crash with `Illegal instruction` at `import lancedb`.
@@ -37,6 +39,25 @@ Stable releases are created about every 2 weeks. For the latest features and bug
 ```bash
 pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 ```
+
+### Threading in CPU-limited containers
+
+LanceDB uses separate pools for compute work and storage I/O. On a container with
+two visible CPUs, current releases intentionally use one compute worker by default;
+no manual configuration is needed. If every query logs an I/O core reservation
+warning on a two-CPU container, upgrade from LanceDB 0.21.1 or earlier.
+
+The two commonly tuned environment variables control different resources:
+
+- `LANCE_CPU_THREADS` overrides the number of compute workers. One worker is the
+  appropriate setting for a two-CPU container when an explicit override is needed.
+- `LANCE_IO_THREADS` controls concurrent storage operations, not reserved CPU
+  cores. Its default can be greater than the number of CPUs because I/O workers
+  spend much of their time waiting for storage.
+
+Keep the defaults unless measurements show that the workload benefits from an
+override. See the [Lance threading model](https://lance.org/guide/performance/#threading-model)
+for the current defaults and tuning guidance.
 
 ## Usage
 

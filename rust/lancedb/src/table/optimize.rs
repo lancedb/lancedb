@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use lance::dataset::cleanup::RemovalStats;
+use chrono::{DateTime, Utc};
+use lance::dataset::cleanup::{CleanupPolicyBuilder, RemovalStats};
 use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
@@ -68,7 +69,11 @@ pub enum OptimizeAction {
         /// **WARNING**: This should only be set to true if you can guarantee that no other process is
         /// currently working on this dataset.  Otherwise the dataset could be put into a corrupted state.
         delete_unverified: Option<bool>,
+        /// Tagged versions are never removed, regardless of their age.
+        ///
         /// If true, an error will be returned if there are any old versions that are still tagged.
+        /// If false or `None` (the default), tagged versions are silently retained and all other
+        /// old versions are removed.
         error_if_tagged_old_versions: Option<bool>,
     },
     /// Optimize the indices
@@ -124,6 +129,12 @@ pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOpti
 ///   no other process is currently working on this dataset.  Otherwise the
 ///   dataset could be put into a corrupted state.
 ///
+/// * `error_if_tagged_old_versions` - Tagged versions are always retained.  If
+///   this is true, an error is returned when a tagged version is older than the
+///   cutoff.  Defaults to false (the tagged versions are retained silently),
+///   unlike Lance's own default, so that `optimize` does not fail (and skip the
+///   steps after pruning) once a tagged version ages past the cutoff.
+///
 /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
 /// returns the result.
 pub(crate) async fn cleanup_old_versions(
@@ -134,9 +145,47 @@ pub(crate) async fn cleanup_old_versions(
 ) -> Result<RemovalStats> {
     table.dataset.ensure_mutable()?;
     let dataset = table.dataset.get().await?;
-    Ok(dataset
-        .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
-        .await?)
+    let stats = dataset
+        .cleanup_old_versions(
+            older_than,
+            delete_unverified,
+            Some(error_if_tagged_old_versions.unwrap_or(false)),
+        )
+        .await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
+}
+
+/// Remove dataset versions committed before an absolute timestamp.
+pub(crate) async fn cleanup_old_versions_before(
+    table: &NativeTable,
+    before_timestamp: DateTime<Utc>,
+    delete_unverified: Option<bool>,
+    error_if_tagged_old_versions: Option<bool>,
+) -> Result<RemovalStats> {
+    table.dataset.ensure_mutable()?;
+    let dataset = table.dataset.get().await?;
+    let mut policy = CleanupPolicyBuilder::default().before_timestamp(before_timestamp);
+    if let Some(delete_unverified) = delete_unverified {
+        policy = policy.delete_unverified(delete_unverified);
+    }
+    // Tagged versions are retained rather than raising an error unless asked.
+    policy = policy.error_if_tagged_old_versions(error_if_tagged_old_versions.unwrap_or(false));
+    let stats = dataset.cleanup_with_policy(policy.build()).await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
 }
 
 /// Compact files in the dataset.
@@ -214,12 +263,17 @@ pub(crate) async fn execute_optimize(
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::{Int32Array, RecordBatch, StringArray};
+    use arrow_array::{
+        Array, FixedSizeListArray, Float32Array, Int32Array, RecordBatch, StringArray,
+    };
     use arrow_schema::{DataType, Field, Schema};
+    use lance_arrow::FixedSizeListArrayExt;
     use rstest::rstest;
     use std::sync::Arc;
 
     use crate::connect;
+    use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
+    use crate::index::vector::IvfRqIndexBuilder;
     use crate::index::{Index, scalar::BTreeIndexBuilder};
     use crate::query::ExecutableQuery;
     use crate::table::{CompactionOptions, OptimizeAction, OptimizeStats};
@@ -305,6 +359,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_compact_with_concurrent_add() {
+        const NUM_FRAGMENTS: usize = 5;
+        const ROWS_PER_FRAGMENT: i32 = 300;
+
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int32Array::from_iter_values(0..ROWS_PER_FRAGMENT))],
+        )
+        .unwrap();
+
+        let table = conn
+            .create_table("test_concurrent_compact", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        for _ in 0..NUM_FRAGMENTS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Use separate handles so the two writes actually overlap, as they can
+        // when different Node connections operate on the same S3 table.
+        let compact_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let append_table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let compact_task = tokio::spawn(async move {
+            compact_table
+                .optimize(OptimizeAction::Compact {
+                    options: CompactionOptions {
+                        target_rows_per_fragment: 1_000,
+                        ..Default::default()
+                    },
+                    remap_options: None,
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        for _ in 0..NUM_FRAGMENTS {
+            append_table.add(batch.clone()).execute().await.unwrap();
+        }
+        compact_task.await.unwrap().unwrap();
+
+        let table = conn
+            .open_table("test_concurrent_compact")
+            .execute()
+            .await
+            .unwrap();
+        let dataset = table.dataset().unwrap().get().await.unwrap();
+        let fragment_ids = dataset
+            .get_fragments()
+            .iter()
+            .map(|fragment| fragment.id())
+            .collect::<Vec<_>>();
+        assert!(fragment_ids.windows(2).all(|ids| ids[0] < ids[1]));
+
+        // A second compaction exposed the original out-of-order row-id bug.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1_000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            table.count_rows(None).await.unwrap(),
+            ROWS_PER_FRAGMENT as usize * (NUM_FRAGMENTS * 2 + 1)
+        );
+    }
+
+    #[tokio::test]
     async fn test_optimize_prune_versions() {
         let conn = connect("memory://").execute().await.unwrap();
 
@@ -381,6 +525,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_optimize_prune_retains_tagged_versions() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let make_batch = |start: i32| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(start..start + 10))],
+            )
+            .unwrap()
+        };
+
+        let table = conn
+            .create_table("test_prune_tagged", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        // Tag the first version, then create more versions after it.
+        table.tags().await.unwrap().create("keep", 1).await.unwrap();
+        for i in 1..4 {
+            table.add(make_batch(i * 10)).execute().await.unwrap();
+        }
+        assert_eq!(table.list_versions().await.unwrap().len(), 4);
+
+        // Explicitly asking for an error still errors, and leaves everything in place.
+        let err = table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::try_days(0).unwrap()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: Some(true),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("tagged version"), "{err}");
+        assert_eq!(table.list_versions().await.unwrap().len(), 4);
+
+        // By default, tagged versions are retained and the other old versions are removed.
+        let stats = table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::try_days(0).unwrap()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(stats.prune.unwrap().old_versions, 2);
+        let mut versions = table
+            .list_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.version)
+            .collect::<Vec<_>>();
+        versions.sort();
+        assert_eq!(versions, vec![1, 4]);
+
+        // Same through the absolute-cutoff entry point used by the Node binding.
+        table.add(make_batch(40)).execute().await.unwrap();
+        let stats = table
+            .optimize_prune_before(chrono::Utc::now(), Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(stats.prune.unwrap().old_versions, 1);
+
+        // The tagged version is still readable, including its data files.
+        assert_eq!(table.count_rows(None).await.unwrap(), 50);
+        table.checkout_tag("keep").await.unwrap();
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 10);
+    }
+
+    #[tokio::test]
     async fn test_optimize_index() {
         let conn = connect("memory://").execute().await.unwrap();
 
@@ -440,6 +668,58 @@ mod tests {
         // Verify data integrity
         let final_row_count = table.count_rows(None).await.unwrap();
         assert_eq!(final_row_count, 200);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_vector_index_after_delete_with_stable_row_ids() {
+        const NUM_ROWS: i32 = 400;
+        const DIMENSION: i32 = 32;
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let vectors = FixedSizeListArray::try_new_from_values(
+            Float32Array::from_iter_values((0..NUM_ROWS).flat_map(|id| {
+                (0..DIMENSION).map(move |offset| ((id as f32 * 0.1) + (offset as f32 * 0.3)).sin())
+            })),
+            DIMENSION,
+        )
+        .unwrap();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("vector", vectors.data_type().clone(), false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..NUM_ROWS)),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_vector_index_optimize_after_delete", batch)
+            .storage_option(OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS, "true")
+            .execute()
+            .await
+            .unwrap();
+
+        table
+            .create_index(
+                &["vector"],
+                Index::IvfRq(IvfRqIndexBuilder::default().num_partitions(4)),
+            )
+            .execute()
+            .await
+            .unwrap();
+        table.delete("id % 3 = 0").await.unwrap();
+
+        // Regression test for #3330: deleted stable row IDs used to become
+        // misaligned with row addresses while joining small IVF partitions.
+        table
+            .optimize(OptimizeAction::Index(Default::default()))
+            .await
+            .unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 266);
     }
 
     #[tokio::test]

@@ -88,7 +88,7 @@ async def binary_table(db_async):
 async def test_create_index_async_returns_done_job(some_table: AsyncTable):
     job = await some_table.create_index_async("id", config=BTree())
     assert job.id is None
-    await job.wait()
+    assert await job.wait() is None
     assert len(await some_table.list_indices()) == 1
     await job.cancel()
 
@@ -373,6 +373,31 @@ async def test_create_vector_index(some_table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_create_ivf_index_reports_unsplittable_partitions(db_async):
+    dim = 8
+    num_partitions = 300  # More than 256 selects hierarchical k-means.
+    base_vectors = [[float(row == column) for column in range(dim)] for row in range(5)]
+    vectors = pa.array(base_vectors * 200, pa.list_(pa.float32(), dim))
+    table = await db_async.create_table(
+        "unsplittable_partitions",
+        pa.table({"vector": vectors}),
+    )
+
+    error_pattern = (
+        rf"Cannot create {num_partitions} IVF partitions: k-means could only form"
+    )
+    with pytest.raises(RuntimeError, match=error_pattern):
+        await table.create_index(
+            "vector",
+            config=IvfFlat(
+                distance_type="dot",
+                num_partitions=num_partitions,
+                max_iterations=10,
+            ),
+        )
+
+
+@pytest.mark.asyncio
 async def test_create_4bit_ivfpq_index(some_table: AsyncTable):
     # Can create
     await some_table.create_index("vector", config=IvfPq(num_bits=4))
@@ -403,6 +428,28 @@ async def test_create_ivfrq_index(some_table: AsyncTable):
     assert indices[0].index_type == "IvfRq"
     assert indices[0].columns == ["vector"]
     assert indices[0].name == "vector_idx"
+
+
+@pytest.mark.asyncio
+async def test_read_ivfrq_index_created_with_lance(db_async, some_table: AsyncTable):
+    pytest.importorskip("lance")
+    dataset = await some_table.to_lance()
+    dataset.create_index(
+        "vector",
+        index_type="IVF_RQ",
+        metric="cosine",
+        num_partitions=1,
+    )
+
+    # Open a fresh LanceDB handle so the index is discovered from disk.
+    table = await db_async.open_table("some_table")
+    indices = await table.list_indices()
+    assert len(indices) == 1
+    assert indices[0].index_type == "IvfRq"
+    assert indices[0].columns == ["vector"]
+
+    results = await table.query().nearest_to(list(range(DIM))).limit(8).to_arrow()
+    assert len(results) == 8
 
 
 @pytest.mark.asyncio

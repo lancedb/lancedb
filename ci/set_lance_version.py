@@ -22,7 +22,7 @@ def run_command(command: str) -> str:
 def get_latest_stable_version() -> str:
     version_line = run_command("cargo info lance | grep '^version:'")
     # Example output: "version: 0.35.0 (latest 0.37.0)"
-    match = re.search(r'\(latest ([0-9.]+)\)', version_line)
+    match = re.search(r"\(latest ([0-9.]+)\)", version_line)
     if match:
         return match.group(1)
     # Fallback: use the first version after 'version:'
@@ -69,7 +69,7 @@ def extract_default_features(line: str) -> bool:
     """
     import re
 
-    match = re.search(r'default-features\s*=\s*false', line)
+    match = re.search(r"default-features\s*=\s*false", line)
     return match is not None
 
 
@@ -104,7 +104,7 @@ def dict_to_toml_line(package_name: str, config: dict) -> str:
             # This shouldn't happen with our current usage
             parts.append(f'"{key}" = {json.dumps(value)}')
 
-    return f'{package_name} = {{ {", ".join(parts)} }}\n'
+    return f"{package_name} = {{ {', '.join(parts)} }}\n"
 
 
 def update_cargo_toml(line_updater):
@@ -119,7 +119,7 @@ def update_cargo_toml(line_updater):
     lance_line = ""
     is_parsing_lance_line = False
     for line in lines:
-        if line.startswith("lance"):
+        if re.match(r"^lance(?:\s|[-_])", line):
             # Check if this is a single-line or multi-line entry
             # Single-line entries either:
             # 1. End with } (complete inline table)

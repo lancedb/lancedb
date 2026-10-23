@@ -2,9 +2,12 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import contextlib
+import inspect
 import re
 import sys
 from datetime import timedelta
+from importlib import resources
 import os
 from types import SimpleNamespace
 
@@ -15,6 +18,10 @@ import pyarrow as pa
 import pytest
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.pydantic import LanceModel, Vector
+
+
+def test_package_includes_pep_561_marker():
+    assert resources.files(lancedb).joinpath("py.typed").is_file()
 
 
 def test_basic(tmp_path):
@@ -62,17 +69,24 @@ def test_basic(tmp_path):
     assert db.open_table("test").name == db["test"].name
 
 
-def test_sync_repr_does_not_use_background_loop(tmp_path, monkeypatch):
+def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeypatch):
     from lancedb.background_loop import LOOP
 
     db = lancedb.connect(tmp_path)
     table = db.create_table("test", data=[{"id": 1}])
 
     def fail_run(*args, **kwargs):
-        raise AssertionError("repr should not use the Python background loop")
+        raise AssertionError("debugger inspection should not use the background loop")
 
     monkeypatch.setattr(LOOP, "run", fail_run)
 
+    # Debuggers enumerate and evaluate every exposed attribute when expanding a
+    # variable. This must remain safe while their breakpoint suspends LOOP's thread.
+    members = dict(inspect.getmembers(db))
+
+    assert members["uri"] == str(tmp_path)
+    assert members["read_consistency_interval"] is None
+    assert members["session"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
@@ -92,6 +106,8 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     assert db.read_consistency_interval == consistency_interval
     assert db_from_inner.read_consistency_interval == consistency_interval
+    assert db.session is None
+    assert db_from_inner.session is None
 
 
 def test_ingest_pd(tmp_path):
@@ -232,6 +248,40 @@ def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConn
     assert "does_not_exist" not in tmp_db
 
 
+@pytest.mark.asyncio
+async def test_table_listing_defaults_and_zero_limit(tmp_path):
+    names = [f"t{i:03}" for i in range(130)]
+    for name in names:
+        (tmp_path / f"{name}.lance").mkdir()
+
+    db = lancedb.connect(tmp_path)
+    assert db.table_names() == names
+    assert db.table_names(limit=None) == names
+    assert db.table_names(limit=0) == []
+    first = db.list_tables()
+    assert first.tables == names[:100]
+    assert first.page_token
+    second = db.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    assert db.list_tables(limit=200).tables == names
+    empty = db.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+    adb = await lancedb.connect_async(tmp_path)
+    assert await adb.table_names() == names
+    assert await adb.table_names(limit=0) == []
+    first = await adb.list_tables()
+    assert first.tables == names[:100]
+    second = await adb.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    empty = await adb.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+
 def test_db_contains_stops_after_matching_table_page(
     tmp_db: lancedb.DBConnection, monkeypatch
 ):
@@ -338,6 +388,40 @@ async def test_create_table_from_iterator_async(mem_db_async: lancedb.AsyncConne
     assert await table.count_rows() == 10
 
 
+def test_create_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    table = db.create_table("t1", data, mode="exist_ok")
+    assert table.count_rows() == 2
+    original = table.to_arrow()
+
+    reopened = db.create_table("t1", [{"vector": [9.0, 8.0]}], mode="exist_ok")
+    assert reopened.to_arrow().equals(original)
+
+
+def test_create_empty_exist_ok_mode(tmp_db: lancedb.DBConnection):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    table = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert table.schema == schema
+    assert table.count_rows() == 0
+    table.add([{"id": 7}])
+
+    reopened = tmp_db.create_table("empty", schema=schema, mode="exist_ok")
+    assert reopened.to_arrow().to_pylist() == [{"id": 7}]
+
+    bad_schema = pa.schema([pa.field("other", pa.int64())])
+    with pytest.raises(ValueError):
+        tmp_db.create_table("empty", schema=bad_schema, mode="exist_ok")
+
+
+def test_create_table_invalid_mode(tmp_db: lancedb.DBConnection):
+    db = tmp_db
+    data = [{"vector": [1.1, 1.2]}, {"vector": [0.2, 1.8]}]
+    with pytest.raises(ValueError, match="Invalid mode bogus"):
+        db.create_table("tb", data, mode="bogus")
+    assert "tb" not in db
+
+
 def test_create_exist_ok(tmp_db: lancedb.DBConnection):
     from conftest import pandas_string_type
 
@@ -391,6 +475,49 @@ async def test_connect(tmp_path):
         tmp_path, read_consistency_interval=timedelta(seconds=5)
     )
     assert str(db) == f"ListingDatabase(uri={tmp_path}, read_consistency_interval=5s)"
+
+
+@pytest.fixture(params=["memory", "local", "namespace", "from_inner"])
+def sync_db(request, tmp_path):
+    if request.param == "memory":
+        return lancedb.connect("memory://")
+    if request.param == "namespace":
+        return lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    db = lancedb.connect(tmp_path)
+    if request.param == "from_inner":
+        return lancedb.db.LanceDBConnection.from_inner(db._inner, None)
+    return db
+
+
+def test_sync_close(sync_db):
+    assert sync_db.is_open()
+    assert sync_db.close() is None
+    assert not sync_db.is_open()
+    assert sync_db.close() is None
+
+    with pytest.warns(DeprecationWarning, match="table_names"):
+        with pytest.raises(RuntimeError, match="Connection is closed"):
+            sync_db.table_names()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.list_tables()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.open_table("test")
+
+
+@pytest.mark.parametrize("raise_error", [False, True])
+def test_sync_context_manager(sync_db, raise_error):
+    with contextlib.ExitStack() as stack:
+        if raise_error:
+            stack.enter_context(pytest.raises(ValueError, match="test error"))
+        with sync_db as db:
+            assert db is sync_db
+            assert db.is_open()
+            if raise_error:
+                raise ValueError("test error")
+
+    assert not sync_db.is_open()
+    with pytest.raises(RuntimeError, match="Connection is closed"):
+        sync_db.list_tables()
 
 
 @pytest.mark.asyncio
@@ -481,6 +608,27 @@ async def test_create_exist_ok_async(tmp_db_async: lancedb.AsyncConnection):
     # )
     # with pytest.raises(ValueError):
     #     await db.create_table("test", schema=bad_schema, exist_ok=True)
+
+
+@pytest.mark.parametrize("enable_v2_manifest_paths", [False, True])
+@pytest.mark.parametrize("empty", [False, True])
+def test_create_table_deprecated_v2_manifest_paths(
+    tmp_path, enable_v2_manifest_paths, empty
+):
+    db = lancedb.connect(tmp_path)
+    data = None if empty else [{"id": 1}]
+
+    with pytest.warns(DeprecationWarning, match="enable_v2_manifest_paths"):
+        table = db.create_table(
+            "test",
+            data=data,
+            schema=pa.schema([("id", pa.int64())]),
+            enable_v2_manifest_paths=enable_v2_manifest_paths,
+        )
+
+    assert table.uses_v2_manifest_paths() == enable_v2_manifest_paths
+    assert table.to_arrow().to_pylist() == ([] if empty else data)
+    assert db.open_table("test").uses_v2_manifest_paths() == enable_v2_manifest_paths
 
 
 @pytest.mark.asyncio
@@ -743,8 +891,7 @@ def test_delete_table(tmp_db: lancedb.DBConnection):
     assert tmp_db.table_names() == []
 
 
-@pytest.mark.asyncio
-async def test_delete_table_async(tmp_db: lancedb.DBConnection):
+def test_drop_table_async(tmp_db: lancedb.DBConnection):
     data = pd.DataFrame(
         {
             "vector": [[3.1, 4.1], [5.9, 26.5]],
@@ -760,13 +907,27 @@ async def test_delete_table_async(tmp_db: lancedb.DBConnection):
 
     assert tmp_db.table_names() == ["test"]
 
-    tmp_db.drop_table("test")
+    job = tmp_db.drop_table_async("test")
+    assert job.id is None
+    assert job.status() == "finished"
+    assert job.wait() is None
     assert tmp_db.table_names() == []
 
     tmp_db.create_table("test", data=data)
     assert tmp_db.table_names() == ["test"]
 
     tmp_db.drop_table("does_not_exist", ignore_missing=True)
+
+
+@pytest.mark.asyncio
+async def test_drop_table_async_connection(tmp_db_async: lancedb.AsyncConnection):
+    await tmp_db_async.create_table("test", data=pa.table({"id": [1, 2]}))
+
+    job = await tmp_db_async.drop_table_async("test")
+    assert job.id is None
+    assert await job.status() == "finished"
+    assert await job.wait() is None
+    assert await tmp_db_async.table_names() == []
 
 
 def test_drop_database(tmp_db: lancedb.DBConnection):

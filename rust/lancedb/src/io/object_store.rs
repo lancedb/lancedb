@@ -10,7 +10,7 @@ use lance::io::WrappingObjectStore;
 use object_store::{
     CopyOptions, Error, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
     ObjectStore, ObjectStoreExt, PutMultipartOptions, PutOptions, PutPayload, PutResult, Result,
-    UploadPart, path::Path,
+    UploadPart, list::PaginatedListStore, path::Path,
 };
 
 use async_trait::async_trait;
@@ -132,9 +132,14 @@ impl ObjectStore for MirroringObjectStore {
         if to.primary_only() {
             self.primary.copy_opts(from, to, options).await
         } else {
-            self.secondary.copy_opts(from, to, options.clone()).await?;
-            self.primary.copy_opts(from, to, options).await?;
-            Ok(())
+            // The secondary store can be process-local and less durable than the
+            // primary, so a source written by another process may not exist here
+            // or may be evicted before the copy begins.
+            match self.secondary.copy_opts(from, to, options.clone()).await {
+                Ok(()) | Err(Error::NotFound { .. }) => {}
+                Err(err) => return Err(err),
+            }
+            self.primary.copy_opts(from, to, options).await
         }
     }
 }
@@ -182,6 +187,14 @@ impl WrappingObjectStore for MirroringObjectStoreWrapper {
             secondary: self.secondary.clone(),
         })
     }
+
+    fn wrap_paginated(
+        &self,
+        _store_prefix: &str,
+        original: Arc<dyn PaginatedListStore>,
+    ) -> Option<Arc<dyn PaginatedListStore>> {
+        Some(original)
+    }
 }
 
 // windows pathing can't be simply concatenated
@@ -192,7 +205,8 @@ mod test {
     use futures::TryStreamExt;
     use lance::{dataset::WriteParams, io::ObjectStoreParams};
     use lance_testing::datagen::{BatchGenerator, IncrementingInt32, RandomVector};
-    use object_store::local::LocalFileSystem;
+    use object_store::{local::LocalFileSystem, memory::InMemory};
+    use std::time::Duration;
     use tempfile;
 
     use crate::{
@@ -200,6 +214,139 @@ mod test {
         query::{ExecutableQuery, QueryBase},
         table::WriteOptions,
     };
+
+    #[derive(Debug)]
+    struct EvictBeforeCopyStore {
+        inner: Arc<dyn ObjectStore>,
+    }
+
+    impl std::fmt::Display for EvictBeforeCopyStore {
+        fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+            write!(f, "EvictBeforeCopyStore")
+        }
+    }
+
+    #[async_trait]
+    impl ObjectStore for EvictBeforeCopyStore {
+        async fn put_opts(
+            &self,
+            location: &Path,
+            payload: PutPayload,
+            options: PutOptions,
+        ) -> Result<PutResult> {
+            self.inner.put_opts(location, payload, options).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &Path,
+            options: PutMultipartOptions,
+        ) -> Result<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, options).await
+        }
+
+        async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: BoxStream<'static, Result<Path>>,
+        ) -> BoxStream<'static, Result<Path>> {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, Result<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+
+        async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
+            self.inner.delete(from).await?;
+            self.inner.copy_opts(from, to, options).await
+        }
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_source_is_missing_from_secondary() {
+        let primary_dir = tempfile::tempdir().unwrap();
+        let secondary_dir = tempfile::tempdir().unwrap();
+        let primary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(primary_dir.path()).unwrap());
+        let secondary: Arc<dyn ObjectStore> =
+            Arc::new(LocalFileSystem::new_with_prefix(secondary_dir.path()).unwrap());
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary: secondary.clone(),
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        tokio::time::timeout(Duration::from_secs(5), store.copy(&staging, &finalized))
+            .await
+            .expect("copy should not hang when the secondary source is missing")
+            .unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_copy_when_secondary_source_disappears_after_head() {
+        let primary: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary_inner: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
+        let secondary: Arc<dyn ObjectStore> = Arc::new(EvictBeforeCopyStore {
+            inner: secondary_inner.clone(),
+        });
+        let store = MirroringObjectStore {
+            primary: primary.clone(),
+            secondary,
+        };
+        let staging = Path::from("_versions/1.manifest-staging");
+        let finalized = Path::from("_versions/1.manifest");
+
+        primary
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+        secondary_inner
+            .put(&staging, "manifest contents".into())
+            .await
+            .unwrap();
+
+        store.copy(&staging, &finalized).await.unwrap();
+
+        let copied = primary
+            .get(&finalized)
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(copied, "manifest contents");
+        assert!(matches!(
+            secondary_inner.head(&finalized).await,
+            Err(Error::NotFound { .. })
+        ));
+    }
 
     // This test is ignored because lance 3.0 introduced LocalWriter optimization
     // that bypasses the object store wrapper for local writes. The mirroring feature

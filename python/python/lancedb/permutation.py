@@ -41,21 +41,15 @@ class PermutationBuilder:
     The permutation is stored in memory and will be lost when the program exits.
     """
 
-    def __init__(self, table: LanceTable):
+    def __init__(self, table: Table):
         """
         Creates a new permutation builder for the given table.
 
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
+
+        Tables with an RTE write spec are rejected: unflushed rows have no row id.
         """
-        if not hasattr(table, "_inner"):
-            raise TypeError(
-                f"PermutationBuilder requires a local LanceTable, "
-                f"got {type(table).__name__}. "
-                "The permutation API is not supported on remote tables. "
-                "Remote tables connect to LanceDB Cloud or Enterprise and do not have "
-                "direct access to the underlying Lance dataset needed for permutations."
-            )
         self._async = async_permutation_builder(table)
 
     def split_random(
@@ -175,6 +169,50 @@ class PermutationBuilder:
         )
         return self
 
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[list[float]] = None,
+        counts: Optional[list[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
+    ) -> "PermutationBuilder":
+        """
+        Sample rows uniformly **with replacement**, independently per split.
+
+        Unlike the other split strategies, the number of output rows is
+        ``num_samples``, not the number of (optionally filtered) input rows: the
+        same row can appear zero, one, or many times, and ``num_samples`` may be
+        larger or smaller than the input row count. Useful for bootstrap
+        resampling, oversampling rare classes, or any training workload that
+        wants a fixed-size stream of random draws rather than a single
+        deterministic pass over every row. Combine with :meth:`filter` to
+        restrict the eligible population.
+
+        One of ratios, counts, or fixed must be provided, with the same meaning
+        as in :meth:`split_random`, except they divide ``num_samples`` across
+        splits rather than the input row count: if fixed is 4, each split gets
+        ``num_samples // 4`` samples.
+
+        Each split draws its own sample using a seed derived independently from
+        ``(seed, split_index)``, so a split's content does not change if the samples are
+        later redistributed across a different number of splits.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.bootstrap_sample(
+            num_samples,
+            ratios=ratios,
+            counts=counts,
+            fixed=fixed,
+            seed=seed,
+            split_names=split_names,
+        )
+        return self
+
     def split_calculated(
         self, calculation: str, split_names: Optional[list[str]] = None
     ) -> "PermutationBuilder":
@@ -231,7 +269,7 @@ class PermutationBuilder:
         return LOOP.run(do_execute())
 
 
-def permutation_builder(table: LanceTable) -> PermutationBuilder:
+def permutation_builder(table: Table) -> PermutationBuilder:
     return PermutationBuilder(table)
 
 
@@ -248,7 +286,7 @@ class Permutations:
 
     Attributes
     ----------
-    base_table: LanceTable
+    base_table: Table
         The base table that the permutations are based on.
     permutation_table: LanceTable
         The permutation table that defines the splits.
@@ -282,7 +320,7 @@ class Permutations:
     {'train': 0, 'test': 1}
     """
 
-    def __init__(self, base_table: LanceTable, permutation_table: LanceTable):
+    def __init__(self, base_table: Table, permutation_table: LanceTable):
         self.base_table = base_table
         self.permutation_table = permutation_table
 
@@ -395,6 +433,15 @@ def _table_to_pickle_state(table: Table) -> dict[str, Any]:
         "namespace": table._namespace_path,
         "storage_options": table._conn.storage_options,
     }
+
+
+def _drop_base_version(permutation_data: pa.Table) -> pa.Table:
+    """Strip the recorded base version so the reader leaves the base table unpinned."""
+    metadata = dict(permutation_data.schema.metadata or {})
+    if metadata.pop(b"base_version", None) is None:
+        return permutation_data
+    metadata.pop(b"base_branch", None)
+    return permutation_data.replace_schema_metadata(metadata)
 
 
 def _table_from_pickle_state(state: dict[str, Any]) -> Table:
@@ -685,11 +732,15 @@ class Permutation:
         from . import connect
 
         connection_factory = state["connection_factory"]
+        rebuilt_base = False
         if connection_factory is not None:
             base_table = connection_factory(state["base_table_name"])
         elif "base_table_state" in state:
-            base_table = _table_from_pickle_state(state["base_table_state"])
+            base_state = state["base_table_state"]
+            rebuilt_base = base_state["kind"] == "memory"
+            base_table = _table_from_pickle_state(base_state)
         elif "base_table_data" in state:
+            rebuilt_base = True
             # In-memory base table inlined into the pickle; rebuild the same
             # way we rebuild the in-memory permutation table.
             mem_db = connect("memory://")
@@ -707,11 +758,14 @@ class Permutation:
             )
 
         permutation_table: Optional[Table] = None
-        if state["permutation_data"] is not None:
+        permutation_data = state["permutation_data"]
+        if permutation_data is not None:
+            if rebuilt_base:
+                # The base table was materialized from Arrow, so it is a fresh
+                # single-version dataset and the recorded pin cannot resolve on it.
+                permutation_data = _drop_base_version(permutation_data)
             mem_db = connect("memory://")
-            permutation_table = mem_db.create_table(
-                "permutation", state["permutation_data"]
-            )
+            permutation_table = mem_db.create_table("permutation", permutation_data)
 
         self.base_table = base_table
         self.permutation_table = permutation_table
@@ -855,9 +909,11 @@ class Permutation:
                 f"Cannot rename column `{old_name}` to `{new_name}` because a column "
                 "with that name already exists"
             )
-        new_selection = self.selection.copy()
-        new_selection[new_name] = new_selection[old_name]
-        del new_selection[old_name]
+        # Rebuild the mapping so the renamed column keeps its position
+        new_selection = {
+            (new_name if name == old_name else name): value
+            for name, value in self.selection.items()
+        }
         return self._with_selection(new_selection)
 
     def rename_columns(self, column_map: dict[str, str]) -> "Permutation":

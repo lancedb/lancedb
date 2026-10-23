@@ -35,3 +35,9 @@ class JobCancelledError(RuntimeError):
     """Exception raised when an asynchronous job was cancelled."""
 
     pass
+
+
+class JobNotFoundError(ValueError):
+    """Exception raised when opening a job the server does not have."""
+
+    pass

@@ -9,12 +9,12 @@ from typing import List, Optional, Tuple
 import pyarrow as pa
 import pydantic
 import pytest
+from lancedb.conftest import MockTextEmbeddingFunction
 from lancedb.pydantic import (
-    PYDANTIC_VERSION,
     LanceModel,
+    MultiVector,
     Vector,
     pydantic_to_schema,
-    MultiVector,
 )
 from pydantic import BaseModel
 from pydantic import Field
@@ -415,22 +415,107 @@ def test_nullable_vector():
     assert schema == pa.schema([pa.field("vec", pa.list_(pa.float32(), 16), True)])
 
 
+@pytest.mark.parametrize("vector_type", [Vector, MultiVector])
+@pytest.mark.parametrize(
+    "value_type, values",
+    [
+        (pa.int64(), [-(2**53 + 1), 2**53 + 3]),
+        (pa.uint64(), [2**53 + 1, 2**64 - 1]),
+        (pa.int8(), [-128, 127]),
+        (pa.uint8(), [0, 255]),
+        (pa.float32(), [1.25, 2.5]),
+        (pa.float64(), [1.25, 2.5]),
+    ],
+)
+def test_typed_vector_round_trip(tmp_path, vector_type, value_type, values):
+    import lancedb
+
+    annotation = vector_type(2, value_type=value_type)
+    expected = [values, values] if vector_type is MultiVector else values
+
+    class Row(LanceModel):
+        id: int
+        payload: annotation
+
+    row = Row(id=1, payload=expected)
+    table = lancedb.connect(tmp_path).create_table("typed_vectors", [row], schema=Row)
+    table.add([Row(id=2, payload=expected)])
+    assert table.schema == Row.to_arrow_schema()
+    assert table.search().to_arrow().to_pylist() == [
+        {"id": 1, "payload": expected},
+        {"id": 2, "payload": expected},
+    ]
+    assert json.loads(row.model_dump_json())["payload"] == expected
+
+
+@pytest.mark.parametrize("vector_type", [Vector, MultiVector])
+@pytest.mark.parametrize("nullable", [False, True])
+def test_integer_vector_validation(vector_type, nullable):
+    annotation = vector_type(2, value_type=pa.int64(), nullable=nullable)
+
+    class Row(LanceModel):
+        payload: annotation
+
+    def shape(values):
+        return [values] if vector_type is MultiVector else values
+
+    assert Row.to_arrow_schema().field("payload").nullable is nullable
+    assert Row(payload=shape([1.0, -2.0])).model_dump()["payload"] == shape([1, -2])
+    with pytest.raises(pydantic.ValidationError, match="valid integer"):
+        Row(payload=shape([1.5, 2]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=shape([1]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=shape([1, 2, 3]))
+    with pytest.raises(pydantic.ValidationError):
+        Row(payload=None)
+
+    class OptionalRow(LanceModel):
+        payload: Optional[annotation] = None
+
+    assert OptionalRow(payload=None).payload is None
+
+
+def test_bare_vector_raises_clear_error():
+    namespace = {
+        "__name__": "test_model_without_pyarrow",
+        "LanceModel": LanceModel,
+        "Vector": Vector,
+    }
+
+    with pytest.raises(TypeError, match=r"Vector must be parameterized.*Vector\(128\)"):
+        exec("class TestModel(LanceModel):\n    vector: Vector", namespace)
+
+
+def test_embedding_vector_list_annotation():
+    embedding = MockTextEmbeddingFunction.create()
+
+    class StaticTypingModel(LanceModel):
+        text: str = embedding.SourceField()
+        vector: list[float] = embedding.VectorField()
+
+    schema = pydantic_to_schema(StaticTypingModel)
+    assert schema == pa.schema(
+        [
+            pa.field("text", pa.utf8(), False),
+            pa.field("vector", pa.list_(pa.float32(), embedding.ndims()), True),
+        ]
+    )
+
+    model = StaticTypingModel(text="hello", vector=[0.0] * embedding.ndims())
+    assert model.vector == [0.0] * embedding.ndims()
+
+
 def test_fixed_size_list_field():
     class TestModel(pydantic.BaseModel):
         vec: Vector(16)
         li: List[int]
 
     data = TestModel(vec=list(range(16)), li=[1, 2, 3])
-    if PYDANTIC_VERSION.major >= 2:
-        assert json.loads(data.model_dump_json()) == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
-    else:
-        assert data.dict() == {
-            "vec": list(range(16)),
-            "li": [1, 2, 3],
-        }
+    assert json.loads(data.model_dump_json()) == {
+        "vec": list(range(16)),
+        "li": [1, 2, 3],
+    }
 
     schema = pydantic_to_schema(TestModel)
     assert schema == pa.schema(
@@ -440,10 +525,7 @@ def test_fixed_size_list_field():
         ]
     )
 
-    if PYDANTIC_VERSION.major >= 2:
-        json_schema = TestModel.model_json_schema()
-    else:
-        json_schema = TestModel.schema()
+    json_schema = TestModel.model_json_schema()
 
     assert json_schema == {
         "properties": {
@@ -712,3 +794,52 @@ def test_enum_types():
     assert schema.field("priority").type == pa.int64()
     assert schema.field("opt_status").type == pa.dictionary(pa.int32(), pa.utf8())
     assert schema.field("opt_status").nullable
+
+
+def test_plain_enum_values_are_written(mem_db):
+    """Members of an Enum without a str/int mixin are written as their values."""
+
+    class Color(Enum):
+        RED = "red"
+        BLUE = "blue"
+
+    class Priority(Enum):
+        LOW = 1
+        HIGH = 2
+
+    class Tag(LanceModel):
+        color: Color
+
+    class TestModel(LanceModel):
+        color: Color
+        priority: Priority
+        opt_color: Optional[Color] = None
+        colors: List[Color]
+        tag: Tag
+        vector: Vector(2)
+
+    rows = [
+        TestModel(
+            color=Color.RED,
+            priority=Priority.HIGH,
+            opt_color=Color.BLUE,
+            colors=[Color.BLUE, Color.RED],
+            tag=Tag(color=Color.BLUE),
+            vector=[1.0, 2.0],
+        ),
+        TestModel(
+            color=Color.BLUE,
+            priority=Priority.LOW,
+            colors=[],
+            tag=Tag(color=Color.RED),
+            vector=[3.0, 4.0],
+        ),
+    ]
+    tbl = mem_db.create_table("test", schema=TestModel)
+    tbl.add(rows)
+
+    assert tbl.to_arrow().select(["color", "priority", "opt_color"]).to_pylist() == [
+        {"color": "red", "priority": 2, "opt_color": "blue"},
+        {"color": "blue", "priority": 1, "opt_color": None},
+    ]
+    assert tbl.search().to_pydantic(TestModel) == rows

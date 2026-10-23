@@ -19,6 +19,9 @@ pub use lance::dataset::ReadParams;
 pub use lance::dataset::Version;
 use lance::dataset::WriteMode;
 use lance::dataset::builder::DatasetBuilder;
+pub use lance::dataset::mem_wal::MemIndexRegistry;
+/// The traits a memtable index plugin implements; see [`MemIndexRegistry`].
+pub use lance::dataset::mem_wal::index as mem_index;
 use lance::dataset::{InsertBuilder, WriteParams};
 use lance::index::DatasetIndexExt;
 use lance::index::scalar::load_segment_params;
@@ -50,32 +53,39 @@ use crate::DistanceType;
 use crate::blob::BlobRangeRequest;
 use crate::data::scannable::{PeekedScannable, Scannable, estimate_write_partitions};
 use crate::database::Database;
-use crate::database::listing::LANCE_FILE_EXTENSION;
 use crate::database::read_freshness::TableFreshness;
 use crate::embeddings::{EmbeddingDefinition, EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::function::FunctionErrorsRequest;
 use crate::index::IndexStatistics;
 use crate::index::{Index, IndexBuilder};
 use crate::index::{IndexConfig, IndexStatisticsImpl, IndexType};
 use crate::job::Job;
 use crate::query::{IntoQueryVector, Query, QueryExecutionOptions, TakeQuery, VectorQuery};
 use crate::table::datafusion::insert::InsertExec;
-use crate::utils::{PatchReadParam, PatchWriteParam, resolve_arrow_field_path};
+use crate::utils::{
+    PatchReadParam, PatchWriteParam, public_fts_field_path_by_id, resolve_arrow_field_path,
+};
 
 use self::dataset::DatasetConsistencyWrapper;
 use self::merge::MergeInsertBuilder;
 
 pub mod add_columns;
 mod add_data;
-pub mod branch_merge;
+pub mod checkpoint;
+pub mod cherry_pick;
+pub mod computed_columns;
 mod create_index;
 pub mod datafusion;
 pub(crate) mod dataset;
 pub mod delete;
+pub mod freshness;
 pub mod merge;
 pub mod optimize;
-mod primary_key;
+pub(crate) mod primary_key;
 pub mod query;
+pub mod refresh;
+pub mod rte_stats;
 pub mod schema_evolution;
 pub mod update;
 pub mod write_progress;
@@ -84,18 +94,22 @@ pub use add_columns::AddColumnsBuilder;
 #[cfg(feature = "remote")]
 pub(crate) use add_data::PreprocessingOutput;
 pub use add_data::{AddDataBuilder, AddDataMode, AddResult, NaNVectorBehavior};
-pub use branch_merge::{
-    BranchDiff, ColumnChange, ColumnSummary, IndexSummary, MergeBlocker, MergeBlockerCode,
-    MergeBranchResult, MergeBranchStatus, MergePreview, RowCountSummary,
+pub use cherry_pick::{
+    BranchDiff, CherryPickError, CherryPickErrorCode, CherryPickPreview, CherryPickResult,
+    CherryPickStatus, ColumnChange, ColumnSummary, IndexSummary, RowCountSummary,
 };
 pub use chrono::Duration;
+pub use computed_columns::{
+    ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
+};
 pub use delete::DeleteResult;
 use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
-use lance::dataset::statistics::DatasetStatisticsExt;
 pub use lance_index::optimize::OptimizeOptions;
 pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use refresh::RefreshColumnResult;
+pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
     AddColumnsResult, AlterColumnsResult, DropColumnsResult, FieldMetadataUpdate,
     UpdateFieldMetadataResult,
@@ -148,55 +162,6 @@ pub(crate) fn map_namespace_lance_error(err: lance::Error, table_name: &str) -> 
         },
         other => other.into(),
     }
-}
-
-/// Map a `lance::Error::DatasetNotFound` for the table at `uri` into a `lancedb::Error`.
-///
-/// Lance reports "there is nothing at this location" and "there is a table directory
-/// here but nothing loadable inside it" with the same error. Only the first is a
-/// `TableNotFound`: a `<name>.lance` directory left behind by an interrupted drop and
-/// re-create is still reported by `Connection::table_names`, so callers need to be able
-/// to tell "never existed" from "exists but is broken".
-///
-/// See <https://github.com/lancedb/lancedb/issues/3127>.
-async fn map_dataset_not_found(
-    uri: &str,
-    name: &str,
-    params: ReadParams,
-    err: lance::Error,
-) -> Error {
-    let name = name.to_string();
-    let source = Box::new(err);
-    if table_dir_exists(uri, params).await.unwrap_or(false) {
-        Error::TableCorrupted { name, source }
-    } else {
-        Error::TableNotFound { name, source }
-    }
-}
-
-/// Whether a table directory is present at `uri`, even though no dataset could be
-/// loaded from it.
-///
-/// This looks for a `<name>.lance` entry in the parent directory, which is exactly what
-/// `ListingDatabase::table_names` lists, so the two APIs agree on whether a table is
-/// present. Probing `uri` itself would not work: object stores have no empty
-/// directories to probe, and on a local filesystem the interesting case is precisely an
-/// empty directory.
-async fn table_dir_exists(uri: &str, params: ReadParams) -> Result<bool> {
-    let (object_store, path, _) = DatasetBuilder::from_uri(uri)
-        .with_read_params(params)
-        .build_object_store()
-        .await?;
-    // Only `*.lance` entries are ever reported as tables, so nothing else can produce
-    // the list-then-open mismatch this guards against.
-    if path.extension() != Some(LANCE_FILE_EXTENSION) {
-        return Ok(false);
-    }
-    let (Some(parent), Some(dir_name)) = (path.parent(), path.filename()) else {
-        return Ok(false);
-    };
-    let entries = object_store.read_dir(parent).await?;
-    Ok(entries.iter().any(|entry| entry.as_str() == dir_name))
 }
 
 /// Defines the type of column
@@ -280,7 +245,7 @@ enum BadVectorHandling {
     /// An error is returned
     #[default]
     Error,
-    /// The offending row is droppped
+    /// The offending row is dropped
     Drop,
     /// The invalid/missing items are replaced by fill_value
     Fill(f32),
@@ -359,20 +324,23 @@ pub trait Tags: Send + Sync {
 
 pub use self::merge::MergeResult;
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `merge_insert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `merge_insert` through Lance's MemWAL LSM-style write path.
 ///
-/// Construct via [`LsmWriteSpec::bucket`], [`LsmWriteSpec::identity`], or
-/// [`LsmWriteSpec::unsharded`], then optionally chain
-/// [`LsmWriteSpec::with_maintained_indexes`] (indexes the MemWAL keeps up to
-/// date) and [`LsmWriteSpec::with_writer_config_defaults`] (default
+/// Construct via [`RTEWriteSpec::bucket`], [`RTEWriteSpec::identity`], or
+/// [`RTEWriteSpec::unsharded`], then optionally chain
+/// [`RTEWriteSpec::with_maintained_indexes`] (indexes the RTE keeps up to
+/// date) and [`RTEWriteSpec::with_writer_config_defaults`] (default
 /// `ShardWriter` configuration recorded in the MemWAL index).
 ///
-/// Install a spec with [`Table::set_lsm_write_spec`] and remove it with
-/// [`Table::unset_lsm_write_spec`]. The actual `merge_insert` dispatch
-/// onto the MemWAL writer is a follow-up.
+/// A fresh spec maintains every index on the table, including ones created
+/// after it is installed.
+///
+/// Install a spec with [`Table::enable_rte`] and remove it with
+/// [`Table::disable_rte`]. The actual `merge_insert` dispatch
+/// onto the RTE writer is a follow-up.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum LsmWriteSpec {
+pub enum RTEWriteSpec {
     /// Hash-bucket sharding by a scalar column.
     ///
     /// `column` must be a non-nested column with a supported scalar type.
@@ -382,9 +350,11 @@ pub enum LsmWriteSpec {
     Bucket {
         column: String,
         num_buckets: u32,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the RTE maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
@@ -394,68 +364,83 @@ pub enum LsmWriteSpec {
     /// distinct value of `column` becomes its own shard.
     Identity {
         column: String,
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the RTE maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
-    /// No sharding — every `merge_insert` call writes to a single MemWAL shard.
+    /// No sharding — every `merge_insert` call writes to a single RTE shard.
     Unsharded {
-        /// Names of indexes (already created on the table) that the
-        /// MemWAL should maintain in-memory as rows are appended.
-        maintained_indexes: Vec<String>,
+        /// Indexes the RTE maintains in-memory as rows are appended.
+        ///
+        /// `None` means every index the table has, including ones created
+        /// later. `Some([])` maintains nothing.
+        maintained_indexes: Option<Vec<String>>,
         /// Default `ShardWriter` configuration recorded in the MemWAL index.
         writer_config_defaults: HashMap<String, String>,
     },
 }
 
-impl LsmWriteSpec {
-    /// Construct a hash-bucket sharding spec with no maintained indexes.
+impl RTEWriteSpec {
+    /// Construct a hash-bucket sharding spec maintaining every index on the table.
     pub fn bucket(column: impl Into<String>, num_buckets: u32) -> Self {
         Self::Bucket {
             column: column.into(),
             num_buckets,
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
     /// Construct an identity-sharding spec (shard by the raw value of
-    /// `column`) with no maintained indexes.
+    /// `column`) maintaining every index on the table.
     ///
     /// `column` must be a deterministic function of the unenforced primary
     /// key: every row with a given primary key must always produce the same
-    /// `column` value. MemWAL dedups upserts by primary key but tracks
-    /// generations per shard, so if the same key is written with two
+    /// `column` value. RTE dedups upserts by primary key but tracks
+    /// SSTables per shard, so if the same key is written with two
     /// different `column` values its versions land in different shards and a
     /// stale value can win. Typically `column` is the primary key itself, or
     /// a stable attribute of it (e.g. a tenant id).
     pub fn identity(column: impl Into<String>) -> Self {
         Self::Identity {
             column: column.into(),
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Construct an unsharded spec with no maintained indexes.
+    /// Construct an unsharded spec maintaining every index on the table.
     pub fn unsharded() -> Self {
         Self::Unsharded {
-            maintained_indexes: Vec::new(),
+            maintained_indexes: None,
             writer_config_defaults: HashMap::new(),
         }
     }
 
-    /// Replace the list of indexes the MemWAL should keep up to date as
-    /// rows are appended. Each name must reference an index that already
-    /// exists on the table at the time `set_lsm_write_spec` is called.
-    pub fn with_maintained_indexes<I, S>(mut self, indexes: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        let v: Vec<String> = indexes.into_iter().map(Into::into).collect();
+    /// Set which indexes the RTE maintains.
+    ///
+    /// `None` (the default) is every index on the table, re-read as the table
+    /// changes, so an index created later is maintained too; one of a kind the
+    /// RTE cannot mirror is skipped rather than failing the table. A list is
+    /// verbatim: each name must already exist and be maintainable, and an empty
+    /// list maintains nothing. The maintainable kinds are Lance's built-ins plus
+    /// any added with [`NativeTable::set_mem_index_registry`].
+    ///
+    /// ```
+    /// # use lancedb::table::RTEWriteSpec;
+    /// // Every index the table has, now and later:
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(None);
+    /// // Exactly these:
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(vec!["id_idx".to_string()]);
+    /// // None at all:
+    /// RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new());
+    /// ```
+    pub fn with_maintained_indexes(mut self, indexes: impl Into<Option<Vec<String>>>) -> Self {
+        let indexes = indexes.into();
         match &mut self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -465,12 +450,12 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => *maintained_indexes = v,
+            } => *maintained_indexes = indexes,
         }
         self
     }
 
-    /// Replace the default `ShardWriter` configuration recorded in the MemWAL
+    /// Replace the default `ShardWriter` configuration recorded in the RTE
     /// index, so every writer starts from the same defaults. Keys are
     /// `ShardWriter` config field names (`Duration` knobs use a `_ms` suffix);
     /// values are their string encodings.
@@ -501,8 +486,9 @@ impl LsmWriteSpec {
         self
     }
 
-    /// Borrow the list of index names this spec asks MemWAL to maintain.
-    pub fn maintained_indexes(&self) -> &[String] {
+    /// Borrow the list of index names this spec asks RTE to maintain, or
+    /// `None` when it asks for every index on the table.
+    pub fn maintained_indexes(&self) -> Option<&[String]> {
         match self {
             Self::Bucket {
                 maintained_indexes, ..
@@ -512,7 +498,7 @@ impl LsmWriteSpec {
             }
             | Self::Unsharded {
                 maintained_indexes, ..
-            } => maintained_indexes,
+            } => maintained_indexes.as_deref(),
         }
     }
 
@@ -581,6 +567,34 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
     async fn schema(&self) -> Result<SchemaRef>;
+    /// Read this table's materialized-view definition.
+    #[doc(hidden)]
+    async fn materialized_view_info(
+        &self,
+    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
+        let schema = self.schema().await?;
+        crate::materialized_view::materialized_view_info_from_metadata(
+            self.name(),
+            schema.metadata(),
+        )
+    }
+    /// Submit a materialized-view refresh.
+    #[doc(hidden)]
+    async fn refresh_materialized_view_async(
+        &self,
+        _source_version: Option<u64>,
+    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
+        Err(Error::NotSupported {
+            message: "remote materialized-view refresh is not supported on this table type".into(),
+        })
+    }
+    /// Create a read-only handle pinned to the table's current active revision.
+    ///
+    /// The returned handle is independent from later refreshes or checkouts on
+    /// this handle.  This is used by bindings that must prepare client-side
+    /// query state from the same revision that the query will execute against.
+    #[doc(hidden)]
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
     /// Count the number of rows in this table.
     async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
     /// Create a physical plan for the query.
@@ -607,6 +621,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         query: &AnyQuery,
         options: QueryExecutionOptions,
     ) -> Result<String>;
+    /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
+    ///
+    /// Client-side query wrappers use this to preserve backend metrics and
+    /// distributed-analysis options instead of replacing them with a local plan.
+    #[doc(hidden)]
+    fn analyze_plan_is_remote(&self) -> bool {
+        false
+    }
 
     /// Add new records to the table.
     async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
@@ -652,44 +674,94 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "set_unenforced_primary_key is not supported on this table type".into(),
         })
     }
-    /// Install an [`LsmWriteSpec`] on this table.
+    /// Install an [`RTEWriteSpec`] on this table.
     ///
     /// The spec selects Lance's MemWAL LSM-style write path for future
     /// `merge_insert` calls.
     ///
     /// The default implementation returns `NotSupported`. Implementations
-    /// that support the MemWAL LSM write path must override this.
-    async fn set_lsm_write_spec(&self, _spec: LsmWriteSpec) -> Result<()> {
+    /// that support the RTE write path must override this.
+    async fn enable_rte(&self, _spec: RTEWriteSpec) -> Result<()> {
         Err(Error::NotSupported {
-            message: "set_lsm_write_spec is not supported on this table type".into(),
+            message: "enable_rte is not supported on this table type".into(),
         })
     }
-    /// Remove the [`LsmWriteSpec`] from this table.
+    /// Remove the [`RTEWriteSpec`] from this table.
     ///
     /// This is a no-op if no spec is currently set.
     ///
     /// The default implementation returns `NotSupported`. Implementations
-    /// that support the MemWAL LSM write path must override this.
-    async fn unset_lsm_write_spec(&self) -> Result<()> {
+    /// that support the RTE write path must override this.
+    async fn disable_rte(&self) -> Result<()> {
         Err(Error::NotSupported {
-            message: "unset_lsm_write_spec is not supported on this table type".into(),
+            message: "disable_rte is not supported on this table type".into(),
         })
     }
-    /// Read the [`LsmWriteSpec`] currently installed on this table, returning
-    /// `None` when the MemWAL LSM write path is not enabled.
+    /// Read the [`RTEWriteSpec`] currently installed on this table, returning
+    /// `None` when the RTE write path is not enabled.
     ///
     /// The default implementation returns `NotSupported`. Implementations that
-    /// support the MemWAL LSM write path must override this.
-    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
+    /// support the RTE write path must override this.
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
         Err(Error::NotSupported {
-            message: "get_lsm_write_spec is not supported on this table type".into(),
+            message: "get_rte_spec is not supported on this table type".into(),
         })
     }
-    /// Drain and close any cached MemWAL shard writers for this table.
+    /// Whether a hybrid query on this table has already been told it cannot
+    /// join its legs on `_rowid`.
+    ///
+    /// WAL-PK-FUSION: delete this and `note_hybrid_pk_fusion`.
+    ///
+    /// Learned, never probed: hybrid optimistically asks for `_rowid` and only
+    /// an RTE table refuses, so paying a round trip up front would tax every
+    /// table to discover something almost none of them need. Synchronous and
+    /// free by construction — an implementation may only answer from what a
+    /// previous query already learned.
+    ///
+    /// The default is `false`, which keeps a table type that never refuses on
+    /// the `_rowid` path forever.
+    fn hybrid_pk_fusion_learned(&self) -> bool {
+        false
+    }
+
+    /// Record that this table refused `_rowid`, so later hybrid queries skip
+    /// straight to the primary-key fusion instead of paying the refusal again.
+    ///
+    /// Implementations should expire this the way they expire other table
+    /// metadata: a spec can be removed, after which `_rowid` works again and
+    /// the only cost of being late to notice is a base-only read that is still
+    /// correct.
+    fn note_hybrid_pk_fusion(&self) {}
+    /// Freeze every table shard's active memtable into an SSTable.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn flush_rte(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "flush_rte is not supported on this table type".into(),
+        })
+    }
+    /// Trigger a background SSTable compaction pass per table shard.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn compact_rte(&self) -> Result<()> {
+        Err(Error::NotSupported {
+            message: "compact_rte is not supported on this table type".into(),
+        })
+    }
+    /// Read live RTE state, or `None` when the RTE write path is not
+    /// enabled for this table.
+    ///
+    /// The default implementation returns `NotSupported`.
+    async fn get_rte_stats(&self, _include_sstable_rows: bool) -> Result<Option<RTEStats>> {
+        Err(Error::NotSupported {
+            message: "get_rte_stats is not supported on this table type".into(),
+        })
+    }
+    /// Drain and close any cached RTE shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
-    /// MemWAL shard writers override it.
-    async fn close_lsm_writers(&self) -> Result<()> {
+    /// RTE shard writers override it.
+    async fn close_rte_writers(&self) -> Result<()> {
         Ok(())
     }
     /// Names of the blob v2 columns in this table, in declaration order.
@@ -734,12 +806,73 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
     ) -> Result<AddColumnsResult>;
+    /// Declare computed columns, each defined by a SQL expression.
+    ///
+    /// Where the declaration is planned depends on the backend: a local table
+    /// validates and types the expression itself, while a remote one sends the
+    /// expression for the server to plan.
+    async fn add_computed_columns(
+        &self,
+        _columns: &[(String, String)],
+        _options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are not supported on this table type".into(),
+        })
+    }
+    /// Declare one immutable registered-Function binding.
+    async fn add_function_columns(
+        &self,
+        _application: &crate::function::FunctionApplication,
+        _output_name: Option<&str>,
+        _options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        Err(Error::NotSupported {
+            message: "Function columns are supported only on LanceDB Cloud and Enterprise".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed.
+    ///
+    /// The default returns `NotSupported`; Lance-backed tables override it.
+    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// Fill a computed column's unfilled rows and recompute those whose
+    /// inputs changed, returning a [`Job`] tracking the operation.
+    async fn refresh_column_async(
+        &self,
+        _column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        Err(Error::NotSupported {
+            message: "computed columns are supported only on local tables".into(),
+        })
+    }
+    /// The per-row errors Function refreshes recorded on this table; see
+    /// [`Table::function_errors`]. The default returns `NotSupported`.
+    async fn function_errors(
+        &self,
+        _request: &crate::function::FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        Err(Error::NotSupported {
+            message: "per-row Function errors are recorded only on LanceDB Cloud and Enterprise"
+                .into(),
+        })
+    }
     /// Alter columns in the table.
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
     /// Drop columns from the table.
     async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
     /// Get the version of the table.
     async fn version(&self) -> Result<u64>;
+    /// Return a new table handle pinned to the exact revision currently visible.
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        Err(Error::NotSupported {
+            message: "checkout_current is not supported on this table type".into(),
+        })
+    }
     /// Checkout a specific version of the table.
     async fn checkout(&self, version: u64) -> Result<()>;
     /// Checkout a table version referenced by a tag.
@@ -747,6 +880,21 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn checkout_tag(&self, tag: &str) -> Result<()>;
     /// Checkout the latest version of the table.
     async fn checkout_latest(&self) -> Result<()>;
+    /// Return an independent handle pinned to the version currently selected.
+    ///
+    /// Backends that can advance between requests should override this for
+    /// multi-request operations that need snapshot consistency. Backends whose
+    /// existing handles already provide the desired behavior return `None`.
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+        Ok(None)
+    }
+    /// Whether repeated identical scans return rows in the same order.
+    ///
+    /// Callers that assign meaning to a row's position must order the results
+    /// themselves when this is false.  Defaults to false so a table type opts in.
+    fn scan_order_is_deterministic(&self) -> bool {
+        false
+    }
     /// Restore the table to the currently checked out version.
     async fn restore(&self) -> Result<()>;
     /// List the versions of the table.
@@ -783,14 +931,14 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Diff a branch against main. Remote only.
     async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
         Err(Error::NotSupported {
-            message: "diff_branch is only supported on remote tables".into(),
+            message: "Branch diffs are only supported on Enterprise tables.".into(),
         })
     }
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    async fn merge_branch(&self, _from_branch: &str, _dry_run: bool) -> Result<MergeBranchResult> {
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
         Err(Error::NotSupported {
-            message: "merge_branch is only supported on remote tables".into(),
+            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
         })
     }
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -1017,6 +1165,11 @@ impl Table {
         self.database.as_ref().unwrap()
     }
 
+    /// The database this handle was opened through, when it was.
+    pub fn database_opt(&self) -> Option<&Arc<dyn Database>> {
+        self.database.as_ref()
+    }
+
     pub fn embedding_registry(&self) -> &Arc<dyn EmbeddingRegistry> {
         &self.embedding_registry
     }
@@ -1068,19 +1221,33 @@ impl Table {
         self.inner.schema().await
     }
 
+    /// Create a read-only handle pinned to the current active revision.
+    #[doc(hidden)]
+    pub async fn query_snapshot(&self) -> Result<Self> {
+        Ok(Self {
+            inner: self.inner.query_snapshot().await?,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
+    }
+
     /// Count the number of rows in this dataset.
     ///
     /// # Arguments
     ///
     /// * `filter` if present, only count rows matching the filter
     pub async fn count_rows(&self, filter: Option<String>) -> Result<usize> {
-        self.inner.count_rows(filter.map(Filter::Sql)).await
+        let filter = filter
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate).map(Filter::Sql))
+            .transpose()?;
+        self.inner.count_rows(filter).await
     }
 
-    /// Names of the blob v2 columns in this table, in declaration order.
+    /// Names of the row-addressable blob v2 columns, in declaration order.
     ///
-    /// Nested blobs use dotted paths (e.g. `info.blob`). Returns
-    /// [`Error::NotSupported`] on table types without blob support.
+    /// Blobs nested in structs use dotted paths (e.g. `info.blob`). Blobs
+    /// inside lists are omitted because row ids cannot identify their elements.
+    /// Returns [`Error::NotSupported`] on table types without blob support.
     pub async fn blob_columns(&self) -> Result<Vec<String>> {
         self.inner.blob_columns().await
     }
@@ -1088,8 +1255,15 @@ impl Table {
     /// Materialize blob bytes for the given row ids.
     ///
     /// Output matches `row_ids` in length and order. Null blobs are null;
-    /// valid empty blobs contain empty byte strings. Prefer
+    /// valid empty blobs contain empty byte strings. Cloud limits individual
+    /// requests to 1024 row ids and 64 MiB of blob bytes; the remote client
+    /// splits requests and reads a single larger blob through the Range route.
+    /// This method still materializes all bytes in memory, so prefer
     /// [`Self::fetch_blob_files`] for large selections.
+    ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use arrow_array::UInt64Array;
@@ -1113,9 +1287,10 @@ impl Table {
     /// # }
     /// ```
     ///
-    /// Returns [`Error::InvalidInput`] when the column does not exist or is
-    /// not a blob v2 column, and [`Error::NotSupported`] on table types
-    /// without blob support.
+    /// Blobs inside lists cannot be fetched by row id. Returns
+    /// [`Error::InvalidInput`] for those paths, when the column does not exist,
+    /// or when it is not a blob v2 column. Returns [`Error::NotSupported`] on
+    /// table types without blob support.
     pub async fn fetch_blobs(
         &self,
         column: impl AsRef<str>,
@@ -1131,6 +1306,12 @@ impl Table {
     /// ranges for the same blob. The output has the same length and order as
     /// the requests. Null blobs produce null output slots; empty ranges on
     /// non-null blobs produce empty byte strings.
+    /// Remote tables read through version-pinned [`BlobFile`] handles using
+    /// HTTP byte-range requests.
+    ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial results are returned.
     ///
     /// ```
     /// use lancedb::blob::BlobRangeRequest;
@@ -1169,6 +1350,13 @@ impl Table {
     ///
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
+    /// Remote blob requests share a connection-wide concurrency limit. Set
+    /// `ClientConfig::blob_request_concurrency` or the
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` environment variable to tune it.
+    ///
+    /// `_rowid` values stay valid after compaction when the table has stable
+    /// row ids. One missing or deleted row id rejects the whole request; no
+    /// partial handles are returned.
     ///
     /// ```
     /// # use lancedb::Table;
@@ -1216,7 +1404,7 @@ impl Table {
     /// Note: if your condition is something like "some_id_column == 7" and
     /// you are updating many rows (with different ids) then you will get
     /// better performance with a single [`merge_insert`] call instead of
-    /// repeatedly calilng this method.
+    /// repeatedly calling this method.
     pub fn update(&self) -> UpdateBuilder {
         UpdateBuilder::new(self.inner.clone())
     }
@@ -1274,7 +1462,13 @@ impl Table {
     /// # });
     /// ```
     pub async fn delete(&self, predicate: impl Into<Predicate<'_>>) -> Result<DeleteResult> {
-        self.inner.delete(predicate.into()).await
+        match predicate.into() {
+            Predicate::String(predicate) => {
+                let predicate = crate::expr::canonicalize_sql_predicate(predicate)?;
+                self.inner.delete(Predicate::String(&predicate)).await
+            }
+            predicate @ Predicate::Expr(_) => self.inner.delete(predicate).await,
+        }
     }
 
     /// Create an index on the provided column(s).
@@ -1399,7 +1593,9 @@ impl Table {
     ///
     /// * `on` One or more columns to join on.  This is how records from the
     ///   source table and target table are matched.  Typically this is some
-    ///   kind of key or id column.
+    ///   kind of key or id column.  Several columns match on the composite
+    ///   key: a source row updates a target row only when it agrees on every
+    ///   one of them.
     ///
     /// # Examples
     ///
@@ -1492,6 +1688,7 @@ impl Table {
     ///     .unwrap()
     ///     .refine_factor(5)
     ///     .nprobes(10)
+    ///     .unwrap()
     ///     .execute()
     ///     .await
     ///     .unwrap();
@@ -1553,9 +1750,9 @@ impl Table {
     /// Offsets are useful for sampling as the set of all valid offsets is easily
     /// known in advance to be [0, len(table)).
     ///
-    /// No guarantees are made regarding the order in which results are returned.  If you
-    /// desire an output order that matches the order of the given offsets, you will need
-    /// to add the row offset column to the output and align it yourself.
+    /// No guarantees are made regarding the order in which results are returned.
+    /// Repeated offsets produce repeated rows, which makes this method suitable for
+    /// sampling with replacement.
     ///
     /// Parameters
     /// ----------
@@ -1621,20 +1818,164 @@ impl Table {
         self.inner.optimize(action).await
     }
 
+    /// Prune versions committed before an absolute timestamp.
+    ///
+    /// This is an internal entry point for language bindings whose public API
+    /// accepts an absolute cleanup cutoff.
+    #[doc(hidden)]
+    pub async fn optimize_prune_before(
+        &self,
+        before_timestamp: chrono::DateTime<chrono::Utc>,
+        delete_unverified: Option<bool>,
+        error_if_tagged_old_versions: Option<bool>,
+    ) -> Result<OptimizeStats> {
+        let native = self.as_native().ok_or_else(|| Error::NotSupported {
+            message: "optimize is not supported on LanceDB cloud.".into(),
+        })?;
+        let prune = optimize::cleanup_old_versions_before(
+            native,
+            before_timestamp,
+            delete_unverified,
+            error_if_tagged_old_versions,
+        )
+        .await?;
+        Ok(OptimizeStats {
+            compaction: None,
+            prune: Some(prune),
+        })
+    }
+
     /// Add new columns to the table, providing values to fill in.
     pub fn add_columns(&self) -> AddColumnsBuilder {
         AddColumnsBuilder::new(self.inner.clone())
     }
 
-    /// Change a column's name or nullability.
+    /// Fill the fragments of a computed column that hold no values yet.
+    ///
+    /// Declared with
+    /// [`AddColumnsBuilder::computed`](add_columns::AddColumnsBuilder::computed),
+    /// a column starts empty and gets its values here. Fragments appended
+    /// since the last refresh are filled by the next one, and fragments whose
+    /// inputs changed since they were computed are recomputed (see
+    /// [`freshness`](crate::table::freshness)); everything else is left as
+    /// it is.
+    ///
+    /// Local tables only: a remote refresh runs as a server job, through
+    /// [`Table::refresh_column_async`].
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let result = table.refresh_column("doubled").await?;
+    /// println!("filled {} rows at version {}", result.rows_filled, result.version);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column(&self, column: impl AsRef<str>) -> Result<RefreshColumnResult> {
+        self.inner.refresh_column(column.as_ref()).await
+    }
+
+    /// Like [`Table::refresh_column`], but returns a [`Job`] tracking the
+    /// operation instead of blocking until it completes.
+    ///
+    /// The job may already be complete when returned, and callers must not
+    /// assume the column is filled until [`Job::wait`] returns. A successful
+    /// wait returns the durable [`crate::function::RefreshColumnResult`] for
+    /// both expression-backed and Function-backed columns. Invalid input
+    /// -- an unknown column, or one that is not computed -- is reported by
+    /// this call rather than by the job. On local tables the job runs as an
+    /// in-process task; on LanceDB Cloud and Enterprise it is the server's
+    /// backfill job.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # async fn refresh_in_background(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let job = table.refresh_column_async("doubled").await?;
+    /// println!("refresh running: {:?}", job.status().await?);
+    /// let result = job.wait().await?;
+    /// println!("assigned {} rows", result.rows_assigned);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn refresh_column_async(
+        &self,
+        column: impl AsRef<str>,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        self.inner.refresh_column_async(column.as_ref()).await
+    }
+
+    /// The per-row errors Function refreshes recorded on this table: the
+    /// rows a refresh skipped under its skip policy, with the failing input
+    /// and the error, plus a summary for any fragment whose detail was
+    /// capped. Filter by job or column through the request; a listing that
+    /// hit its limit reports [`FunctionErrors::truncated`].
+    ///
+    /// LanceDB Cloud and Enterprise only, and the caller needs read access
+    /// to the table, since a message carries the value that failed.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// use lancedb::function::FunctionErrorsRequest;
+    ///
+    /// # async fn list_errors(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let errors = table
+    ///     .function_errors(FunctionErrorsRequest::new().column("embedding"))
+    ///     .await?;
+    /// for record in &errors.records {
+    ///     println!("{}: {}", record.error_type, record.error_message);
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn function_errors(
+        &self,
+        request: FunctionErrorsRequest,
+    ) -> Result<crate::function::FunctionErrors> {
+        self.inner.function_errors(&request).await
+    }
+
+    /// Change a column's name, data type, or nullability.
+    ///
+    /// Each alteration must specify at least one of `rename`, `data_type`, or
+    /// `nullable`. Returns [`Error::InvalidInput`] before applying any changes
+    /// if an alteration does not specify any of these fields.
     pub async fn alter_columns(
         &self,
         alterations: &[ColumnAlteration],
     ) -> Result<AlterColumnsResult> {
+        for alteration in alterations {
+            if alteration.rename.is_none()
+                && alteration.nullable.is_none()
+                && alteration.data_type.is_none()
+            {
+                return Err(Error::InvalidInput {
+                    message: format!(
+                        "One of rename, nullable or data_type must be specified for path '{}'",
+                        alteration.path
+                    ),
+                });
+            }
+        }
         self.inner.alter_columns(alterations).await
     }
 
-    /// Update per-field metadata (merges by default).
+    /// Update per-field (column) metadata.
+    ///
+    /// Each [`FieldMetadataUpdate`] is merged into the field's existing metadata
+    /// by default; use [`FieldMetadataUpdate::remove`] to delete a key, or
+    /// [`FieldMetadataUpdate::replace`] to swap the field's entire metadata map.
+    ///
+    /// The following keys are treated specially, by convention, and should be
+    /// used when appropriate:
+    ///
+    /// - `lancedb:description`: for a human-readable description of a field.
+    /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
+    ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
+    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
+    ///   `feature_v2` might be in the same logical column.
+    /// - `lancedb:status`: for status options (`production`, `candidate`,
+    ///   `deprecated`, `archived`) to designate the current life cycle state of
+    ///   this column.
     pub async fn update_field_metadata(
         &self,
         updates: &[FieldMetadataUpdate],
@@ -1669,71 +2010,162 @@ impl Table {
         self.inner.set_unenforced_primary_key(&borrowed).await
     }
 
-    /// Install an [`LsmWriteSpec`] on this table, selecting Lance's MemWAL
+    /// Install an [`RTEWriteSpec`] on this table, selecting Lance's MemWAL
     /// LSM-style write path for future `merge_insert` calls.
     ///
-    /// [`LsmWriteSpec`] chooses one of three sharding strategies:
+    /// [`RTEWriteSpec`] chooses one of three sharding strategies:
     ///
-    /// - [`LsmWriteSpec::bucket`] — hash-bucket writes by a scalar column.
-    /// - [`LsmWriteSpec::identity`] — shard by the raw value of a scalar column.
-    /// - [`LsmWriteSpec::unsharded`] — route every write to a single shard.
+    /// - [`RTEWriteSpec::bucket`] — hash-bucket writes by a scalar column.
+    /// - [`RTEWriteSpec::identity`] — shard by the raw value of a scalar column.
+    /// - [`RTEWriteSpec::unsharded`] — route every write to a single shard.
+    ///
+    /// Every spec requires the table to declare an unenforced primary key
+    /// ([`Table::set_unenforced_primary_key`]); otherwise this fails.
+    ///
+    /// A table carries one spec: this fails while one is installed, since the
+    /// SSTables already written were homed under it.
+    /// [`Table::disable_rte`] removes one.
     ///
     /// # Example
     ///
     /// ```
-    /// # use lancedb::table::{LsmWriteSpec, Table};
+    /// # use lancedb::table::{RTEWriteSpec, Table};
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
     /// table
-    ///     .set_lsm_write_spec(
-    ///         LsmWriteSpec::bucket("id", 16).with_maintained_indexes(["id_idx"]),
+    ///     .enable_rte(
+    ///         RTEWriteSpec::bucket("id", 16).with_maintained_indexes(vec!["id_idx".to_string()]),
     ///     )
     ///     .await?;
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
-        self.inner.set_lsm_write_spec(spec).await
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
+        self.inner.enable_rte(spec).await
     }
 
-    /// Remove the [`LsmWriteSpec`] from this table, reverting to the standard
+    /// Remove the [`RTEWriteSpec`] from this table, reverting to the standard
     /// `merge_insert` write path.
     ///
     /// Errors if no spec is currently set.
-    pub async fn unset_lsm_write_spec(&self) -> Result<()> {
-        self.inner.unset_lsm_write_spec().await
+    pub async fn disable_rte(&self) -> Result<()> {
+        self.inner.disable_rte().await
     }
 
-    /// Read the [`LsmWriteSpec`] currently installed on this table.
+    /// Read the [`RTEWriteSpec`] currently installed on this table.
     ///
-    /// Returns `Ok(None)` when the MemWAL LSM write path is not enabled (no
-    /// spec has been set, or it was removed with [`Table::unset_lsm_write_spec`]).
-    /// The returned spec — including its [`LsmWriteSpec::maintained_indexes`] and
-    /// [`LsmWriteSpec::writer_config_defaults`] — mirrors what was passed to
-    /// [`Table::set_lsm_write_spec`].
+    /// `Ok(None)` means the RTE write path is not enabled at all — no spec has
+    /// been set, or one was removed with [`Table::disable_rte`]. That
+    /// is a different answer from a spec whose
+    /// [`RTEWriteSpec::maintained_indexes`] is `None`, which is an installed
+    /// spec selecting indexes automatically.
+    ///
+    /// The spec read back is the one that was installed, selection included:
+    /// `None` maintains every supported index the table has now or gains
+    /// later, `[]` maintains none, and a non-empty list maintains exactly
+    /// those. All three round-trip.
     ///
     /// # Example
     ///
     /// ```
     /// # use lancedb::table::Table;
     /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
-    /// if let Some(spec) = table.get_lsm_write_spec().await? {
-    ///     println!("LSM write path enabled: {:?}", spec);
+    /// if let Some(spec) = table.get_rte_spec().await? {
+    ///     println!("RTE write path enabled: {:?}", spec);
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
-        self.inner.get_lsm_write_spec().await
+    pub async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
+        self.inner.get_rte_spec().await
     }
 
-    /// Drain and close any cached MemWAL shard writers held for this table.
+    /// Converge this table's RTE write path into its base table.
     ///
-    /// When an [`LsmWriteSpec`] is installed, `merge_insert` opens MemWAL shard
+    /// One `flush` to freeze every memtable into an SSTable, then compaction triggers
+    /// until every generation that existed at that moment has reached base.
+    /// The loop runs client-side, reading progress from `get_rte_stats`, so
+    /// there is no held socket and nothing to reconcile if you drop this
+    /// future partway through.
+    ///
+    /// **Best-effort.** Generations created *after* the opening flush are
+    /// deliberately not waited on — that is what lets this terminate on a
+    /// table taking writes. Idempotent and safe on a cadence: an
+    /// already-converged table costs two round trips and triggers nothing.
+    ///
+    /// **No deadline, and the caller owns that.** It returns when the target
+    /// SSTables are gone, propagates a terminal server fault, and
+    /// otherwise waits however long the server takes. A slow table and a
+    /// stuck one are the same picture from here: the compactor pool is shared
+    /// across every table on the node, so a checkpoint queued behind
+    /// unrelated work is indistinguishable from one that is merging. Wrap
+    /// this in `tokio::time::timeout` for a wall-clock bound; abandoning it
+    /// partway costs nothing.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use lancedb::Table;
+    /// # async fn example(table: &Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let before = table.get_rte_stats(false).await?;
+    /// table.checkpoint_rte().await?;
+    /// let after = table.get_rte_stats(false).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn checkpoint_rte(&self) -> Result<()> {
+        checkpoint::checkpoint_rte(self).await
+    }
+
+    /// Freeze every table shard's active memtable into an SSTable without touching the
+    /// base table.
+    ///
+    /// Independently useful: flushing makes memtable rows readable from an SSTable at
+    /// a lower per-query cost. On a node that has not claimed this table it
+    /// claims it and replays the WAL log first — reporting "nothing to flush"
+    /// without replaying would lie about durable data.
+    pub async fn flush_rte(&self) -> Result<()> {
+        self.inner.flush_rte().await
+    }
+
+    /// Run one bounded SSTable compaction pass per table shard, reporting what
+    /// it merged and what is left.
+    ///
+    /// One pass, not convergence: that bounds each request's cost and gives a
+    /// caller driving its own cadence a progress signal per round trip.
+    pub async fn compact_rte(&self) -> Result<()> {
+        self.inner.compact_rte().await
+    }
+
+    /// Read live per-table-shard RTE state.
+    ///
+    /// Answers "how far behind is my fresh tier", "which table shard is hot", and
+    /// "why is my fresh-tier vector search brute-force". Mutates no table
+    /// state, though on a node that has not claimed this table it claims it,
+    /// exactly as a read would.
+    ///
+    /// `include_sstable_rows` reports a row count per SSTable. Off by
+    /// default: each count opens an uncached Lance dataset, and
+    /// `checkpoint_rte` polls this needing only generation numbers.
+    ///
+    /// `Ok(None)` only when the RTE write path is not enabled, matching
+    /// [`Table::get_rte_spec`]. Stats is fresh-tier only, so with the
+    /// WAL off there is no manifest to report and a struct of zeros would
+    /// read as measurements.
+    ///
+    /// Do not build a checkpoint's termination on this: the completion
+    /// predicate lives in the `flush` and `compact` responses.
+    pub async fn get_rte_stats(&self, include_sstable_rows: bool) -> Result<Option<RTEStats>> {
+        self.inner.get_rte_stats(include_sstable_rows).await
+    }
+
+    /// Drain and close any cached RTE shard writers held for this table.
+    ///
+    /// When an [`RTEWriteSpec`] is installed, `merge_insert` opens RTE shard
     /// writers and caches them for reuse across calls. This closes them,
     /// flushing pending data; writers reopen lazily on the next `merge_insert`.
     /// It is a no-op when no writers are cached.
-    pub async fn close_lsm_writers(&self) -> Result<()> {
-        self.inner.close_lsm_writers().await
+    pub async fn close_rte_writers(&self) -> Result<()> {
+        self.inner.close_rte_writers().await
     }
 
     /// Retrieve the version of the table
@@ -1744,6 +2176,20 @@ impl Table {
     /// version to replace the current table with a previous version.
     pub async fn version(&self) -> Result<u64> {
         self.inner.version().await
+    }
+
+    /// Return a new table handle pinned to the exact revision currently visible.
+    ///
+    /// This is used when asynchronous preparation must remain consistent with
+    /// the revision used for a later read.
+    #[doc(hidden)]
+    pub async fn checkout_current(&self) -> Result<Self> {
+        let inner = self.inner.checkout_current().await?;
+        Ok(Self {
+            inner,
+            database: self.database.clone(),
+            embedding_registry: self.embedding_registry.clone(),
+        })
     }
 
     /// Checks out a specific version of the Table
@@ -1818,7 +2264,11 @@ impl Table {
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
-    /// same tokenizer model files must also exist locally.
+    /// same tokenizer model files must also exist locally, and must match the
+    /// files the server uses: the client cannot detect a mismatch, so it may
+    /// return tokens the server's index never produces. If the model files are
+    /// missing, this returns an error naming the tokenizer and
+    /// `LANCE_LANGUAGE_MODEL_HOME`.
     pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
         let indices = self.inner.list_indices().await?;
         let matches = indices
@@ -1852,7 +2302,8 @@ impl Table {
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
     /// index metadata. For remote tables, this means the same tokenizer model
-    /// files must also exist locally.
+    /// files must also exist locally, and must match the files the server uses
+    /// (see [`Self::tokenize`]).
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
         let schema = self.inner.schema().await?;
         let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
@@ -1908,13 +2359,30 @@ impl Table {
                 ),
             }
         })?;
+        let model_backed_tokenizer = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|details| {
+                let tokenizer = details.get("base_tokenizer")?.as_str()?.to_string();
+                (tokenizer.starts_with("jieba/") || tokenizer.starts_with("lindera/"))
+                    .then_some(tokenizer)
+            });
         tokenize(query, &params).map_err(|err| match err {
-            Error::InvalidInput { message } => Error::InvalidInput {
-                message: format!(
+            Error::InvalidInput { message } => {
+                let mut message = format!(
                     "{} for full text search index '{}' for {}",
                     message, index.name, selector_description
-                ),
-            },
+                );
+                if let Some(tokenizer) = model_backed_tokenizer {
+                    message.push_str(&format!(
+                        ". tokenize() runs on the client: the '{}' tokenizer is rebuilt \
+                         in this process from the index metadata, so its model files must \
+                         be available under LANCE_LANGUAGE_MODEL_HOME and, for remote \
+                         tables, match the files the server uses",
+                        tokenizer
+                    ));
+                }
+                Error::InvalidInput { message }
+            }
             err => err,
         })
     }
@@ -2082,14 +2550,10 @@ impl Table {
         self.inner.diff_branch(from_branch).await
     }
 
-    /// Merge a branch into main, or dry-run. Remote only.
-    /// HTTP 409 still returns [`Ok`] with [`MergeBranchStatus::Rejected`].
-    pub async fn merge_branch(
-        &self,
-        from_branch: &str,
-        dry_run: bool,
-    ) -> Result<MergeBranchResult> {
-        self.inner.merge_branch(from_branch, dry_run).await
+    /// Cherry-pick a branch onto main, or dry-run. Remote only.
+    /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
+    pub async fn cherry_pick(&self, from_branch: &str, dry_run: bool) -> Result<CherryPickResult> {
+        self.inner.cherry_pick(from_branch, dry_run).await
     }
 
     /// The branch this handle is scoped to, or `None` for `main`.
@@ -2167,6 +2631,9 @@ pub struct NativeTable {
     pub(crate) pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     // Read-freshness baseline; `Some` only for namespace-backed tables.
     freshness: Option<TableFreshness>,
+    // Memtable index kinds this handle's LSM writes maintain, shared with its
+    // clones and branch handles.
+    mem_index_registry: Arc<std::sync::RwLock<MemIndexRegistry>>,
 }
 
 impl std::fmt::Debug for NativeTable {
@@ -2292,8 +2759,6 @@ impl NativeTable {
             None => false,
         };
 
-        // Kept so that a `DatasetNotFound` can be re-checked against storage below.
-        let recovery_params = params.clone();
         let mut builder = DatasetBuilder::from_uri(uri).with_read_params(params);
 
         // Set up commit handler when managed_versioning is enabled
@@ -2312,7 +2777,12 @@ impl NativeTable {
         let dataset = match builder.load().await {
             Ok(dataset) => dataset,
             Err(e @ lance::Error::DatasetNotFound { .. }) => {
-                return Err(map_dataset_not_found(uri, name, recovery_params, e).await);
+                // The manifest load is the existence check. A physical prefix may be
+                // from a concurrent or abandoned create, so it cannot refine this error.
+                return Err(Error::TableNotFound {
+                    name: name.to_string(),
+                    source: Box::new(e),
+                });
             }
             Err(e) => return Err(e.into()),
         };
@@ -2330,7 +2800,49 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Maintain the memtable index kinds in `registry` when this table writes
+    /// through its [`RTEWriteSpec`], and accept them when
+    /// [`RTEWriteSpec::with_maintained_indexes`] names one.
+    ///
+    /// The registry belongs to this handle, its clones and its branch handles,
+    /// and is not stored with the table: a handle opened separately starts from
+    /// Lance's built-ins. Set it before the handle's first LSM write; writers
+    /// already open keep the registry they were opened with. Local tables only,
+    /// reached through [`Table::as_native`].
+    ///
+    /// ```
+    /// # use std::sync::Arc;
+    /// # use lancedb::Table;
+    /// # use lancedb::table::{RTEWriteSpec, MemIndexRegistry, mem_index::MemIndexPlugin};
+    /// # async fn example(
+    /// #     table: &Table,
+    /// #     plugin: Arc<dyn MemIndexPlugin>,
+    /// # ) -> Result<(), Box<dyn std::error::Error>> {
+    /// let registry = MemIndexRegistry::default().with_plugin(plugin)?;
+    /// if let Some(native) = table.as_native() {
+    ///     native.set_mem_index_registry(registry);
+    /// }
+    /// let spec = RTEWriteSpec::unsharded().with_maintained_indexes(vec!["region_bitmap".to_string()]);
+    /// table.enable_rte(spec).await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn set_mem_index_registry(&self, registry: MemIndexRegistry) {
+        *self
+            .mem_index_registry
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = registry;
+    }
+
+    pub(crate) fn mem_index_registry(&self) -> MemIndexRegistry {
+        self.mem_index_registry
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// Set the namespace client for server-side query execution.
@@ -2360,6 +2872,7 @@ impl NativeTable {
             namespace_client: self.namespace_client.clone(),
             pushdown_operations: self.pushdown_operations.clone(),
             freshness: self.freshness.clone(),
+            mem_index_registry: self.mem_index_registry.clone(),
         }
     }
 
@@ -2467,6 +2980,7 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -2524,6 +3038,7 @@ impl NativeTable {
         namespace_client: Option<Arc<dyn LanceNamespace>>,
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Default params uses format v1.
         let params = params.unwrap_or(WriteParams {
             ..Default::default()
@@ -2557,6 +3072,7 @@ impl NativeTable {
             namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
     }
 
@@ -2623,6 +3139,7 @@ impl NativeTable {
         pushdown_operations: HashSet<NamespaceClientPushdownOperation>,
         session: Option<Arc<lance::session::Session>>,
     ) -> Result<Self> {
+        let batches = computed_columns::admit_create_source(batches)?;
         // Build table_id from namespace + name for the storage options provider
         let mut table_id = namespace.clone();
         table_id.push(name.to_string());
@@ -2689,7 +3206,18 @@ impl NativeTable {
             namespace_client: stored_namespace_client,
             pushdown_operations,
             freshness: None,
+            mem_index_registry: Default::default(),
         })
+    }
+
+    /// Refuse `operation` when this table is a materialized view.
+    pub(crate) async fn ensure_not_a_view(&self, operation: &str) -> Result<()> {
+        let dataset = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &dataset.schema().metadata,
+            operation,
+        )
     }
 
     /// Merge new data into this table.
@@ -2700,6 +3228,7 @@ impl NativeTable {
         right_on: &str,
     ) -> Result<()> {
         self.dataset.ensure_mutable()?;
+        self.ensure_not_a_view("merge into").await?;
         let mut dataset = (*self.dataset.get().await?).clone();
         dataset.merge(batches, left_on, right_on).await?;
         self.dataset.update(dataset);
@@ -2823,6 +3352,12 @@ impl BaseTable for NativeTable {
         self
     }
 
+    /// Lance scans fragments in order (`Scanner::ordered` defaults to true, and we
+    /// never clear it), so repeated identical scans agree.
+    fn scan_order_is_deterministic(&self) -> bool {
+        true
+    }
+
     fn name(&self) -> &str {
         self.name.as_str()
     }
@@ -2835,8 +3370,31 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
+    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+        let snapshot = self.dataset.new_query_snapshot().await?;
+        let mut table = self.with_dataset(snapshot);
+        // QueryTable requests do not carry a revision. A pinned snapshot must
+        // execute locally until the namespace API can accept that revision.
+        table
+            .pushdown_operations
+            .remove(&NamespaceClientPushdownOperation::QueryTable);
+        Ok(Arc::new(table))
+    }
+
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
+    }
+
+    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+        let current = self.dataset.get().await?;
+        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+            current.as_ref().clone(),
+            self.read_consistency_interval,
+        );
+        Ok(Arc::new(Self {
+            dataset,
+            ..self.clone()
+        }))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -2957,7 +3515,10 @@ impl BaseTable for NativeTable {
         let dataset = self.dataset.get().await?;
         match filter {
             None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => Ok(dataset.count_rows(Some(sql)).await?),
+            Some(Filter::Sql(sql)) => {
+                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                Ok(dataset.count_rows(Some(sql)).await?)
+            }
             Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
                 message: "Datafusion filters are not yet supported".to_string(),
             }),
@@ -2970,8 +3531,17 @@ impl BaseTable for NativeTable {
         self.dataset.ensure_mutable()?;
         let ds_wrapper = self.dataset.clone();
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(&self.name, &ds.schema().metadata, "add to")?;
 
         let table_schema = Schema::from(&ds.schema().clone());
+        computed_columns::ensure_supported_function_metadata(&table_schema)?;
+        computed_columns::ensure_not_written(
+            &table_schema,
+            add.data.schema().fields().iter().map(|f| f.name().as_str()),
+        )?;
+        if matches!(add.mode, AddDataMode::Overwrite) {
+            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+        }
 
         let num_partitions = if let Some(parallelism) = add.write_parallelism {
             parallelism
@@ -2996,7 +3566,7 @@ impl BaseTable for NativeTable {
 
         let output = add.into_plan(&table_schema, &table_def)?;
 
-        let lance_params = output
+        let mut lance_params = output
             .write_options
             .lance_write_params
             .unwrap_or(WriteParams {
@@ -3006,6 +3576,9 @@ impl BaseTable for NativeTable {
                 },
                 ..Default::default()
             });
+        if output.allow_external_blob_outside_bases {
+            lance_params.allow_external_blob_outside_bases = true;
+        }
 
         // Repartition for write parallelism if beneficial.
         let plan = if num_partitions > 1 {
@@ -3132,6 +3705,12 @@ impl BaseTable for NativeTable {
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
     ) -> Result<MergeResult> {
+        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+        self.ensure_not_a_view("merge insert into").await?;
+        computed_columns::ensure_not_written(
+            &Schema::from(self.dataset.get().await?.schema()),
+            source_schema.fields().iter().map(|f| f.name().as_str()),
+        )?;
         let result = merge::execute_merge_insert(self, params, new_data).await?;
         self.bump_freshness();
         Ok(result)
@@ -3141,20 +3720,20 @@ impl BaseTable for NativeTable {
         primary_key::set_unenforced_primary_key(self, columns).await
     }
 
-    async fn set_lsm_write_spec(&self, spec: LsmWriteSpec) -> Result<()> {
-        merge::lsm::set_lsm_write_spec(self, spec).await
+    async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
+        merge::lsm::enable_rte(self, spec).await
     }
 
-    async fn unset_lsm_write_spec(&self) -> Result<()> {
-        merge::lsm::unset_lsm_write_spec(self).await
+    async fn disable_rte(&self) -> Result<()> {
+        merge::lsm::disable_rte(self).await
     }
 
-    async fn get_lsm_write_spec(&self) -> Result<Option<LsmWriteSpec>> {
-        merge::lsm::get_lsm_write_spec(self).await
+    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
+        merge::lsm::get_rte_spec(self).await
     }
 
-    async fn close_lsm_writers(&self) -> Result<()> {
-        merge::lsm::close_lsm_writers(self).await
+    async fn close_rte_writers(&self) -> Result<()> {
+        merge::lsm::close_rte_writers(self).await
     }
 
     async fn blob_columns(&self) -> Result<Vec<String>> {
@@ -3213,6 +3792,29 @@ impl BaseTable for NativeTable {
         Ok(result)
     }
 
+    async fn add_computed_columns(
+        &self,
+        columns: &[(String, String)],
+        options: computed_columns::ComputedColumnOptions,
+    ) -> Result<AddColumnsResult> {
+        let result = schema_evolution::execute_declare(self, columns, options).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
+        let result = refresh::execute_refresh_column(self, column).await?;
+        self.bump_freshness();
+        Ok(result)
+    }
+
+    async fn refresh_column_async(
+        &self,
+        column: &str,
+    ) -> Result<Job<crate::function::RefreshColumnResult>> {
+        refresh::execute_refresh_column_async(self, column).await
+    }
+
     async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
         let result = schema_evolution::execute_alter_columns(self, alterations).await?;
         self.bump_freshness();
@@ -3241,10 +3843,7 @@ impl BaseTable for NativeTable {
         let mut indices: Vec<IndexConfig> = descriptions
             .iter()
             .filter_map(|idx_desc| {
-                let index_type: crate::index::IndexType = idx_desc
-                    .index_type()
-                    .parse()
-                    .unwrap_or(crate::index::IndexType::Unknown);
+                let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
                 if index_type == crate::index::IndexType::Unknown {
                     // Internal or future index types that this version doesn't recognize
                     // (e.g. Lance's internal FragReuseIndex) are silently excluded from
@@ -3260,7 +3859,14 @@ impl BaseTable for NativeTable {
                 let field_ids = idx_desc.field_ids();
                 let mut columns = Vec::with_capacity(field_ids.len());
                 for field_id in field_ids {
-                    let field_path = match dataset.schema().field_path(*field_id as i32) {
+                    let field_path = match if index_type == crate::index::IndexType::FTS {
+                        public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
+                    } else {
+                        dataset
+                            .schema()
+                            .field_path(*field_id as i32)
+                            .map_err(Into::into)
+                    } {
                         Ok(field_path) => field_path,
                         Err(e) => {
                             log::warn!(
@@ -3312,7 +3918,20 @@ impl BaseTable for NativeTable {
             let Some(segment) = segments.first() else {
                 continue;
             };
-            let params = load_segment_params(&dataset, segment).await?;
+            // The listing itself only needs the manifest. Missing index files must
+            // not hide every other index, or callers cannot find the one to repair.
+            let params = match load_segment_params(&dataset, segment).await {
+                Ok(params) => params,
+                Err(err) => {
+                    log::warn!(
+                        "Failed to read full text search configuration for index '{}': {}",
+                        index.name,
+                        err
+                    );
+                    index.index_details = None;
+                    continue;
+                }
+            };
             let details = serde_json::to_string(&params).map_err(|source| Error::Other {
                 message: format!(
                     "Failed to serialize full text search configuration for index '{}'",
@@ -3360,10 +3979,7 @@ impl BaseTable for NativeTable {
             return Ok(None);
         };
 
-        let index_type: crate::index::IndexType = description
-            .index_type()
-            .parse()
-            .unwrap_or(crate::index::IndexType::Unknown);
+        let index_type = crate::index::IndexType::from_description(description.as_ref());
 
         let is_vector = matches!(
             index_type,
@@ -3441,9 +4057,25 @@ impl BaseTable for NativeTable {
         let num_rows = self.count_rows(None).await?;
         let num_indices = self.list_indices().await?.len();
         let ds = self.dataset.get().await?;
-        let ds_clone = (*ds).clone();
-        let ds_stats = Arc::new(ds_clone).calculate_data_stats().await?;
-        let total_bytes = ds_stats.fields.iter().map(|f| f.bytes_on_disk).sum::<u64>() as usize;
+        let num_deleted_rows = Some(ds.count_deleted_rows().await?);
+        // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
+        // would open every data file to read its column metadata, which costs one
+        // IO per fragment and reports 0 for legacy v1 storage.
+        //
+        // The manifest summary covers only the fragments' base data files, so
+        // overlay files (recorded on each fragment) and index files (recorded in
+        // the manifest's index section) are added separately.
+        let mut total_bytes = ds.manifest().summary().total_files_size as usize;
+        for frag in ds.manifest().fragments.iter() {
+            for overlay in &frag.overlays {
+                if let Some(size) = overlay.data_file.file_size_bytes.get() {
+                    total_bytes += size.get() as usize;
+                }
+            }
+        }
+        for index in ds.load_indices().await?.iter() {
+            total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
+        }
 
         let frags = ds.get_fragments();
         let mut sorted_sizes = join_all(
@@ -3490,6 +4122,7 @@ impl BaseTable for NativeTable {
         let stats = TableStatistics {
             total_bytes,
             num_rows,
+            num_deleted_rows,
             num_indices,
             fragment_stats: frag_stats,
         };
@@ -3502,6 +4135,11 @@ impl BaseTable for NativeTable {
         write_params: WriteParams,
     ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
         let ds = self.dataset.get().await?;
+        crate::materialized_view::ensure_not_a_view(
+            &self.name,
+            &ds.schema().metadata,
+            "insert into",
+        )?;
         let dataset = Arc::new((*ds).clone());
         Ok(Arc::new(datafusion::insert::InsertExec::new(
             self.dataset.clone(),
@@ -3515,11 +4153,30 @@ impl BaseTable for NativeTable {
 #[skip_serializing_none]
 #[derive(Debug, Deserialize, PartialEq)]
 pub struct TableStatistics {
-    /// The total number of bytes in the table
+    /// The total size, in bytes, of the table's data files, index files, and
+    /// overlay files
+    ///
+    /// Read from the manifest, so this excludes deletion files and manifests,
+    /// and it excludes any file whose size the manifest does not record
+    /// (tables and indices written before writers persisted file sizes).
     pub total_bytes: usize,
 
     /// The number of rows in the table
     pub num_rows: usize,
+
+    /// The number of rows marked as deleted across all fragments of the table
+    ///
+    /// Deleted rows are only marked in deletion files and still occupy space on
+    /// disk until the table is compacted, so a large value here is a good
+    /// indication that [`Table::optimize`] should be called.
+    ///
+    /// These rows are not included in [`Self::num_rows`]. Fragments in which
+    /// every row was deleted are dropped outright rather than kept with a
+    /// deletion file, so their rows are not counted here either.
+    ///
+    /// `None` means the backend did not report a deletion count.
+    #[serde(default)]
+    pub num_deleted_rows: Option<usize>,
 
     /// The number of indices in the table
     pub num_indices: usize,
@@ -3560,7 +4217,7 @@ pub struct FragmentSummaryStats {
 #[allow(deprecated)]
 mod tests {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use arrow_array::{
@@ -3576,6 +4233,7 @@ mod tests {
     use super::*;
     use crate::connect;
     use crate::connection::ConnectBuilder;
+    use crate::io::object_store::io_tracking::IoTrackingStore;
     use crate::query::Select;
     use crate::query::{ExecutableQuery, QueryBase};
     use crate::test_utils::connection::new_test_connection;
@@ -3619,6 +4277,31 @@ mod tests {
         assert_eq!(table.name, "test")
     }
 
+    /// The per-row error store is a server feature; a local table says so
+    /// rather than answering with an empty listing.
+    #[tokio::test]
+    async fn test_function_errors_are_remote_only() {
+        let tmp_dir = tempdir().unwrap();
+        let conn = connect(tmp_dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let batch = make_test_batches();
+        let table = conn
+            .create_table("t", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let err = table
+            .function_errors(FunctionErrorsRequest::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::NotSupported { message } if message.contains("Cloud and Enterprise")),
+            "{err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn test_open_not_found() {
         let tmp_dir = tempdir().unwrap();
@@ -3641,73 +4324,50 @@ mod tests {
         );
     }
 
-    /// Write a table and then break it, leaving the `<name>.lance` directory in place.
-    ///
-    /// `remove_all` reproduces an interrupted drop + re-create (the directory is left
-    /// empty); otherwise only the manifests are removed, leaving the data files behind.
-    async fn write_then_corrupt_table(dir: &std::path::Path, remove_all: bool) -> String {
-        let dataset_path = dir.join("test.lance");
-        let uri = dataset_path.to_str().unwrap().to_string();
-
-        let batch = make_test_batches();
-        let reader = RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema());
-        Dataset::write(reader, &uri, None).await.unwrap();
-
-        if remove_all {
-            for entry in std::fs::read_dir(&dataset_path).unwrap() {
-                let entry = entry.unwrap();
-                if entry.file_type().unwrap().is_dir() {
-                    std::fs::remove_dir_all(entry.path()).unwrap();
-                } else {
-                    std::fs::remove_file(entry.path()).unwrap();
-                }
-            }
-            assert_eq!(std::fs::read_dir(&dataset_path).unwrap().count(), 0);
-        } else {
-            let versions = dataset_path.join("_versions");
-            assert!(versions.is_dir(), "expected manifests under {versions:?}");
-            std::fs::remove_dir_all(&versions).unwrap();
-            assert!(std::fs::read_dir(&dataset_path).unwrap().count() > 0);
-        }
-
-        uri
-    }
-
     #[tokio::test]
-    async fn test_open_corrupt_empty_dir() {
+    async fn test_open_not_found_when_empty_directory_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), true).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        std::fs::create_dir(&dataset_path).unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
     #[tokio::test]
-    async fn test_open_corrupt_missing_manifest() {
+    async fn test_open_not_found_when_only_uncommitted_storage_exists() {
         let tmp_dir = tempdir().unwrap();
-        let uri = write_then_corrupt_table(tmp_dir.path(), false).await;
+        let dataset_path = tmp_dir.path().join("test.lance");
+        let data_dir = dataset_path.join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join("orphan.lance"), b"uncommitted").unwrap();
 
-        let err = NativeTable::open(&uri).await.unwrap_err();
+        let err = NativeTable::open(dataset_path.to_str().unwrap())
+            .await
+            .unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
             "got {err:?}"
         );
     }
 
-    /// A table listed by `table_names()` must not be reported as missing by
-    /// `open_table()`. See <https://github.com/lancedb/lancedb/issues/3127>.
+    /// Listing databases discover physical `*.lance` entries. That snapshot is not an
+    /// authoritative table-existence check: only a committed manifest makes a table
+    /// openable, and the entry could also be concurrently created or dropped.
     #[tokio::test]
-    async fn test_open_table_corrupt_is_still_listed() {
+    async fn test_table_names_may_include_uncommitted_storage() {
         let tmp_dir = tempdir().unwrap();
         let db = connect(tmp_dir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap();
 
-        write_then_corrupt_table(tmp_dir.path(), true).await;
+        std::fs::create_dir(tmp_dir.path().join("test.lance")).unwrap();
 
         assert_eq!(
             db.table_names().execute().await.unwrap(),
@@ -3715,12 +4375,185 @@ mod tests {
         );
         let err = db.open_table("test").execute().await.unwrap_err();
         assert!(
-            matches!(&err, Error::TableCorrupted { name, .. } if name == "test"),
+            matches!(&err, Error::TableNotFound { name, .. } if name == "test"),
+            "physical storage without a committed manifest is not a table: {err:?}"
+        );
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardStore {
+        inner: Arc<dyn object_store::ObjectStore>,
+        parent: object_store::path::Path,
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl std::fmt::Display for ParentListGuardStore {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("ParentListGuardStore")
+        }
+    }
+
+    #[async_trait::async_trait]
+    #[deny(clippy::missing_trait_methods)]
+    impl object_store::ObjectStore for ParentListGuardStore {
+        async fn put_opts(
+            &self,
+            location: &object_store::path::Path,
+            payload: object_store::PutPayload,
+            opts: object_store::PutOptions,
+        ) -> object_store::Result<object_store::PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+
+        async fn put_multipart_opts(
+            &self,
+            location: &object_store::path::Path,
+            opts: object_store::PutMultipartOptions,
+        ) -> object_store::Result<Box<dyn object_store::MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+
+        async fn get_opts(
+            &self,
+            location: &object_store::path::Path,
+            options: object_store::GetOptions,
+        ) -> object_store::Result<object_store::GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+
+        async fn get_ranges(
+            &self,
+            location: &object_store::path::Path,
+            ranges: &[std::ops::Range<u64>],
+        ) -> object_store::Result<Vec<bytes::Bytes>> {
+            self.inner.get_ranges(location, ranges).await
+        }
+
+        fn delete_stream(
+            &self,
+            locations: futures::stream::BoxStream<
+                'static,
+                object_store::Result<object_store::path::Path>,
+            >,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::path::Path>>
+        {
+            self.inner.delete_stream(locations)
+        }
+
+        fn list(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list(prefix)
+        }
+
+        fn list_with_offset(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+            offset: &object_store::path::Path,
+        ) -> futures::stream::BoxStream<'static, object_store::Result<object_store::ObjectMeta>>
+        {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_offset(prefix, offset)
+        }
+
+        async fn list_with_delimiter(
+            &self,
+            prefix: Option<&object_store::path::Path>,
+        ) -> object_store::Result<object_store::ListResult> {
+            if prefix == Some(&self.parent) {
+                self.parent_list_calls.fetch_add(1, Ordering::Relaxed);
+            }
+            self.inner.list_with_delimiter(prefix).await
+        }
+
+        async fn copy_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::CopyOptions,
+        ) -> object_store::Result<()> {
+            self.inner.copy_opts(from, to, options).await
+        }
+
+        async fn rename_opts(
+            &self,
+            from: &object_store::path::Path,
+            to: &object_store::path::Path,
+            options: object_store::RenameOptions,
+        ) -> object_store::Result<()> {
+            self.inner.rename_opts(from, to, options).await
+        }
+    }
+
+    #[derive(Debug)]
+    struct ParentListGuardWrapper {
+        parent_list_calls: Arc<AtomicUsize>,
+    }
+
+    impl WrappingObjectStore for ParentListGuardWrapper {
+        fn wrap(
+            &self,
+            _store_prefix: &str,
+            inner: Arc<dyn object_store::ObjectStore>,
+        ) -> Arc<dyn object_store::ObjectStore> {
+            Arc::new(ParentListGuardStore {
+                inner,
+                parent: object_store::path::Path::from("database"),
+                parent_list_calls: self.parent_list_calls.clone(),
+            })
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            _original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            None
+        }
+    }
+
+    #[tokio::test]
+    async fn test_open_missing_never_lists_database_parent() {
+        let parent_list_calls = Arc::new(AtomicUsize::new(0));
+        let params = ReadParams {
+            store_options: Some(ObjectStoreParams {
+                object_store_wrapper: Some(Arc::new(ParentListGuardWrapper {
+                    parent_list_calls: parent_list_calls.clone(),
+                })),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let err = NativeTable::open_with_params(
+            "memory:///database/missing.lance",
+            "missing",
+            Vec::new(),
+            None,
+            Some(params),
+            None,
+            None,
+            HashSet::new(),
+            None,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            matches!(&err, Error::TableNotFound { name, .. } if name == "missing"),
             "got {err:?}"
         );
-        assert!(
-            err.to_string().contains("exists but could not be loaded"),
-            "got {err}"
+        assert_eq!(
+            parent_list_calls.load(Ordering::Relaxed),
+            0,
+            "opening one missing table must not enumerate sibling tables"
         );
     }
 
@@ -3786,6 +4619,14 @@ mod tests {
         ) -> Arc<dyn object_store::ObjectStore> {
             self.called.store(true, Ordering::Relaxed);
             original
+        }
+
+        fn wrap_paginated(
+            &self,
+            _store_prefix: &str,
+            original: Arc<dyn object_store::list::PaginatedListStore>,
+        ) -> Option<Arc<dyn object_store::list::PaginatedListStore>> {
+            Some(original)
         }
     }
 
@@ -4696,7 +5537,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec() {
+    async fn test_enable_rte() {
         use arrow_array::StringArray;
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
@@ -4724,19 +5565,20 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // Reject num_buckets out of range.
         for bad in [0u32, 1025] {
             let err = table
-                .set_lsm_write_spec(LsmWriteSpec::bucket("id", bad))
+                .enable_rte(RTEWriteSpec::bucket("id", bad))
                 .await
                 .expect_err("should reject");
             assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
         }
 
-        // Happy path: install spec; verify MemWAL details record it.
+        // Happy path: install spec; verify RTE details record it.
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
             .await
             .unwrap();
 
@@ -4762,14 +5604,61 @@ mod tests {
 
         // Mutation rejected.
         let err = table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .enable_rte(RTEWriteSpec::bucket("id", 8))
             .await
             .expect_err("mutation should be rejected");
         assert!(matches!(err, Error::InvalidInput { .. }), "got {:?}", err);
     }
 
+    /// A spec is refused on a table without an unenforced primary key, for every
+    /// sharding mode, and a refused spec leaves nothing installed.
     #[tokio::test]
-    async fn test_set_lsm_write_spec_unsharded() {
+    async fn test_enable_rte_requires_primary_key() {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let conn = ConnectBuilder::new(tmp_dir.path().to_str().unwrap())
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(arrow_array::Int64Array::from(vec![1, 2]))],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema));
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+        let installed = |table: &Table| {
+            let table = table.clone();
+            async move {
+                let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
+                dataset.mem_wal_index_details().await.unwrap().is_some()
+            }
+        };
+
+        for spec in [
+            RTEWriteSpec::unsharded(),
+            RTEWriteSpec::bucket("id", 4),
+            RTEWriteSpec::identity("id"),
+        ] {
+            let err = table.enable_rte(spec).await.unwrap_err();
+            assert!(
+                matches!(&err, Error::InvalidInput { message } if message.contains("primary key")),
+                "got {err:?}"
+            );
+            assert!(!installed(&table).await);
+        }
+
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        assert!(installed(&table).await);
+    }
+
+    #[tokio::test]
+    async fn test_enable_rte_unsharded() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -4789,11 +5678,9 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
-        table
-            .set_lsm_write_spec(LsmWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
 
         let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
         let details = dataset
@@ -4809,7 +5696,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_set_lsm_write_spec_identity() {
+    async fn test_enable_rte_identity() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -4835,10 +5722,11 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         table
-            .set_lsm_write_spec(
-                LsmWriteSpec::identity("region")
+            .enable_rte(
+                RTEWriteSpec::identity("region")
                     .with_writer_config_defaults([("durable_write", "false")]),
             )
             .await
@@ -4866,7 +5754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_unset_lsm_write_spec() {
+    async fn test_disable_rte() {
         use lance::dataset::mem_wal::DatasetMemWalExt;
 
         let tmp_dir = tempdir().unwrap();
@@ -4886,13 +5774,14 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // unset errors when no spec is set.
-        table.unset_lsm_write_spec().await.unwrap_err();
+        table.disable_rte().await.unwrap_err();
 
         // Install a spec, then unset it.
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 4))
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
             .await
             .unwrap();
         {
@@ -4900,16 +5789,16 @@ mod tests {
             assert!(dataset.mem_wal_index_details().await.unwrap().is_some());
         }
 
-        table.unset_lsm_write_spec().await.unwrap();
+        table.disable_rte().await.unwrap();
         {
             let dataset = table.as_native().unwrap().dataset.get().await.unwrap();
             assert!(dataset.mem_wal_index_details().await.unwrap().is_none());
         }
 
         // A second unset errors; a fresh spec can still be installed afterwards.
-        table.unset_lsm_write_spec().await.unwrap_err();
+        table.disable_rte().await.unwrap_err();
         table
-            .set_lsm_write_spec(LsmWriteSpec::bucket("id", 8))
+            .enable_rte(RTEWriteSpec::bucket("id", 8))
             .await
             .unwrap();
         {
@@ -4919,7 +5808,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_get_lsm_write_spec() {
+    async fn test_get_rte_spec() {
         let tmp_dir = tempdir().unwrap();
         let uri = tmp_dir.path().to_str().unwrap();
 
@@ -4943,9 +5832,10 @@ mod tests {
             .await
             .unwrap();
         let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
 
         // No spec installed yet.
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
 
         // A real scalar index is needed to name it as a maintained index.
         table
@@ -4957,26 +5847,157 @@ mod tests {
 
         // Bucket spec round-trips exactly, including the routing column (recovered
         // from its field id), maintained indexes, and writer config defaults.
-        let spec = LsmWriteSpec::bucket("id", 4)
-            .with_maintained_indexes([idx_name])
+        let spec = RTEWriteSpec::bucket("id", 4)
+            .with_maintained_indexes(vec![idx_name.clone()])
             .with_writer_config_defaults([("durable_write", "false")]);
-        table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
 
         // After unset, no spec is reported.
-        table.unset_lsm_write_spec().await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), None);
+        table.disable_rte().await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
 
         // Identity sharding round-trips (column recovered from the schema).
-        let spec = LsmWriteSpec::identity("region");
-        table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
-        table.unset_lsm_write_spec().await.unwrap();
+        // A spec left at its default round-trips as the default: what is stored
+        // is the intent to maintain everything, not the set it resolves to now.
+        let spec = RTEWriteSpec::identity("region");
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
+        table.disable_rte().await.unwrap();
 
         // Unsharded round-trips (no routing column).
-        let spec = LsmWriteSpec::unsharded();
-        table.set_lsm_write_spec(spec.clone()).await.unwrap();
-        assert_eq!(table.get_lsm_write_spec().await.unwrap(), Some(spec));
+        let spec = RTEWriteSpec::unsharded();
+        table.enable_rte(spec.clone()).await.unwrap();
+        assert_eq!(table.get_rte_spec().await.unwrap(), Some(spec));
+    }
+
+    /// The maintained set defaults to every index on the table. A named index
+    /// the memtable cannot build fails the install, because the caller asked
+    /// for it; an unnamed one is skipped, because it arrived by existing.
+    #[tokio::test]
+    async fn test_enable_rte_infers_maintained_indexes() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("tag", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema.clone()));
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.create_table("t", reader).execute().await.unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+
+        table
+            .create_index(&["id"], Index::BTree(Default::default()))
+            .name("id_btree".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["tag"], Index::Bitmap(Default::default()))
+            .name("tag_bitmap".to_string())
+            .execute()
+            .await
+            .unwrap();
+
+        // Explicitly naming the bitmap index fails before anything commits.
+        let err = table
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["tag_bitmap".to_string()]),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message } if message.contains("tag_bitmap")),
+            "expected the bitmap index to be rejected, got {err:?}"
+        );
+        assert_eq!(table.get_rte_spec().await.unwrap(), None);
+
+        // The default names nothing, so the bitmap is skipped rather than
+        // refusing the table: it is maintained by existing, not by being asked
+        // for. The intent is what is stored, not the set it resolves to today.
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        assert_eq!(
+            table
+                .get_rte_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            None,
+            "an unnamed set is stored as the intent to maintain everything"
+        );
+
+        // Narrowing to a named subset: unset first, since an installed spec
+        // cannot be set over.
+        table.disable_rte().await.unwrap();
+        table
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["id_btree".to_string()]),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_rte_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some(["id_btree".to_string()].as_slice())
+        );
+
+        // Opting out entirely is distinct from the default.
+        table.disable_rte().await.unwrap();
+        table
+            .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
+            .await
+            .unwrap();
+        assert_eq!(
+            table
+                .get_rte_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice())
+        );
+
+        // An installed spec is never set over, whatever the new one asks for,
+        // and the refused call leaves it alone.
+        let err = table
+            .enable_rte(RTEWriteSpec::bucket("id", 4))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::InvalidInput { ref message }
+                if message.contains("already set")),
+            "expected the repeat to be refused, got {err:?}"
+        );
+        assert_eq!(
+            table
+                .get_rte_spec()
+                .await
+                .unwrap()
+                .unwrap()
+                .maintained_indexes(),
+            Some([].as_slice()),
+            "a refused call changes nothing"
+        );
     }
 
     #[tokio::test]
@@ -5024,12 +6045,17 @@ mod tests {
 
         let res = table.stats().await.unwrap();
         println!("{:#?}", res);
+        // `total_bytes` is the full on-disk size of the 11 data files (this table
+        // has no index or overlay files), so it is well above the 2000 bytes of
+        // column data these 250 int32 pairs hold: each file carries its own footer
+        // and metadata.
         assert_eq!(
             res,
             TableStatistics {
                 num_rows: 250,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
-                total_bytes: 2300,
+                total_bytes: 8969,
                 fragment_stats: FragmentStatistics {
                     num_fragments: 11,
                     num_small_fragments: 11,
@@ -5051,6 +6077,7 @@ mod tests {
             res,
             TableStatistics {
                 num_rows: 0,
+                num_deleted_rows: Some(0),
                 num_indices: 0,
                 total_bytes: 0,
                 fragment_stats: FragmentStatistics {
@@ -5068,5 +6095,260 @@ mod tests {
                 },
             }
         )
+    }
+
+    /// `total_bytes` counts more than the base data files: index files and
+    /// overlay files recorded in the manifest are included too.
+    #[tokio::test]
+    pub async fn test_stats_includes_index_and_overlay_files() {
+        use lance::dataset::WriteDestination;
+        use lance::dataset::transaction::{DataOverlayGroup, Operation};
+        use lance_file::version::stable_file_version;
+        use lance_file::writer::FileWriterOptions;
+        use lance_io::utils::CachedFileSize;
+        use lance_table::format::DataFile;
+        use lance_table::format::overlay::{DataOverlayFile, OverlayCoverage};
+        use roaring::RoaringBitmap;
+
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = ConnectBuilder::new(uri)
+            .read_consistency_interval(Duration::from_secs(0))
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("foo", DataType::Int32, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(Int32Array::from_iter_values(0..100)),
+                Arc::new(Int32Array::from_iter_values(0..100)),
+            ],
+        )
+        .unwrap();
+        let table = conn
+            .create_table("test_stats_extra_files", batch)
+            .execute()
+            .await
+            .unwrap();
+
+        let data_only = table.stats().await.unwrap().total_bytes;
+        assert!(data_only > 0);
+
+        // A scalar index adds index files whose sizes are recorded in the
+        // manifest's index section.
+        table
+            .create_index(&["id"], Index::Auto)
+            .execute()
+            .await
+            .unwrap();
+        let with_index = table.stats().await.unwrap().total_bytes;
+        let dataset = {
+            let native = table.as_native().unwrap();
+            (*native.dataset.get().await.unwrap()).clone()
+        };
+        let index_bytes: usize = dataset
+            .load_indices()
+            .await
+            .unwrap()
+            .iter()
+            .map(|idx| idx.total_size_bytes().unwrap_or(0) as usize)
+            .sum();
+        assert!(index_bytes > 0);
+        assert_eq!(with_index, data_only + index_bytes);
+
+        // Release builds reject unstable overlay datasets unless explicitly opted in.
+        if !lance_table::feature_flags::can_read_dataset(
+            lance_table::feature_flags::FLAG_UNSTABLE_DATA_OVERLAY_FILES,
+        ) {
+            return;
+        }
+
+        // Commit an overlay file supplying new `foo` values for the first three
+        // rows of fragment 0. There is no high-level API that writes overlays
+        // yet, so write the overlay's data file and commit the `DataOverlay`
+        // operation by hand.
+        let read_version = dataset.version().version;
+        let fragment_id = dataset.get_fragments()[0].id() as u64;
+        let foo_field_id = dataset.schema().field("foo").unwrap().id;
+        let overlay_schema = dataset.schema().project_by_ids(&[foo_field_id], true);
+        let file_version = stable_file_version();
+
+        let filename = "overlay.lance".to_string();
+        let store = dataset.object_store(None).await.unwrap();
+        let path = dataset.data_dir().child(filename.clone());
+        let obj_writer = store.create(&path).await.unwrap();
+        let mut writer = lance_file::versions::create_writer(
+            file_version,
+            obj_writer,
+            overlay_schema,
+            FileWriterOptions::default(),
+        )
+        .unwrap();
+        writer
+            .write_column(0, Arc::new(Int32Array::from(vec![1000, 1001, 1002])) as _)
+            .await
+            .unwrap();
+        let summary = writer.finish().await.unwrap();
+        let overlay_bytes = summary.size_bytes as usize;
+        assert!(overlay_bytes > 0);
+
+        let mut data_file = DataFile::new_unstarted(filename, file_version);
+        data_file.fields = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(field_id, _)| *field_id as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.column_indices = writer
+            .field_id_to_column_indices()
+            .iter()
+            .map(|(_, column_index)| *column_index as i32)
+            .collect::<Vec<_>>()
+            .into();
+        data_file.file_size_bytes = CachedFileSize::new(summary.size_bytes);
+
+        let overlay = DataOverlayFile {
+            data_file,
+            coverage: OverlayCoverage::dense(RoaringBitmap::from_iter(0..3)),
+            committed_version: 0,
+        };
+        Dataset::commit(
+            WriteDestination::Dataset(Arc::new(dataset)),
+            Operation::DataOverlay {
+                groups: vec![DataOverlayGroup {
+                    fragment_id,
+                    overlays: vec![overlay],
+                }],
+            },
+            Some(read_version),
+            None,
+            None,
+            Arc::new(Default::default()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        table.checkout_latest().await.unwrap();
+        let with_overlay = table.stats().await.unwrap().total_bytes;
+        assert_eq!(with_overlay, with_index + overlay_bytes);
+    }
+
+    /// `stats()` must stay manifest-only. Summing per-field `bytes_on_disk`
+    /// instead opens every data file, so cost would grow with fragment count.
+    #[tokio::test]
+    pub async fn test_stats_does_not_read_data_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from_iter_values(0..10))],
+        )
+        .unwrap();
+
+        conn.create_table("test_stats_io", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let table = conn.open_table("test_stats_io").execute().await.unwrap();
+        const NUM_APPENDS: usize = 20;
+        for _ in 0..NUM_APPENDS {
+            table.add(batch.clone()).execute().await.unwrap();
+        }
+
+        // Reopen through a tracking store so the counters cover `stats()` alone and
+        // not the writes above.
+        let (wrapper, io_stats) = IoTrackingStore::new_wrapper();
+        let table = conn
+            .open_table("test_stats_io")
+            .lance_read_params(ReadParams {
+                store_options: Some(ObjectStoreParams {
+                    object_store_wrapper: Some(wrapper),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .execute()
+            .await
+            .unwrap();
+        io_stats.lock().unwrap().read_iops = 0;
+
+        let stats = table.stats().await.unwrap();
+        let read_iops = io_stats.lock().unwrap().read_iops;
+
+        assert_eq!(stats.fragment_stats.num_fragments, NUM_APPENDS + 1);
+        assert!(stats.total_bytes > 0);
+        // Reading the fragments' data files would take at least one IOP each.
+        assert!(
+            read_iops < stats.fragment_stats.num_fragments as u64,
+            "stats() issued {} read IOPs across {} fragments",
+            read_iops,
+            stats.fragment_stats.num_fragments
+        );
+    }
+
+    #[tokio::test]
+    pub async fn test_stats_num_deleted_rows() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+
+        let conn = ConnectBuilder::new(uri).execute().await.unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = |ids: Vec<i32>| {
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(ids))]).unwrap()
+        };
+
+        let table = conn
+            .create_table("test_stats_deletions", batch(vec![0, 1]))
+            .execute()
+            .await
+            .unwrap();
+        // A second fragment, holding only rows that the delete below removes.
+        table.add(batch(vec![1])).execute().await.unwrap();
+        table.add(batch(vec![1, 2, 3])).execute().await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.fragment_stats.num_fragments, 3);
+
+        table.delete("id = 1").await.unwrap();
+
+        let res = table.stats().await.unwrap();
+        // 6 rows are inserted over 3 fragments
+        // 3 rows with id = 1 are deleted (one in each fragment), and that empties the 2nd
+        // fragment, which is dropped outright rather than kept with a deletion
+        // file, so only the row marked in the surviving fragment are counted.
+        assert_eq!(res.num_deleted_rows, Some(2));
+        assert_eq!(res.num_rows, 3);
+        assert_eq!(res.fragment_stats.num_fragments, 2);
+        // The marked row is are physically there, so it counts towards the
+        // 3rd fragment length even though it is excluded from num_rows.
+        assert_eq!(res.fragment_stats.lengths.max, 3);
+
+        // Compaction materializes the deletions.
+        table
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions {
+                    target_rows_per_fragment: 1000,
+                    ..Default::default()
+                },
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+
+        let res = table.stats().await.unwrap();
+        assert_eq!(res.num_deleted_rows, Some(0));
+        assert_eq!(res.num_rows, 3);
     }
 }

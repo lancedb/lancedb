@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
-use arrow_schema::{DataType, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use lance::dataset::WriteMode;
+use lance_arrow::FieldExt;
 use serde::{Deserialize, Serialize};
 
 use crate::data::scannable::Scannable;
@@ -60,6 +62,7 @@ pub struct AddDataBuilder {
     pub(crate) embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     pub(crate) progress_callback: Option<ProgressCallback>,
     pub(crate) write_parallelism: Option<usize>,
+    pub(crate) allow_external_blob_outside_bases: bool,
 }
 
 impl std::fmt::Debug for AddDataBuilder {
@@ -87,6 +90,7 @@ impl AddDataBuilder {
             embedding_registry,
             progress_callback: None,
             write_parallelism: None,
+            allow_external_blob_outside_bases: false,
         }
     }
 
@@ -138,6 +142,16 @@ impl AddDataBuilder {
     /// Setting this to `1` disables parallel writes.
     pub fn write_parallelism(mut self, parallelism: usize) -> Self {
         self.write_parallelism = Some(parallelism);
+        self
+    }
+
+    /// Store blob URIs that sit outside registered blob bases.
+    ///
+    /// The row keeps a reference, so the object has to stay readable.
+    /// [`crate::table::Table::fetch_blobs`] reads from that location.
+    /// Defaults to `false`. Local tables only.
+    pub fn allow_external_blob_outside_bases(mut self, allow: bool) -> Self {
+        self.allow_external_blob_outside_bases = allow;
         self
     }
 
@@ -199,6 +213,7 @@ impl AddDataBuilder {
             write_options: self.write_options,
             mode: self.mode,
             tracker,
+            allow_external_blob_outside_bases: self.allow_external_blob_outside_bases,
         })
     }
 }
@@ -212,6 +227,7 @@ pub struct PreprocessingOutput {
     pub write_options: WriteOptions,
     pub mode: AddDataMode,
     pub tracker: Option<Arc<WriteProgressTracker>>,
+    pub allow_external_blob_outside_bases: bool,
 }
 
 /// Check that the input schema is valid for insert.
@@ -219,6 +235,7 @@ pub struct PreprocessingOutput {
 /// Fields can be in different orders, so match by name.
 ///
 /// If a column exists in input but not in table, error (no extra columns allowed).
+/// Input field names must be unique within each struct.
 ///
 /// If a column exists in table but not in input, that is okay - it may be filled with nulls.
 ///
@@ -230,7 +247,13 @@ fn validate_schema(input: &Schema, table: &Schema) -> Result<()> {
 }
 
 fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
+    let mut names = HashSet::with_capacity(input.len());
     for field in input {
+        if !names.insert(field.name()) {
+            return Err(Error::InvalidInput {
+                message: format!("field '{}' is specified more than once", field.name()),
+            });
+        }
         match table.iter().find(|f| f.name() == field.name()) {
             None => {
                 return Err(Error::InvalidInput {
@@ -238,15 +261,31 @@ fn validate_fields(input: &Fields, table: &Fields) -> Result<()> {
                 });
             }
             Some(table_field) => {
-                if let (DataType::Struct(in_children), DataType::Struct(tbl_children)) =
-                    (field.data_type(), table_field.data_type())
-                {
-                    validate_fields(in_children, tbl_children)?;
-                }
+                validate_field(field, table_field)?;
             }
         }
     }
     Ok(())
+}
+
+fn validate_field(input: &Field, table: &Field) -> Result<()> {
+    // Blob coercion validates its children and permits dropping only
+    // all-null range fields when targeting a legacy two-field layout.
+    if table.is_blob_v2() {
+        return Ok(());
+    }
+    match (input.data_type(), table.data_type()) {
+        (DataType::Struct(input), DataType::Struct(table)) => validate_fields(input, table),
+        (
+            DataType::List(input) | DataType::LargeList(input) | DataType::FixedSizeList(input, _),
+            DataType::List(table) | DataType::LargeList(table) | DataType::FixedSizeList(table, _),
+        ) => {
+            // Preserve the item's extension metadata, and match nested struct
+            // children by name rather than comparing collection item names.
+            validate_field(input, table)
+        }
+        _ => Ok(()),
+    }
 }
 
 #[cfg(test)]
@@ -283,6 +322,81 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
         conn.create_table("test", batch).execute().await.unwrap()
+    }
+
+    #[rstest::rstest]
+    fn test_validate_append_collection_fields(
+        #[values("list", "large_list", "fixed_size_list")] source_kind: &str,
+        #[values("list", "large_list", "fixed_size_list")] target_kind: &str,
+    ) {
+        fn schema(kind: &str, item: Field) -> Schema {
+            let item = Arc::new(item);
+            let data_type = match kind {
+                "list" => DataType::List(item),
+                "large_list" => DataType::LargeList(item),
+                "fixed_size_list" => DataType::FixedSizeList(item, 1),
+                _ => unreachable!(),
+            };
+            Schema::new(vec![Field::new("items", data_type, true)])
+        }
+        let image = crate::blob("image", true);
+        let legacy_image = lance::blob::blob_field("image", true);
+        let caption = Field::new("caption", DataType::Utf8, true);
+        let input = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone()].into()),
+                true,
+            ),
+        );
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&input, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("does not exist"),
+            "{error}"
+        );
+
+        let target = schema(
+            target_kind,
+            Field::new(
+                "target_item",
+                DataType::Struct(vec![caption.clone(), legacy_image.clone()].into()),
+                true,
+            ),
+        );
+        // Declared siblings can be reordered, but must not occur more than once.
+        super::validate_schema(&input, &target).unwrap();
+        let duplicate = schema(
+            source_kind,
+            Field::new(
+                "source_item",
+                DataType::Struct(vec![image.clone(), caption.clone(), caption].into()),
+                true,
+            ),
+        );
+        let error = super::validate_schema(&duplicate, &target)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("caption") && error.contains("specified more than once"),
+            "{error}"
+        );
+        // Item names need not match, and blob children still reach range coercion.
+        super::validate_schema(
+            &schema(source_kind, image.with_name("source_item")),
+            &schema(target_kind, legacy_image.with_name("target_item")),
+        )
+        .unwrap();
     }
 
     async fn test_add_with_data<T>(data: T)
@@ -1005,14 +1119,23 @@ mod tests {
     #[case::utf8(DataType::Utf8)]
     #[case::large_utf8(DataType::LargeUtf8)]
     #[tokio::test]
-    async fn test_add_arrow_json_into_lance_json_table(#[case] input_type: DataType) {
+    async fn test_add_arrow_json_into_lance_json_table(
+        #[case] input_type: DataType,
+        #[values(false, true)] table_has_serialized_metadata: bool,
+        #[values(false, true)] input_has_serialized_metadata: bool,
+    ) {
         use arrow_array::{Array, cast::AsArray};
         use lance_arrow::ARROW_EXT_NAME_KEY;
         use lance_arrow::json::{ARROW_JSON_EXT_NAME, JSON_EXT_NAME};
 
         // Build a table whose "data" column is lance.json (LargeBinary +
         // ARROW:extension:name = "lance.json").
-        let lance_json_field = lance_arrow::json::json_field("data", true);
+        let mut lance_json_field = lance_arrow::json::json_field("data", true);
+        if table_has_serialized_metadata {
+            let mut metadata = lance_json_field.metadata().clone();
+            metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+            lance_json_field = lance_json_field.with_metadata(metadata);
+        }
         let table_schema = Arc::new(Schema::new(vec![lance_json_field]));
 
         let db = connect("memory://").execute().await.unwrap();
@@ -1036,10 +1159,13 @@ mod tests {
 
         // Build an arrow.json input field (Utf8/LargeUtf8 + arrow.json extension).
         // This is what PyArrow produces for pa.json_() arrays.
-        let arrow_json_metadata = std::collections::HashMap::from([(
+        let mut arrow_json_metadata = std::collections::HashMap::from([(
             ARROW_EXT_NAME_KEY.to_string(),
             ARROW_JSON_EXT_NAME.to_string(),
         )]);
+        if input_has_serialized_metadata {
+            arrow_json_metadata.insert(lance_arrow::ARROW_EXT_META_KEY.to_string(), String::new());
+        }
         let arrow_json_field =
             Field::new("data", input_type.clone(), true).with_metadata(arrow_json_metadata);
         let arrow_json_schema = Arc::new(Schema::new(vec![arrow_json_field]));
@@ -1089,5 +1215,221 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A batch whose json values are all null infers as `DataType::Null` (this is what
+    /// pyarrow produces for a one-row insert with no value). The column's lance.json
+    /// identity lives in the field metadata, so dropping it while casting used to make
+    /// lance-core reject the batch as a schema mismatch.
+    #[tokio::test]
+    async fn test_add_all_null_json_column() {
+        use arrow_array::{Array, cast::AsArray, new_null_array};
+
+        let table_schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            lance_arrow::json::json_field("data", true),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_nulls", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let null_batch = |ids: Vec<i64>| {
+            let len = ids.len();
+            RecordBatch::try_new(
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    Field::new("data", DataType::Null, true),
+                ])),
+                vec![
+                    Arc::new(arrow_array::Int64Array::from(ids)),
+                    new_null_array(&DataType::Null, len),
+                ],
+            )
+            .unwrap()
+        };
+
+        // A single all-null row as the very first write, then again after real JSON has
+        // been written - both scenarios from the bug report.
+        table.add(null_batch(vec![1])).execute().await.unwrap();
+
+        let arrow_json_field = Field::new("data", DataType::Utf8, true).with_metadata(
+            std::collections::HashMap::from([(
+                lance_arrow::ARROW_EXT_NAME_KEY.to_string(),
+                lance_arrow::json::ARROW_JSON_EXT_NAME.to_string(),
+            )]),
+        );
+        let populated = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                arrow_json_field,
+            ])),
+            vec![
+                Arc::new(arrow_array::Int64Array::from(vec![2])),
+                Arc::new(arrow_array::StringArray::from(vec![Some(r#"{"a": 1}"#)])),
+            ],
+        )
+        .unwrap();
+        table.add(populated).execute().await.unwrap();
+        table.add(null_batch(vec![3])).execute().await.unwrap();
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let ids = batch
+            .column_by_name("id")
+            .unwrap()
+            .as_primitive::<arrow::datatypes::Int64Type>();
+        let json_strs = batch.column_by_name("data").unwrap().as_string::<i32>();
+        for row in 0..batch.num_rows() {
+            match ids.value(row) {
+                2 => assert_eq!(json_strs.value(row), r#"{"a":1}"#),
+                _ => assert!(json_strs.is_null(row), "row {row} expected null"),
+            }
+        }
+    }
+
+    /// JSON text with no arrow.json label - what pyarrow infers for a column of `str` - is
+    /// encoded as JSONB rather than stored verbatim, at the top level and inside a struct.
+    #[tokio::test]
+    async fn test_add_unlabelled_json_strings() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![
+            lance_arrow::json::json_field("data", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![lance_arrow::json::json_field("value", true)].into()),
+                true,
+            ),
+        ]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("json_strings", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        let nested_children: Fields = vec![Field::new("value", DataType::Utf8, true)].into();
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("data", DataType::Utf8, true),
+            Field::new("info", DataType::Struct(nested_children.clone()), true),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(arrow_array::StringArray::from(vec![
+                    Some(r#"{"a": 1}"#),
+                    None,
+                ])),
+                Arc::new(arrow_array::StructArray::new(
+                    nested_children,
+                    vec![Arc::new(arrow_array::StringArray::from(vec![
+                        Some(r#"{"b": 2}"#),
+                        None,
+                    ]))],
+                    None,
+                )),
+            ],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        assert_eq!(batch.num_rows(), 2);
+
+        let data = batch.column_by_name("data").unwrap().as_string::<i32>();
+        assert_eq!(data.value(0), r#"{"a":1}"#);
+        assert!(data.is_null(1));
+
+        let nested = batch
+            .column_by_name("info")
+            .unwrap()
+            .as_struct()
+            .column_by_name("value")
+            .unwrap()
+            .as_string::<i32>();
+        assert_eq!(nested.value(0), r#"{"b":2}"#);
+        assert!(nested.is_null(1));
+    }
+
+    /// A null struct row survives a cast of one of its children, even when that child is
+    /// non-nullable. Lance checks a non-nullable child for nulls without applying the
+    /// parent's validity, so rebuilding the struct must leave the children untouched.
+    #[tokio::test]
+    async fn test_add_null_struct_with_non_nullable_child() {
+        use arrow_array::{Array, cast::AsArray};
+        use arrow_schema::Fields;
+
+        let table_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(vec![Field::new("x", DataType::Int64, false)].into()),
+            true,
+        )]));
+
+        let db = connect("memory://").execute().await.unwrap();
+        let table = db
+            .create_empty_table("null_struct", table_schema)
+            .execute()
+            .await
+            .unwrap();
+
+        // Int32 rather than the table's Int64, so the struct goes through reconstruction.
+        let input_children: Fields = vec![Field::new("x", DataType::Int32, false)].into();
+        let input_schema = Arc::new(Schema::new(vec![Field::new(
+            "s",
+            DataType::Struct(input_children.clone()),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![Arc::new(arrow_array::StructArray::new(
+                input_children,
+                vec![Arc::new(arrow_array::Int32Array::from(vec![0, 6]))],
+                Some(arrow::buffer::NullBuffer::from(vec![false, true])),
+            ))],
+        )
+        .unwrap();
+        table.add(batch).execute().await.unwrap();
+
+        let results: Vec<RecordBatch> = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        let batch = arrow_select::concat::concat_batches(&results[0].schema(), &results).unwrap();
+        let s = batch.column_by_name("s").unwrap().as_struct();
+        assert!(s.is_null(0));
+        assert_eq!(
+            s.column_by_name("x")
+                .unwrap()
+                .as_primitive::<arrow::datatypes::Int64Type>()
+                .value(1),
+            6
+        );
     }
 }
