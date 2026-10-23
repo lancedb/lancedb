@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+use lancedb::table::computed_columns::ComputedColumnOptions;
 use std::{
     collections::HashMap,
     sync::{
@@ -39,16 +40,16 @@ use pyo3::{
 
 mod scannable;
 
-/// Convert `LsmStats` to a Python dict, preserving the per-bucket list.
+/// Convert `RTEStats` to a Python dict, preserving the per-table-shard list.
 ///
 /// Deliberately not flattened to a table-level summary: a table is N
-/// buckets on one node, and the per-bucket detail is the reason the
-/// endpoint exists — flattening hides the single hot bucket someone opened
+/// table shards on one node, and the per-shard detail is the reason the
+/// endpoint exists — flattening hides the single hot table shard someone opened
 /// it to find.
-fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult<Py<PyDict>> {
+fn rte_stats_to_py(py: Python<'_>, stats: &lancedb::table::RTEStats) -> PyResult<Py<PyDict>> {
     let out = PyDict::new(py);
-    let buckets = PyList::empty(py);
-    for b in &stats.buckets {
+    let table_shards = PyList::empty(py);
+    for b in &stats.table_shards {
         let e = PyDict::new(py);
         e.set_item("shard_id", &b.shard_id)?;
         e.set_item("status", &b.status)?;
@@ -64,15 +65,15 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
             b.wal_entry_position_last_seen,
         )?;
 
-        let generations = PyList::empty(py);
-        for g in &b.generations {
+        let sstables = PyList::empty(py);
+        for g in &b.sstables {
             let ge = PyDict::new(py);
             ge.set_item("generation", g.generation)?;
             ge.set_item("bytes", g.bytes)?;
             ge.set_item("rows", g.rows)?;
-            generations.append(ge)?;
+            sstables.append(ge)?;
         }
-        e.set_item("generations", generations)?;
+        e.set_item("sstables", sstables)?;
         e.set_item("compacting", b.compacting)?;
 
         e.set_item(
@@ -94,9 +95,9 @@ fn lsm_stats_to_py(py: Python<'_>, stats: &lancedb::table::LsmStats) -> PyResult
                 })
                 .transpose()?,
         )?;
-        buckets.append(e)?;
+        table_shards.append(e)?;
     }
-    out.set_item("buckets", buckets)?;
+    out.set_item("table_shards", table_shards)?;
     Ok(out.unbind())
 }
 
@@ -261,26 +262,26 @@ fn fmt_maintained(maintained: &Option<Vec<String>>) -> String {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `merge_insert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `merge_insert` through Lance's MemWAL LSM-style write path.
 ///
 /// Constructed via the `bucket(...)`, `identity(...)`, or `unsharded()`
 /// classmethods, then optionally chain `with_maintained_indexes(...)` and
 /// `with_writer_config_defaults(...)`. A fresh spec maintains every index the
-/// MemWAL supports, resolved on install.
+/// table has, including ones created later.
 #[pyclass(module = "lancedb._lancedb", from_py_object)]
 #[derive(Clone, Debug)]
-pub struct LsmWriteSpec {
-    inner: lancedb::table::LsmWriteSpec,
+pub struct RTEWriteSpec {
+    inner: lancedb::table::RTEWriteSpec,
 }
 
 #[pymethods]
-impl LsmWriteSpec {
+impl RTEWriteSpec {
     /// Hash-bucket sharding by the unenforced primary key column.
     #[staticmethod]
     pub fn bucket(column: String, num_buckets: u32) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::bucket(column, num_buckets),
+            inner: lancedb::table::RTEWriteSpec::bucket(column, num_buckets),
         }
     }
 
@@ -294,22 +295,22 @@ impl LsmWriteSpec {
     #[staticmethod]
     pub fn identity(column: String) -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::identity(column),
+            inner: lancedb::table::RTEWriteSpec::identity(column),
         }
     }
 
     /// No sharding — every `merge_insert` call writes to a single
-    /// MemWAL shard.
+    /// RTE shard.
     #[staticmethod]
     pub fn unsharded() -> Self {
         Self {
-            inner: lancedb::table::LsmWriteSpec::unsharded(),
+            inner: lancedb::table::RTEWriteSpec::unsharded(),
         }
     }
 
-    /// Set which indexes the MemWAL maintains. `None` (the default)
-    /// resolves every supported index on install; a list is verbatim,
-    /// and an empty list maintains nothing.
+    /// Set which indexes the RTE maintains. `None` (the default) is
+    /// every index the table has, including ones created later; a list is
+    /// verbatim, and an empty list maintains nothing.
     #[pyo3(signature = (indexes))]
     pub fn with_maintained_indexes(&self, indexes: Option<Vec<String>>) -> Self {
         Self {
@@ -327,33 +328,33 @@ impl LsmWriteSpec {
 
     pub fn __repr__(&self) -> String {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket {
+            lancedb::table::RTEWriteSpec::Bucket {
                 column,
                 num_buckets,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.bucket(column={:?}, num_buckets={}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 num_buckets,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Identity {
+            lancedb::table::RTEWriteSpec::Identity {
                 column,
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.identity(column={:?}, maintained_indexes={}, writer_config_defaults={:?})",
                 column,
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
-            lancedb::table::LsmWriteSpec::Unsharded {
+            lancedb::table::RTEWriteSpec::Unsharded {
                 maintained_indexes,
                 writer_config_defaults,
             } => format!(
-                "LsmWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
+                "RTEWriteSpec.unsharded(maintained_indexes={}, writer_config_defaults={:?})",
                 fmt_maintained(maintained_indexes),
                 writer_config_defaults,
             ),
@@ -365,9 +366,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn spec_type(&self) -> &'static str {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { .. } => "bucket",
-            lancedb::table::LsmWriteSpec::Identity { .. } => "identity",
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => "unsharded",
+            lancedb::table::RTEWriteSpec::Bucket { .. } => "bucket",
+            lancedb::table::RTEWriteSpec::Identity { .. } => "identity",
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => "unsharded",
         }
     }
 
@@ -375,9 +376,9 @@ impl LsmWriteSpec {
     #[getter]
     pub fn column(&self) -> Option<String> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { column, .. }
-            | lancedb::table::LsmWriteSpec::Identity { column, .. } => Some(column.clone()),
-            lancedb::table::LsmWriteSpec::Unsharded { .. } => None,
+            lancedb::table::RTEWriteSpec::Bucket { column, .. }
+            | lancedb::table::RTEWriteSpec::Identity { column, .. } => Some(column.clone()),
+            lancedb::table::RTEWriteSpec::Unsharded { .. } => None,
         }
     }
 
@@ -385,12 +386,12 @@ impl LsmWriteSpec {
     #[getter]
     pub fn num_buckets(&self) -> Option<u32> {
         match &self.inner {
-            lancedb::table::LsmWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
+            lancedb::table::RTEWriteSpec::Bucket { num_buckets, .. } => Some(*num_buckets),
             _ => None,
         }
     }
 
-    /// Indexes the MemWAL keeps up to date, or `None` for every supported one.
+    /// Indexes the RTE keeps up to date, or `None` for every supported one.
     #[getter]
     pub fn maintained_indexes(&self) -> Option<Vec<String>> {
         self.inner.maintained_indexes().map(<[String]>::to_vec)
@@ -403,14 +404,14 @@ impl LsmWriteSpec {
     }
 }
 
-impl From<LsmWriteSpec> for lancedb::table::LsmWriteSpec {
-    fn from(spec: LsmWriteSpec) -> Self {
+impl From<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
+    fn from(spec: RTEWriteSpec) -> Self {
         spec.inner
     }
 }
 
-impl From<lancedb::table::LsmWriteSpec> for LsmWriteSpec {
-    fn from(inner: lancedb::table::LsmWriteSpec) -> Self {
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(inner: lancedb::table::RTEWriteSpec) -> Self {
         Self { inner }
     }
 }
@@ -592,8 +593,6 @@ impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewRes
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
         let mode = match result.mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-            lancedb::RefreshMode::Incremental => "incremental",
-            lancedb::RefreshMode::NoOp => "no_op",
         };
         Self {
             mode: mode.to_string(),
@@ -699,6 +698,14 @@ impl PyBlobFile {
     }
 }
 
+fn blob_file_error(operation: &str, error: lance_core::Error) -> pyo3::PyErr {
+    let message = format!("blob {operation} failed: {error}");
+    match error {
+        lance_core::Error::InvalidInput { .. } => PyValueError::new_err(message),
+        _ => PyRuntimeError::new_err(message),
+    }
+}
+
 #[pymethods]
 impl PyBlobFile {
     fn read_bytes(self_: PyRef<'_, Self>) -> PyResult<Py<PyBytes>> {
@@ -707,7 +714,7 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            .map_err(|e| blob_file_error("read", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 
@@ -715,10 +722,7 @@ impl PyBlobFile {
         self_.ensure_open()?;
         let inner = self_.inner.clone();
         future_into_py(self_.py(), async move {
-            let bytes = inner
-                .read()
-                .await
-                .map_err(|e| PyRuntimeError::new_err(format!("blob read failed: {e}")))?;
+            let bytes = inner.read().await.map_err(|e| blob_file_error("read", e))?;
             Python::attach(|py| Ok(PyBytes::new(py, bytes.as_ref()).unbind()))
         })
     }
@@ -741,7 +745,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.close().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob close failed: {e}")))
+            .map_err(|e| blob_file_error("close", e))
     }
 
     fn is_closed(self_: PyRef<'_, Self>) -> bool {
@@ -754,7 +758,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.seek(position).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob seek failed: {e}")))
+            .map_err(|e| blob_file_error("seek", e))
     }
 
     fn tell(self_: PyRef<'_, Self>) -> PyResult<u64> {
@@ -763,7 +767,7 @@ impl PyBlobFile {
         self_
             .py()
             .detach(move || block_on(async move { inner.tell().await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob tell failed: {e}")))
+            .map_err(|e| blob_file_error("tell", e))
     }
 
     fn size(self_: PyRef<'_, Self>) -> u64 {
@@ -780,8 +784,30 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_range(offset..end).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_range failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_range", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
+    }
+
+    /// Read blob-local byte ranges without moving the cursor.
+    fn read_ranges(self_: PyRef<'_, Self>, ranges: Vec<(u64, u64)>) -> PyResult<Vec<Py<PyBytes>>> {
+        let ranges = ranges
+            .into_iter()
+            .map(|(offset, length)| {
+                offset
+                    .checked_add(length)
+                    .map(|end| offset..end)
+                    .ok_or_else(|| PyValueError::new_err("offset + length overflowed"))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let inner = self_.inner.clone();
+        let py = self_.py();
+        let bytes = py
+            .detach(move || block_on(async move { inner.read_ranges(&ranges).await }))
+            .map_err(|e| blob_file_error("read_ranges", e))?;
+        Ok(bytes
+            .iter()
+            .map(|bytes| PyBytes::new(py, bytes.as_ref()).unbind())
+            .collect())
     }
 
     fn read_up_to(self_: PyRef<'_, Self>, length: usize) -> PyResult<Py<PyBytes>> {
@@ -790,7 +816,7 @@ impl PyBlobFile {
         let py = self_.py();
         let bytes = py
             .detach(move || block_on(async move { inner.read_up_to(length).await }))
-            .map_err(|e| PyRuntimeError::new_err(format!("blob read_up_to failed: {e}")))?;
+            .map_err(|e| blob_file_error("read_up_to", e))?;
         Ok(PyBytes::new(py, bytes.as_ref()).unbind())
     }
 }
@@ -825,8 +851,8 @@ impl From<LanceDbFtsToken> for FtsToken {
     language = "English".to_string(),
     max_token_length = Some(40),
     lower_case = true,
-    stem = true,
-    remove_stop_words = true,
+    stem = None,
+    remove_stop_words = None,
     custom_stop_words = None,
     ascii_folding = true,
     ngram_min_length = 3,
@@ -840,15 +866,15 @@ pub fn tokenize(
     language: String,
     max_token_length: Option<u32>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
 ) -> PyResult<Vec<FtsToken>> {
-    let params = FtsIndexBuilder::default()
+    let mut params = FtsIndexBuilder::default()
         .base_tokenizer(base_tokenizer)
         .language(&language)
         .map_err(|_| {
@@ -859,13 +885,17 @@ pub fn tokenize(
         })?
         .max_token_length(max_token_length.map(|value| value as usize))
         .lower_case(lower_case)
-        .stem(stem)
-        .remove_stop_words(remove_stop_words)
         .ascii_folding(ascii_folding)
         .ngram_min_length(ngram_min_length)
         .ngram_max_length(ngram_max_length)
         .ngram_prefix_only(prefix_only)
         .custom_stop_words(custom_stop_words);
+    if let Some(stem) = stem {
+        params = params.stem(stem);
+    }
+    if let Some(remove_stop_words) = remove_stop_words {
+        params = params.remove_stop_words(remove_stop_words);
+    }
     let tokens = lancedb_tokenize(&query, &params).infer_error()?;
     Ok(tokens.into_iter().map(FtsToken::from).collect())
 }
@@ -913,6 +943,11 @@ impl Table {
     /// Returns True if the table is open, False if it is closed.
     pub fn is_open(&self) -> bool {
         self.inner.is_some()
+    }
+
+    /// Whether this table has a local Lance dataset that the client may open.
+    pub fn _is_native(&self) -> PyResult<bool> {
+        Ok(self.inner_ref()?.as_native().is_some())
     }
 
     /// Closes the table, releasing any resources associated with it.
@@ -1099,7 +1134,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1130,7 +1167,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1268,6 +1307,7 @@ impl Table {
                 let dict = PyDict::new(py);
                 dict.set_item("total_bytes", stats.total_bytes)?;
                 dict.set_item("num_rows", stats.num_rows)?;
+                dict.set_item("num_deleted_rows", stats.num_deleted_rows)?;
                 dict.set_item("num_indices", stats.num_indices)?;
 
                 let fragment_stats = PyDict::new(py);
@@ -1392,8 +1432,8 @@ impl Table {
         })
     }
 
-    pub fn query(&self) -> Query {
-        Query::new(self.inner_ref().unwrap().query())
+    pub fn query(&self) -> PyResult<Query> {
+        Ok(Query::new(self.inner_ref()?.query()))
     }
 
     #[getter]
@@ -1454,14 +1494,30 @@ impl Table {
     pub fn fetch_blob_ranges(
         self_: PyRef<'_, Self>,
         column: String,
-        requests: Vec<(u64, u64, u64)>,
+        requests: Vec<Vec<i128>>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let requests = requests
+            .into_iter()
+            .map(|values| {
+                let [row_id, offset, length] = <[i128; 3]>::try_from(values).map_err(|_| {
+                    PyValueError::new_err("each blob range request must have three values")
+                })?;
+                let to_u64 = |value, name| {
+                    u64::try_from(value).map_err(|_| {
+                        PyValueError::new_err(format!(
+                            "blob range {name} must be a non-negative 64-bit integer"
+                        ))
+                    })
+                };
+                Ok(BlobRangeRequest::new(
+                    to_u64(row_id, "row id")?,
+                    to_u64(offset, "offset")?,
+                    to_u64(length, "length")?,
+                ))
+            })
+            .collect::<PyResult<Vec<_>>>()?;
         future_into_py(self_.py(), async move {
-            let requests = requests
-                .into_iter()
-                .map(|(row_id, offset, length)| BlobRangeRequest::new(row_id, offset, length))
-                .collect::<Vec<_>>();
             let blobs: LargeBinaryArray = inner
                 .fetch_blob_ranges(column, requests)
                 .await
@@ -1585,8 +1641,8 @@ impl Table {
         if let Some(use_index) = parameters.use_index {
             builder.use_index(use_index);
         }
-        if let Some(use_lsm) = parameters.use_lsm {
-            builder.use_lsm(use_lsm);
+        if let Some(use_rte) = parameters.use_rte {
+            builder.use_rte(use_rte);
         }
         if let Some(validate_single_shard) = parameters.validate_single_shard {
             builder.validate_single_shard(validate_single_shard);
@@ -1611,29 +1667,29 @@ impl Table {
         })
     }
 
-    pub fn set_lsm_write_spec<'a>(
+    pub fn enable_rte<'a>(
         self_: PyRef<'a, Self>,
-        spec: LsmWriteSpec,
+        spec: RTEWriteSpec,
     ) -> PyResult<Bound<'a, PyAny>> {
         let inner = self_.inner_ref()?.clone();
-        let native_spec = lancedb::table::LsmWriteSpec::from(spec);
+        let native_spec = lancedb::table::RTEWriteSpec::from(spec);
         future_into_py(self_.py(), async move {
-            inner.set_lsm_write_spec(native_spec).await.infer_error()
+            inner.enable_rte(native_spec).await.infer_error()
         })
     }
 
-    pub fn unset_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn disable_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.unset_lsm_write_spec().await.infer_error()
+            inner.disable_rte().await.infer_error()
         })
     }
 
-    pub fn get_lsm_write_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn get_rte_spec(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            let spec = inner.get_lsm_write_spec().await.infer_error()?;
-            Ok(spec.map(LsmWriteSpec::from))
+            let spec = inner.get_rte_spec().await.infer_error()?;
+            Ok(spec.map(RTEWriteSpec::from))
         })
     }
 
@@ -1652,55 +1708,55 @@ impl Table {
         Ok(())
     }
 
-    /// Converge the table's LSM write path into its base table.
+    /// Converge the table's RTE write path into its base table.
     ///
     /// Best-effort: with writes flowing, new rows may land after the last
     /// pass. Errors if the table stops making progress.
-    pub fn checkpoint_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn checkpoint_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.checkpoint_lsm().await.infer_error()
+            inner.checkpoint_rte().await.infer_error()
         })
     }
 
-    /// Seal every bucket's active memtable into L0.
-    pub fn flush_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    /// Freeze every table shard's active memtable into an SSTable.
+    pub fn flush_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(
             self_.py(),
-            async move { inner.flush_lsm().await.infer_error() },
+            async move { inner.flush_rte().await.infer_error() },
         )
     }
 
-    /// Trigger a background L0 → base pass per bucket. Returns once the
-    /// passes are dispatched, not once they finish — watch `get_lsm_stats`.
-    pub fn compact_lsm(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    /// Trigger a background SSTable compaction pass per table shard. Returns once the
+    /// passes are dispatched, not once they finish — watch `get_rte_stats`.
+    pub fn compact_rte(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.compact_lsm().await.infer_error()
+            inner.compact_rte().await.infer_error()
         })
     }
 
-    /// Live LSM state, or `None` when the LSM write path is not enabled.
-    #[pyo3(signature = (include_generation_rows=false))]
-    pub fn get_lsm_stats(
+    /// Live RTE state, or `None` when the RTE write path is not enabled.
+    #[pyo3(signature = (include_sstable_rows=false))]
+    pub fn get_rte_stats(
         self_: PyRef<'_, Self>,
-        include_generation_rows: bool,
+        include_sstable_rows: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let stats = inner
-                .get_lsm_stats(include_generation_rows)
+                .get_rte_stats(include_sstable_rows)
                 .await
                 .infer_error()?;
-            Python::attach(|py| stats.map(|s| lsm_stats_to_py(py, &s)).transpose())
+            Python::attach(|py| stats.map(|s| rte_stats_to_py(py, &s)).transpose())
         })
     }
 
-    pub fn close_lsm_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
+    pub fn close_rte_writers(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
-            inner.close_lsm_writers().await.infer_error()
+            inner.close_rte_writers().await.infer_error()
         })
     }
 
@@ -1709,7 +1765,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .uses_v2_manifest_paths()
                 .await
                 .infer_error()
@@ -1721,7 +1780,10 @@ impl Table {
         future_into_py(self_.py(), async move {
             inner
                 .as_native()
-                .ok_or_else(|| PyValueError::new_err("This cannot be run on a remote table"))?
+                .ok_or_else(|| lancedb::Error::NotSupported {
+                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                })
+                .infer_error()?
                 .migrate_manifest_paths_v2()
                 .await
                 .infer_error()
@@ -1746,35 +1808,59 @@ impl Table {
         })
     }
 
+    #[pyo3(signature = (columns, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn add_computed_columns(
         self_: PyRef<'_, Self>,
         columns: Vec<(String, String)>,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
+        let options = ComputedColumnOptions {
+            auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
+            auto_refresh_interval_seconds,
+        };
+        options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
             let mut builder = inner.add_columns();
             for (name, expression) in columns {
                 builder = builder.computed(name, expression);
             }
-            let result = builder.execute().await.infer_error()?;
+            let result = builder
+                .computed_options(options)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }
 
+    #[pyo3(signature = (application_json, output_name, auto_refresh_enabled=None, auto_refresh_interval_seconds=None))]
     pub fn add_function_columns(
         self_: PyRef<'_, Self>,
         application_json: String,
         output_name: Option<String>,
+        auto_refresh_enabled: Option<bool>,
+        auto_refresh_interval_seconds: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let application =
             lancedb::function::FunctionApplication::from_json(&application_json).infer_error()?;
         let inner = self_.inner_ref()?.clone();
+        let options = ComputedColumnOptions {
+            auto_refresh_enabled: auto_refresh_enabled.unwrap_or(true),
+            auto_refresh_interval_seconds,
+        };
+        options.validate().infer_error()?;
         future_into_py(self_.py(), async move {
             let builder = match output_name {
                 Some(name) => inner.add_columns().function_as(name, application),
                 None => inner.add_columns().function(application),
             };
-            let result = builder.execute().await.infer_error()?;
+            let result = builder
+                .computed_options(options)
+                .execute()
+                .await
+                .infer_error()?;
             Ok(AddColumnsResult::from(result))
         })
     }
@@ -1817,10 +1903,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1828,7 +1913,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1837,10 +1922,9 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (full=false, source_version=None))]
+    #[pyo3(signature = (source_version=None))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
-        full: bool,
         source_version: Option<u64>,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
@@ -1848,7 +1932,7 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh().full(full);
+            let mut builder = view.refresh();
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1863,11 +1947,9 @@ impl Table {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            view.definition().to_json().map_err(|err| {
-                PyRuntimeError::new_err(format!(
-                    "failed to serialize materialized-view definition: {err}"
-                ))
-            })
+            Ok(lancedb::materialized_view::definition_metadata_from_sql(
+                view.definition_sql(),
+            ))
         })
     }
 
@@ -2030,7 +2112,7 @@ pub struct MergeInsertParams {
     when_not_matched_by_source_condition_expr: Option<PyExpr>,
     timeout: Option<std::time::Duration>,
     use_index: Option<bool>,
-    use_lsm: Option<bool>,
+    use_rte: Option<bool>,
     validate_single_shard: Option<bool>,
 }
 

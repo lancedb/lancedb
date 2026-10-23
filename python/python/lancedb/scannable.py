@@ -276,6 +276,14 @@ def _from_iterable(data: Iterator) -> Scannable:
 _registered_modules: set[str] = set()
 
 
+def _hf_batches(data):
+    if data._indices is None:
+        yield from data.data.to_batches()
+    else:
+        for table in data.with_format("arrow").iter(batch_size=1000):
+            yield from table.to_batches()
+
+
 def _register_optional_converters():
     """Register converters for optional dependencies that are already imported."""
 
@@ -323,7 +331,15 @@ def _register_optional_converters():
         def _from_hf_dataset(data: HFDataset) -> Scannable:
             table = data.data.table  # Access underlying Arrow table
             return Scannable(
-                schema=table.schema, num_rows=len(data), reader=table.to_reader
+                schema=table.schema,
+                num_rows=len(data),
+                reader=(
+                    table.to_reader
+                    if data._indices is None
+                    else lambda: pa.RecordBatchReader.from_batches(
+                        table.schema, _hf_batches(data)
+                    )
+                ),
             )
 
         @to_scannable.register(HFDatasetDict)
@@ -335,7 +351,7 @@ def _register_optional_converters():
 
             def gen():
                 for split_name, dataset in data.items():
-                    for batch in dataset.data.to_batches():
+                    for batch in _hf_batches(dataset):
                         split_arr = pa.array(
                             [split_name] * len(batch), type=pa.string()
                         )

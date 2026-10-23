@@ -1,0 +1,133 @@
+---
+title: "Joining datasets"
+sidebarTitle: "Join"
+description: "Combine records with labels or metadata, and check for missing or duplicate matches."
+icon: link
+keywords: ["join", "labels", "metadata", "enrichment", "namespace"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL joins.
+---
+
+A SQL join combines records from two tables using a shared key. Use joins to
+attach labels, metadata or model scores to your documents. Choose an inner join
+to keep matching records, or a left join to retain records without a match.
+
+## Example data {#example-data}
+
+Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
+document table and a separate label table. Expand the setup below to create them.
+
+<Accordion title="Create the example tables">
+
+`curation_documents` has six records describing four documents.
+`curation_labels` has one label for each of three documents. `row_id` identifies
+a record; `doc_id` identifies the document it describes.
+
+Run each statement separately in a scratch database or namespace. Create these
+tables once for the whole section, using fresh names if they already exist.
+
+```sql
+CREATE TABLE curation_documents (
+    row_id BIGINT, doc_id BIGINT, version BIGINT,
+    source VARCHAR, caption VARCHAR, score DOUBLE
+);
+INSERT INTO curation_documents VALUES
+    (1, 10, 1, 'web', NULL, 0.80),
+    (2, 10, 2, 'web', 'A cat on a chair', 0.95),
+    (3, 20, 1, 'books', 'A dog in a field', 0.90),
+    (4, 30, 1, 'web', NULL, 0.70),
+    (5, 30, 1, 'web', 'A cat by a window', 0.85),
+    (6, 40, 1, 'books', 'A bird in a tree', 0.60);
+
+CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
+INSERT INTO curation_labels VALUES
+    (10, 'cat'), (20, 'dog'), (30, 'cat');
+```
+
+`score` is a sample quality score, not a search result score. Document 10 has
+two versions. Document 30 has two records at the same version. Document 40
+has no label. These cases let you check the effect of each operation.
+
+</Accordion>
+
+## Basic join {#join-type}
+
+An inner join keeps matching records:
+
+```sql
+SELECT d.row_id, d.doc_id, l.label
+FROM curation_documents AS d
+JOIN curation_labels AS l ON l.doc_id = d.doc_id
+ORDER BY d.row_id;
+```
+
+This returns **5 rows**: both records for document 10, one for document 20,
+and both records for document 30. To produce one row per document,
+[deduplicate the source records](/curation/windowing#dedup).
+
+### Find records without a match
+
+A left join keeps every record from the left table and fills missing right-side
+values with `NULL`. Add `WHERE l.doc_id IS NULL` to return only unlabeled documents:
+
+```sql
+SELECT DISTINCT d.doc_id
+FROM curation_documents AS d
+LEFT JOIN curation_labels AS l ON l.doc_id = d.doc_id
+WHERE l.doc_id IS NULL
+ORDER BY d.doc_id;
+```
+
+The result is **document 40**. You might send it for annotation, retain it for
+an unlabeled-data workflow, or exclude it from a task that requires labels.
+
+## Handle duplicate keys {#labels}
+
+This example joins `curation_documents.doc_id` to `curation_labels.doc_id`.
+First check whether the label table contains more than one row per document:
+
+```sql
+SELECT doc_id, count(*) AS labels
+FROM curation_labels
+GROUP BY doc_id
+HAVING count(*) > 1;
+```
+
+The example returns no rows. If your data returns duplicates, decide whether
+they represent valid multiple labels or records that need consolidation.
+A join does not enforce one-to-one matching.
+
+## Join tables across namespaces {#namespaces}
+
+Use a table's qualified path to address it in another
+[namespace](/management/namespace). For example, a table named `images` in
+`prod.media` is addressed as `prod.media.images`. The same matching-key and
+join-type rules apply; your identity needs access to the source objects.
+
+## Combine search results with metadata {#search}
+
+A [SQL full-text search](/sql/dql/fts) returns rows that can be joined to other
+tables. Join using an identifier retained in the search result, then check
+whether the metadata has one or several matches per result.
+
+For an SDK search, retain the matching IDs and combine them with metadata in
+your application or save the selected records to a table for further SQL work.
+See [SQL search interfaces](/basics/sql#no-vector-sql) for supported query forms.
+
+## Join performance {#performance}
+
+Check the row count, unmatched keys and duplicate matches before using a
+joined dataset. Select only the columns needed for the next step, especially
+when source records include large media or embedding columns.
+
+Use [Explain a query plan](/search/explain) to see how the query reads and
+combines data. Check the plan to see whether the query uses indexes and how it performs the
+join. An index on a key does not guarantee that the join will use it.
+
+## Save the result or continue curating {#reference}
+
+Keep the query for reuse or [save the selected data](/curation#next).
+See [Joins](/sql/dql/join) for join types and exact SQL behavior.

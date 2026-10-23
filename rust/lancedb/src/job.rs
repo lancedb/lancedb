@@ -3,6 +3,8 @@
 
 //! Handles to operations a server may run asynchronously.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use arrow_array::RecordBatch;
@@ -99,25 +101,45 @@ impl TerminalResult {
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
+            Some(request_id) => remote_job_error(
+                request_id.clone(),
+                "successful typed job response did not contain a result".to_string(),
+            ),
             None => Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
             },
         })?;
         serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
+            Some(request_id) => remote_job_error(
                 request_id,
-                status_code: None,
-            },
+                format!("failed to parse typed job result: {error}"),
+            ),
             None => Error::Runtime {
                 message: format!("failed to parse typed job result: {error}"),
             },
         })
+    }
+}
+
+/// Build the error for a failed remote typed-job result.
+///
+/// The `Error::Http` variant is gated behind the `remote` feature, so without
+/// it we fall back to `Error::Runtime`. A `request_id` is only ever `Some`
+/// for remote jobs, making the fallback unreachable in practice without the
+/// feature.
+#[cfg(feature = "remote")]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Http {
+        source: source.into(),
+        request_id,
+        status_code: None,
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Runtime {
+        message: format!("{source} (request_id={request_id})"),
     }
 }
 
@@ -249,6 +271,18 @@ where
     /// A typed job running as a task in this process.
     pub(crate) fn spawned(task: JoinHandle<Result<T>>) -> Self {
         Self::new_typed(Box::new(SpawnedJob::new(task)))
+    }
+
+    pub(crate) fn spawned_with_cancellation<F, Fut>(task: JoinHandle<Result<T>>, cancel: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<()>> + Send + 'static,
+    {
+        let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
+        Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+            task,
+            cancellation,
+        )))
     }
 }
 
@@ -501,10 +535,28 @@ impl Outcome {
 struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
+    cancellation: Option<Cancellation>,
 }
+
+type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+type Cancellation = Arc<dyn Fn() -> CancellationFuture + Send + Sync>;
 
 impl SpawnedJob {
     fn new<T>(task: JoinHandle<Result<T>>) -> Self
+    where
+        T: Serialize + Send + 'static,
+    {
+        Self::new_inner(task, None)
+    }
+
+    fn new_with_cancellation<T>(task: JoinHandle<Result<T>>, cancellation: Cancellation) -> Self
+    where
+        T: Serialize + Send + 'static,
+    {
+        Self::new_inner(task, Some(cancellation))
+    }
+
+    fn new_inner<T>(task: JoinHandle<Result<T>>, cancellation: Option<Cancellation>) -> Self
     where
         T: Serialize + Send + 'static,
     {
@@ -526,7 +578,11 @@ impl SpawnedJob {
             };
             let _ = tx.send(Some(outcome));
         });
-        Self { outcome, abort }
+        Self {
+            outcome,
+            abort,
+            cancellation,
+        }
     }
 }
 
@@ -556,6 +612,19 @@ impl JobHandle for SpawnedJob {
     }
 
     async fn cancel(&self) -> Result<()> {
+        if let Some(cancellation) = &self.cancellation {
+            let mut outcome = self.outcome.clone();
+            tokio::select! {
+                biased;
+                settled = outcome.wait_for(Option::is_some) => {
+                    settled.map_err(|_| Error::Runtime {
+                        message: "job outcome was dropped before cancellation completed".to_string(),
+                    })?;
+                    return Ok(());
+                }
+                result = cancellation() => result?,
+            }
+        }
         self.abort.abort();
         Ok(())
     }
@@ -584,5 +653,47 @@ mod tests {
         job.cancel().await.unwrap();
         assert!(matches!(job.wait().await, Err(Error::JobCancelled { .. })));
         assert_eq!(job.status().await.unwrap(), "cancelled");
+    }
+
+    #[test]
+    fn decode_missing_result_uses_feature_appropriate_error() {
+        // A `request_id` is only `Some` for remote jobs. The error for a
+        // missing result must use `Error::Http` with the `remote` feature and
+        // fall back to `Error::Runtime` without it (where `Error::Http`
+        // does not exist). See https://github.com/lancedb/lancedb/issues/4142.
+        let result = TerminalResult {
+            value: None,
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<Value>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_unparsable_result_uses_feature_appropriate_error() {
+        let result = TerminalResult {
+            value: Some(Value::String("not a u64".to_string())),
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<u64>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
     }
 }

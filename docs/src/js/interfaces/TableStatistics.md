@@ -18,6 +18,23 @@ Statistics on table fragments
 
 ***
 
+### numDeletedRows?
+
+```ts
+optional numDeletedRows: number;
+```
+
+The number of rows marked as deleted across all fragments of the table
+
+These rows are not included in `numRows`, but still occupy space on disk
+until the table is compacted, so a large value here indicates that the
+table should be optimized. Fragments in which every row was deleted are
+dropped outright, so their rows are not counted here.
+
+Absent (`undefined`) when the backend does not report deletion counts.
+
+***
+
 ### numIndices
 
 ```ts
