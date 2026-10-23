@@ -418,16 +418,33 @@ async def test_async_local_table(nvidia_api, tmp_path):
     not os.environ.get("NVIDIA_API_KEY"), reason="NVIDIA_API_KEY not set"
 )
 @pytest.mark.parametrize("name", MODEL_DIMENSIONS)
-def test_nvidia_live(name):
-    """Opt in with NVIDIA_API_KEY and pytest -m slow -k nvidia_live."""
+def test_nvidia_live(name, tmp_path):
+    """Five small requests per model, with retries disabled for free-tier tests."""
     pytest.importorskip("openai")
-    func = NvidiaEmbeddings.create(name=name)
-    passages = func.compute_source_embeddings_with_retry(
-        ["Paris is the capital of France.", "Bananas are yellow fruit."]
+    func = NvidiaEmbeddings.create(name=name, max_retries=0)
+    passages = ["Paris is the capital of France.", "Bananas are yellow fruit."]
+    question = "What is the capital of France?"
+
+    class Document(LanceModel):
+        text: str = func.SourceField()
+        vector: Vector(func.ndims()) = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "docs", schema=Document, data=[{"text": text} for text in passages]
     )
-    query = func.compute_query_embeddings_with_retry("What is the capital of France?")[
-        0
-    ]
-    assert np.shape(passages) == (2, func.ndims())
-    assert np.shape(query) == (func.ndims(),)
-    assert np.dot(query, passages[0]) > np.dot(query, passages[1])
+    table.add([{"text": "Saturn is a planet with rings."}])
+    reopened = lancedb.connect(tmp_path).open_table("docs")
+    assert reopened.schema.metadata == table.schema.metadata
+    assert reopened.schema.field("vector").type.list_size == func.ndims()
+    result = reopened.search(question).limit(1).to_list()[0]
+    assert result["text"] == passages[0]
+    assert len(result["vector"]) == func.ndims()
+    assert np.isfinite(result["vector"]).all()
+
+    reduced = NvidiaEmbeddings.create(name=name, dim=128, max_retries=0)
+    vectors = reduced.compute_source_embeddings_with_retry(passages)
+    query = reduced.compute_query_embeddings_with_retry(question)[0]
+    assert np.shape(vectors) == (2, 128)
+    assert np.shape(query) == (128,)
+    assert np.dot(query, vectors[0]) > np.dot(query, vectors[1])

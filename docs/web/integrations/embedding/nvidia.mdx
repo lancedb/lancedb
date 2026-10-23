@@ -94,7 +94,9 @@ SDK coverage: Python. TypeScript, Rust, and Java do not gain a NVIDIA provider
 from this integration. Automated tests use mocked NVIDIA and Enterprise HTTP
 responses plus real local tables. The opt-in hosted smoke test runs with
 `NVIDIA_API_KEY` and `pytest python/tests/test_nvidia_embeddings.py -m slow -k nvidia_live`
-from the repository's Python environment.
+from the repository's Python environment. It sends five small requests per model
+(ten total), with retries disabled, to check local ingestion, reopening, search,
+and reduced-dimensional embeddings.
 
 NVIDIA references (checked October 23, 2026):
 [hosted 1B API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-embed-1b-infer),
