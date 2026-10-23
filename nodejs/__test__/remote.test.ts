@@ -310,6 +310,59 @@ describe("remote connection", () => {
   });
 
   it.each([false, true])(
+    "forwards scoring autoprojection only when disabled: %s",
+    async (disableScoring) => {
+      const response = Buffer.from(
+        tableToIPC(makeArrowTable([{ id: 1n }]), "stream"),
+      );
+      const requests: Record<string, unknown>[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          if (req.url?.endsWith("/describe/")) {
+            res.writeHead(200, { "Content-Type": "application/json" }).end(
+              JSON.stringify({
+                version: 1,
+                schema: {
+                  fields: [
+                    { name: "id", type: { type: "int64" }, nullable: false },
+                  ],
+                },
+              }),
+            );
+          } else if (req.url?.endsWith("/query/")) {
+            let body = "";
+            req.on("data", (chunk) => {
+              body += chunk;
+            });
+            req.on("end", () => {
+              requests.push(JSON.parse(body));
+              res
+                .writeHead(200, {
+                  "Content-Type": "application/vnd.apache.arrow.stream",
+                })
+                .end(response);
+            });
+          } else {
+            res.writeHead(404).end();
+          }
+        },
+        async (db) => {
+          const table = await db.openTable("test");
+          const query = table.vectorSearch([0, 0]).select(["id"]);
+          if (disableScoring) {
+            query.disableScoringAutoprojection();
+          }
+          expect((await query.toArrow()).numRows).toBe(1);
+        },
+      );
+      expect(requests).toHaveLength(1);
+      expect(requests[0].disable_scoring_autoprojection).toBe(
+        disableScoring ? true : undefined,
+      );
+    },
+  );
+
+  it.each([false, true])(
     "preserves an empty query's schema with an empty batch: %s",
     async (withEmptyBatch) => {
       const schema = new Schema(

@@ -539,6 +539,27 @@ pub trait QueryBase {
     /// scores are normalized directly.
     fn norm(self, norm: NormalizeMethod) -> Self;
 
+    /// Disable autoprojection of scoring columns.
+    ///
+    /// With an explicit projection, scoring columns such as `_score` and
+    /// `_distance` are only returned if explicitly selected. This avoids the
+    /// deprecation warning emitted when these columns are auto-included.
+    ///
+    /// ```
+    /// use lancedb::query::{ExecutableQuery, QueryBase, Select};
+    ///
+    /// # async fn query(table: &lancedb::Table) -> lancedb::Result<()> {
+    /// let results = table.query()
+    ///     .nearest_to(&[0.1, 0.2])?
+    ///     .select(Select::columns(&["id"]))
+    ///     .disable_scoring_autoprojection()
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    fn disable_scoring_autoprojection(self) -> Self;
+
     /// Sort the results by the specified column(s).
     ///
     /// This allows ordering query results by one or more columns in either ascending or descending order.
@@ -626,6 +647,11 @@ impl<T: HasQuery> QueryBase for T {
 
     fn norm(mut self, norm: NormalizeMethod) -> Self {
         self.mut_query().norm = Some(norm);
+        self
+    }
+
+    fn disable_scoring_autoprojection(mut self) -> Self {
+        self.mut_query().disable_scoring_autoprojection = true;
         self
     }
 
@@ -1530,6 +1556,33 @@ impl VectorQuery {
             }
         }
 
+        // Hybrid normalization and reranking still need each leg's score even
+        // when the caller disables scoring autoprojection. Select those scores
+        // internally and strip the injected columns only after fusion.
+        let mut injected_scores = Vec::new();
+        if self.request.base.disable_scoring_autoprojection {
+            if matches!(self.request.base.select, Select::All) {
+                let columns = self
+                    .parent
+                    .schema()
+                    .await?
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect();
+                fts_query.request.select = Select::Columns(columns);
+                vector_query.request.base.select = fts_query.request.select.clone();
+            }
+            for (select, score) in [
+                (&mut fts_query.request.select, SCORE_COL),
+                (&mut vector_query.request.base.select, DIST_COL),
+            ] {
+                if hybrid::add_score_column(select, score) {
+                    injected_scores.push(score);
+                }
+            }
+        }
+
         vector_query.request.base.full_text_search = None;
         let (fts_results, vec_results) = try_join!(
             fts_query.execute_with_options(internal_options.clone()),
@@ -1597,6 +1650,12 @@ impl VectorQuery {
                 }
             }
             Some(pk_fusion) => results = pk_fusion.strip(results)?,
+        }
+
+        for score in injected_scores {
+            if results.schema().column_with_name(score).is_some() {
+                results = results.drop_column(score)?;
+            }
         }
 
         Ok(single_batch_stream(results, max_batch_length))
@@ -3563,6 +3622,57 @@ mod tests {
         let texts = texts.iter().map(|e| e.unwrap()).collect::<HashSet<_>>();
         assert!(texts.contains("cat")); // should be close by vector search
         assert!(texts.contains("b")); // should be close by fts search
+
+        // Scores remain available to normalization and reranking for every
+        // projection form, but do not leak into the opt-in query's output.
+        for select in [
+            Select::All,
+            Select::columns(&["text"]),
+            Select::dynamic(&[("label", "upper(text)")]),
+            Select::expr_projection(&[("label", col("text"))]),
+        ] {
+            for norm in [NormalizeMethod::Rank, NormalizeMethod::Score] {
+                for term in ["b", "z"] {
+                    let query = table
+                        .query()
+                        .full_text_search(FullTextSearchQuery::new(term.to_string()))
+                        .nearest_to(&[-10.0, -10.0])
+                        .unwrap()
+                        .select(select.clone())
+                        .norm(norm.clone())
+                        .with_row_id()
+                        .limit(2);
+                    let expected = query
+                        .execute()
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap();
+                    let expected = &expected[0];
+                    let columns = expected
+                        .schema()
+                        .fields()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, field)| {
+                            (!matches!(field.name().as_str(), SCORE_COL | DIST_COL))
+                                .then_some(index)
+                        })
+                        .collect::<Vec<_>>();
+                    let expected = expected.project(&columns).unwrap();
+                    let actual = query
+                        .disable_scoring_autoprojection()
+                        .execute()
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap();
+                    assert_eq!(actual[0], expected);
+                }
+            }
+        }
 
         // ensure that this works correctly if there are no matching FTS results
         let fts_query = FullTextSearchQuery::new("z".to_string());

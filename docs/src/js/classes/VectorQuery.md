@@ -149,6 +149,39 @@ whose data type is a fixed-size-list of floats.
 
 ***
 
+### disableScoringAutoprojection()
+
+```ts
+disableScoringAutoprojection(): this
+```
+
+Disable autoprojection of scoring columns.
+
+When you specify an explicit projection with [select](VectorQuery.md#select) that does not
+include scoring columns (e.g. `_score` for FTS or `_distance` for vector
+search), Lance currently auto-includes those columns and emits a
+deprecation warning. Calling this method disables that behavior so the
+scoring columns are only returned if explicitly selected.
+
+#### Returns
+
+`this`
+
+#### Example
+
+```ts
+const results = await table.vectorSearch([0.1, 0.2])
+  .select(["id"])
+  .disableScoringAutoprojection()
+  .toArray();
+```
+
+#### Inherited from
+
+`StandardQueryBase.disableScoringAutoprojection`
+
+***
+
 ### distanceRange()
 
 ```ts

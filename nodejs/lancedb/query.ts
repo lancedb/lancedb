@@ -674,6 +674,28 @@ export class StandardQueryBase<
     return this.where(predicate);
   }
 
+  /**
+   * Disable autoprojection of scoring columns.
+   *
+   * When you specify an explicit projection with {@link select} that does not
+   * include scoring columns (e.g. `_score` for FTS or `_distance` for vector
+   * search), Lance currently auto-includes those columns and emits a
+   * deprecation warning. Calling this method disables that behavior so the
+   * scoring columns are only returned if explicitly selected.
+   *
+   * @example
+   * const results = await table.vectorSearch([0.1, 0.2])
+   *   .select(["id"])
+   *   .disableScoringAutoprojection()
+   *   .toArray();
+   */
+  disableScoringAutoprojection(): this {
+    this.doCall((inner: NativeQueryType) =>
+      inner.disableScoringAutoprojection(),
+    );
+    return this;
+  }
+
   fullTextSearch(
     query: string | FullTextQuery,
     options?: Partial<FullTextSearchOptions>,
