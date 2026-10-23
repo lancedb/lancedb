@@ -375,3 +375,171 @@ def test_selected_schema_change_rejected_even_with_asserted_revision(tables):
     a.add_columns({"new_value": "id * 2"})
     with pytest.raises(ValueError, match="config"):
         make(a, **opts).load_state_dict(state)
+
+
+@pytest.mark.parametrize(
+    "change,field,private_value",
+    [
+        ({"filter": "value >= 3"}, "config.filter", "value >= 3"),
+        (
+            {"checkpoint_policy_id": "private-batch-policy-v2"},
+            "config.policy_id",
+            "private-batch-policy-v2",
+        ),
+        ({"columns": ["id"]}, "config.schema", "arrow-ipc-v1:"),
+    ],
+)
+def test_nested_mismatch_diagnostics_name_fields_not_values(
+    tables, change, field, private_value
+):
+    a, _ = tables
+    state, _ = checkpoint(make(a))
+    with pytest.raises(ValueError) as exc:
+        make(a, **change).load_state_dict(state)
+    assert field in str(exc.value)
+    assert private_value not in str(exc.value)
+    assert state["provenance"]["dataset_identity"] not in str(exc.value)
+
+
+def test_real_branch_mismatch_and_matching_branch_resume(tables):
+    a, _ = tables
+    branch = a.branches.create("training-branch")
+    state, expected = checkpoint(make(branch))
+    assert state["provenance"]["snapshot"]["branch"] == "training-branch"
+    with pytest.raises(ValueError, match=r"snapshot\.branch") as exc:
+        make(a).load_state_dict(state)
+    assert "training-branch" not in str(exc.value)
+    resumed = make(a.branches.checkout("training-branch"))
+    resumed.load_state_dict(state)
+    assert list(resumed) == expected
+
+
+def test_asserted_split_count_mismatch(tables):
+    a, _ = tables
+    state, _ = checkpoint(make(a))
+    target = make(a, num_splits=2)
+    before = target.state_dict()
+    with pytest.raises(ValueError, match=r"config\.num_splits"):
+        target.load_state_dict(state)
+    assert target.state_dict() == before
+
+
+def _ordered_steps(iterators, rows_per_rank):
+    """One row per logical split, in split order, for each global step.
+
+    Rank ownership is contiguous and each iterator round-robins its splits.
+    Concatenating each rank's one-round rows reconstructs the ordered logical
+    global step. No set/sort can conceal reordering or duplicated samples.
+    """
+    stop = object()
+    while True:
+        step = [
+            next(iterator, stop) for iterator in iterators for _ in range(rows_per_rank)
+        ]
+        if all(row is stop for row in step):
+            return
+        assert all(row is not stop for row in step), "unequal rank exhaustion"
+        yield [row["id"] for row in step]
+
+
+@pytest.mark.parametrize("initial_world,resume_world", [(1, 2), (2, 1), (1, 4), (4, 1)])
+@pytest.mark.parametrize("shuffle", [False, True])
+def test_asserted_elastic_grow_shrink_preserves_ordered_global_steps(
+    tmp_path, initial_world, resume_world, shuffle
+):
+    table = lancedb.connect(tmp_path / "elastic").create_table(
+        "corpus", pa.table({"id": list(range(32))})
+    )
+    opts = dict(num_splits=4, shuffle=shuffle, shuffle_seed=42)
+    reference = list(_ordered_steps([iter(make(table, **opts))], 4))
+    assert len(reference) == 8
+    datasets = [
+        make(table, world_size=initial_world, rank=rank, **opts)
+        for rank in range(initial_world)
+    ]
+    iterators = [iter(ds) for ds in datasets]
+    steps = _ordered_steps(iterators, 4 // initial_world)
+    assert [next(steps), next(steps)] == reference[:2]
+    states = [ds.state_dict() for ds in datasets]
+    assert all(state["provenance"]["mode"] == "snapshot" for state in states)
+    for iterator in iterators:
+        iterator.close()
+    merged = StreamingDataset.merge_state_dicts(states)
+    resumed = [
+        make(table, world_size=resume_world, rank=rank, **opts)
+        for rank in range(resume_world)
+    ]
+    for ds in resumed:
+        ds.load_state_dict(merged)
+    remaining = list(_ordered_steps([iter(ds) for ds in resumed], 4 // resume_world))
+    assert remaining == reference[2:]
+
+
+@pytest.mark.parametrize("initial_workers,resume_workers", [(1, 2), (2, 1)])
+def test_asserted_spawn_worker_change_preserves_ordered_global_steps(
+    tmp_path, initial_workers, resume_workers
+):
+    table = lancedb.connect(tmp_path / "worker-elastic").create_table(
+        "corpus", pa.table({"id": list(range(32))})
+    )
+    opts = dict(num_splits=4, shuffle=True, shuffle_seed=42)
+    reference = list(_ordered_steps([iter(make(table, **opts))], 4))
+
+    def loader(ds, workers):
+        return StreamingDataLoader(
+            ds,
+            batch_size=4 // workers,
+            num_workers=workers,
+            multiprocessing_context="spawn",
+        )
+
+    ds = make(table, **opts)
+    iterator = iter(loader(ds, initial_workers))
+    try:
+        consumed = [
+            [v for _ in range(initial_workers) for v in next(iterator)["id"].tolist()]
+            for _ in range(2)
+        ]
+        state = ds.state_dict()
+    finally:
+        iterator._shutdown_workers()
+    assert consumed == reference[:2]
+    assert state["provenance"]["mode"] == "snapshot"
+    resumed = make(table, **opts)
+    resumed.load_state_dict(state)
+    iterator = iter(loader(resumed, resume_workers))
+    try:
+        remaining = [
+            [v for _ in range(resume_workers) for v in next(iterator)["id"].tolist()]
+            for _ in range(6)
+        ]
+        with pytest.raises(StopIteration):
+            next(iterator)
+    finally:
+        iterator._shutdown_workers()
+    assert remaining == reference[2:]
+
+
+def test_caller_batch_policy_change_has_real_effect_and_is_rejected(tables):
+    a, _ = tables
+    original = make(a, checkpoint_policy_id="application-batch-size-2")
+    state, _ = checkpoint(original)
+    old_batches = [
+        batch["id"].tolist()
+        for batch in StreamingDataLoader(
+            make(a, checkpoint_policy_id="application-batch-size-2"), batch_size=2
+        )
+    ]
+    new_batches = [
+        batch["id"].tolist()
+        for batch in StreamingDataLoader(
+            make(a, checkpoint_policy_id="application-batch-size-3"), batch_size=3
+        )
+    ]
+    assert old_batches != new_batches
+    assert [x for batch in old_batches for x in batch] == [
+        x for batch in new_batches for x in batch
+    ]
+    changed = make(a, checkpoint_policy_id="application-batch-size-3")
+    with pytest.raises(ValueError, match=r"config\.policy_id"):
+        changed.load_state_dict(state)

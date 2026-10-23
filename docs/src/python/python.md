@@ -628,6 +628,11 @@ order. Loading legacy state into an asserted dataset requires
 `allow_legacy=True`; exports from that instance then remain unverified. Unknown
 future schema versions cannot use this migration path.
 
+Matching configuration alone does not establish shuffle compatibility across
+library/native algorithm changes or platforms. The current descriptor does not
+record a native construction-algorithm revision. Resume requires a compatible
+producer runtime; it is not a cross-version or cross-platform shuffle guarantee.
+
 Rank and worker counts are excluded from identity so supported elastic
 resharding remains available. Collect every previous rank's checkpoint and call
 `StreamingDataset.merge_state_dicts` before restoring on the new topology.

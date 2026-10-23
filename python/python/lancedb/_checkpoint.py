@@ -130,8 +130,60 @@ def compatible(left, right):
         a = {k: v for k, v in a.items() if k not in ignored}
         b = {k: v for k, v in b.items() if k not in ignored}
     if a != b:
-        keys = sorted(k for k in set(a) | set(b) if a.get(k) != b.get(k))
-        raise ValueError("checkpoint provenance mismatch: " + ", ".join(keys))
+        # Report schema-defined field names, never identity/filter/policy values.
+        # Unexpected dictionary keys are not safe diagnostic text either.
+        nested_fields = {
+            "config": {
+                "filter",
+                "columns",
+                "schema",
+                "plan",
+                "seed",
+                "epoch",
+                "clump_size",
+                "num_splits",
+                "policy_id",
+                "transform",
+                "transform_batch_size",
+                "error_policy",
+                "pack_sequences",
+                "eos_id",
+                "pad_id",
+                "blocks_per_epoch",
+            },
+            "snapshot": {"branch", "version"},
+            "native_locator": {"path", "namespace", "table", "kind"},
+        }
+        fields = {
+            "mode",
+            "guarantee",
+            "dataset_identity",
+            "logical_revision",
+            *nested_fields,
+        }
+        differences = []
+        for key in sorted(fields):
+            left_value, right_value = a.get(key), b.get(key)
+            if left_value == right_value:
+                continue
+            allowed = nested_fields.get(key)
+            if (
+                allowed is not None
+                and isinstance(left_value, dict)
+                and isinstance(right_value, dict)
+                and set(left_value) | set(right_value) <= allowed
+            ):
+                differences.extend(
+                    f"{key}.{field}"
+                    for field in sorted(allowed)
+                    if left_value.get(field) != right_value.get(field)
+                )
+            else:
+                differences.append(key)
+        raise ValueError(
+            "checkpoint provenance mismatch: "
+            + ", ".join(differences or ["descriptor fields"])
+        )
 
 
 def validate(state):

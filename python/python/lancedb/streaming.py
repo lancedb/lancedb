@@ -410,6 +410,9 @@ class StreamingDataset(IterableDataset):
         snapshot coordinates and native locators are diagnostic in this mode.
         This permits compaction/relocation only when logical contents and order
         remain equivalent. It does not hash or verify all dataset contents.
+        Matching configuration does not guarantee identical shuffles across native
+        algorithm/library changes or platforms. No native algorithm revision is
+        recorded here; resume requires a compatible producer runtime.
     checkpoint_identity:
         Non-secret persistent dataset-generation identity, required outside legacy
         mode. Do not reuse it after deletion/recreation. Ordinary local filesystem
