@@ -23,7 +23,7 @@ class LinearCombinationReranker(Reranker):
         TODO: We should just hardcode this--
         its pretty confusing as we invert scores to calculate final score
     return_score : str, default "relevance"
-        opntions are "relevance" or "all"
+        options are "relevance" or "all"
         The type of score to return. If "relevance", will return only the relevance
         score. If "all", will return all scores from the vector and FTS search along
         with the relevance score.
