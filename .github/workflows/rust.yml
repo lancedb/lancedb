@@ -245,12 +245,15 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
+            test-args: ""
           # windows-11-arm is a standard runner, so it is free on public repos.
           # Running natively lets the aarch64 tests actually execute -- this
           # job used to cross-compile them and then skip the test step, paying
           # full codegen and link cost for a compile check.
           - target: aarch64-pc-windows-msvc
             runner: windows-11-arm
+            # Doctests and examples are covered on x64 Windows, macOS and Linux.
+            test-args: "--lib --tests"
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -277,7 +280,7 @@ jobs:
           # `--target` has to match the build step above. Without it cargo uses
           # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
           # dependency graph a second time.
-          cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
+          cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }} ${{ matrix.test-args }}
 
   msrv:
     # Check the minimum supported Rust version
