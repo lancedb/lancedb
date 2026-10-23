@@ -40,3 +40,6 @@ dist
 target
 
 **/sccache.log
+
+# Vale styles installed by `vale sync`
+/.vale/

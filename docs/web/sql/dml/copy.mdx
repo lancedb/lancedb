@@ -1,19 +1,23 @@
 ---
 title: "Copy"
 sidebarTitle: "Copy"
-description: "COPY ... TO — writing a query result to object storage as files."
+description: "COPY ... TO: writing a query result to object storage as files."
 icon: file-export
 keywords: ["copy", "export", "parquet", "sql"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Warning>
+Recent deployment versions refuse `COPY` over the SQL endpoint with "COPY is not
+supported". On those, export a result by reading it through a Flight SQL client
+or an SDK and writing the files from your application.
+</Warning>
 
 ```sql
 COPY (SELECT id, title FROM documents) TO 's3://bucket/export/' STORED AS PARQUET
 ```
 
 Writes a query result to object storage. This is the export path when the
-consumer is another engine rather than an application -- results land as files
+consumer is another engine rather than an application: results land as files
 rather than streaming to a client.
 
 ## What to read next {#next}

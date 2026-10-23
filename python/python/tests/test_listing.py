@@ -89,6 +89,143 @@ KINDS = ["secrets", "views", "jobs", "functions", "materialized_views"]
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_compatible_name_listing_pages(listing_server, kind, asynchronous):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        [
+            (200, response_page(kind, ["a", "b"], "next")),
+            (200, response_page(kind, ["c"], None)),
+        ]
+    )
+    db = await connection(endpoint, asynchronous)
+    listing = getattr(db, "list_" + kind)(
+        namespace_path=["team"], page_token="start", limit=2
+    )
+    field = kind
+    assert len(requests) == (0 if asynchronous else 1)
+    if asynchronous:
+        with pytest.raises(RuntimeError, match="Await or iterate"):
+            getattr(listing, field)
+        assert listing.page_token == "start"
+        assert await listing is listing
+    assert len(requests) == 1
+    page_names = getattr(listing, field)
+    assert type(page_names) is list
+    assert page_names == ["a", "b"]
+    page_names.append("changed")
+    assert getattr(listing, field) == ["a", "b"]
+    assert listing.page_token == "next"
+    assert listing.num_page_results() == 2
+    assert await advance(listing, asynchronous) == "a"
+    assert getattr(listing, field) == ["a", "b"]
+    assert await advance(listing, asynchronous) == "b"
+    assert len(requests) == 1
+    assert await advance(listing, asynchronous) == "c"
+    assert getattr(listing, field) == ["c"]
+    assert listing.page_token is None
+    assert len(requests) == 2
+    assert ([item async for item in listing] if asynchronous else list(listing)) == []
+    if asynchronous:
+        assert await listing is listing
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+async def test_name_listing_skips_empty_page_only_during_iteration(
+    listing_server, kind
+):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        [
+            (200, response_page(kind, [], "next")),
+            (200, response_page(kind, ["a"], None)),
+        ]
+    )
+    db = await connection(endpoint, True)
+    listing = getattr(db, "list_" + kind)()
+    await listing
+    assert getattr(listing, kind) == []
+    assert listing.page_token == "next"
+    assert len(requests) == 1
+    assert [name async for name in listing] == ["a"]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+@pytest.mark.parametrize("asynchronous", [False, True])
+async def test_name_listing_zero_limit_uses_no_request(
+    listing_server, kind, asynchronous
+):
+    endpoint, requests, _ = listing_server
+    db = await connection(endpoint, asynchronous)
+    listing = getattr(db, "list_" + kind)(limit=0)
+    if asynchronous:
+        assert await listing is listing
+        assert [name async for name in listing] == []
+    else:
+        assert list(listing) == []
+    assert getattr(listing, kind) == []
+    assert listing.page_token is None
+    assert requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+async def test_name_listing_failure_retains_token(listing_server, kind):
+    endpoint, requests, responses = listing_server
+    responses.append((401, {}))
+    db = await connection(endpoint, True)
+    listing = getattr(db, "list_" + kind)(page_token="retry")
+    with pytest.raises(HttpError):
+        await listing
+    assert listing.page_token == "retry"
+    with pytest.raises(HttpError):
+        await listing
+    assert [name async for name in listing] == []
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+async def test_name_listing_direct_async_iteration(listing_server, kind):
+    endpoint, requests, responses = listing_server
+    responses.extend(
+        [
+            (200, response_page(kind, ["a"], "next")),
+            (200, response_page(kind, ["b"], None)),
+        ]
+    )
+    db = await connection(endpoint, True)
+    listing = getattr(db, "list_" + kind)(limit=1)
+    assert requests == []
+    assert [name async for name in listing] == ["a", "b"]
+    assert getattr(listing, kind) == ["b"]
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["tables", "namespaces"])
+async def test_name_listing_serializes_concurrent_advances(listing_server, kind):
+    endpoint, requests, responses = listing_server
+    responses.append((200, response_page(kind, ["a", "b"], None)))
+    db = await connection(endpoint, True)
+    listing = getattr(db, "list_" + kind)()
+    results = await asyncio.gather(
+        listing.__anext__(),
+        listing.__anext__(),
+        listing.__anext__(),
+        return_exceptions=True,
+    )
+    assert results[:2] == ["a", "b"]
+    assert isinstance(results[2], StopAsyncIteration)
+    assert len(requests) == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", KINDS)
 @pytest.mark.parametrize("asynchronous", [False, True])
 async def test_listing_lazy_pages_and_resume(listing_server, kind, asynchronous):
