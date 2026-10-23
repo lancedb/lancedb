@@ -30,6 +30,7 @@ IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+__version__: str
 
 class MetricPoint:
     name: str
