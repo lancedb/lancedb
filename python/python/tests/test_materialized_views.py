@@ -4,12 +4,12 @@
 import contextlib
 import http.server
 import json
-import threading
 
 import lancedb
 import pytest
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
+from utils import start_server_thread
 
 
 STABLE_ROW_IDS = {"new_table_enable_stable_row_ids": "true"}
@@ -45,11 +45,10 @@ def mock_remote_materialized_views():
             self.end_headers()
             self.wfile.write(encoded)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", requests
+            yield f"http://127.0.0.1:{server.server_address[1]}", requests
         finally:
             server.shutdown()
             thread.join()
@@ -75,11 +74,10 @@ def mock_remote_materialized_view_create():
             self.end_headers()
             self.wfile.write(encoded)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", requests
+            yield f"http://127.0.0.1:{server.server_address[1]}", requests
         finally:
             server.shutdown()
             thread.join()
