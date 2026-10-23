@@ -445,6 +445,7 @@
               "integrations/embedding/imagebind",
               "integrations/embedding/instructor",
               "integrations/embedding/jina",
+              "integrations/embedding/nvidia",
               "integrations/embedding/ollama",
               "integrations/embedding/openai",
               "integrations/embedding/openclip",

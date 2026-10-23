@@ -1,0 +1,103 @@
+---
+title: NVIDIA Nemotron
+sidebarTitle: NVIDIA
+description: Text embeddings with Nemotron 3.5 Embed 1B and 8B in the Python SDK.
+---
+
+The Python SDK registers `nvidia` for client-side text embedding with NVIDIA-hosted
+and self-hosted NIM endpoints. Documents use `input_type="passage"`; searches use
+`input_type="query"`. This provider supports text only, with floating-point output.
+Image and combined text/image inputs are not supported by this integration.
+
+Install the optional client and set your NVIDIA API key:
+
+```shell
+pip install openai
+export NVIDIA_API_KEY="your-api-key"
+```
+
+```python
+import lancedb
+from lancedb.embeddings import get_registry
+from lancedb.pydantic import LanceModel, Vector
+
+func = get_registry().get("nvidia").create(
+    name="nvidia/nemotron-3.5-embed-1b",
+)
+
+class Document(LanceModel):
+    text: str = func.SourceField()
+    vector: Vector(func.ndims()) = func.VectorField()
+
+db = lancedb.connect("./nemotron-db")
+table = db.create_table("documents", schema=Document)
+table.add([{"text": "Paris is the capital of France."}])
+results = table.search("What is the capital of France?").limit(3).to_list()
+```
+
+For an Enterprise table, use your remote connection, for example
+`lancedb.connect("db://my-database", api_key=..., region=...)`. The same schema,
+`add`, and `search` calls compute embeddings in the Python client. The NVIDIA key
+is separate from the LanceDB database key. Use a fresh table name when creating a
+table; reopening an existing table restores its embedding configuration.
+
+## Models and configuration
+
+The hosted API documents these exact IDs and dimensions:
+
+| Model ID | Default dimensions | Supported `dim` |
+|---|---:|---:|
+| `nvidia/nemotron-3.5-embed-1b` | 2048 | 128–2048 |
+| `nvidia/nemotron-3.5-embed-8b` | 4096 | 1–4096 |
+
+| Parameter | Default | Description |
+|---|---|---|
+| `name` | `nvidia/nemotron-3.5-embed-1b` | Model ID sent to the endpoint. |
+| `dim` | Model default above | Output dimensions; required for other served model IDs. |
+| `base_url` | `https://integrate.api.nvidia.com/v1` | API base including `/v1`. |
+| `api_key` | `NVIDIA_API_KEY` environment variable | Alternatively, a registry reference such as `$var:nvidia-key`. |
+| `batch_size` | `32` | Maximum inputs per request. Reduce for your deployment's limits. |
+| `truncate` | `END` | Truncate overlong text at the end, or use `NONE` to reject it. |
+| `max_retries` | `7` | LanceDB's existing retry policy for automatic document/query embedding. |
+
+Requests specify `modality="text"` and `encoding_format="float"`. Returned vectors
+are checked for count, input indices, dimensions, and finite numeric values.
+The hosted input limit is 10,240 tokens per item; self-hosted limits depend on the
+served profile. This provider batches by item count, not token count.
+
+## Self-hosted NIM
+
+Set `name` to the exact ID returned by your deployment's `GET /v1/models` and
+`dim` to an output dimension that deployment supports:
+
+```python
+func = get_registry().get("nvidia").create(
+    name="nvidia/Nemotron-3.5-Embed-1B-BF16",
+    base_url="http://localhost:8000/v1",
+    dim=2048,
+)
+```
+
+Custom endpoints may run without a key. For authenticated endpoints, use
+`NVIDIA_API_KEY` or `get_registry().set_var("nvidia-key", key)` with
+`api_key="$var:nvidia-key"`. Registry references, rather than secret values, are
+stored in the schema. Restore registry variables in each process. Before using
+a custom endpoint restored from table metadata in a new process, call
+`get_registry().allow_endpoint("http://localhost:8000/v1")`.
+
+The NIM 2.4 support matrix lists `nvidia/Nemotron-3.5-Embed-8B-BF16` at 2048
+dimensions, whereas the hosted 8B reference specifies 4096. For self-hosted model
+IDs, this provider requires an explicit `dim` and checks the response instead of
+assuming the hosted defaults.
+
+SDK coverage: Python. TypeScript, Rust, and Java do not gain a NVIDIA provider
+from this integration. Automated tests use mocked NVIDIA and Enterprise HTTP
+responses plus real local tables. The opt-in hosted smoke test runs with
+`NVIDIA_API_KEY` and `pytest python/tests/test_nvidia_embeddings.py -m slow -k nvidia_live`
+from the repository's Python environment.
+
+NVIDIA references (checked October 23, 2026):
+[hosted 1B API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-embed-1b-infer),
+[hosted 8B API](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3_5-embed-8b-infer),
+[NIM request/response format](https://docs.nvidia.com/nim/nemo-retriever/embedding/2.4/use-the-api-openai.html),
+[NIM support matrix](https://docs.nvidia.com/nim/nemo-retriever/embedding/2.4/support-matrix.html).
