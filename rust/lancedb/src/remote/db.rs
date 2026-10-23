@@ -1611,7 +1611,8 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             // the table still exists before returning a handle for it.
             let req = self
                 .client
-                .post(&format!("/v1/table/{}/describe/", identifier));
+                .post(&format!("/v1/table/{}/describe/", identifier))
+                .header(CONTENT_TYPE, "application/json");
             let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
             let rsp =
                 RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
