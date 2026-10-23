@@ -1,0 +1,70 @@
+---
+title: "LanceDB OSS or Enterprise?"
+sidebarTitle: "OSS and Enterprise"
+description: "Start with an embedded library, or use the LanceDB Enterprise multimodal lakehouse for shared AI workloads."
+icon: compass
+keywords: ["oss", "enterprise", "embedded", "deployment", "availability", "comparison"]
+---
+
+LanceDB gives you two ways to work with multimodal data, both built on the open
+[Lance](/basics/lance) format.
+
+**LanceDB OSS** is an embedded library. Run it inside your application
+with tables on local disk or in object storage. You control the application,
+its resources, and table maintenance, without a separate database service.
+[Try the quickstart](/quickstart) to create a table and run your first search.
+
+**LanceDB Enterprise** is a multimodal lakehouse for data curation, feature
+engineering, search, and training data access. It adds query-serving capacity,
+data caching, and background operations for teams working with shared
+multimodal datasets.
+[Connect to Enterprise](/basics/connect#enterprise) when your cluster is ready.
+
+<span id="labels" />
+<span id="availability" />
+
+## Why choose Enterprise? {#why-enterprise}
+
+### Serve growing workloads {#serving}
+
+Add query-serving capacity as more applications and users depend on your data.
+Enterprise spreads query traffic across a fleet and caches frequently read
+table data near compute, reducing repeated reads from object storage. Query
+serving and background work use separate resources, so you can size each for
+your workload. See [Enterprise architecture](/enterprise/architecture).
+
+### Reduce operational work {#operations}
+
+Let the service handle routine table maintenance instead of scheduling it in
+application code. Enterprise handles background [compaction](/maintenance/compaction) and can
+[clean up old table versions](/maintenance/cleanup) according to your retention
+policy. Configure these maintenance tasks for your Enterprise cluster so each
+application does not have to schedule them.
+
+### Fit your deployment requirements {#deployment}
+
+Choose a managed deployment or bring LanceDB into your own cloud account.
+Enterprise integrates with OpenTelemetry for metrics and traces, helping your
+team monitor the service alongside your applications. Talk to us about your
+cloud, networking, and operational requirements to plan the right deployment.
+The [Enterprise overview](/enterprise) explains the available options.
+
+### Connect your data workflows {#workflows}
+
+Use the same tables for retrieval, dataset preparation, and training data access.
+With its [SQL endpoint](/basics/sql) enabled, Enterprise supports analytical
+[curation](/curation), including joins, grouping, and sampling.
+[Feature engineering](/feature-engineering) adds derived columns and tables;
+computed columns and materialized views require the corresponding features to
+be enabled for your Enterprise cluster.
+[Geneva](/geneva) runs Python feature backfills as distributed jobs.
+[Training data loaders](/training/data-loading), available in both offerings,
+read the resulting datasets for model training.
+
+## Plan your Enterprise deployment {#get-started}
+
+[Talk to us about your workload](https://www.lancedb.com/contact) to discuss your
+data, query traffic, pipelines, and deployment requirements.
+
+For a closer look at how the service runs, read the
+[Enterprise architecture](/enterprise/architecture).

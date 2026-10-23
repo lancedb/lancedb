@@ -267,23 +267,25 @@ Collect the results as an Arrow
 
 ArrowTable.
 
+Empty results retain the query's output schema.
+
 #### Inherited from
 
 [`QueryBase`](QueryBase.md).[`toArrow`](QueryBase.md#toarrow)
 
 ***
 
-### useLsm()
+### useRTE()
 
 ```ts
-useLsm(enable): this
+useRTE(enable): this
 ```
 
-Control MemWAL read routing for this take query.
+Control RTE read routing for this take query.
 
-`false` bypasses the MemWAL and reads the base table only — the escape hatch,
+`false` bypasses the RTE and reads the base table only — the escape hatch,
 since take-by-row-id/offset is not supported on the LSM scanner and, on a
-MemWAL table, auto-routes to it and errors otherwise.
+RTE table, auto-routes to it and errors otherwise.
 
 #### Parameters
 

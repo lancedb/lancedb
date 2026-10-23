@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import { Field, LargeBinary, Struct, Utf8 } from "apache-arrow";
+import { Field, LargeBinary, Struct, Uint64, Utf8 } from "apache-arrow";
 import { BlobFile as NativeBlobFile } from "./native";
 
 const BLOB_V2_EXTENSION_NAME = "lance.blob.v2";
@@ -12,9 +12,59 @@ const DEDICATED_SIZE_THRESHOLD_KEY =
 const PACK_FILE_SIZE_THRESHOLD_KEY =
   "lance-encoding:blob-pack-file-size-threshold";
 
-export type BlobInput = {
+/**
+ * Bytes accepted for a blob value. `ArrayBuffer` is wrapped without copying.
+ * `Blob` and `File` are read with `arrayBuffer()`, which only the async write
+ * paths ({@link Connection.createTable}, {@link Table.add},
+ * {@link Table.mergeInsert}) can do.
+ */
+export type BlobData = Buffer | Uint8Array | ArrayBuffer | Blob;
+
+/** A URI accepted for a blob value. A `URL` is stored as its `href`. */
+export type BlobUri = string | URL;
+
+/**
+ * A value accepted for a `lance.blob.v2` column (see {@link blob}).
+ *
+ * Either inline bytes, a URI pointing at external bytes, or a struct that sets
+ * exactly one of `data` or `uri`. `null` and `undefined` write a null blob.
+ * External byte ranges require both
+ * `position` (non-negative) and `size` (positive). Use safe integer numbers or
+ * `bigint` values for these unsigned 64-bit byte counts.
+ *
+ * @example
+ * ```ts
+ * import { pathToFileURL } from "node:url";
+ * import type { BlobInput } from "@lancedb/lancedb";
+ *
+ * const rows: { id: bigint; image: BlobInput }[] = [
+ *   { id: 1n, image: await (await fetch(url)).arrayBuffer() },
+ *   { id: 2n, image: pathToFileURL("/data/cat.png") },
+ *   { id: 3n, image: { data: new Blob(["hello"]) } },
+ * ];
+ * await table.add(rows);
+ * ```
+ */
+export type BlobInput =
+  | BlobData
+  | BlobUri
+  | { data: BlobData; uri?: null; position?: null; size?: null }
+  | { data?: null; uri: BlobUri; position?: null; size?: null }
+  | {
+      data?: null;
+      uri: BlobUri;
+      position: number | bigint;
+      size: number | bigint;
+    }
+  | null
+  | undefined;
+
+/** A blob value normalized to the columns of the blob struct. */
+export type BlobValue = {
   data: Buffer | Uint8Array | null;
   uri: string | null;
+  position?: bigint;
+  size?: bigint;
 };
 
 export type BlobOptions = {
@@ -39,9 +89,20 @@ export type BlobOptions = {
 
 /**
  * Declares a `lance.blob.v2` column.
+ * Uses nullable `data`, `uri`, `position`, and `size` fields for inline bytes,
+ * whole external files, and external byte ranges. Set both `position` and
+ * positive `size` for a range, or omit both for a whole file.
+ *
+ * Existing two-field columns remain writable. Appends and merge inserts fill
+ * missing range fields with nulls for four-field targets and drop all-null
+ * range fields for two-field targets. Non-null ranges require a four-field
+ * target. Overwrite with Arrow input replaces the table's schema; row objects
+ * are converted using the current table schema.
  *
  * Query results are descriptors, not payload bytes. Use {@link Table.fetchBlobs}
  * or {@link Table.fetchBlobFiles} to read bytes.
+ * Blobs inside lists can be written and queried as descriptors, but cannot
+ * currently be fetched because a row ID does not identify a list element.
  *
  * @example
  * ```ts
@@ -101,6 +162,8 @@ export function blob(name: string, options: BlobOptions = {}): Field {
     new Struct([
       new Field("data", new LargeBinary(), true),
       new Field("uri", new Utf8(), true),
+      new Field("position", new Uint64(), true),
+      new Field("size", new Uint64(), true),
     ]),
     options.nullable ?? true,
     metadata,
@@ -248,7 +311,88 @@ export type BlobRange = {
   end: bigint;
 };
 
-export function coerceBlobValue(value: unknown): BlobInput | null {
+/**
+ * Rewrites the synchronous-only widenings of {@link BlobInput} (`ArrayBuffer`,
+ * `URL`) into `Uint8Array` and URI strings, keeping the value's shape. Other
+ * values are returned unchanged and validated later by {@link coerceBlobValue}.
+ *
+ * Throws on `Blob` / `File`, which must be read into bytes first.
+ */
+export function normalizeBlobInput(value: unknown): unknown {
+  if (blobToRead(value) !== undefined) {
+    throw new Error(
+      "Blob and File values must be read asynchronously. Pass them to " +
+        "createTable, add, or mergeInsert, or convert them with " +
+        "`new Uint8Array(await value.arrayBuffer())`",
+    );
+  }
+  if (value instanceof ArrayBuffer) {
+    return new Uint8Array(value);
+  }
+  if (value instanceof URL) {
+    return value.href;
+  }
+  if (isBlobStruct(value)) {
+    // Read `data` and `uri` explicitly: spreading a class instance would drop
+    // fields defined as getters on its prototype.
+    const out: Record<string, unknown> = {
+      ...value,
+      data: value.data,
+      uri: value.uri,
+      position: value.position,
+      size: value.size,
+    };
+    let changed = false;
+    if (value.data instanceof ArrayBuffer) {
+      out.data = new Uint8Array(value.data);
+      changed = true;
+    }
+    if (value.uri instanceof URL) {
+      out.uri = value.uri.href;
+      changed = true;
+    }
+    return changed ? out : value;
+  }
+  return value;
+}
+
+/**
+ * Returns the `Blob` / `File` a blob value needs read, either the value itself
+ * or its `data` field, or `undefined` when there is nothing to read.
+ */
+export function blobToRead(value: unknown): Blob | undefined {
+  if (isBlobLike(value)) {
+    return value;
+  }
+  if (isBlobStruct(value) && isBlobLike(value.data)) {
+    return value.data;
+  }
+  return undefined;
+}
+
+/**
+ * Replaces the `Blob` that {@link blobToRead} found in `value` with `bytes`,
+ * keeping the value's shape.
+ */
+export function withBlobBytes(value: unknown, bytes: Uint8Array): unknown {
+  if (isBlobLike(value)) {
+    return bytes;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    ...record,
+    uri: record.uri,
+    position: record.position,
+    size: record.size,
+    data: bytes,
+  };
+}
+
+export function coerceBlobValue(
+  input: unknown,
+  field?: Field,
+): BlobValue | null {
+  const value = normalizeBlobInput(input);
   if (value == null) {
     return null;
   }
@@ -256,7 +400,9 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
     return { data: value, uri: null };
   }
   if (ArrayBuffer.isView(value)) {
-    throw new Error("Blob data must be Buffer or Uint8Array");
+    throw new Error(
+      "Blob data must be Buffer, Uint8Array, ArrayBuffer, or Blob",
+    );
   }
   if (typeof value === "string") {
     if (value === "") {
@@ -264,11 +410,21 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
     }
     return { data: null, uri: value };
   }
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
+  if (isBlobStruct(value)) {
+    const record = value;
     if (!("data" in record) && !("uri" in record)) {
       throw new Error(
         "Blob struct values must include a 'data' or 'uri' field",
+      );
+    }
+    const unknownKeys = Object.keys(record).filter(
+      (key) => !["data", "uri", "position", "size"].includes(key),
+    );
+    if (unknownKeys.length > 0) {
+      throw new Error(
+        `Blob struct values only support 'data', 'uri', 'position', and 'size', got ${unknownKeys
+          .map((key) => `'${key}'`)
+          .join(", ")}`,
       );
     }
     const uri = record.uri;
@@ -276,11 +432,15 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
       throw new Error("Blob uri cannot be empty");
     }
     if (uri != null && typeof uri !== "string") {
-      throw new Error(`Blob uri must be a string or null, got ${typeof uri}`);
+      throw new Error(
+        `Blob uri must be a string, URL, or null, got ${typeof uri}`,
+      );
     }
     const data = record.data;
     if (data != null && !isBlobBytes(data)) {
-      throw new Error("Blob data must be Buffer, Uint8Array, or null");
+      throw new Error(
+        "Blob data must be Buffer, Uint8Array, ArrayBuffer, Blob, or null",
+      );
     }
     const bytes = (data as Buffer | Uint8Array | null | undefined) ?? null;
     const uriValue = uri ?? null;
@@ -289,10 +449,92 @@ export function coerceBlobValue(value: unknown): BlobInput | null {
         "Blob struct values must set exactly one of 'data' or 'uri'",
       );
     }
+    const hasPosition = record.position != null;
+    const hasSize = record.size != null;
+    if (hasPosition !== hasSize) {
+      throw new Error(
+        "External blob must set both position and size, or neither",
+      );
+    }
+    if (hasPosition) {
+      if (uriValue == null) {
+        throw new Error("External blob byte ranges require a uri");
+      }
+      const position = blobRangeInteger(record.position, "position", 0n);
+      const size = blobRangeInteger(record.size, "size", 1n);
+      if (position + size > 0xffffffffffffffffn) {
+        throw new Error("External blob range overflows uint64");
+      }
+      if (
+        field !== undefined &&
+        (!(field.type instanceof Struct) ||
+          ["position", "size"].some(
+            (name) =>
+              !field.type.children.some((child: Field) => child.name === name),
+          ))
+      ) {
+        throw new Error(
+          "Blob storage schema cannot store byte ranges. Use a four-field blob() schema to store position and size",
+        );
+      }
+      return { data: null, uri: uriValue, position, size };
+    }
     return { data: bytes, uri: uriValue };
   }
   throw new Error(
-    "Blob column values must be Buffer, Uint8Array, a URI string, null, or { data?, uri? }",
+    "Blob column values must be Buffer, Uint8Array, ArrayBuffer, Blob, a URI string or URL, null, or { data?, uri?, position?, size? }",
+  );
+}
+
+function blobRangeInteger(
+  value: unknown,
+  name: string,
+  minimum: bigint,
+): bigint {
+  if (
+    typeof value !== "bigint" &&
+    (typeof value !== "number" || !Number.isSafeInteger(value))
+  ) {
+    throw new Error(`Blob ${name} must be a safe integer or bigint`);
+  }
+  const integer = BigInt(value);
+  if (integer < minimum || integer > 0xffffffffffffffffn) {
+    throw new Error(
+      `Blob ${name} must be ${minimum === 0n ? "non-negative" : "positive"} and fit in uint64`,
+    );
+  }
+  return integer;
+}
+
+function isBlobLike(value: unknown): value is Blob {
+  return typeof Blob !== "undefined" && value instanceof Blob;
+}
+
+/**
+ * Whether `value` is a `{ data?, uri? }` struct: any plain object, or any
+ * other object with a `data` or `uri` field (such as a class instance), apart
+ * from the binary, `Blob`, and `URL` values that are blob inputs themselves.
+ */
+function isBlobStruct(value: unknown): value is Record<string, unknown> {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    ArrayBuffer.isView(value) ||
+    value instanceof ArrayBuffer ||
+    (typeof SharedArrayBuffer !== "undefined" &&
+      value instanceof SharedArrayBuffer) ||
+    isBlobLike(value) ||
+    value instanceof URL
+  ) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return (
+    prototype === Object.prototype ||
+    prototype === null ||
+    "data" in value ||
+    "uri" in value
   );
 }
 

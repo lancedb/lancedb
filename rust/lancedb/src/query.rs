@@ -11,7 +11,7 @@ use arrow_array::{
     Array, Float16Array, Float32Array, Float64Array, RecordBatch, UInt64Array,
     cast::AsArray,
     make_array,
-    types::{Int64Type, UInt64Type},
+    types::{Float32Type, Int64Type, UInt64Type},
 };
 use arrow_schema::{DataType, SchemaRef};
 use datafusion_common::{DataFusionError, Result as DataFusionResult};
@@ -544,25 +544,25 @@ pub trait QueryBase {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
 
-    /// Control MemWAL read routing for this query.
+    /// Control RTE read routing for this query.
     ///
-    /// By default (unset), when the table carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
+    /// By default (unset), when the table carries an RTE write spec (see
+    /// [`crate::Table::enable_rte`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
-    /// memtables and flushed generations); a table without a spec reads the base
+    /// memtables and SSTables); a table without a spec reads the base
     /// table.
     ///
-    /// - `use_lsm(true)` forces LSM routing and errors if the table has no
-    ///   MemWAL write spec.
-    /// - `use_lsm(false)` bypasses the MemWAL and reads the base table only,
+    /// - `use_rte(true)` forces RTE routing and errors if the table has no
+    ///   RTE write spec.
+    /// - `use_rte(false)` bypasses the RTE and reads the base table only,
     ///   even when a spec is present.
     ///
     /// Note: the LSM scanner does not support every query shape (e.g. reranking,
-    /// hybrid search, `order_by`). On a MemWAL table those shapes error unless
-    /// `use_lsm(false)` is set, because a base-only read would silently
-    /// exclude un-compacted MemWAL data.
-    fn use_lsm(self, enable: bool) -> Self;
+    /// hybrid search, `order_by`). On an RTE table those shapes error unless
+    /// `use_rte(false)` is set, because a base-only read would silently
+    /// exclude un-compacted RTE data.
+    fn use_rte(self, enable: bool) -> Self;
 }
 
 pub trait HasQuery {
@@ -634,8 +634,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn use_lsm(mut self, enable: bool) -> Self {
-        self.mut_query().use_lsm = Some(enable);
+    fn use_rte(mut self, enable: bool) -> Self {
+        self.mut_query().use_rte = Some(enable);
         self
     }
 }
@@ -898,19 +898,19 @@ pub struct QueryRequest {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
 
-    /// Controls MemWAL read routing. When unset (the default), a query against a
-    /// table that carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
+    /// Controls RTE read routing. When unset (the default), a query against a
+    /// table that carries an RTE write spec (see
+    /// [`crate::Table::enable_rte`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
-    /// memtables and the flushed (L0) generations, deduplicated by primary key
+    /// memtables and the SSTables, deduplicated by primary key
     /// against the base table (newest generation wins); a table without a spec
     /// reads the base table.
     ///
-    /// - `Some(true)` forces LSM routing and errors if the table has no MemWAL
+    /// - `Some(true)` forces RTE routing and errors if the table has no RTE
     ///   write spec.
-    /// - `Some(false)` reads only the base table, bypassing the MemWAL.
-    pub use_lsm: Option<bool>,
+    /// - `Some(false)` reads only the base table, bypassing the RTE.
+    pub use_rte: Option<bool>,
 }
 
 impl Default for QueryRequest {
@@ -930,7 +930,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
-            use_lsm: None,
+            use_rte: None,
         }
     }
 }
@@ -1024,6 +1024,8 @@ impl Query {
     ///
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
+    /// NaN and infinite components are rejected with [`Error::InvalidInput`]
+    /// after conversion to Float32, for both local and remote tables.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1050,8 +1052,7 @@ impl Query {
     /// * `vector` - The vector that will be used for search.
     pub fn nearest_to(self, vector: impl IntoQueryVector) -> Result<VectorQuery> {
         let mut vector_query = self.into_vector();
-        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        vector_query.request.query_vector.push(query_vector);
+        vector_query.request.add_query_vector(vector)?;
 
         if vector_query.request.base.limit.is_none() {
             vector_query.request.base.limit = Some(DEFAULT_TOP_K);
@@ -1113,10 +1114,24 @@ pub struct VectorQueryRequest {
     pub column: Option<String>,
     /// The vector(s) to search for
     pub query_vector: Vec<Arc<dyn Array>>,
-    /// The minimum number of partitions to search
-    pub minimum_nprobes: usize,
-    /// The maximum number of partitions to search
+    /// The legacy number of partitions to search.
+    ///
+    /// Lance sets both probe bounds to this value. Explicit bounds can override it.
+    pub nprobes: Option<usize>,
+    /// The minimum number of partitions to search.
+    ///
+    /// If unset, Lance's default is used.
+    pub minimum_nprobes: Option<usize>,
+    /// The maximum number of partitions to search.
+    ///
+    /// If unset, Lance's default is used. Zero represents an explicitly unbounded
+    /// maximum on request and wire representations.
     pub maximum_nprobes: Option<usize>,
+    /// Optional initial IVF search effort in [0, 1].
+    ///
+    /// None preserves Auto and fixed `nprobes`; any explicit value overrides
+    /// `nprobes` while retaining explicit minimum and maximum bounds.
+    pub search_effort: Option<f64>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
     /// The upper bound (exclusive) of the distance to search for.
@@ -1140,8 +1155,10 @@ impl Default for VectorQueryRequest {
             base: QueryRequest::default(),
             column: None,
             query_vector: Vec::new(),
-            minimum_nprobes: 20,
-            maximum_nprobes: Some(20),
+            nprobes: None,
+            minimum_nprobes: None,
+            maximum_nprobes: None,
+            search_effort: None,
             lower_bound: None,
             upper_bound: None,
             ef: None,
@@ -1154,6 +1171,34 @@ impl Default for VectorQueryRequest {
 }
 
 impl VectorQueryRequest {
+    pub(crate) fn validate_search_effort(&self) -> Result<()> {
+        if let Some(effort) = self.search_effort
+            && (!effort.is_finite() || !(0.0..=1.0).contains(&effort))
+        {
+            return Err(Error::InvalidInput {
+                message: format!("search_effort must be finite and in [0, 1], got {effort}"),
+            });
+        }
+        Ok(())
+    }
+
+    fn add_query_vector(&mut self, vector: impl IntoQueryVector) -> Result<()> {
+        let vector = vector.to_query_vector(&DataType::Float32, "default")?;
+        let array =
+            vector
+                .as_primitive_opt::<Float32Type>()
+                .ok_or_else(|| Error::InvalidInput {
+                    message: "VectorQuery vector must be of type Float32".into(),
+                })?;
+        if array.values().iter().any(|value| !value.is_finite()) {
+            return Err(Error::InvalidInput {
+                message: "query vector must contain only finite values".into(),
+            });
+        }
+        self.query_vector.push(vector);
+        Ok(())
+    }
+
     pub fn from_plain_query(query: QueryRequest) -> Self {
         Self {
             base: query,
@@ -1222,13 +1267,15 @@ impl VectorQuery {
     /// The output data will contain an additional column `query_index` which
     /// will contain the index of the query vector that was used to generate the
     /// result.
+    ///
+    /// NaN and infinite components are rejected with [`Error::InvalidInput`]
+    /// after conversion to Float32, for both local and remote tables.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
-        let query_vector = vector.to_query_vector(&DataType::Float32, "default")?;
-        self.request.query_vector.push(query_vector);
+        self.request.add_query_vector(vector)?;
         Ok(self)
     }
 
-    /// Set the number of partitions to search (probe)
+    /// Set the legacy IVF probe parameter
     ///
     /// This argument is only used when the vector column has an IVF PQ index.
     /// If there is no index then this value is ignored.
@@ -1238,24 +1285,56 @@ impl VectorQuery {
     ///
     /// The partition whose centroids are closest to the query vector will be
     /// exhaustiely searched to find matches.  This parameter controls how many
-    /// partitions should be searched.
+    /// partitions may be searched.
     ///
     /// Increasing this value will increase the recall of your query but will
-    /// also increase the latency of your query.  The default value is 20.  This
-    /// default is good for many cases but the best value to use will depend on
-    /// your data and the recall that you need to achieve.
+    /// also increase the latency of your query. If this method is not called,
+    /// Lance's adaptive probe defaults are used.
     ///
     /// For best results we recommend tuning this parameter with a benchmark against
     /// your actual data to find the smallest possible value that will still give
     /// you the desired recall.
     ///
-    /// This method sets both the minimum and maximum number of partitions to search.
-    /// For more fine-grained control see [`VectorQuery::minimum_nprobes`] and
+    /// LanceDB retains this as `nprobes` through local and remote request
+    /// construction. Lance sets both probe bounds to this value only when
+    /// [`Self::search_effort`] is unset. For more
+    /// fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
-    pub fn nprobes(mut self, nprobes: usize) -> Self {
-        self.request.minimum_nprobes = nprobes;
-        self.request.maximum_nprobes = Some(nprobes);
-        self
+    ///
+    /// Returns an error if `nprobes` is not greater than 0.
+    pub fn nprobes(mut self, nprobes: usize) -> Result<Self> {
+        if nprobes == 0 {
+            return Err(Error::InvalidInput {
+                message: "nprobes must be greater than 0".to_string(),
+            });
+        }
+        self.request.nprobes = Some(nprobes);
+        Ok(self)
+    }
+
+    /// Set the initial IVF search effort to a finite value in [0, 1].
+    ///
+    /// None (the default) resolves to 0.5, preserving Auto probing. At 0 the
+    /// search starts at the caller minimum; at 1 it searches all partitions
+    /// within the caller maximum. Intermediate values interpolate around Auto.
+    /// Later probing may continue when too few candidates are found.
+    /// Any explicit value, including 0.5, overrides [`Self::nprobes`] regardless
+    /// of setter order. Explicit minimum and maximum bounds still apply.
+    /// This does not change refinement or HNSW ef and is not a recall guarantee.
+    /// Lance's MemWAL LSM scanner does not yet support this option.
+    ///
+    /// ```
+    /// # use lancedb::{Table, query::{QueryBase, ExecutableQuery}};
+    /// # async fn example(table: &Table) -> lancedb::Result<()> {
+    /// let results = table.query().nearest_to([0.1, 0.2].as_slice())?
+    ///     .search_effort(0.75)?.execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn search_effort(mut self, search_effort: impl Into<Option<f64>>) -> Result<Self> {
+        self.request.search_effort = search_effort.into();
+        self.request.validate_search_effort()?;
+        Ok(self)
     }
 
     /// Set the minimum number of partitions to search
@@ -1276,6 +1355,7 @@ impl VectorQuery {
             });
         }
         if let Some(maximum_nprobes) = self.request.maximum_nprobes
+            && maximum_nprobes != 0
             && minimum_nprobes > maximum_nprobes
         {
             return Err(Error::InvalidInput {
@@ -1283,7 +1363,7 @@ impl VectorQuery {
                     .to_string(),
             });
         }
-        self.request.minimum_nprobes = minimum_nprobes;
+        self.request.minimum_nprobes = Some(minimum_nprobes);
         Ok(self)
     }
 
@@ -1296,11 +1376,13 @@ impl VectorQuery {
     ///
     /// If this value is greater than minimum_nprobes then the excess partitions will
     /// only be searched if the initial search does not return enough results.
+    /// The bound applies per index segment to initial and later probing without
+    /// disabling Auto probing.
     ///
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
     ///
-    /// Set to None to search all partitions, if needed, to satisfy the limit
+    /// Set to None to use Lance's default maximum probe behavior.
     pub fn maximum_nprobes(mut self, maximum_nprobes: Option<usize>) -> Result<Self> {
         if let Some(maximum_nprobes) = maximum_nprobes {
             if maximum_nprobes == 0 {
@@ -1308,14 +1390,18 @@ impl VectorQuery {
                     message: "maximum_nprobes must be greater than 0".to_string(),
                 });
             }
-            if maximum_nprobes < self.request.minimum_nprobes {
+            if let Some(minimum_nprobes) = self.request.minimum_nprobes
+                && maximum_nprobes < minimum_nprobes
+            {
                 return Err(Error::InvalidInput {
                     message: "maximum_nprobes must be greater than or equal to minimum_nprobes"
                         .to_string(),
                 });
             }
         }
-        self.request.maximum_nprobes = maximum_nprobes;
+        // Preserve an explicit reset separately from an untouched maximum. The
+        // request protocols already use zero to represent an unbounded maximum.
+        self.request.maximum_nprobes = Some(maximum_nprobes.unwrap_or(0));
         Ok(self)
     }
 
@@ -2330,6 +2416,69 @@ mod tests {
     use crate::{Table, connect, database::CreateTableMode, index::Index};
 
     #[tokio::test]
+    async fn test_query_vector_non_finite() {
+        let conn = connect("memory://non_finite_vectors")
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let assert_invalid = |result: Result<VectorQuery>| {
+            let err = result.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }));
+            assert!(err.to_string().contains("only finite values"));
+        };
+
+        // Float64 values can be finite before conversion but overflow Float32.
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            f64::MIN,
+        ] {
+            assert_invalid(table.query().nearest_to(&[0.1, value as f32]));
+            assert_invalid(table.query().nearest_to(vec![0.1, value]));
+            assert_invalid(
+                table
+                    .query()
+                    .nearest_to(&[0.1, 0.2])
+                    .unwrap()
+                    .add_query_vector(vec![0.1, value]),
+            );
+
+            let arrays: [Arc<dyn Array>; 3] = [
+                Arc::new(Float16Array::from(vec![
+                    f16::from_f32(0.1),
+                    f16::from_f64(value),
+                ])),
+                Arc::new(Float32Array::from(vec![0.1, value as f32])),
+                Arc::new(Float64Array::from(vec![0.1, value])),
+            ];
+            for array in arrays {
+                assert_invalid(table.query().nearest_to(array.clone()));
+                assert_invalid(
+                    table
+                        .query()
+                        .nearest_to(&[0.1, 0.2])
+                        .unwrap()
+                        .add_query_vector(array),
+                );
+            }
+        }
+
+        table
+            .query()
+            .nearest_to(&[f32::MIN, f32::MAX])
+            .unwrap()
+            .add_query_vector(&[0.0, -0.0])
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_setters_getters() {
         let batches = make_test_batches();
         let conn = connect("memory://foo").execute().await.unwrap();
@@ -2341,6 +2490,29 @@ mod tests {
 
         let vector = Float32Array::from_iter_values([0.1, 0.2]);
         let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+        assert_eq!(query.request.nprobes, None);
+        assert_eq!(query.request.minimum_nprobes, None);
+        assert_eq!(query.request.maximum_nprobes, None);
+        assert_eq!(query.request.search_effort, None);
+
+        let effort_query = query
+            .clone()
+            .nprobes(20)
+            .unwrap()
+            .search_effort(0.5)
+            .unwrap();
+        assert_eq!(effort_query.request.search_effort, Some(0.5));
+        assert_eq!(effort_query.request.nprobes, Some(20));
+        assert_eq!(effort_query.request.minimum_nprobes, None);
+        assert_eq!(effort_query.request.maximum_nprobes, None);
+        assert_eq!(
+            effort_query
+                .search_effort(None)
+                .unwrap()
+                .request
+                .search_effort,
+            None
+        );
         assert_eq!(
             *query
                 .request
@@ -2352,6 +2524,37 @@ mod tests {
             vector
         );
 
+        let minimum_only_query = query.clone().minimum_nprobes(20).unwrap();
+        assert_eq!(minimum_only_query.request.minimum_nprobes, Some(20));
+        assert_eq!(minimum_only_query.request.maximum_nprobes, None);
+
+        let maximum_only_query = query.maximum_nprobes(Some(20)).unwrap();
+        assert_eq!(maximum_only_query.request.minimum_nprobes, None);
+        assert_eq!(maximum_only_query.request.maximum_nprobes, Some(20));
+
+        let explicitly_unbounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .nprobes(20)
+            .unwrap()
+            .maximum_nprobes(None)
+            .unwrap();
+        assert_eq!(explicitly_unbounded_query.request.nprobes, Some(20));
+        assert_eq!(explicitly_unbounded_query.request.maximum_nprobes, Some(0));
+
+        let bounded_query = table
+            .query()
+            .nearest_to(&[0.1, 0.2])
+            .unwrap()
+            .minimum_nprobes(5)
+            .unwrap()
+            .nprobes(20)
+            .unwrap();
+        assert_eq!(bounded_query.request.nprobes, Some(20));
+        assert_eq!(bounded_query.request.minimum_nprobes, Some(5));
+        assert_eq!(bounded_query.request.maximum_nprobes, None);
+
         let new_vector = Float32Array::from_iter_values([9.8, 8.7]);
 
         let query = table
@@ -2360,7 +2563,8 @@ mod tests {
             .offset(1)
             .nearest_to(&[9.8, 8.7])
             .unwrap()
-            .nprobes(1000)
+            .nprobes(20)
+            .unwrap()
             .postfilter()
             .distance_type(DistanceType::Cosine)
             .approx_mode(ApproxMode::Accurate)
@@ -2378,12 +2582,38 @@ mod tests {
         );
         assert_eq!(query.request.base.limit.unwrap(), 100);
         assert_eq!(query.request.base.offset.unwrap(), 1);
-        assert_eq!(query.request.minimum_nprobes, 1000);
-        assert_eq!(query.request.maximum_nprobes, Some(1000));
+        assert_eq!(query.request.nprobes, Some(20));
+        assert_eq!(query.request.minimum_nprobes, None);
+        assert_eq!(query.request.maximum_nprobes, None);
         assert!(query.request.use_index);
         assert_eq!(query.request.distance_type, Some(DistanceType::Cosine));
         assert_eq!(query.request.approx_mode, Some(ApproxMode::Accurate));
         assert_eq!(query.request.refine_factor, Some(999));
+    }
+
+    #[tokio::test]
+    async fn test_nprobes_validation() {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn
+            .create_table("my_table", make_test_batches())
+            .execute()
+            .await
+            .unwrap();
+        let query = table.query().nearest_to(&[0.1, 0.2]).unwrap();
+
+        assert!(matches!(
+            query.clone().nprobes(0),
+            Err(Error::InvalidInput { message }) if message == "nprobes must be greater than 0"
+        ));
+
+        // Legacy probe counts remain independent until Lance resolves them.
+        let mut query = query;
+        for nprobes in [30, 1, 50] {
+            query = query.nprobes(nprobes).unwrap();
+            assert_eq!(query.request.nprobes, Some(nprobes));
+            assert_eq!(query.request.minimum_nprobes, None);
+            assert_eq!(query.request.maximum_nprobes, None);
+        }
     }
 
     #[test]
@@ -3576,8 +3806,12 @@ mod tests {
         assert_eq!(results[0].num_columns(), 1);
     }
 
+    #[rstest::rstest]
+    #[case::single_row(1)]
+    #[case::two_rows(2)]
+    #[case::three_rows(3)]
     #[tokio::test]
-    async fn test_take_offsets_preserves_duplicate_multiplicity() {
+    async fn test_take_offsets_preserves_duplicate_multiplicity(#[case] max_batch_length: u32) {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
@@ -3585,7 +3819,7 @@ mod tests {
             .take_offsets(vec![5, 1, 5, 17])
             .select(Select::Columns(vec!["id".to_string()]))
             .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 2,
+                max_batch_length,
                 ..Default::default()
             })
             .await
@@ -3594,7 +3828,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|batch| batch.num_rows() <= max_batch_length as usize)
+        );
         assert!(results.iter().all(|batch| batch.num_columns() == 1));
         let mut ids = results
             .iter()

@@ -16,8 +16,7 @@ use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
 
 use lance_namespace::models::{
-    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
-    ListTablesRequest,
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -29,18 +28,6 @@ pub struct Connection {
 #[napi(object)]
 pub struct DescribeNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
-}
-
-#[napi(object)]
-pub struct ListNamespacesResponse {
-    pub namespaces: Vec<String>,
-    pub page_token: Option<String>,
-}
-
-#[napi(object)]
-pub struct ListTablesResponse {
-    pub tables: Vec<String>,
-    pub page_token: Option<String>,
 }
 
 #[napi(object)]
@@ -239,31 +226,20 @@ impl Connection {
         op.execute().await.default_error()
     }
 
-    /// List a page of tables in the database.
+    /// Lazily list tables in the database.
     #[napi(catch_unwind)]
-    pub async fn list_tables(
+    pub fn list_tables(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListTablesResponse> {
-        let request = ListTablesRequest {
-            // The root namespace is an empty path, not an absent one: a namespace-backed
-            // database rejects a request that names no namespace.
-            id: Some(namespace_path.unwrap_or_default()),
-            page_token,
-            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
-            ..Default::default()
-        };
-        let response = self
-            .get_inner()?
-            .list_tables(request)
-            .await
-            .default_error()?;
-        Ok(ListTablesResponse {
-            tables: response.tables,
-            page_token: response.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -371,13 +347,15 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    pub async fn list_materialized_views(&self) -> napi::Result<Vec<String>> {
-        let views = self
-            .get_inner()?
-            .list_materialized_views()
-            .await
-            .default_error()?;
-        Ok(views)
+    pub fn list_materialized_views(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?
+                .list_materialized_views(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Drop a materialized view.
@@ -460,12 +438,18 @@ impl Connection {
 
     /// The names of the views in one namespace.
     #[napi(catch_unwind)]
-    pub async fn list_views(
+    pub fn list_views(
         &self,
         namespace_path: Option<Vec<String>>,
-    ) -> napi::Result<Vec<String>> {
-        let ns = namespace_path.unwrap_or_default();
-        self.get_inner()?.list_views(&ns).await.default_error()
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
     }
 
     /// Start dropping a materialized view and return its cleanup job.
@@ -588,9 +572,15 @@ impl Connection {
 
     /// List server-side jobs across the database's tables.
     #[napi(catch_unwind)]
-    pub async fn list_jobs(&self) -> napi::Result<Vec<crate::job::JobInfo>> {
-        let jobs = self.get_inner()?.list_jobs().await.default_error()?;
-        Ok(jobs.into_iter().map(Into::into).collect())
+    pub fn list_jobs(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::JobListing> {
+        Ok(crate::listing::JobListing::new(
+            self.get_inner()?
+                .list_jobs(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -649,28 +639,19 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    /// List child namespaces under the given namespace path
-    pub async fn list_namespaces(
+    /// Lazily list child namespaces under the given namespace path
+    pub fn list_namespaces(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListNamespacesResponse> {
-        let req = ListNamespacesRequest {
-            id: namespace_path,
-            page_token,
-            limit: limit.map(|l| l as i32),
-            ..Default::default()
-        };
-        let resp = self
-            .get_inner()?
-            .list_namespaces(req)
-            .await
-            .default_error()?;
-        Ok(ListNamespacesResponse {
-            namespaces: resp.namespaces,
-            page_token: resp.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]

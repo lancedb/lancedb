@@ -1,0 +1,551 @@
+---
+title: "Explain a query plan"
+sidebarTitle: "Query Plans"
+description: "Inspect query execution, identify expensive work and compare changes."
+icon: "map"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Query plans are available in OSS and Enterprise.
+---
+
+import { PyQueryPlan, TsQueryPlanBody, TsQueryPlanTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsQueryPlanBody, RsExampleTail as RsQueryPlanTail } from '/snippets/search_query_plan.mdx';
+
+Use query plans to understand how LanceDB reads data, applies filters and uses
+indexes. `explain_plan()` shows the planned operations. `analyze_plan()` runs
+the query and adds measurements, including execution time and rows processed.
+
+## Inspect a plan or measure execution {#inspect-a-query-plan}
+
+| Operation | Python / Rust | TypeScript |
+|:----------|:--------------|:-----------|
+| Inspect the plan without executing the query | `explain_plan()` | `explainPlan()` |
+| Execute the query and report runtime measurements | `analyze_plan()` | `analyzePlan()` |
+
+Use the first to inspect query structure and the second to investigate work
+actually performed. Operator names and available measurements can differ
+between OSS and Enterprise. SQL provides [EXPLAIN and EXPLAIN ANALYZE](/sql/dql/explain).
+
+<span id="try-both-methods-on-a-local-table"></span>
+
+<Accordion title="Explain and analyze a query in Python, TypeScript or Rust">
+
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
+
+- **Python:** Install with `pip install lancedb`, save as `query_plan.py`, then run `python query_plan.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `query_plan.mts`, then run `node query_plan.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin query_plan` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyQueryPlan}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsQueryPlanBody + "\n" + TsQueryPlanTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsQueryPlanBody + "\n" + RsQueryPlanTail}
+</CodeBlock>
+</CodeGroup>
+
+This tiny table demonstrates the API, not a performance benchmark. The plan
+uses a scan because the example has no vector index. The following larger
+example illustrates how to read scans, filters and index operations.
+
+</Accordion>
+
+## Read scans, filters and result retrieval {#reading-the-execution-plan}
+
+The recorded example below uses 1.2 million rows sampled from the
+[Wikipedia dataset](https://huggingface.co/datasets/wikimedia/wikipedia).
+The counts describe that run. The table initially has no indexes, so the plan
+shows a scan. This Enterprise plan includes `RemoteTake` and hides storage paths
+as `uri=***`. A local plan shows the dataset path instead, and fetches the result
+rows with Lance's `Take` or, depending on the library version, a second
+`LanceRead` whose `source` is `stream(_rowid)`.
+
+Let's examine a vector search query that:
+
+- Filters rows where `identifier` is between 0 and 1,000,000
+- Returns the top 100 matches
+- Projects specific columns: `chunk_index`, `title`, and `identifier`
+
+<CodeGroup>
+```python Python icon="python"
+# explain_plan
+query_explain_plan = (
+    table.search(query_embed)
+    .where("identifier > 0 AND identifier < 1000000")
+    .select(["chunk_index", "title", "identifier"])
+    .limit(100)
+    .explain_plan(True)
+)
+```
+
+```typescript TypeScript icon="square-js"
+// explain_plan
+const explainPlan = await table
+    .search(queryEmbed)
+    .where("identifier > 0 AND identifier < 1000000")
+    .select(["chunk_index", "title", "identifier"])
+    .limit(100)
+    .explainPlan(true);
+```
+</CodeGroup>
+
+### Execution Plan Components {#execution-plan-components}
+
+<Accordion title="Read the recorded vector plan operator by operator">
+
+
+The execution plan reveals the sequence of operations performed to execute your query. Let's examine each component:
+
+```
+ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier@1 as identifier, _distance@3 as _distance]
+  RemoteTake: columns="vector, identifier, _rowid, _distance, chunk_index, title"
+    CoalesceBatchesExec: target_batch_size=1024
+      GlobalLimitExec: skip=0, fetch=100
+        FilterExec: _distance@3 IS NOT NULL
+          SortExec: TopK(fetch=100), expr=[_distance@3 ASC NULLS LAST], preserve_partitioning=[false]
+            KNNVectorDistance: metric=l2
+              FilterExec: identifier@1 > 0 AND identifier@1 < 1000000
+                LanceScan: uri=***, projection=[vector, identifier], row_id=true, row_addr=false, ordered=false
+```
+
+#### 1\. Base Layer (LanceScan) {#1-base-layer-lancescan}
+
+- Initial data scan loading only specified columns to minimize I/O
+- Unordered scan enabling parallel processing
+
+```
+LanceScan: 
+- projection=[vector, identifier]
+- row_id=true, row_addr=false, ordered=false
+```
+
+#### 2\. First Filter {#2-first-filter}
+
+- Apply requested filter on `identifier` column
+- Reduces the number of vectors that need KNN computation
+
+```
+FilterExec: identifier@1 > 0 AND identifier@1 < 1000000
+```
+
+#### 3\. Vector Search {#3-vector-search}
+
+- Computes squared L2 distances between query vector and all vectors that passed the filter
+
+```
+KNNVectorDistance: metric=l2
+```
+
+#### 4\. Results Processing {#4-results-processing}
+
+- Filters out null distance results
+- Sorts by distance and takes top 100 results
+- Coalesces output into batches targeting 1,024 rows in this plan
+
+```
+SortExec: TopK(fetch=100)
+- expr=[_distance@3 ASC NULLS LAST]
+- preserve_partitioning=[false]
+FilterExec: _distance@3 IS NOT NULL
+GlobalLimitExec: skip=0, fetch=100
+CoalesceBatchesExec: target_batch_size=1024
+```
+
+#### 5\. Data Retrieval {#5-data-retrieval}
+
+- `RemoteTake` is the deployment's operator for this step; a local plan shows Lance's `Take` or a `LanceRead` over the selected row IDs, depending on the library version
+- Handles efficient data retrieval from remote storage locations
+- Fetches specific rows and columns needed for the final output
+- Optimizes network bandwidth by only retrieving required data
+
+```
+RemoteTake: columns="vector, identifier, _rowid, _distance, chunk_index, title"
+```
+
+#### 6\. Final Output {#6-final-output}
+
+- Returns only requested columns and maintains column ordering
+
+```text
+ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier@1 as identifier, _distance@3 as _distance]
+```
+
+This plan demonstrates a basic search without index optimizations: it performs a full scan and filter before vector search.
+
+
+</Accordion>
+
+## Non-vector queries {#analyzing-non-vector-queries}
+
+Query plans also cover filters and full-text search. Python can show both
+sub-plans of a hybrid query. Check where a filter runs and how many rows flow
+through each operator; a separate `FilterExec` does not by itself establish
+that the plan is inefficient or that an index is missing.
+
+### FTS queries {#fts-queries}
+
+<CodeGroup>
+```python Python icon="python"
+plan = (
+    table.search("puppy", query_type="fts")
+    .where("category = 'animals'", prefilter=True)
+    .limit(10)
+    .explain_plan(True)
+)
+print(plan)
+```
+
+```typescript TypeScript icon="square-js"
+const plan = await table
+    .query()
+    .fullTextSearch("puppy")
+    .where("category = 'animals'")
+    .limit(10)
+    .explainPlan(true);
+```
+</CodeGroup>
+
+Look for the text-index operation and any scan of unindexed rows. A scan can
+be needed to include records written after the index was built. Use index
+coverage and execution measurements to determine whether that extra work
+matters. Check filter placement separately from text-index use.
+
+### Hybrid queries {#hybrid-queries}
+
+For hybrid queries, `explain_plan` returns the reranker label followed by the vector and FTS sub-plans, indented for readability:
+
+<CodeGroup>
+```python Python icon="python"
+plan = (
+    table.search("flower moon", query_type="hybrid")
+    .where("category = 'film'", prefilter=True)
+    .limit(10)
+    .explain_plan(True)
+)
+print(plan)
+# RRFReranker(...)
+#   <vector sub-plan>
+#   <FTS sub-plan>
+```
+</CodeGroup>
+
+`analyze_plan` executes both sub-queries and labels them `Vector Search Plan:`
+and `FTS Search Plan:`. Compare their filter placement and execution measurements.
+
+`analyze_plan` executes the query and returns the physical plan annotated with
+runtime metrics such as elapsed time, rows produced, bytes read and index comparisons.
+Where [`explain_plan`](#inspect-a-query-plan) tells you what a query intends to do,
+analysis shows the work performed.
+
+<Note>
+The SQL equivalent is [`EXPLAIN ANALYZE`](/sql/dql/explain).
+</Note>
+
+## Read execution measurements {#analyze-a-query-plan}
+
+Executes the query and provides detailed runtime metrics, including:
+
+- Operation duration (`_elapsed_compute_`)
+- Data processing statistics (`_output_rows_`, `_bytes_read_`)
+- Index effectiveness (`_index_comparisons_`, `_indices_loaded_`)
+- Resource utilization (`_iops_`, `_requests_`)
+
+## Measure the example query {#performance-analysis}
+
+Let's use `analyze_plan` to run the query and analyze the query performance, which will help us identify potential bottlenecks:
+
+<CodeGroup>
+```python Python icon="python"
+# analyze_plan
+query_analyze_plan = (
+    table.search(query_embed)
+    .where("identifier > 0 AND identifier < 1000000")
+    .select(["chunk_index", "title", "identifier"])
+    .limit(100)
+    .analyze_plan()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// analyze_plan
+const analyzePlan = await table
+    .search(queryEmbed)
+    .where("identifier > 0 AND identifier < 1000000")
+    .select(["chunk_index", "title", "identifier"])
+    .limit(100)
+    .analyzePlan();
+```
+</CodeGroup>
+
+### Performance Metrics Analysis {#performance-metrics-analysis}
+
+<Accordion title="Inspect the recorded execution measurements">
+
+
+```
+ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier@1 as identifier, _distance@3 as _distance], metrics=[output_rows=100, elapsed_compute=1.424µs]
+    RemoteTake: columns="vector, identifier, _rowid, _distance, chunk_index, title", metrics=[output_rows=100, elapsed_compute=175.53097ms, output_batches=1, remote_takes=100]
+      CoalesceBatchesExec: target_batch_size=1024, metrics=[output_rows=100, elapsed_compute=2.748µs]
+        GlobalLimitExec: skip=0, fetch=100, metrics=[output_rows=100, elapsed_compute=1.819µs]
+          FilterExec: _distance@3 IS NOT NULL, metrics=[output_rows=100, elapsed_compute=10.275µs]
+            SortExec: TopK(fetch=100), expr=[_distance@3 ASC NULLS LAST], preserve_partitioning=[false], metrics=[output_rows=100, elapsed_compute=39.259451ms, row_replacements=546]
+              KNNVectorDistance: metric=l2, metrics=[output_rows=1099508, elapsed_compute=56.783526ms, output_batches=1076]
+                FilterExec: identifier@1 > 0 AND identifier@1 < 1000000, metrics=[output_rows=1099508, elapsed_compute=17.136819ms]
+                  LanceScan: uri=***, projection=[vector, identifier], row_id=true, row_addr=false, ordered=false, metrics=[output_rows=1200000, elapsed_compute=21.348178ms, bytes_read=1852931072, iops=78, requests=78]
+```
+
+#### 1\. Data Loading (LanceScan) {#1-data-loading-lancescan}
+
+- Scanned 1,200,000 rows from the LanceDB table
+- Read 1.86GB of data in 78 I/O operations
+- Only loaded necessary columns (`vector` and `identifier`)
+- Unordered scan for parallel processing
+
+#### 2\. Filtering and Search {#2-filtering-and-search}
+
+- Applied prefilter condition (`identifier > 0 AND identifier < 1000000`)
+- Reduced dataset from 1.2M to 1,099,508 rows
+- KNN search used L2 (Euclidean) distance metric
+- Vector comparisons processed in 1076 batches
+
+#### 3\. Results Processing {#3-results-processing}
+
+- KNN results sorted by distance (TopK with fetch=100)
+- Null distances filtered out
+- Batches coalesced to target size of 1024 rows
+- Additional columns fetched for final results
+- Remote take operation for 100 results
+- Final projection of required columns
+
+
+</Accordion>
+
+### Distributed metrics on remote tables {#distributed-metrics-on-remote-tables}
+
+<Badge color="red">Enterprise</Badge>
+
+When you call `analyze_plan` against a LanceDB Enterprise deployment that distributes its queries across a pool of workers, the query runs on those workers. By default the returned plan aggregates each operator's metrics into a single value, matching the local single-node output. Pass a `distributed_metrics` mode when you need to see how work was split across workers:
+
+| Mode          | What it shows                                                                       | When to use it                                                                                          |
+| :------------ | :---------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ |
+| `aggregate`   | One summary value per operator (default). Same shape as local `analyze_plan`.       | Everyday performance checks and comparisons against a local plan.                                       |
+| `per_worker`  | Metrics reported separately for each worker that participated in the query.         | Diagnosing stragglers or uneven work distribution across the cluster.                                   |
+| `full`        | Both the aggregate summary and the per-worker breakdown.                            | Deep investigations where you need the totals *and* the per-worker detail in a single output.           |
+
+Python exposes this option through `distributed_metrics`. In TypeScript, pass
+the same mode to `analyzePlan()` as its `distributedMetrics` argument. Local
+Python queries ignore the distributed mode and return local measurements.
+
+<CodeGroup>
+```python Python icon="python"
+# Show a per-worker breakdown for a remote query
+plan = (
+    table.search(query_embed)
+    .where("identifier > 0 AND identifier < 1000000")
+    .limit(100)
+    .analyze_plan(distributed_metrics="per_worker")
+)
+print(plan)
+```
+
+
+</CodeGroup>
+
+<Note>
+Use `per_worker` or `full` sparingly; the plan output grows with the size of your worker pool. Stick with the default `aggregate` mode for routine tuning.
+</Note>
+
+### Identify expensive operations {#key-observations}
+
+- The query computes distances for 1,099,508 vectors; inspect timings to assess its contribution to latency
+- The scan reads 1.86 GB in this recorded run
+- Full table scan due to lack of indices
+- Compare this scan with an indexed plan using the same query
+
+## Compare the query after adding indexes {#optimized-query-execution}
+
+<Accordion title="Compare the recorded indexed and unindexed plans">
+
+
+The recorded query after adding vector and scalar indexes produced this plan:
+
+```
+ProjectionExec: expr=[chunk_index@3 as chunk_index, title@4 as title, identifier@2 as identifier, _distance@0 as _distance]
+  RemoteTake: columns="_distance, _rowid, identifier, chunk_index, title"
+    CoalesceBatchesExec: target_batch_size=1024
+      GlobalLimitExec: skip=0, fetch=100
+        SortExec: TopK(fetch=100), expr=[_distance@0 ASC NULLS LAST], preserve_partitioning=[false]
+          ANNSubIndex: name=vector_idx, k=100, deltas=1
+            ANNIvfPartition: uuid=83916fd5-fc45-4977-bad9-1f0737539bb9, nprobes=20, deltas=1
+            ScalarIndexQuery: query=AND(identifier > 0,identifier < 1000000)
+```
+
+### Optimized Plan Analysis {#optimized-plan-analysis}
+
+#### 1\. Scalar Index Query {#1-scalar-index-query}
+
+```
+ScalarIndexQuery: query=AND(identifier > 0,identifier < 1000000)
+metrics=[
+    output_rows=2
+    index_comparisons=2,301,824
+    indices_loaded=2
+    output_batches=1
+    parts_loaded=562
+    elapsed_compute=86.979354ms
+]
+```
+
+- Range filter using scalar index
+- Only 2 index files and 562 scalar index parts loaded
+- 2.3M index comparisons for matches
+
+#### 2\. Vector Search {#2-vector-search}
+
+```
+ANNSubIndex: name=vector_idx, k=100, deltas=1
+metrics=[
+    output_rows=2,000
+    index_comparisons=25,893
+    indices_loaded=0
+    output_batches=20
+    parts_loaded=20
+    elapsed_compute=111.849043ms
+]
+```
+
+- IVF index with 20 probes
+- Only 20 index parts loaded
+- 25,893 vector comparisons
+- 2,000 matching vectors
+
+#### 3\. Results Processing {#3-results-processing-2}
+
+```
+SortExec: TopK(fetch=100), expr=[_distance@0 ASC NULLS LAST], preserve_partitioning=[false]
+GlobalLimitExec: skip=0, fetch=100
+CoalesceBatchesExec: target_batch_size=1024
+```
+
+- Sorts by distance
+- Limits to top 100 results
+- Batches into groups of 1024
+
+#### 4\. Data Fetching {#4-data-fetching}
+
+```
+RemoteTake: columns="_distance, _rowid, identifier, chunk_index, title"
+metrics=[output_rows=100, elapsed_compute=113.491859ms, output_batches=1, remote_takes=100]
+```
+
+- Single output batch
+- One remote take per row
+
+#### 5\. Final Projection {#5-final-projection}
+
+```
+ProjectionExec: expr=[chunk_index@3 as chunk_index, title@4 as title, identifier@2 as identifier, _distance@0 as _distance]
+```
+
+- Returns specified columns: chunk_index, title, identifier, and distance
+
+### Performance Improvements {#performance-improvements}
+
+#### 1\. Initial Data Access {#1-initial-data-access}
+
+```
+ScalarIndexQuery metrics:
+- indices_loaded=2
+- parts_loaded=562
+- output_batches=1
+```
+
+- Before: Full table scan of 1.2M rows, 1.86GB data
+- After: Only 2 indices and 562 scalar index parts loaded
+- Benefit: Eliminated table scans for prefilter
+
+#### 2\. Vector Search Efficiency {#2-vector-search-efficiency}
+
+```
+ANNSubIndex:
+- index_comparisons=25,893
+- indices_loaded=0
+- parts_loaded=20
+- output_batches=20
+```
+
+- Before: L2 calculations on 1,099,508 vectors
+- After: 
+  - About 97.6% fewer vector comparisons (25,893 versus 1,099,508)
+  - Decreased output batches from 1,076 to 20
+
+#### 3\. Data Retrieval Optimization {#3-data-retrieval-optimization}
+
+```
+RemoteTake:
+- remote_takes=100
+- output_batches=1
+```
+
+- RemoteTake operation remains consistent
+
+
+</Accordion>
+
+## Choose a change to measure {#performance-optimization-guide}
+
+### 1\. Index Implementation {#1-index-implementation}
+
+#### When to Create Indices {#when-to-create-indices}
+
+- Columns used in WHERE clauses
+- Vector columns for similarity searches
+- Join columns used in `merge_insert`
+
+#### Index Type Selection {#index-type-selection}
+
+| Data Type   | Recommended Index  | Use Case                                 |
+| ----------- | ------------------ | ---------------------------------------- |
+| Vector      | IVF_PQ/IVF_HNSW_SQ/IVF_HNSW_FLAT | Approximate nearest neighbor search      |
+| Scalar      | B-Tree             | Equality and range filters               |
+| Categorical | Bitmap             | Multi-value filters and set operations   |
+| `List`      | Label_list         | Multi-label classification and filtering |
+
+<Card title="Index Coverage Monitoring" icon="lightbulb">
+Use `table.index_stats()` to monitor index coverage.
+Unindexed rows can add scan work. Use their count alongside query measurements
+to decide when index maintenance is needed.
+</Card>
+
+### 2\. Query Plan Optimization {#2-query-plan-optimization}
+
+#### Common Patterns and Fixes {#common-patterns-and-fixes}
+
+| Plan Pattern                               | Optimization                                 |
+| ------------------------------------------ | -------------------------------------------- |
+| Scan with high bytes read or I/O count | Check index coverage and whether the query can use an index |
+|                                            | Use `select()` to limit returned columns     |
+|                                            | Check whether the dataset has been compacted |
+| Multiple filters | Check their placement and row counts; compare the plan after changing the query |
+
+<Note>
+Regularly analyze your query plans to identify and address performance
+bottlenecks. The `analyze_plan` output provides detailed metrics to guide
+optimization efforts.
+</Note>
+
+### 3\. Getting Started with Optimization {#3-getting-started-with-optimization}
+
+Keep the query, data and result limit fixed while changing one factor. Compare
+rows processed, bytes read, timings and returned results. For ANN changes,
+measure recall too: doing less work is useful only if retrieval quality meets
+your application's needs. See [vector indexes](/indexing/vector-index) and
+[scalar indexes](/indexing/scalar-index) for index choices.

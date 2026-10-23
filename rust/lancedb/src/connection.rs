@@ -13,7 +13,7 @@ use lance::dataset::refs::MAIN_BRANCH;
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
     DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
-    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    ListTablesRequest,
 };
 #[cfg(feature = "aws")]
 use object_store::aws::AwsCredential;
@@ -23,11 +23,12 @@ use crate::connection::create_table::CreateTableBuilder;
 use crate::data::scannable::Scannable;
 use crate::database::listing::ListingDatabase;
 use crate::database::{
-    CloneTableRequest, Database, DatabaseOptions, JobInfo, OpenTableRequest, PauseJobStatus,
-    ReadConsistency, ResumeJobStatus, TableNamesRequest,
+    CloneTableRequest, Database, DatabaseOptions, ExecuteQueryRequest, JobInfo, OpenTableRequest,
+    PauseJobStatus, ReadConsistency, ResumeJobStatus, TableNamesRequest,
 };
 use crate::embeddings::{EmbeddingRegistry, MemoryRegistry};
 use crate::error::{Error, Result};
+use crate::listing::{Listing, ListingOptions, ListingPage};
 #[cfg(feature = "remote")]
 use crate::remote::{
     client::ClientConfig,
@@ -37,10 +38,7 @@ use crate::remote::{
     },
 };
 use crate::secrets::SecretInfo;
-use crate::utils::{
-    validate_namespace, validate_secret_component, validate_secret_reference,
-    validate_view_reference,
-};
+use crate::utils::{validate_namespace, validate_secret_reference, validate_view_reference};
 use crate::view::ViewDescription;
 use lance::io::ObjectStoreParams;
 pub use lance_file::version::LanceFileVersion;
@@ -105,7 +103,9 @@ impl TableNamesBuilder {
         self
     }
 
-    /// The maximum number of table names to return
+    /// The maximum number of table names to return.
+    ///
+    /// Without a limit, all names are returned. Zero returns an empty list.
     pub fn limit(mut self, limit: u32) -> Self {
         self.request.limit = Some(limit);
         self
@@ -334,16 +334,14 @@ pub struct CloneTableBuilder {
 /// Builder for asynchronously executing a SQL statement on a remote database.
 pub struct ExecuteQueryAsyncBuilder {
     parent: Arc<dyn Database>,
-    query: String,
-    default_namespace_path: Vec<String>,
+    request: ExecuteQueryRequest,
 }
 
 impl ExecuteQueryAsyncBuilder {
     fn new(parent: Arc<dyn Database>, query: String) -> Self {
         Self {
             parent,
-            query,
-            default_namespace_path: vec!["public".to_string()],
+            request: ExecuteQueryRequest::new(query),
         }
     }
 
@@ -356,15 +354,63 @@ impl ExecuteQueryAsyncBuilder {
         I: IntoIterator<Item = S>,
         S: Into<String>,
     {
-        self.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self.request.default_namespace_path = path.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Bind values to the statement's placeholders.
+    ///
+    /// `parameters` is a single-row batch. Column `i` binds `$<i + 1>`, and a
+    /// column whose name is not a number also binds `$<name>`, so
+    /// `WHERE id = $1` and `WHERE id = $id` both work. The values travel as
+    /// Arrow rather than as SQL text, so a float keeps its exact bits and type
+    /// and a vector stays a compact `FixedSizeList`.
+    ///
+    /// Every placeholder needs a value and every parameter must be used by a
+    /// placeholder. Parameters are supported in queries (`SELECT`, and
+    /// `EXPLAIN` of one), not in DDL or DML, nor in table-function arguments.
+    /// Do not follow a named placeholder directly with `$`: `$a$` starts a
+    /// dollar-quoted string.
+    ///
+    /// A parameterized statement runs on the call that returns its rows rather
+    /// than detached from it: cancelling the query, or dropping its handle
+    /// before reading it, stops the statement on the server. Its status follows
+    /// that stream too -- it reports `Running` until the reader has received
+    /// every row -- so open the reader directly rather than waiting for
+    /// `Finished`.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// # use std::sync::Arc;
+    /// # use arrow_array::{ArrayRef, FixedSizeListArray, Int64Array, RecordBatch};
+    /// # use arrow_array::types::Float32Type;
+    /// # async fn query(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// let vector = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+    ///     [Some([0.1_f32, 0.2, 0.3].map(Some))],
+    ///     3,
+    /// );
+    /// let parameters = RecordBatch::try_from_iter([
+    ///     ("vector", Arc::new(vector) as ArrayRef),
+    ///     ("k", Arc::new(Int64Array::from(vec![10])) as ArrayRef),
+    /// ])?;
+    /// let query = db
+    ///     .execute_query_async("SELECT id FROM docs ORDER BY distance(vector, $vector) LIMIT $k")
+    ///     .parameters(parameters)
+    ///     .execute()
+    ///     .await?;
+    /// let rows = query.reader().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn parameters(mut self, parameters: RecordBatch) -> Self {
+        self.request.parameters = Some(parameters);
         self
     }
 
     /// Start the statement and return its asynchronous query handle.
     pub async fn execute(self) -> Result<crate::sql::Query> {
-        self.parent
-            .execute_query_async(&self.query, &self.default_namespace_path)
-            .await
+        self.parent.execute_query_async(self.request).await
     }
 }
 
@@ -455,8 +501,9 @@ impl Connection {
     ///
     /// The query can reference tables in other databases with SQL dot notation.
     /// Use [`ExecuteQueryAsyncBuilder::default_namespace_path`] to avoid qualifying
-    /// tables in the default namespace. Local connections return
-    /// [`Error::NotSupported`].
+    /// tables in the default namespace, and [`ExecuteQueryAsyncBuilder::parameters`]
+    /// to bind Arrow values to `$1` / `$name` placeholders instead of writing them
+    /// into the SQL text. Local connections return [`Error::NotSupported`].
     ///
     /// # Example
     ///
@@ -505,7 +552,8 @@ impl Connection {
     /// under creation, may contain only uncommitted storage, or may be concurrently
     /// dropped before it is opened.
     ///
-    /// The parameters `page_token` and `limit` can be used to paginate the results
+    /// Without a limit, all names are returned. The parameters `start_after` and
+    /// `limit` can be used to paginate the results.
     pub fn table_names(&self) -> TableNamesBuilder {
         TableNamesBuilder::new(self.internal.clone())
     }
@@ -568,6 +616,7 @@ impl Connection {
     /// Creates a new table by cloning from an existing source table.
     /// By default, this performs a shallow clone where the new table shares
     /// the underlying data files with the source table.
+    /// The target table name must be unused. An existing table is left unchanged.
     ///
     /// # Parameters
     /// - `target_table_name`: The name of the new table to create
@@ -624,8 +673,7 @@ impl Connection {
     /// List every published immutable Function version in `namespace_path` of
     /// the remote catalog. Functions in child namespaces are not included.
     ///
-    /// Results are ordered by Function name then version. The client walks all
-    /// server pages before returning. Local databases return
+    /// Results are ordered by Function name then version. Local databases return
     /// [`Error::NotSupported`].
     ///
     /// # Example
@@ -634,17 +682,30 @@ impl Connection {
     /// # async fn list_functions(
     /// #     connection: &lancedb::Connection,
     /// # ) -> Result<(), Box<dyn std::error::Error>> {
-    /// for function in connection.list_functions(&[]).await? {
+    /// use futures::TryStreamExt;
+    /// let mut functions = connection.list_functions(&[], Default::default());
+    /// while let Some(function) = functions.try_next().await? {
     ///     println!("{} {}", function.name(), function.version());
     /// }
     /// # Ok(())
     /// # }
     /// ```
-    pub async fn list_functions(
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    pub fn list_functions(
         &self,
         namespace_path: &[String],
-    ) -> Result<Vec<crate::function::FunctionVersion>> {
-        self.internal.list_functions(namespace_path).await
+        options: ListingOptions,
+    ) -> Listing<crate::function::FunctionVersion> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move { database.list_functions(&namespace_path, options).await }
+        })
     }
 
     /// Remove the current Function name binding, retaining the object history.
@@ -722,11 +783,35 @@ impl Connection {
     /// Names only. No path in this API returns a stored credential, by
     /// construction rather than by policy. Local databases return
     /// [`Error::NotSupported`].
-    pub async fn list_secrets(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        for segment in namespace_path {
-            validate_secret_component("Secret namespace path segment", segment)?;
-        }
-        self.internal.list_secrets(namespace_path).await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_secrets(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_secrets(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database.list_secrets(&namespace_path, options).await
+            }
+        })
     }
 
     /// Drop a Secret.
@@ -794,7 +879,8 @@ impl Connection {
     /// let described = connection.describe_view("recent_orders", &namespace).await?;
     /// println!("{} in {:?}", described.query, described.default_namespace_path);
     ///
-    /// let names = connection.list_views(&namespace).await?;
+    /// use futures::TryStreamExt;
+    /// let names: Vec<_> = connection.list_views(&namespace, Default::default()).try_collect().await?;
     /// assert!(names.iter().any(|name| name == "recent_orders"));
     ///
     /// // Dropping the view leaves `orders` untouched.
@@ -870,11 +956,36 @@ impl Connection {
     /// The names of the views in one namespace.
     ///
     /// Names only; a definition is query metadata and comes from
-    /// [`Self::describe_view`]. The client walks all server pages before
-    /// returning. Local databases return [`Error::NotSupported`].
-    pub async fn list_views(&self, namespace_path: &[String]) -> Result<Vec<String>> {
-        validate_namespace(namespace_path)?;
-        self.internal.list_views(namespace_path).await
+    /// [`Self::describe_view`]. Local databases return [`Error::NotSupported`].
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_views(&[], Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_views(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database.list_views(&namespace_path, options).await
+            }
+        })
     }
 
     /// Rename a table in the database.
@@ -933,8 +1044,26 @@ impl Connection {
     }
 
     /// List server-side jobs across the database's tables.
-    pub async fn list_jobs(&self) -> Result<Vec<JobInfo>> {
-        self.internal.list_jobs().await
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_jobs(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_jobs(&self, options: ListingOptions) -> Listing<JobInfo> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_jobs(options).await }
+        })
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -997,12 +1126,43 @@ impl Connection {
         self.internal.drop_all_tables(namespace_path).await
     }
 
-    /// List immediate child namespace names in the given namespace
-    pub async fn list_namespaces(
+    /// Lazily list immediate child namespace names. Each request asks for at
+    /// most 100 names unless `options.page_limit` is set.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let names: Vec<String> = connection.list_namespaces(&[], Default::default())
+    ///     .try_collect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_namespaces(
         &self,
-        request: ListNamespacesRequest,
-    ) -> Result<ListNamespacesResponse> {
-        self.internal.list_namespaces(request).await
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                let response = database
+                    .list_namespaces(ListNamespacesRequest {
+                        id: Some(namespace_path),
+                        page_token: options.page_token,
+                        limit: Some(options.page_limit.unwrap_or(100) as i32),
+                        ..Default::default()
+                    })
+                    .await?;
+                Ok(ListingPage {
+                    items: response.namespaces,
+                    page_token: response.page_token,
+                })
+            }
+        })
     }
 
     /// Create a new namespace
@@ -1053,9 +1213,43 @@ impl Connection {
         self.internal.namespace_client_config().await
     }
 
-    /// List tables with pagination support
-    pub async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse> {
-        self.internal.list_tables(request).await
+    /// Lazily list tables. Each request asks for at most 100 names unless
+    /// `options.page_limit` is set.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let names: Vec<String> = connection.list_tables(&[], Default::default())
+    ///     .try_collect().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_tables(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                let response = database
+                    .list_tables(ListTablesRequest {
+                        id: Some(namespace_path),
+                        page_token: options.page_token,
+                        limit: Some(options.page_limit.unwrap_or(100) as i32),
+                        ..Default::default()
+                    })
+                    .await?;
+                Ok(ListingPage {
+                    items: response.tables,
+                    page_token: response.page_token,
+                })
+            }
+        })
     }
 
     /// Get the in-memory embedding registry.
@@ -2117,27 +2311,50 @@ mod tests {
         }
         names.sort();
 
-        // Walking in pages has to reach every table exactly once, with nothing lost at a
-        // page boundary.
-        let mut seen = Vec::with_capacity(names.len());
-        let mut page_token = None;
-        loop {
-            let page = db
-                .list_tables(ListTablesRequest {
-                    id: Some(Vec::new()),
-                    limit: Some(2),
-                    page_token,
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            seen.extend(page.tables);
-            page_token = page.page_token.filter(|token| !token.is_empty());
-            if page_token.is_none() {
-                break;
-            }
-        }
+        let seen = futures::TryStreamExt::try_collect::<Vec<_>>(
+            db.list_tables(&[], ListingOptions::default().page_limit(2)),
+        )
+        .await
+        .unwrap();
         assert_eq!(seen, names);
+    }
+
+    #[tokio::test]
+    async fn test_table_listing_defaults_and_zero_limit() {
+        let tempdir = tempfile::tempdir().unwrap();
+        // Listing discovers physical entries without opening the datasets.
+        let names: Vec<_> = (0..130).map(|i| format!("t{i:03}")).collect();
+        for name in &names {
+            std::fs::create_dir(tempdir.path().join(format!("{name}.lance"))).unwrap();
+        }
+        let db = connect(tempdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(db.table_names().execute().await.unwrap(), names);
+        assert!(
+            db.table_names()
+                .limit(0)
+                .execute()
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        let mut listing = db.list_tables(&[], ListingOptions::default());
+        assert_eq!(listing.num_page_results(), 0);
+        let first = listing.next_page().await.unwrap().unwrap();
+        assert_eq!(first.items, names[..100]);
+        assert!(first.page_token.is_some());
+        let second = listing.next_page().await.unwrap().unwrap();
+        assert_eq!(second.items, names[100..]);
+        assert!(second.page_token.is_none());
+        assert!(listing.next_page().await.unwrap().is_none());
+
+        let mut all = db.list_tables(&[], ListingOptions::default().page_limit(200));
+        assert_eq!(all.next_page().await.unwrap().unwrap().items, names);
+        let mut invalid = db.list_tables(&[], ListingOptions::default().page_limit(0));
+        assert!(invalid.next_page().await.is_err());
     }
 
     #[tokio::test]
@@ -2191,6 +2408,63 @@ mod tests {
 
         let tables = db.table_names().execute().await.unwrap();
         assert_eq!(tables.len(), 0);
+    }
+
+    #[rstest::rstest]
+    #[tokio::test]
+    async fn test_clone_table_target_already_exists(
+        #[values("source", "target")] target: &str,
+        #[values(false, true)] enable_v2_manifest_paths: bool,
+    ) {
+        use crate::query::ExecutableQuery;
+        use futures::TryStreamExt;
+
+        let tmp_dir = tempdir().unwrap();
+        let options = ListingDatabaseOptions::builder()
+            .enable_v2_manifest_paths(enable_v2_manifest_paths)
+            .build();
+        let db = connect(tmp_dir.path().to_str().unwrap())
+            .database_options(&options)
+            .execute()
+            .await
+            .unwrap();
+        let source_data = arrow_array::record_batch!(("id", Int32, [0, 1, 2])).unwrap();
+        let target_data = arrow_array::record_batch!(("id", Int32, [10, 11])).unwrap();
+        db.create_table("source", source_data.clone())
+            .execute()
+            .await
+            .unwrap();
+        db.create_table("target", target_data.clone())
+            .execute()
+            .await
+            .unwrap();
+
+        let source_uri = tmp_dir.path().join("source.lance");
+        let err = db
+            .clone_table(target, source_uri.to_str().unwrap())
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TableAlreadyExists { name } if name == target),
+            "unexpected clone error: {err:?}"
+        );
+
+        // Reopen both tables to verify that the failed clone left their data and versions intact.
+        for (name, expected_data) in [("source", source_data), ("target", target_data)] {
+            let table = db.open_table(name).execute().await.unwrap();
+            assert_eq!(table.version().await.unwrap(), 1);
+            assert_eq!(table.list_versions().await.unwrap().len(), 1);
+            let batches = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            assert_eq!(batches, vec![expected_data]);
+        }
     }
 
     #[tokio::test]

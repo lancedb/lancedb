@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 import sys
@@ -31,17 +32,24 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import EnforceOverrides, override  # type: ignore
 
+from lancedb.listing import (
+    AsyncListing,
+    AsyncNamespaceListing,
+    AsyncTableListing,
+    Listing,
+    NamespaceListing,
+    TableListing,
+    validate_page_limit,
+)
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 from lance_namespace import (
     LanceNamespace,
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
     connect as namespace_connect,
 )
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
@@ -52,12 +60,11 @@ from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
-from .sql import QueryDescription
+from .sql import QueryDescription, QueryParameters, to_parameter_batch
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewSource,
-    VectorDedupSource,
     SelectArg,
     normalize_select,
 )
@@ -122,14 +129,55 @@ def _view_description(
 
 
 class DBConnection(EnforceOverrides):
-    """An active LanceDB connection interface."""
+    """An active LanceDB connection interface.
+
+    Use [close][lancedb.db.DBConnection.close] to release the connection's
+    underlying resources, or use the connection as a context manager to close it
+    automatically when leaving the block, including when an exception is raised.
+
+    Examples
+    --------
+    >>> import lancedb
+    >>> with lancedb.connect("memory://") as db:
+    ...     assert db.is_open()
+    >>> db.is_open()
+    False
+    """
+
+    def __enter__(self) -> DBConnection:
+        return self
+
+    def __exit__(self, *_) -> None:
+        self.close()
+
+    @abstractmethod
+    def is_open(self) -> bool:
+        """Return True if the connection is open."""
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        """Close the connection, releasing any underlying resources.
+
+        It is safe to call this method multiple times. Database operations on a
+        closed connection raise ``RuntimeError: Connection is closed``.
+
+        Examples
+        --------
+        >>> import lancedb
+        >>> db = lancedb.connect("memory://")
+        >>> db.close()
+        >>> db.is_open()
+        False
+        """
+        pass
 
     def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -145,12 +193,12 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return ListNamespacesResponse(namespaces=[], page_token=None)
+        return NamespaceListing(AsyncNamespaceListing(None, empty=True))
 
     def create_namespace(
         self,
@@ -275,8 +323,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -287,11 +335,12 @@ class DBConnection(EnforceOverrides):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         raise NotImplementedError(
@@ -302,7 +351,7 @@ class DBConnection(EnforceOverrides):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -316,8 +365,9 @@ class DBConnection(EnforceOverrides):
         page_token: str, optional
             The token to use for pagination. If not present, start from the beginning.
             Typically, this token is last table name from the previous page.
-        limit: int, default 10
-            The size of the page to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -368,9 +418,10 @@ class DBConnection(EnforceOverrides):
             - [LanceModel][lancedb.pydantic.LanceModel]
         mode: str; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -563,6 +614,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -571,21 +624,12 @@ class DBConnection(EnforceOverrides):
         table. The view is a normal table: it can be queried, indexed and
         searched, and it appears in ``table_names``.
 
-        Ordinary source tables must have stable row ids (create them with the
-        ``new_table_enable_stable_row_ids`` storage option): they keep the
-        view's provenance valid across source compactions, and cannot be
-        enabled after a table exists. Native dedup sources also support physical
-        row IDs interpreted against their pinned snapshot.
-
         Parameters
         ----------
         name: str
             The name of the view.
-        source: str or VectorDedupSource
-            The name of the source table, or an indexed dedup source declared
-            with [vector_dedup][lancedb.vector_dedup]. Dedup sources capture a
-            fixed snapshot and preserve the source table. They accept no
-            additional select, where or limit options.
+        source: str
+            The name of the source table.
         select: list or dict, optional
             The view's columns: column names, ``(alias, SQL expression)``
             pairs, or a dict of the same. Omitting it selects every source
@@ -596,6 +640,13 @@ class DBConnection(EnforceOverrides):
             Cap the view at this many rows, in materialization order.
         with_no_data: bool, default False
             Skip the initial refresh and leave the backing table empty.
+        auto_refresh_enabled: bool, optional
+            Enable or disable automatic refresh on Cloud and Enterprise.
+            When omitted, the server determines whether automatic refresh is enabled.
+            Embedded databases do not support automatic refresh.
+        auto_refresh_interval_seconds: float, optional
+            Positive, finite refresh interval in seconds on Cloud and Enterprise.
+            When omitted, the server determines when to refresh.
 
         Returns
         -------
@@ -614,6 +665,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
@@ -636,11 +689,16 @@ class DBConnection(EnforceOverrides):
             "materialized views are not supported on this connection type"
         )
 
-    def list_materialized_views(self) -> List[str]:
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
         """The names of the materialized views in this database.
 
-        Found by reading every table's schema, so this costs an open per
-        table.
+        Local listings inspect table schemas one page at a time.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -853,8 +911,12 @@ class DBConnection(EnforceOverrides):
         )
 
     def list_functions(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[FunctionVersion]:
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[FunctionVersion]:
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
@@ -868,6 +930,10 @@ class DBConnection(EnforceOverrides):
         ```python
         [(function.name, function.version) for function in db.list_functions()]
         ```
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -939,11 +1005,21 @@ class DBConnection(EnforceOverrides):
             "Secret operations are not supported for this connection type"
         )
 
-    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+    def list_secrets(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
         """The names of every Secret in this database.
 
         Names only. No method returns a stored credential, by construction
         rather than by policy. Local connections raise ``NotImplementedError``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
             "Secret operations are not supported for this connection type"
@@ -1041,12 +1117,22 @@ class DBConnection(EnforceOverrides):
             "View operations are not supported for this connection type"
         )
 
-    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
+    def list_views(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
         """The names of the views in one namespace.
 
         Names only; a definition comes from
         [describe_view][lancedb.db.DBConnection.describe_view]. Local
         connections raise ``NotImplementedError``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
@@ -1065,8 +1151,15 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("open_job is not supported for this connection type")
 
-    def list_jobs(self) -> List[JobInfo]:
-        """List server-side jobs across the database's tables."""
+    def list_jobs(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[JobInfo]:
+        """List server-side jobs across the database's tables.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
         raise NotImplementedError("list_jobs is not supported for this connection type")
 
     def cancel_job(self, job_id: str) -> bool:
@@ -1105,6 +1198,7 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> pa.RecordBatchReader:
         """Execute SQL and return a blocking Arrow reader.
 
@@ -1115,6 +1209,7 @@ class DBConnection(EnforceOverrides):
         return self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         ).reader()
 
     def execute_query_async(
@@ -1122,8 +1217,31 @@ class DBConnection(EnforceOverrides):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> SqlQuery:
         """Start executing SQL and return its query handle.
+
+        ``parameters`` binds values to the statement's ``$1`` / ``$name``
+        placeholders. They travel as Arrow rather than as SQL text, so a
+        float keeps its exact value and type and a vector stays a compact
+        fixed-size list. A list binds by position, a dict binds by name, and
+        a one-row ``pyarrow.RecordBatch`` or ``pyarrow.Table`` binds both
+        ways. A 1-D numpy or pyarrow array becomes a fixed-size list of its
+        element type, the shape of a vector column:
+
+        .. code-block:: python
+
+            db.execute_query(
+                "SELECT id FROM docs ORDER BY distance(vector, $1) LIMIT $2",
+                parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
+            )
+
+        Parameters are supported in queries, not in DDL or DML. A
+        parameterized query runs on the call that returns its rows:
+        cancelling it, or dropping its handle before reading, stops it on the
+        server. Its status follows that stream as well: ``describe()``
+        reports ``running`` until the reader has received every row, so open
+        ``reader()`` directly rather than waiting for ``finished``.
 
         Local connections do not support SQL.
         """
@@ -1188,6 +1306,10 @@ class LanceDBConnection(DBConnection):
         self.storage_options = storage_options
         self._manifest_enabled = manifest_enabled
         self._namespace_client_properties = namespace_client_properties
+        # The native connection does not expose the Python Session wrapper.
+        # Keep the object supplied by the caller so this property stays
+        # synchronous for debugger inspection.
+        self._session = session
         if _inner is not None:
             self._conn = _inner
             # Native-derived wrappers resolve this in their async reconstruction
@@ -1254,7 +1376,12 @@ class LanceDBConnection(DBConnection):
 
     @property
     def session(self) -> Optional[Session]:
-        return self._conn.session
+        """Return the session supplied when this connection was opened.
+
+        None when the caller did not pass a session, including connections
+        reconstructed with :meth:`from_inner`.
+        """
+        return self._session
 
     @property
     def uri(self) -> str:
@@ -1274,6 +1401,14 @@ class LanceDBConnection(DBConnection):
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(uri={self._conn.uri!r})"
+
+    @override
+    def is_open(self) -> bool:
+        return self._conn.is_open()
+
+    @override
+    def close(self) -> None:
+        self._conn.close()
 
     @override
     def serialize(self) -> str:
@@ -1307,7 +1442,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -1323,16 +1458,14 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
@@ -1383,8 +1516,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -1395,16 +1528,17 @@ class LanceDBConnection(DBConnection):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -1414,7 +1548,7 @@ class LanceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
@@ -1429,8 +1563,9 @@ class LanceDBConnection(DBConnection):
             The namespace to list tables in.
         page_token: str, optional
             The token to use for pagination.
-        limit: int, default 10
-            The maximum number of tables to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -1497,8 +1632,6 @@ class LanceDBConnection(DBConnection):
         """
         if namespace_path is None:
             namespace_path = []
-        if mode.lower() not in ["create", "overwrite"]:
-            raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
 
         tbl = LanceTable.create(
@@ -1598,6 +1731,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1606,10 +1741,7 @@ class LanceDBConnection(DBConnection):
         Examples
         --------
         >>> import lancedb
-        >>> db = lancedb.connect(
-        ...     "./.lancedb",
-        ...     storage_options={"new_table_enable_stable_row_ids": "true"},
-        ... )
+        >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
         >>> view = db.create_materialized_view(
@@ -1629,6 +1761,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -1643,6 +1777,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -1652,6 +1788,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)
@@ -1664,9 +1802,20 @@ class LanceDBConnection(DBConnection):
         return view
 
     @override
-    def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in this database."""
-        return LOOP.run(self._conn.list_materialized_views())
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """The names of the materialized views in this database.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     @override
     def drop_materialized_view(
@@ -1861,9 +2010,25 @@ class LanceDBConnection(DBConnection):
 
     @override
     def list_functions(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[FunctionVersion]:
-        return LOOP.run(self._conn.list_functions(namespace_path=namespace_path))
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[FunctionVersion]:
+        """List functions.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_functions(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
     def drop_function(
@@ -1907,8 +2072,26 @@ class LanceDBConnection(DBConnection):
         LOOP.run(self._conn.alter_secret(name, value, namespace_path=namespace_path))
 
     @override
-    def list_secrets(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
-        return LOOP.run(self._conn.list_secrets(namespace_path=namespace_path))
+    def list_secrets(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List secrets.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_secrets(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
     def drop_secret(
@@ -1951,13 +2134,40 @@ class LanceDBConnection(DBConnection):
         )
 
     @override
-    def list_views(self, *, namespace_path: Optional[List[str]] = None) -> List[str]:
-        return LOOP.run(self._conn.list_views(namespace_path=namespace_path))
+    def list_views(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        """List views.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
 
     @override
-    def list_jobs(self) -> List[JobInfo]:
-        """List server-side jobs across the database's tables."""
-        return LOOP.run(self._conn.list_jobs())
+    def list_jobs(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[JobInfo]:
+        """List server-side jobs across the database's tables.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._conn.list_jobs(page_token=page_token, page_limit=page_limit)
+        )
 
     @override
     def cancel_job(self, job_id: str) -> bool:
@@ -2080,12 +2290,12 @@ class AsyncConnection(object):
         else:
             return None
 
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> AsyncNamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -2100,15 +2310,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListNamespacesResponse
+        AsyncNamespaceListing
             Response containing namespace names and optional pagination token
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_namespaces(
+        validate_page_limit(limit)
+        inner = self._inner.list_namespaces(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListNamespacesResponse(**result)
+        if limit == 0:
+            return AsyncNamespaceListing(None, empty=True)
+        return AsyncNamespaceListing(inner, page_token)
 
     async def create_namespace(
         self,
@@ -2187,13 +2400,13 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List all tables in this database with pagination support.
+    ) -> AsyncTableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -2204,19 +2417,23 @@ class AsyncConnection(object):
             Token for pagination. Use the token from a previous response
             to get the next page of results.
         limit: int, optional
-            The maximum number of results to return.
+            The maximum number of results to return, default 100.
+            Zero returns an empty page without a continuation token.
 
         Returns
         -------
-        ListTablesResponse
+        AsyncTableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_tables(
+        validate_page_limit(limit)
+        inner = self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListTablesResponse(**result)
+        if limit == 0:
+            return AsyncTableListing(None, empty=True)
+        return AsyncTableListing(inner, page_token)
 
     async def table_names(
         self,
@@ -2241,8 +2458,9 @@ class AsyncConnection(object):
 
             This can be combined with limit to implement pagination by setting this to
             the last table name from the previous page.
-        limit: int, default 10
-            The number of results to return.
+        limit: int, optional
+            The maximum number of tables to return. None returns all tables;
+            zero returns an empty list.
 
         Returns
         -------
@@ -2301,11 +2519,12 @@ class AsyncConnection(object):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
-        mode: Literal["create", "overwrite"]; default "create"
+        mode: Literal["create", "overwrite", "exist_ok"]; default "create"
             The mode to use when creating the table.
-            Can be either "create" or "overwrite".
+            Can be "create", "overwrite", or "exist_ok".
             By default, if the table already exists, an exception is raised.
             If you want to overwrite the table, use mode="overwrite".
+            To open an existing table without adding data, use mode="exist_ok".
         exist_ok: bool, default False
             If a table by the same name already exists, then raise an exception
             if exist_ok=False. If exist_ok=True, then open the existing table;
@@ -2453,8 +2672,16 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
+        # Input preparation may advance a user-provided iterator.  Keep that work
+        # off the background event loop so an iterator can use the synchronous
+        # LanceDB API without blocking the loop that API needs to make progress.
+        data, schema = await asyncio.to_thread(
+            sanitize_create_table,
+            data,
+            schema,
+            metadata,
+            on_bad_vectors,
+            fill_value,
         )
         validate_schema(schema)
 
@@ -2576,19 +2803,7 @@ class AsyncConnection(object):
         where: Optional[str],
         limit: Optional[int],
     ) -> Tuple[str, Dict[str, str]]:
-        if not isinstance(source, VectorDedupSource):
-            return source, {}
-        if select is not None or where is not None or limit is not None:
-            raise ValueError(
-                "vector_dedup cannot be combined with select, where or limit"
-            )
-        version = source.dataset_version
-        if version is None:
-            table = await self.open_table(source.source)
-            version = await table.version()
-        return source.source, {
-            "vector_source_json": source._native_source_json(version)
-        }
+        return source, {}
 
     async def create_materialized_view(
         self,
@@ -2599,6 +2814,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -2614,6 +2831,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncMaterializedView(AsyncTable(inner))
@@ -2627,6 +2846,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
@@ -2642,6 +2863,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncJob(inner)
@@ -2656,13 +2879,22 @@ class AsyncConnection(object):
         await view.definition()
         return view
 
-    async def list_materialized_views(self) -> List[str]:
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[str]:
         """The names of the materialized views in this database.
 
-        Found by reading every table's schema, so this costs an open per
-        table.
+        Local listings inspect table schemas one page at a time.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
-        return await self._inner.list_materialized_views()
+        return AsyncListing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
 
     async def drop_materialized_view(
         self,
@@ -2884,19 +3116,31 @@ class AsyncConnection(object):
             await self._inner.get_function(name, version, namespace_path)
         )
 
-    async def list_functions(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[FunctionVersion]:
+    def list_functions(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[FunctionVersion]:
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
         Function name then version. Local connections raise
         ``NotImplementedError``.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
         """
-        return [
-            FunctionVersion.from_json(value)
-            for value in await self._inner.list_functions(namespace_path)
-        ]
+        return AsyncListing(
+            self._inner.list_functions(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            ),
+            FunctionVersion.from_json,
+        )
 
     async def drop_function(
         self,
@@ -2954,12 +3198,25 @@ class AsyncConnection(object):
             list(validate_namespace_path(namespace_path)),
         )
 
-    async def list_secrets(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[str]:
-        """The names of every Secret in this database. Names only."""
-        return await self._inner.list_secrets(
-            list(validate_namespace_path(namespace_path))
+    def list_secrets(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """The names of every Secret in this database. Names only.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_secrets(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
         )
 
     async def drop_secret(
@@ -3031,15 +3288,39 @@ class AsyncConnection(object):
             await self._inner.drop_view_async(name, namespace_path=namespace_path)
         )
 
-    async def list_views(
-        self, *, namespace_path: Optional[List[str]] = None
-    ) -> List[str]:
-        """The names of the views in one namespace."""
-        return await self._inner.list_views(list(namespace_path or []))
+    def list_views(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """The names of the views in one namespace.
 
-    async def list_jobs(self) -> List[JobInfo]:
-        """List server-side jobs across the database's tables."""
-        return await self._inner.list_jobs()
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_views(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    def list_jobs(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[JobInfo]:
+        """List server-side jobs across the database's tables.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_jobs(page_token=page_token, page_limit=page_limit)
+        )
 
     async def cancel_job(self, job_id: str) -> bool:
         """Request cancellation of a server-side job by id.
@@ -3072,6 +3353,7 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncRecordBatchReader:
         """Execute SQL and return an asynchronous Arrow reader.
 
@@ -3082,6 +3364,7 @@ class AsyncConnection(object):
         submitted = await self.execute_query_async(
             query,
             default_namespace_path=default_namespace_path,
+            parameters=parameters,
         )
         return await submitted.reader()
 
@@ -3090,17 +3373,21 @@ class AsyncConnection(object):
         query: str,
         *,
         default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
     ) -> AsyncSqlQuery:
         """Start executing SQL and return its query handle.
 
         The database from ``connect_async`` is used for unqualified database
-        references. The namespace defaults to ``["public"]``. Local
-        connections raise ``NotImplementedError``.
+        references. The namespace defaults to ``["public"]``. ``parameters``
+        binds values to ``$1`` / ``$name`` placeholders; see
+        [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
+        Local connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
             await self._inner.execute_query_async(
                 query,
                 default_namespace_path=default_namespace_path,
+                parameters=to_parameter_batch(parameters),
             )
         )
 

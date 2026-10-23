@@ -69,12 +69,18 @@ class SchemaInferrer {
       this.addField(path, value, row);
     } else if (this.providedSchema === undefined) {
       this.updateInferredField(path, value, row, current);
+    } else if (current instanceof DeferredTypeEvidence) {
+      if (value != null) {
+        this.addSchemaField(this.providedSchema, path, value, row);
+      }
+    } else if (current instanceof FieldTree || DataType.isStruct(current)) {
+      assertStructValue(path, value, row);
     }
   }
 
   private addField(path: string[], value: unknown, row: number): void {
     if (this.providedSchema !== undefined) {
-      this.addSchemaField(this.providedSchema, path, row);
+      this.addSchemaField(this.providedSchema, path, value, row);
       return;
     }
 
@@ -95,15 +101,31 @@ class SchemaInferrer {
     }
   }
 
-  private addSchemaField(schema: Schema, path: string[], row: number): void {
+  private addSchemaField(
+    schema: Schema,
+    path: string[],
+    value: unknown,
+    row: number,
+  ): void {
     const field = fieldAtPath(schema, path);
     if (field === undefined) {
       throw new Error(
         `Found field not in schema: ${path.join(".")} at row ${row}`,
       );
     }
+    if (DataType.isStruct(field.type)) {
+      assertStructValue(path, value, row);
+    }
 
-    const conflict = this.fields.set(path, field.type);
+    // Nulls are kept as deferred evidence so that a struct field seen first as
+    // null can be replaced by a record in a later row, just as a record seen
+    // first already ignores later nulls.
+    const conflict = this.fields.set(
+      path,
+      DeferredTypeEvidence.from(value, row) ?? field.type,
+      (existing) =>
+        existing instanceof DeferredTypeEvidence && existing.isOnlyNulls(),
+    );
     if (conflict !== undefined) {
       throw branchConflictError(conflict, row, "Struct");
     }
@@ -481,6 +503,26 @@ function assertSupportedValue(
       `Unsupported object value for field ${field} at row ${row}.`,
     );
   }
+}
+
+/**
+ * Rejects primitives, arrays, and typed arrays given for a struct field, which
+ * would otherwise be written as a struct with every child null.
+ */
+function assertStructValue(path: string[], value: unknown, row: number): void {
+  if (
+    value == null ||
+    (typeof value === "object" &&
+      !Array.isArray(value) &&
+      !ArrayBuffer.isView(value))
+  ) {
+    return;
+  }
+  const kind =
+    typeof value === "object" ? value.constructor.name : typeof value;
+  throw new Error(
+    `Expected a struct value for field ${path.join(".")} at row ${row}, got ${kind}.`,
+  );
 }
 
 function fieldAtPath(schema: Schema, path: string[]): Field | undefined {

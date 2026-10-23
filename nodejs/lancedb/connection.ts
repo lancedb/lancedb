@@ -8,6 +8,7 @@ import {
   fromTableToStreamBuffer,
   isArrowTable,
   makeArrowTable,
+  resolveBlobInputs,
 } from "./arrow";
 import {
   Table as ArrowTable,
@@ -16,6 +17,7 @@ import {
 } from "./arrow";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { Job } from "./job";
+import { Listing, ListingOptions, validateListingOptions } from "./listing";
 import {
   MaterializedView,
   MaterializedViewSelect,
@@ -28,16 +30,12 @@ import type {
   DescribeNamespaceResponse,
   DropNamespaceResponse,
   JobInfo,
-  ListNamespacesResponse,
-  ListTablesResponse,
 } from "./native";
 import { ViewDescription, viewDescriptionFromNative } from "./view";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
-  ListNamespacesResponse,
-  ListTablesResponse,
 };
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
@@ -51,8 +49,11 @@ export interface CreateTableOptions {
    * happen.  Any provided data will be ignored.
    *
    * If this is set to "overwrite" then any existing table will be replaced.
+   *
+   * If this is set to "exist_ok" then an existing table is opened and any
+   * provided data is ignored.
    */
-  mode: "create" | "overwrite";
+  mode: "create" | "overwrite" | "exist_ok";
   /**
    * If this is true and the table already exists and the mode is "create"
    * then no error will be raised.
@@ -136,7 +137,7 @@ export interface OpenTableOptions {
 }
 
 /**
- * @deprecated Use {@link ListTablesOptions} with {@link Connection.listTables}
+ * @deprecated Use {@link ListingOptions} with {@link Connection.listTables}
  * instead.
  */
 export interface TableNamesOptions {
@@ -148,32 +149,7 @@ export interface TableNamesOptions {
    * the last table name from the previous page.
    */
   startAfter?: string;
-  /** An optional limit to the number of results to return. */
-  limit?: number;
-}
-
-export interface ListTablesOptions {
-  /**
-   * Token from a previous response, to resume listing where it left off.
-   *
-   * The token is opaque: it carries whatever the database needs to resume, and
-   * callers should not construct or interpret one.
-   */
-  pageToken?: string;
-  /**
-   * An upper bound on how many tables to return.
-   *
-   * A page may hold fewer than this and still not be the last one, so keep
-   * going while the response carries a page token rather than while pages are
-   * full.
-   */
-  limit?: number;
-}
-
-export interface ListNamespacesOptions {
-  /** Token from a previous response for pagination. */
-  pageToken?: string;
-  /** An optional limit to the number of results to return. */
+  /** The maximum number of names to return. Omitted returns all names; zero returns none. */
   limit?: number;
 }
 
@@ -272,45 +248,18 @@ export abstract class Connection {
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]>;
 
-  /**
-   * List a page of the tables in this database.
-   *
-   * To retrieve the tables after the page, pass the `pageToken` the response
-   * carries back in. A page can be shorter than `limit` without being the last
-   * one, so walk until a response carries no page token:
-   *
+  /** Lazily list tables in a namespace, requesting 100 per page by default.
+   * @example
    * ```ts
-   * const names = [];
-   * let pageToken = undefined;
-   * do {
-   *   const page = await conn.listTables({ pageToken, limit: 100 });
-   *   names.push(...page.tables);
-   *   pageToken = page.pageToken;
-   * } while (pageToken);
+   * for await (const name of conn.listTables([], { pageLimit: 20 })) {
+   *   console.log(name);
+   * }
    * ```
-   *
-   * @param {Partial<ListTablesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListTablesResponse>} A page of table names and an
-   *   optional token for the tables after it.
-   */
-  abstract listTables(
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse>;
-  /**
-   * List a page of the tables in this database.
-   *
-   * @param {string[]} namespacePath - The namespace path to list tables from
-   *   (defaults to root namespace)
-   * @param {Partial<ListTablesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListTablesResponse>} A page of table names and an
-   *   optional token for the tables after it.
    */
   abstract listTables(
     namespacePath?: string[],
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse>;
+    options?: ListingOptions,
+  ): Listing<string>;
 
   /**
    * Open a table in the database.
@@ -324,10 +273,6 @@ export abstract class Connection {
    * The view is populated before creation returns. Set `withNoData` to create
    * only its definition and empty backing table. The view is a normal table:
    * it can be queried, indexed and searched, and it appears in `tableNames`.
-   * The source table must have stable row ids (create it with
-   * the `newTableEnableStableRowIds` storage option); they keep the view's
-   * provenance valid across source compactions and cannot be enabled after
-   * a table exists.
    */
   abstract createMaterializedView(
     name: string,
@@ -350,9 +295,11 @@ export abstract class Connection {
   /**
    * The names of the materialized views in this database.
    *
-   * Found by reading every table's schema, so this costs an open per table.
+   * Iterate lazily with `for await...of`. Local listings inspect table schemas
+   * one page at a time. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
    */
-  abstract listMaterializedViews(): Promise<string[]>;
+  abstract listMaterializedViews(options?: ListingOptions): Listing<string>;
 
   /**
    * Drop the materialized view named `name`.
@@ -424,8 +371,13 @@ export abstract class Connection {
    * The names of the views in one namespace.
    *
    * Names only; a definition comes from {@link describeView}.
+   * Iterate lazily with `for await...of`. See {@link Listing} for pagination
+   * state and error behavior; options control page size and the starting token.
    */
-  abstract listViews(namespacePath?: string[]): Promise<string[]>;
+  abstract listViews(
+    namespacePath?: string[],
+    options?: ListingOptions,
+  ): Listing<string>;
 
   abstract openTable(
     name: string,
@@ -533,23 +485,11 @@ export abstract class Connection {
     namespacePath: string[],
   ): Promise<DescribeNamespaceResponse>;
 
-  /**
-   * List the immediate child namespaces under the given parent.
-   *
-   * Results may be paginated. To retrieve subsequent pages, pass the
-   * `pageToken` returned by a previous call.
-   *
-   * @param {string[]} namespacePath - The parent namespace path. Defaults
-   *   to the root namespace if omitted.
-   * @param {Partial<ListNamespacesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListNamespacesResponse>} Child namespace names and
-   *   an optional token for fetching the next page.
-   */
+  /** Lazily list immediate child namespaces, 100 per page by default. */
   abstract listNamespaces(
     namespacePath?: string[],
-    options?: Partial<ListNamespacesOptions>,
-  ): Promise<ListNamespacesResponse>;
+    options?: ListingOptions,
+  ): Listing<string>;
 
   /**
    * Create a new namespace at the given path.
@@ -640,8 +580,12 @@ export abstract class Connection {
    */
   abstract openJob(jobId: string): Promise<Job>;
 
-  /** List server-side jobs across the database's tables. */
-  abstract listJobs(): Promise<JobInfo[]>;
+  /**
+   * Iterate lazily over server-side jobs across the database's tables.
+   * Use `for await...of`. Options control page size and the starting token.
+   * See {@link Listing} for pagination state and error behavior.
+   */
+  abstract listJobs(options?: ListingOptions): Listing<JobInfo>;
 
   /**
    * Request cancellation of a server-side job by id.
@@ -707,13 +651,13 @@ export class LocalConnection extends Connection {
     } else {
       // First argument is options object (backwards compatibility)
       namespacePath = undefined;
-      tableNamesOptions = namespacePathOrOptions;
+      tableNamesOptions = namespacePathOrOptions ?? options;
     }
 
     return this.inner.tableNames(
       namespacePath ?? [],
       tableNamesOptions?.startAfter,
-      tableNamesOptions?.limit,
+      normalizeTableListingLimit(tableNamesOptions?.limit),
     );
   }
 
@@ -744,8 +688,11 @@ export class LocalConnection extends Connection {
     return new MaterializedView(new LocalTable(innerTable));
   }
 
-  async listMaterializedViews(): Promise<string[]> {
-    return await this.inner.listMaterializedViews();
+  listMaterializedViews(options: ListingOptions = {}): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listMaterializedViews(options.pageToken, options.pageLimit),
+    );
   }
 
   async dropMaterializedView(
@@ -791,26 +738,31 @@ export class LocalConnection extends Connection {
     return new Job(await this.inner.dropViewAsync(name, namespacePath ?? []));
   }
 
-  async listViews(namespacePath?: string[]): Promise<string[]> {
-    return this.inner.listViews(namespacePath ?? []);
+  listViews(
+    namespacePath?: string[],
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listViews(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
+    );
   }
 
-  async listTables(
-    namespacePathOrOptions?: string[] | Partial<ListTablesOptions>,
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse> {
-    // Detect if first argument is namespacePath array or options object
-    const namespacePath = Array.isArray(namespacePathOrOptions)
-      ? namespacePathOrOptions
-      : undefined;
-    const listTablesOptions = Array.isArray(namespacePathOrOptions)
-      ? options
-      : namespacePathOrOptions;
-
-    return this.inner.listTables(
-      namespacePath ?? [],
-      listTablesOptions?.pageToken,
-      listTablesOptions?.limit,
+  listTables(
+    namespacePath?: string[],
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listTables(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
     );
   }
 
@@ -867,23 +819,24 @@ export class LocalConnection extends Connection {
   private getStorageOptions(
     options?: Partial<CreateTableOptions>,
   ): Record<string, string> | undefined {
+    let storageOptions = options?.storageOptions;
     if (options?.dataStorageVersion !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableDataStorageVersion"] =
-        options.dataStorageVersion;
+      storageOptions = {
+        ...storageOptions,
+        newTableDataStorageVersion: options.dataStorageVersion,
+      };
     }
 
     if (options?.enableV2ManifestPaths !== undefined) {
-      if (options.storageOptions === undefined) {
-        options.storageOptions = {};
-      }
-      options.storageOptions["newTableEnableV2ManifestPaths"] =
-        options.enableV2ManifestPaths ? "true" : "false";
+      storageOptions = {
+        ...storageOptions,
+        newTableEnableV2ManifestPaths: options.enableV2ManifestPaths
+          ? "true"
+          : "false",
+      };
     }
 
-    return cleanseStorageOptions(options?.storageOptions);
+    return cleanseStorageOptions(storageOptions);
   }
 
   async createTable(
@@ -916,7 +869,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     return this._createTableImpl(name, data, namespacePath, createOptions);
@@ -963,7 +916,7 @@ export class LocalConnection extends Connection {
     } else {
       // Third argument is options object (backwards compatibility)
       namespacePath = undefined;
-      createOptions = namespacePathOrOptions;
+      createOptions = namespacePathOrOptions ?? options;
     }
 
     let mode: string = createOptions?.mode ?? "create";
@@ -1012,12 +965,15 @@ export class LocalConnection extends Connection {
 
   listNamespaces(
     namespacePath?: string[],
-    options?: Partial<ListNamespacesOptions>,
-  ): Promise<ListNamespacesResponse> {
-    return this.inner.listNamespaces(
-      namespacePath ?? [],
-      options?.pageToken,
-      options?.limit,
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listNamespaces(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
     );
   }
 
@@ -1060,8 +1016,11 @@ export class LocalConnection extends Connection {
     return new Job(await this.inner.openJob(jobId));
   }
 
-  async listJobs(): Promise<JobInfo[]> {
-    return this.inner.listJobs();
+  listJobs(options: ListingOptions = {}): Listing<JobInfo> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listJobs(options.pageToken, options.pageLimit),
+    );
   }
 
   async cancelJob(jobId: string): Promise<boolean> {
@@ -1075,6 +1034,13 @@ export class LocalConnection extends Connection {
   async resumeJob(jobId: string): Promise<string> {
     return this.inner.resumeJob(jobId);
   }
+}
+
+function normalizeTableListingLimit(limit?: number): number | undefined {
+  validateNonNegativeInteger(limit, "limit");
+  // The native binding takes u32: larger JS numbers otherwise wrap to zero or
+  // a smaller page size. A listing limit is an upper bound, so saturate it.
+  return limit === undefined ? undefined : Math.min(limit, 0xffffffff);
 }
 
 /**
@@ -1133,7 +1099,11 @@ async function parseTableData(
   if (isArrowTable(data)) {
     table = sanitizeTable(data);
   } else {
-    table = makeArrowTable(data as Record<string, unknown>[], options);
+    const records = await resolveBlobInputs(
+      data as Record<string, unknown>[],
+      options?.schema,
+    );
+    table = makeArrowTable(records, options);
   }
   if (streaming) {
     const buf = await fromTableToStreamBuffer(

@@ -1,0 +1,266 @@
+---
+title: "Merge insert"
+sidebarTitle: "Merge Insert"
+description: "Match incoming records by key and choose which rows to update, insert or remove."
+icon: code-merge
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Merge insert is available through the SDKs in OSS and Enterprise. Use it for key-based updates and inserts.
+---
+
+import {
+    TsMergeMatchedUpdateOnly,
+    TsInsertIfNotExists,
+    TsMergeUpdateInsert,
+    TsMergeDeleteMissingBySource,
+    TsMergePartialColumns,
+    RsMergeMatchedUpdateOnly,
+    RsInsertIfNotExists,
+    RsMergeUpdateInsert,
+    RsMergeDeleteMissingBySource,
+    RsMergePartialColumns,
+} from '/snippets/tables.mdx';
+import {
+    PyMergeMatchedUpdateOnly as MergeMatchedUpdateOnly,
+    PyInsertIfNotExists as InsertIfNotExists,
+    PyMergeUpdateInsert as MergeUpdateInsert,
+    PyMergeDeleteMissingBySource as MergeDeleteMissingBySource,
+    PyMergePartialColumns as MergePartialColumns,
+} from '/snippets/ingestion_examples.mdx';
+
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+
+Use merge insert when incoming records should be compared with existing rows.
+Combine update and insert policies for an **upsert**. Use [append](/ingestion/insert)
+when every incoming row should simply be added.
+
+## Merge incoming rows by key {#merge-incoming-rows-by-key}
+
+Merging is different from updating because it involves comparing incoming rows to existing rows by key, and then choosing what to do based on whether the key exists in the target table or not.
+Use `merge_insert("id")` in Python or the corresponding SDK builder.
+
+In merge operations, rows are split into three groups:
+
+- **Matched**: key exists in both source and target.
+- **Not matched**: key exists only in source.
+- **Not matched by source**: key exists only in target.
+
+Conditional merge clauses can compare old and new values. Use the `target.` prefix for the
+existing table row and `source.` for the incoming row, for example
+`target.last_update < source.last_update`.
+
+Choose a key that identifies the same record in the source and target. Check
+for duplicate and null keys before merging. A primary-key declaration does not
+enforce uniqueness on ordinary writes, and append operations do not deduplicate
+records for you.
+
+A scalar index on the key can help matching. Keep it current and measure the
+actual workload rather than assuming every merge uses an index. Enterprise may
+reject a merge when the unindexed scan exceeds its configured limit; inspect
+that error and the index state before retrying.
+
+## Choose a merge policy {#policies}
+
+| Source and target relationship | Available action |
+| --- | --- |
+| Key appears in both | Update matching target rows, optionally with a condition. |
+| Key appears only in the source | Insert it, or leave it out. |
+| Key appears only in the target | Keep it, or explicitly delete it under a synchronization policy. |
+
+The following examples are independent. Each starts from the table shown in
+its code, so the expected results do not depend on running the previous example.
+Python blocks include their own temporary connection. For a full TypeScript or
+Rust program, see [Complete write workflow](#complete-example).
+
+### Update matched rows only {#update-matched-rows-only}
+
+This updates keys that already exist in the target table. Source rows with new keys are ignored.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeMatchedUpdateOnly}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeMatchedUpdateOnly}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+
+### Insert unmatched rows only {#insert-unmatched-rows-only}
+
+This inserts only brand-new keys from the source. Existing keys are left unchanged.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {InsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsInsertIfNotExists}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsInsertIfNotExists}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bob | 20 |
+| 3 | Charlie | 5 |
+
+### Update matched rows and insert unmatched rows {#update-matched-rows-and-insert-unmatched-rows}
+
+Use both `when_matched_update_all()` and `when_not_matched_insert_all()` when you want to update existing keys and insert missing keys in one operation.
+
+<Info>
+This is a conventional **upsert**.
+</Info>
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeUpdateInsert}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeUpdateInsert}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+### Delete target rows that are missing from source {#delete-target-rows-that-are-missing-from-source}
+
+Use `when_not_matched_by_source_delete()` only when the incoming data is the
+complete set for the target scope you intend to synchronize. An incremental
+batch is usually not a complete source: deleting everything absent from it
+could remove unrelated target records. Inspect the unmatched target keys first.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergeDeleteMissingBySource}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergeDeleteMissingBySource}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 2 | Bobby | 21 |
+| 3 | Charlie | 5 |
+
+Here, IDs 2 and 3 are updated and ID 1 is deleted. This policy synchronizes
+the target to the supplied source set.
+
+### Use partial columns in merge updates {#use-partial-columns-in-merge-updates}
+
+Merge updates do not require you to provide values for all columns. You can provide only a subset of columns in source rows. For matched rows, only the provided columns are updated.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {MergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsMergePartialColumns}
+    </CodeBlock>
+
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsMergePartialColumns}
+    </CodeBlock>
+</CodeGroup>
+
+Expected table contents:
+
+| id | name | login_count |
+| --- | --- | --- |
+| 1 | Alice | 10 |
+| 2 | Bobby | 20 |
+| 3 | Charlie | null |
+
+Note that in the example above, when `merge_insert` creates a new row, any missing columns are written as `null`. If a missing column is non-nullable in your schema, the insert will fail.
+
+## Check the merged records {#verify}
+
+Inspect the keys that should have changed, confirm that unrelated rows remain,
+and check inserted or deleted counts when the SDK returns them. Repeating a
+merge is only safe when its keys, conditions and update values produce the
+intended result on retry.
+
+### Embeddings and expression predicates {#advanced}
+
+When a table uses an [embedding definition](/embedding), behavior depends on
+which source and vector fields the incoming records provide. Do not assume a
+partial metadata update recomputes embeddings. Inspect the resulting vector
+when changing the input used to generate it.
+
+Rust's `when_matched_update_all_expr` and
+`when_not_matched_by_source_delete_expr` accept DataFusion expressions for
+local tables. Use the string predicate variants for Enterprise tables.
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

@@ -622,7 +622,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -1280,6 +1279,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     }
 
 
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
+        ],
+    }
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [
@@ -1499,7 +1520,7 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
@@ -1555,7 +1576,7 @@ def _mock_remote_function_catalog():
                     )["image"],
                     "signature": body["signature"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202
@@ -1720,7 +1741,7 @@ def test_remote_secret_verbs_round_trip():
         )
         assert db.create_secret("openai-prod", "sk-live-0001") is None
         assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
         assert db.drop_secret("openai-prod") is None
 
     routes = [path for path, _ in state["requests"]]
@@ -1781,7 +1802,7 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         )
         created = db.create_function(normalize_score)
         state["requests"].clear()
-        functions = db.list_functions()
+        functions = list(db.list_functions())
 
     assert functions == [created]
     assert state["requests"] == [
@@ -1805,7 +1826,7 @@ async def test_async_remote_list_functions_returns_typed_versions():
         registration = await db.create_function_async(normalize_score)
         created = await registration.wait()
         state["requests"].clear()
-        functions = await db.list_functions()
+        functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
     assert [path for path, _ in state["requests"]] == [
@@ -1878,7 +1899,7 @@ def test_remote_function_verbs_address_a_namespace_in_the_path():
         assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
             namespace
         )
-        db.list_functions(namespace_path=namespace)
+        list(db.list_functions(namespace_path=namespace))
         assert (
             db.drop_function(
                 "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
@@ -1918,7 +1939,7 @@ async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
         await db.get_function(
             "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
         )
-        await db.list_functions(namespace_path=namespace)
+        [item async for item in db.list_functions(namespace_path=namespace)]
         assert (
             await db.drop_function(
                 "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
@@ -1947,6 +1968,6 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
             client_config={"retry_config": {"retries": 0}},
         )
         with pytest.raises(TypeError):
-            db.list_functions(namespace_path="analytics")
+            list(db.list_functions(namespace_path="analytics"))
 
     assert state["requests"] == []
