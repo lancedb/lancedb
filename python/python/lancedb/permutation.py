@@ -909,9 +909,11 @@ class Permutation:
                 f"Cannot rename column `{old_name}` to `{new_name}` because a column "
                 "with that name already exists"
             )
-        new_selection = self.selection.copy()
-        new_selection[new_name] = new_selection[old_name]
-        del new_selection[old_name]
+        # Rebuild the mapping so the renamed column keeps its position
+        new_selection = {
+            (new_name if name == old_name else name): value
+            for name, value in self.selection.items()
+        }
         return self._with_selection(new_selection)
 
     def rename_columns(self, column_map: dict[str, str]) -> "Permutation":

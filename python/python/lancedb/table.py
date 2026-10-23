@@ -28,7 +28,7 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import _register_optional_converters, to_scannable
+from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
 from ._blob import (
@@ -117,6 +117,33 @@ def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
+
+
+_CUDA_UNAVAILABLE_MESSAGE = (
+    "CUDA acceleration is unavailable in this Python environment. Install a "
+    "CUDA-enabled PyTorch build and verify that the CUDA device is accessible, or "
+    "omit `accelerator` (or set `accelerator=None`) to create the index on CPU."
+)
+
+
+def _validate_index_accelerator(accelerator: Any) -> None:
+    if not isinstance(accelerator, str) or accelerator.split(":", 1)[0] != "cuda":
+        return
+
+    try:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+    except (ImportError, RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+    if not cuda_available:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE)
+
+    try:
+        torch.cuda.init()
+    except (RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
 
 
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
@@ -373,7 +400,7 @@ def _into_pyarrow_reader(
     if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
-            return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
+            return pa.RecordBatchReader.from_batches(schema, _hf_batches(data))
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
             schema = _schema_from_hf(data, None)
             if "split" not in schema.names:
@@ -442,7 +469,7 @@ def _into_pyarrow_reader(
     ):
         return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_reader(data)
+        return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -452,10 +479,19 @@ def _into_pyarrow_reader(
         )
 
 
-def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+def _iterator_to_reader(
+    data: Iterable, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
-    first = _into_pyarrow_reader(next(data))
+    data = iter(data)
+    try:
+        first_batch = next(data)
+    except StopIteration:
+        if schema is None:
+            raise ValueError("Cannot create table from empty iterable without a schema")
+        return pa.RecordBatchReader.from_batches(schema, [])
+    first = _into_pyarrow_reader(first_batch)
     schema = first.schema
 
     def gen():
@@ -1168,7 +1204,7 @@ def _to_batches_with_split(data):
     with an extra `split` column
     """
     for key, dataset in data.items():
-        for batch in dataset.data.to_batches():
+        for batch in _hf_batches(dataset):
             table = pa.Table.from_batches([batch])
             if "split" not in table.column_names:
                 table = table.append_column(
@@ -2531,7 +2567,11 @@ class Table(ABC):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
 
     @abstractmethod
@@ -3600,7 +3640,9 @@ class LanceTable(Table):
 
             # Handle accelerator through pylance
             if accelerator is not None:
-                self.to_lance().create_index(
+                dataset = self.to_lance()
+                _validate_index_accelerator(accelerator)
+                dataset.create_index(
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -3625,6 +3667,8 @@ class LanceTable(Table):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
+                    dataset = self.to_lance()
+                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -3636,7 +3680,7 @@ class LanceTable(Table):
                     cfg_type = type(config).__name__
                     lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
 
-                    self.to_lance().create_index(
+                    dataset.create_index(
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
@@ -4782,7 +4826,11 @@ class LanceTable(Table):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -5285,6 +5333,11 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     else:
         values_has_nan = pc.is_nan(values)
     values_indices = pc.list_parent_indices(arr)
+    if arr.null_count:
+        # Match flatten(), which excludes child spans under null parent lists.
+        values_indices = pc.filter(
+            values_indices, pc.take(pc.is_valid(arr), values_indices)
+        )
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
@@ -5335,6 +5388,12 @@ def _infer_target_schema(
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
+            if dim is None:
+                # Every list entry is null (e.g. embeddings not computed yet),
+                # so the dimension is unknowable. Leave the column as a
+                # variable-length list instead of guessing a fixed size.
+                continue
+
             # Determine target type based on value type
             if pa.types.is_floating(field.type.value_type):
                 target_type = pa.list_(pa.float32(), dim)
@@ -5367,6 +5426,7 @@ def _infer_target_schema(
                 field.name,  # preserve original field name
                 target_type,
                 nullable=field.nullable,
+                metadata=field.metadata,
             )
 
             schema = schema.set(i, new_field)
@@ -5374,9 +5434,14 @@ def _infer_target_schema(
     return schema, reader
 
 
-def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
-    # Use the most common length of the list as the dimensions
-    return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> Optional[int]:
+    # Use the most common length of the list as the dimensions. pyarrow's
+    # `mode` skips nulls, so an all-null column yields an empty result; return
+    # None in that case so the caller can keep a variable-length list.
+    modes = pc.mode(pc.list_value_length(arr))
+    if len(modes) == 0:
+        return None
+    return modes[0].as_py()["mode"]
 
 
 def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:
@@ -6213,8 +6278,12 @@ class AsyncTable:
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
             # so vector columns are inferred as FixedSizeList.
-            data, _ = sanitize_create_table(
-                data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, _ = await asyncio.to_thread(
+                sanitize_create_table,
+                data,
+                None,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
             if blob_v2_column_paths(schema):
                 # Plain bytes cannot be inferred as blob v2. Keep matching blob
@@ -6224,7 +6293,8 @@ class AsyncTable:
         elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
-            data = _sanitize_data(
+            data = await asyncio.to_thread(
+                _sanitize_data,
                 data,
                 schema,
                 metadata=schema.metadata,
@@ -6233,7 +6303,10 @@ class AsyncTable:
                 allow_subschema=True,
             )
         _register_optional_converters()
-        data = to_scannable(data)
+        # Converting an iterator peeks at its first item.  A synchronous query in
+        # that iterator schedules work on LOOP, so peeking on LOOP's own thread
+        # would deadlock waiting for itself.
+        data = await asyncio.to_thread(to_scannable, data)
         progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
@@ -7454,7 +7527,11 @@ class AsyncTable:
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return await self._inner.tokenize(query, column=column, index_name=index_name)
 
