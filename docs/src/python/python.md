@@ -26,13 +26,16 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
-Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
-`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
-collect synchronous results, or `[name async for name in db.list_views()]` with
-an asynchronous connection. `page_limit` controls each request, and `page_token`
-resumes a listing. Drain the iterator's cached results before saving its token.
+Resource listings return iterators. Use `list(db.list_tables())` to collect all
+table names. `db.list_tables().tables` is a list of the first page; `limit`
+controls its page size and `page_token` resumes at a saved token. The same
+patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
 ::: lancedb.listing.Listing
+
+::: lancedb.listing.TableListing
+
+::: lancedb.listing.NamespaceListing
 
 ::: lancedb.Session
 
@@ -630,6 +633,16 @@ can be used to create, list, or open tables.
 ::: lancedb.db.AsyncConnection
 
 ::: lancedb.listing.AsyncListing
+
+`async for name in db.list_tables()` loads pages as needed. To inspect the
+first page, use `page = await db.list_tables()` and then `page.tables`. Reading
+the page list does not consume the iterator. `page.page_token` is the token for
+the next request; drain cached results before using it to resume in a new
+listing. The same behavior applies to namespaces.
+
+::: lancedb.listing.AsyncTableListing
+
+::: lancedb.listing.AsyncNamespaceListing
 
 ## Namespaces (Asynchronous)
 

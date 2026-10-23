@@ -16,8 +16,7 @@ use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
 
 use lance_namespace::models::{
-    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
-    ListTablesRequest,
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -29,18 +28,6 @@ pub struct Connection {
 #[napi(object)]
 pub struct DescribeNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
-}
-
-#[napi(object)]
-pub struct ListNamespacesResponse {
-    pub namespaces: Vec<String>,
-    pub page_token: Option<String>,
-}
-
-#[napi(object)]
-pub struct ListTablesResponse {
-    pub tables: Vec<String>,
-    pub page_token: Option<String>,
 }
 
 #[napi(object)]
@@ -239,31 +226,20 @@ impl Connection {
         op.execute().await.default_error()
     }
 
-    /// List a page of tables in the database.
+    /// Lazily list tables in the database.
     #[napi(catch_unwind)]
-    pub async fn list_tables(
+    pub fn list_tables(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListTablesResponse> {
-        let request = ListTablesRequest {
-            // The root namespace is an empty path, not an absent one: a namespace-backed
-            // database rejects a request that names no namespace.
-            id: Some(namespace_path.unwrap_or_default()),
-            page_token,
-            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
-            ..Default::default()
-        };
-        let response = self
-            .get_inner()?
-            .list_tables(request)
-            .await
-            .default_error()?;
-        Ok(ListTablesResponse {
-            tables: response.tables,
-            page_token: response.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -663,28 +639,19 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    /// List child namespaces under the given namespace path
-    pub async fn list_namespaces(
+    /// Lazily list child namespaces under the given namespace path
+    pub fn list_namespaces(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListNamespacesResponse> {
-        let req = ListNamespacesRequest {
-            id: namespace_path,
-            page_token,
-            limit: checked_limit(limit)?,
-            ..Default::default()
-        };
-        let resp = self
-            .get_inner()?
-            .list_namespaces(req)
-            .await
-            .default_error()?;
-        Ok(ListNamespacesResponse {
-            namespaces: resp.namespaces,
-            page_token: resp.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]
@@ -785,35 +752,5 @@ impl Connection {
             .rename_table(&current_name, &new_name, &cur_ns, &new_ns)
             .await
             .default_error()
-    }
-}
-
-fn checked_limit(limit: Option<u32>) -> napi::Result<Option<i32>> {
-    limit
-        .map(i32::try_from)
-        .transpose()
-        .map_err(|_| napi::Error::from_reason("limit must not exceed 2147483647"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::checked_limit;
-
-    #[test]
-    fn checked_limit_rejects_values_above_i32_max() {
-        // u32 values above i32::MAX wrapped negative through `as i32`,
-        // sending a negative page size to the server.
-        assert!(checked_limit(Some(3_000_000_000)).is_err());
-        assert!(checked_limit(Some(u32::MAX)).is_err());
-    }
-
-    #[test]
-    fn checked_limit_passes_boundary_and_missing_values() {
-        assert_eq!(
-            checked_limit(Some(i32::MAX as u32)).unwrap(),
-            Some(i32::MAX)
-        );
-        assert_eq!(checked_limit(Some(0)).unwrap(), Some(0));
-        assert_eq!(checked_limit(None).unwrap(), None);
     }
 }

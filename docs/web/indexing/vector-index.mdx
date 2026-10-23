@@ -384,7 +384,7 @@ The inner workings of RaBitQ quantization are rather mathematically dense. It ge
 applying a uniformly random, approximately distance-preserving orthogonal transformation of the vertices of the $d$-dimensional hypercube, 
 where $d$ is the dimensionality of the dataset. We defer the details, and an elegant theoretical error bound, to [the original paper.](https://arxiv.org/pdf/2405.12497)
 
-##### Using RaBitQ
+##### Using RaBitQ {#using-rabitq}
 Use RaBitQ quantization by selecting quantized index types ending in the suffix `RQ`. For example, import `IvfRq` from `lancedb.index` and call `table.create_index("vector", config=IvfRq())`.
 Note that when using `IVF_RQ`, the dimension of the dataset must be a multiple of `8`.
 
