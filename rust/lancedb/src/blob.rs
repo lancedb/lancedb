@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Lance blob v2 columns store large binary payloads out of line.
+//! Lance blob columns store large binary payloads out of line.
 //!
-//! Declare a column with [`blob`]. On write, [`crate::table::Table::add`] coerces
+//! The read APIs support both legacy blob v1 and blob v2 columns.
+//!
+//! Declare a blob v2 column with [`blob`]. On write, [`crate::table::Table::add`] coerces
 //! raw `Binary` / `LargeBinary` into the blob struct layout. Queries return
 //! small descriptors, not bytes.
 //!
-//! Blob tables require Lance file format >= 2.2. `_rowid` values stay valid
+//! Blob v2 tables require Lance file format >= 2.2. `_rowid` values stay valid
 //! after compaction when the table has stable row ids. Overwrite is a new
 //! create and does not keep the previous table's stable row id setting.
 
@@ -358,14 +360,27 @@ pub(crate) fn field_tree_has_blob_v2(field: &Field) -> bool {
     }
 }
 
-/// Collects the dotted paths of row-addressable blob v2 columns under `field`.
+fn field_tree_has_blob(field: &Field) -> bool {
+    if field.is_blob() {
+        return true;
+    }
+    match field.data_type() {
+        DataType::Struct(children) => children.iter().any(|c| field_tree_has_blob(c)),
+        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
+            field_tree_has_blob(child)
+        }
+        _ => false,
+    }
+}
+
+/// Collects the dotted paths of row-addressable blob columns under `field`.
 fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
     let path = if prefix.is_empty() {
         field.name().clone()
     } else {
         format!("{prefix}.{}", field.name())
     };
-    if field.is_blob_v2() {
+    if field.is_blob() {
         paths.push(path);
         return;
     }
@@ -382,7 +397,7 @@ fn is_list_blob_path(field: &Field, prefix: &str, column: &str, inside_list: boo
     } else {
         format!("{prefix}.{}", field.name())
     };
-    if field.is_blob_v2() {
+    if field.is_blob() {
         return inside_list && column == path;
     }
     match field.data_type() {
@@ -390,7 +405,7 @@ fn is_list_blob_path(field: &Field, prefix: &str, column: &str, inside_list: boo
             .iter()
             .any(|child| is_list_blob_path(child, &path, column, inside_list)),
         DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
-            (column == path && field_tree_has_blob_v2(child))
+            (column == path && field_tree_has_blob(child))
                 || is_list_blob_path(child, &path, column, true)
         }
         _ => false,
@@ -418,7 +433,7 @@ pub(crate) fn has_blob_columns(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| field_tree_has_blob_v2(f))
 }
 
-/// Row-addressable blob v2 column paths in `schema`, in declaration order.
+/// Row-addressable blob v1 and v2 column paths in `schema`, in declaration order.
 /// Struct-nested blobs use dotted paths (e.g. `info.blob`); list-nested blobs
 /// are omitted because a row id cannot identify an individual list element.
 pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
@@ -448,26 +463,22 @@ pub(crate) fn ensure_blob_storage_version(schema: &Schema, params: &mut WritePar
     }
 }
 
-/// Validate that `column` exists and is a blob v2 column.
-///
-/// Legacy v1 columns (`lance-encoding:blob`) error with a migration hint.
-pub(crate) fn ensure_blob_v2_column(
+/// Validate that `column` exists and is a row-addressable blob v1 or v2 column.
+pub(crate) fn ensure_blob_column(
     schema: &lance_core::datatypes::Schema,
     column: &str,
 ) -> Result<()> {
     // A top-level blob cannot have a list ancestor. Keep the common read path
     // from converting the entire schema just to validate that condition.
-    if column.contains('.') || schema.field(column).is_none_or(|field| !field.is_blob_v2()) {
+    if column.contains('.')
+        || schema
+            .field(column)
+            .is_none_or(|field| !field.is_blob() && !field.is_blob_v2())
+    {
         reject_list_blob_column(&Schema::from(schema), column)?;
     }
     match schema.field(column) {
-        Some(field) if field.is_blob_v2() => Ok(()),
-        Some(field) if field.is_blob() => Err(Error::InvalidInput {
-            message: format!(
-                "column '{column}' is a legacy blob column; blob APIs require blob v2 columns \
-                 (ARROW:extension:name = \"lance.blob.v2\")"
-            ),
-        }),
+        Some(field) if field.is_blob() || field.is_blob_v2() => Ok(()),
         Some(_) => Err(Error::InvalidInput {
             message: format!("column '{column}' is not a blob column"),
         }),
@@ -597,7 +608,7 @@ pub(crate) async fn take_blob_ranges_aligned(
     column: &str,
     requests: &[BlobRangeRequest],
 ) -> Result<LargeBinaryArray> {
-    ensure_blob_v2_column(dataset.schema(), column)?;
+    ensure_blob_column(dataset.schema(), column)?;
     if requests.is_empty() {
         return Ok(LargeBinaryBuilder::new().finish());
     }
@@ -638,7 +649,7 @@ pub(crate) async fn take_blobs_aligned(
     column: &str,
     row_ids: &[u64],
 ) -> Result<LargeBinaryArray> {
-    ensure_blob_v2_column(dataset.schema(), column)?;
+    ensure_blob_column(dataset.schema(), column)?;
     if row_ids.is_empty() {
         return Ok(LargeBinaryBuilder::new().finish());
     }
@@ -671,7 +682,7 @@ pub(crate) async fn take_blob_files_aligned(
     column: &str,
     row_ids: &[u64],
 ) -> Result<Vec<Option<BlobFile>>> {
-    ensure_blob_v2_column(dataset.schema(), column)?;
+    ensure_blob_column(dataset.schema(), column)?;
     if row_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -819,20 +830,35 @@ mod tests {
     }
 
     #[test]
-    fn legacy_v1_blob_column_is_rejected_with_migration_hint() {
+    fn legacy_v1_blob_columns_are_row_addressable() {
         let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
             std::collections::HashMap::from([(
                 "lance-encoding:blob".to_string(),
                 "true".to_string(),
             )]),
         );
-        let arrow_schema = Schema::new(vec![legacy]);
+        let arrow_schema = Schema::new(vec![
+            legacy.clone(),
+            Field::new("info", DataType::Struct(vec![legacy.clone()].into()), true),
+            Field::new("images", DataType::List(Arc::new(legacy)), true),
+        ]);
         let lance_schema = lance_core::datatypes::Schema::try_from(&arrow_schema).unwrap();
 
-        let err = ensure_blob_v2_column(&lance_schema, "image").unwrap_err();
-        assert!(matches!(err, Error::InvalidInput { .. }));
-        assert!(err.to_string().contains("legacy blob column"));
-        assert!(err.to_string().contains("lance.blob.v2"));
+        ensure_blob_column(&lance_schema, "image").unwrap();
+        ensure_blob_column(&lance_schema, "info.image").unwrap();
+        assert_eq!(
+            blob_column_names(&arrow_schema),
+            vec!["image", "info.image"]
+        );
+        for path in ["images", "images.image"] {
+            let err = ensure_blob_column(&lance_schema, path).unwrap_err();
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+        // Legacy columns do not require the blob v2 write format.
+        assert!(!has_blob_columns(&arrow_schema));
     }
 
     #[test]
@@ -840,10 +866,10 @@ mod tests {
         let arrow_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
         let lance_schema = lance_core::datatypes::Schema::try_from(&arrow_schema).unwrap();
 
-        let err = ensure_blob_v2_column(&lance_schema, "id").unwrap_err();
+        let err = ensure_blob_column(&lance_schema, "id").unwrap_err();
         assert!(err.to_string().contains("'id' is not a blob column"));
 
-        let err = ensure_blob_v2_column(&lance_schema, "missing").unwrap_err();
+        let err = ensure_blob_column(&lance_schema, "missing").unwrap_err();
         assert!(err.to_string().contains("no column named 'missing'"));
     }
 

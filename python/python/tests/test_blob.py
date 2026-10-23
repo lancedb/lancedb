@@ -1866,10 +1866,74 @@ def test_legacy_v1_query_omits_auto_row_id():
     assert "_rowid" not in hits.column_names
 
 
-def test_fetch_blobs_rejects_legacy_v1_column():
+def test_fetch_legacy_v1_blobs():
     table = _legacy_v1_table("legacy_fetch")
-    with pytest.raises(ValueError, match="legacy blob column.*blob v2"):
-        table.fetch_blobs("legacy", [0])
+    table.add(
+        [
+            {"id": 2, "legacy": None},
+            {"id": 3, "legacy": b""},
+            {"id": 4, "legacy": b"another fragment"},
+        ]
+    )
+    hits = table.search().select(["id", "legacy"]).with_row_id(True).to_arrow()
+    assert pa.types.is_struct(hits["legacy"].type)
+    by_id = dict(zip(hits["id"].to_pylist(), hits["_rowid"].to_pylist()))
+    row_ids = [by_id[i] for i in [4, 2, 1, 3, 4]]
+    expected = [b"another fragment", None, b"old", b"", b"another fragment"]
+    assert table.fetch_blobs("legacy", row_ids).to_pylist() == expected
+    assert table.blob_columns() == ["legacy"]
+    assert table.fetch_blobs("legacy", hits).to_pylist() == [
+        b"old",
+        None,
+        b"",
+        b"another fragment",
+    ]
+    assert table.fetch_blobs("legacy", []).to_pylist() == []
+    assert table.fetch_blob_files("legacy", []) == []
+
+    handles = table.fetch_blob_files("legacy", row_ids)
+    assert len(handles) == len(expected)
+    for handle, payload in zip(handles, expected):
+        if payload is None:
+            assert handle is None
+        else:
+            with handle:
+                assert handle.size() == len(payload)
+                assert handle.read(2) == payload[:2]
+                assert handle.seek(0) == 0
+                assert handle.read() == payload
+
+    assert table.fetch_blob_ranges(
+        "legacy", [(by_id[4], 8, 8), (by_id[2], 0, 1), (by_id[3], 0, 0)]
+    ).to_pylist() == [b"fragment", None, b""]
+
+    table.delete("id = 2")
+    for fetch in [table.fetch_blobs, table.fetch_blob_files]:
+        with pytest.raises(ValueError, match="row ids but some do not exist"):
+            fetch("legacy", [by_id[1], by_id[2]])
+
+
+@pytest.mark.asyncio
+async def test_async_fetch_legacy_v1_blobs(tmp_path):
+    table = _legacy_v1_table("legacy_async_source")
+    # Open a dataset written by Lance independently of the LanceDB connection.
+    lance.write_dataset(
+        pa.Table.from_pylist(
+            [{"id": 1, "legacy": b"old"}, {"id": 2, "legacy": None}],
+            schema=table.schema,
+        ),
+        tmp_path / "legacy.lance",
+        data_storage_version="2.0",
+    )
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.open_table("legacy")
+    assert await table.blob_columns() == ["legacy"]
+    hits = await table.query().with_row_id().to_arrow()
+    assert (await table.fetch_blobs("legacy", hits)).to_pylist() == [b"old", None]
+    handles = await table.fetch_blob_files("legacy", hits)
+    assert handles[0].read() == b"old"
+    handles[0].close()
+    assert handles[1] is None
 
 
 @pytest.mark.asyncio

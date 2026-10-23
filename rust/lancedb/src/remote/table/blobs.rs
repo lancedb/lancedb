@@ -387,7 +387,7 @@ impl<S: HttpSend> RemoteTable<S> {
         error
     }
 
-    /// Blob v2 columns are marked in field metadata, which `describe` returns. Reading
+    /// Blob columns are marked in field metadata, which `describe` returns. Reading
     /// them from the cached schema needs no route of its own and no version gate.
     pub(super) async fn blob_columns_impl(&self) -> Result<Vec<String>> {
         let schema = self.schema().await?;
