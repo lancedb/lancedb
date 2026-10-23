@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use tokio::time::sleep;
 
 const DEFAULT_SLEEP_MS: u64 = 1000;
-const MAX_WAIT: Duration = Duration::from_secs(2 * 60 * 60);
+pub(crate) const MAX_WAIT: Duration = Duration::from_secs(2 * 60 * 60);
 
 /// Poll the table using list_indices() and index_stats() until all of the indices have 0 un-indexed rows.
 /// Will return Error::Timeout if the columns are not fully indexed within the timeout.

@@ -8,6 +8,8 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
+If no wheel is published for your platform, pip builds `lancedb` from the source distribution. That build needs a [Rust toolchain](https://rustup.rs/) and [protoc](https://grpc.io/docs/protoc-installation/) (the Protocol Buffers compiler) on your `PATH`, and can take a while.
+
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
 The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C) for full performance on modern hardware. Pre-Haswell hosts — Intel Sandy Bridge / Ivy Bridge / Westmere; AMD Bulldozer / Piledriver / Steamroller — don't have AVX2 and crash with `Illegal instruction` at `import lancedb`.

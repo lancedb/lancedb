@@ -94,9 +94,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
     {
         return Ok(false);
     }
-    // A MemWAL write spec means reads auto-route through the LSM scanner in
-    // `create_plan` even when `use_lsm` is unset. The namespace request has no
-    // use_lsm field, so pushing the default query down would silently omit
+    // An RTE write spec means reads auto-route through the LSM scanner in
+    // `create_plan` even when `use_rte` is unset. The namespace request has no
+    // use_rte field, so pushing the default query down would silently omit
     // un-compacted rows — force local execution whenever a spec is installed.
     let dataset = table.dataset.get().await?;
     if dataset.mem_wal_index_details().await?.is_some() {
@@ -106,10 +106,10 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_lsm.
-    // For use_lsm that is worse than a tuning miss: MemWAL read routing lives only
+    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
+    // For use_rte that is worse than a tuning miss: RTE read routing lives only
     // in `create_plan`, so a pushed-down query would return stale base-only data.
-    if query.base().use_lsm.is_some() || query.base().take_offsets.is_some() {
+    if query.base().use_rte.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
     matches!(
@@ -167,25 +167,25 @@ pub async fn create_plan(
 
     let ds_ref = table.dataset.get().await?;
 
-    // MemWAL read routing driven by `use_lsm`:
+    // RTE read routing driven by `use_rte`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
-    //   * Some(true)  — force LSM routing; error if the table has no write spec
-    //   * Some(false) — read the base table only, bypassing the MemWAL
+    //   * Some(true)  — force RTE routing; error if the table has no write spec
+    //   * Some(false) — read the base table only, bypassing the RTE
     // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
-    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    // memtables + SSTables); validation and dispatch live in `lsm`.
     let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
-    let use_lsm = match query.base.use_lsm {
+    let use_rte = match query.base.use_rte {
         Some(true) if !has_spec => {
             return Err(Error::InvalidInput {
-                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
-                    install one with set_lsm_write_spec or leave use_lsm unset"
+                message: "use_rte(true) was set but the table has no RTE write spec; \
+                    install one with enable_rte or leave use_rte unset"
                     .to_string(),
             });
         }
         Some(enable) => enable,
         None => has_spec,
     };
-    if use_lsm {
+    if use_rte {
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
@@ -671,6 +671,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 });
             }
 
+            let k = match q.limit {
+                Some(limit) => limit as i32,
+                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
+                None => i32::MAX,
+            };
+
             let filter = q.filter.as_ref().map(filter_to_sql).transpose()?;
 
             let columns = match &q.select {
@@ -723,7 +729,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             Ok(NsQueryTableRequest {
                 id: None, // Will be set by caller
                 vector,
-                k: q.limit.unwrap_or(10) as i32,
+                k,
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
@@ -1073,6 +1079,54 @@ mod tests {
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
     }
 
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest::default());
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_with_explicit_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_vector_without_limit() {
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let any_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![query_vector as ArrayRef],
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_fts_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                "hello world".to_string(),
+            )),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
     #[tokio::test]
     async fn test_execute_query_local_routing() {
         use crate::connect;
@@ -1195,7 +1249,7 @@ mod tests {
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .enable_rte(crate::table::RTEWriteSpec::unsharded())
             .await
             .unwrap();
         let lsm_error = table
@@ -1395,7 +1449,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
+    async fn test_execute_query_use_rte_with_namespace_pushdown_runs_locally() {
         use crate::connect;
         use crate::table::query::execute_query;
         use arrow_array::{Int32Array, RecordBatch};
@@ -1418,7 +1472,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table("test_use_lsm_namespace_fallback", batch)
+            .create_table("test_use_rte_namespace_fallback", batch)
             .execute()
             .await
             .unwrap();
@@ -1429,13 +1483,13 @@ mod tests {
             .pushdown_operations
             .insert(NamespaceClientPushdownOperation::QueryTable);
 
-        // `use_lsm` set (even to false) must force local execution — the namespace
-        // request has no use_lsm field, so a pushdown would silently ignore it.
+        // `use_rte` set (even to false) must force local execution — the namespace
+        // request has no use_rte field, so a pushdown would silently ignore it.
         let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
         let query = AnyQuery::VectorQuery(VectorQueryRequest {
             base: QueryRequest {
                 limit: Some(1),
-                use_lsm: Some(false),
+                use_rte: Some(false),
                 ..Default::default()
             },
             column: Some("vector".to_string()),

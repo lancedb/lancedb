@@ -7,6 +7,8 @@ on:
     paths:
       - Cargo.toml
       - python/pyproject.toml
+      - ci/check_cargo_lock.py
+      - ci/check_sdist.py
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml
@@ -14,6 +16,8 @@ on:
     paths:
       - Cargo.toml
       - python/pyproject.toml
+      - ci/check_cargo_lock.py
+      - ci/check_sdist.py
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml

@@ -1,14 +1,14 @@
 ---
 title: "Namespace"
 sidebarTitle: "Namespace"
-description: "CREATE SCHEMA and DROP SCHEMA — the SQL spelling of namespace DDL."
+description: "CREATE SCHEMA and DROP SCHEMA: the SQL spelling of namespace DDL."
 icon: folder-tree
 keywords: ["namespace", "schema", "create schema", "drop schema", "sql"]
 ---
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-A [namespace](/management/namespace) is addressed in SQL as a `SCHEMA` -- the
+A [namespace](/management/namespace) is addressed in SQL as a `SCHEMA`, the
 standard's name for the same concept.
 
 ## CREATE SCHEMA {#create}
@@ -39,8 +39,8 @@ DROP SCHEMA `a$b` RESTRICT
 <Warning>
 `CASCADE` is rejected: **"DROP SCHEMA CASCADE is not supported; drop the
 objects inside first."** A namespace's tables, views and other objects must be
-dropped explicitly before the namespace itself can go. `RESTRICT` -- the
-default -- states that requirement rather than changing it.
+dropped explicitly before the namespace itself can go. `RESTRICT` (the
+default) states that requirement rather than changing it.
 </Warning>
 
 ## What to read next {#next}
