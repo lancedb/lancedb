@@ -58,6 +58,33 @@ uv add --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
 ```
 </CodeGroup>
 
+If you also need the optional `lance` Python API, install the `pylance` extra and
+include the Lance preview index:
+
+<CodeGroup>
+```bash Python (pip) icon="terminal"
+pip install --pre \
+  --extra-index-url https://pypi.fury.io/lancedb/ \
+  --extra-index-url https://pypi.fury.io/lance-format/ \
+  "lancedb[pylance]"
+```
+
+```bash Python (uv) icon="terminal"
+uv pip install --prerelease allow \
+  --index https://pypi.fury.io/lancedb/ \
+  --index https://pypi.fury.io/lance-format/ \
+  --index-strategy unsafe-best-match \
+  "lancedb[pylance]"
+```
+</CodeGroup>
+
+The LanceDB preview index contains old `pylance` releases; current Lance previews
+are published to the `lance-format` index. By default, uv only considers versions
+from the first index containing a package, which can select an old `pylance` or
+backtrack to an older LanceDB release. `unsafe-best-match` searches all configured
+indexes, like pip; use it only with indexes you trust. Install the extra rather
+than an unconstrained `pylance` so LanceDB's minimum supported version is enforced.
+
 <Note>
 Pre-release builds receive the same level of testing as stable releases, but their availability is not guaranteed
 for more than 6 months after release. For real-world workloads, we recommend you use the latest stable release

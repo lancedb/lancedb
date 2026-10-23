@@ -215,10 +215,25 @@ def blob(
     same format as ``lance.blob_field``. They do not require pylance.
     """
     metadata = {}
-    for threshold, value, allow_zero in (
-        ("inline_size_threshold", inline_size_threshold, True),
-        ("dedicated_size_threshold", dedicated_size_threshold, False),
-        ("pack_file_size_threshold", pack_file_size_threshold, False),
+    for threshold, value, allow_zero, key in (
+        (
+            "inline_size_threshold",
+            inline_size_threshold,
+            True,
+            "lance-encoding:blob-inline-size-threshold",
+        ),
+        (
+            "dedicated_size_threshold",
+            dedicated_size_threshold,
+            False,
+            "lance-encoding:blob-dedicated-size-threshold",
+        ),
+        (
+            "pack_file_size_threshold",
+            pack_file_size_threshold,
+            False,
+            "lance-encoding:blob-pack-file-size-threshold",
+        ),
     ):
         if value is None:
             continue
@@ -229,7 +244,6 @@ def blob(
             raise ValueError(f"{threshold} must be {bound}")
         if value > _MAX_RUST_USIZE:
             raise OverflowError(f"{threshold} must fit in a Rust usize")
-        key = f"lance-encoding:blob-{threshold.replace('_', '-')}"
         metadata[key] = str(value)
 
     blob_type = _resolve_blob_type()

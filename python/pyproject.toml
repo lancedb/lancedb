@@ -45,7 +45,8 @@ repository = "https://github.com/lancedb/lancedb"
 
 [project.optional-dependencies]
 pylance = [
-    "pylance>=5.0.0b5",
+    # Keep the minimum in the bundled Lance major and compatible with tests below.
+    "pylance>=15.0.0b1",
 ]
 # A library only needs the OpenTelemetry API; the application supplies and
 # configures the SDK (the actual exporter/reader). See
@@ -63,7 +64,7 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow<25",
     "pyarrow-stubs>=16.0",
-    "pylance==14.0.0b12",
+    "pylance==15.0.0b1",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
