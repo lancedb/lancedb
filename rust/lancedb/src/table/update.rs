@@ -13,7 +13,7 @@ use crate::Result;
 /// The result of an update operation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct UpdateResult {
-    #[serde(default)]
+    #[serde(default, alias = "updated_rows")]
     pub rows_updated: u64,
     /// The commit version associated with the operation.
     #[serde(default)]
@@ -62,26 +62,42 @@ impl UpdateBuilder {
     }
 
     /// Executes the update operation.
-    pub async fn execute(self) -> Result<UpdateResult> {
+    pub async fn execute(mut self) -> Result<UpdateResult> {
         if self.columns.is_empty() {
             Err(Error::InvalidInput {
                 message: "at least one column must be specified in an update operation".to_string(),
             })
         } else {
+            self.canonicalize_filter()?;
             self.parent.clone().update(self).await
         }
+    }
+
+    pub(crate) fn canonicalize_filter(&mut self) -> Result<()> {
+        self.filter = self
+            .filter
+            .take()
+            .map(|predicate| crate::expr::canonicalize_sql_predicate(&predicate))
+            .transpose()?;
+        Ok(())
     }
 }
 
 /// Internal implementation of the update logic
 pub(crate) async fn execute_update(
     table: &NativeTable,
-    update: UpdateBuilder,
+    mut update: UpdateBuilder,
 ) -> Result<UpdateResult> {
+    update.canonicalize_filter()?;
     table.dataset.ensure_mutable()?;
 
     // 1. Snapshot the current dataset
     let dataset = table.dataset.get().await?;
+    crate::materialized_view::ensure_not_a_view(&table.name, &dataset.schema().metadata, "update")?;
+    super::computed_columns::ensure_no_function_bindings_for_mutation(
+        &arrow_schema::Schema::from(dataset.schema()),
+        "update",
+    )?;
     super::computed_columns::ensure_not_written(
         &arrow_schema::Schema::from(dataset.schema()),
         update.columns.iter().map(|(name, _)| name.as_str()),

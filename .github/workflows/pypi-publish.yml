@@ -11,6 +11,10 @@ on:
       - .github/workflows/build_linux_wheel/action.yml
       - .github/workflows/build_mac_wheel/action.yml
       - .github/workflows/build_windows_wheel/action.yml
+      - .github/actions/setup-protoc/action.yml
+      - ci/check_cargo_lock.py
+      - ci/check_sdist.py
+      - python/pyproject.toml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 
@@ -21,7 +25,7 @@ permissions:
   contents: read
 
 # Without this, a force-push to a PR leaves the previous run going -- including
-# a ~74 minute Windows job and a billed arm64 wheel build.
+# a long fat-LTO Windows job and a billed arm64 wheel build.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -123,12 +127,17 @@ jobs:
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
   windows:
-    timeout-minutes: 90
-    runs-on: windows-latest
+    # The fat-LTO build of the `lancedb` crate does not finish within 90 minutes
+    # on the 4-core standard runner, so use the 8-core larger runner with extra
+    # headroom.
+    timeout-minutes: 150
+    runs-on: windows-2025-8x-x64
     env:
       # link.exe is single-threaded and the long pole on Windows builds. Use
       # rustc's bundled lld-link instead.
       CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER: rust-lld
+      # Keep the repository's fat LTO / 1 codegen unit release profile to leave
+      # headroom below PyPI's file-size limit for Windows wheels.
     steps:
       - uses: actions/checkout@v6
         with:
@@ -143,7 +152,7 @@ jobs:
       # or the default branch -- so with no run on main there is nothing that
       # can populate an entry the release build would be allowed to read. Fixing
       # this needs a main/nightly trigger (which would also catch wheel-build
-      # breakage before a release); the ~74 minutes here is otherwise dominated
+      # breakage before a release); the build time here is otherwise dominated
       # by the fat-LTO link, which no cache avoids.
       - uses: ./.github/workflows/build_windows_wheel
         with:
@@ -155,10 +164,91 @@ jobs:
           name: wheels-windows
           path: target/wheels/lancedb-*.whl
           if-no-files-found: error
+  sdist:
+    name: Python sdist
+    timeout-minutes: 60
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          lfs: true
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build sdist
+        uses: PyO3/maturin-action@v1
+        with:
+          maturin-version: "1.12.4"
+          command: sdist
+          working-directory: python
+          args: --out dist
+      # maturin ships the nodejs-only pins in Cargo.lock. Remove this step when
+      # the pinned maturin fixes https://github.com/PyO3/maturin/issues/2609.
+      - name: Sync Cargo.lock to the packaged workspace
+        shell: bash
+        run: |
+          # A repo lock in sync with every manifest means the prune only drops pins.
+          cargo metadata --locked --format-version 1 > /dev/null
+          mkdir "$RUNNER_TEMP/sdist-src"
+          tar -xzf python/dist/lancedb-*.tar.gz -C "$RUNNER_TEMP/sdist-src"
+          lock=$(echo "$RUNNER_TEMP"/sdist-src/lancedb-*/Cargo.lock)
+          cp "$lock" "$RUNNER_TEMP/Cargo.lock.before"
+          cargo metadata --format-version 1 \
+            --manifest-path "$RUNNER_TEMP"/sdist-src/lancedb-*/Cargo.toml > /dev/null
+          python ci/check_cargo_lock.py "$RUNNER_TEMP/Cargo.lock.before" "$lock"
+          tar -czf python/dist/lancedb-*.tar.gz -C "$RUNNER_TEMP/sdist-src" \
+            "$(basename python/dist/lancedb-*.tar.gz .tar.gz)"
+      - name: Install sdist check tools
+        shell: bash
+        run: python -m pip install twine==7.0.0 pydistcheck==0.11.3
+      - name: Check sdist size
+        shell: bash
+        run: |
+          pydistcheck --select distro-too-large-compressed \
+            --max-allowed-size-compressed 100M python/dist/lancedb-*.tar.gz
+      - name: Check sdist contents
+        shell: bash
+        run: python ci/check_sdist.py python/dist/lancedb-*.tar.gz
+      - name: Check sdist with twine
+        shell: bash
+        run: python -m twine check --strict python/dist/lancedb-*.tar.gz
+      - uses: ./.github/actions/setup-protoc
+      # Build the way `pip install lancedb` does when no wheel matches. The dev
+      # profile keeps the build within the runner's disk.
+      - name: Build wheel from sdist
+        shell: bash
+        env:
+          MATURIN_PEP517_ARGS: "--profile dev --locked"
+          CARGO_PROFILE_DEV_DEBUG: "0"
+        run: |
+          python -m pip wheel --no-deps --wheel-dir "$RUNNER_TEMP/sdist-wheel" \
+            python/dist/lancedb-*.tar.gz
+      - name: Smoke test wheel built from sdist
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv sdist-venv
+          sdist-venv/bin/pip install sdist-wheel/lancedb-*.whl
+          sdist-venv/bin/python -c '
+          import tempfile
+          import lancedb
+          db = lancedb.connect(tempfile.mkdtemp())
+          table = db.create_table("t", [{"vector": [1.0, 2.0], "id": 1}, {"vector": [3.0, 4.0], "id": 2}])
+          assert table.search([1.0, 2.0]).limit(1).to_list()[0]["id"] == 1
+          print("lancedb", lancedb.__version__, "built from sdist OK")
+          '
+      - uses: actions/upload-artifact@v7
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          name: sdist
+          path: python/dist/lancedb-*.tar.gz
+          if-no-files-found: error
   publish:
-    name: Publish wheels
+    name: Publish wheels and sdist
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, mac, windows]
+    needs: [linux, mac, windows, sdist]
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -171,7 +261,12 @@ jobs:
           pattern: wheels-*
           path: target/wheels
           merge-multiple: true
-      - name: List wheels
+      - name: Download sdist artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: sdist
+          path: target/wheels
+      - name: List packages
         run: ls -la target/wheels
       - name: Choose repo
         id: choose_repo
@@ -188,13 +283,18 @@ jobs:
         run: |
           shopt -s nullglob
           WHEELS=(target/wheels/*.whl)
+          SDISTS=(target/wheels/*.tar.gz)
           if [[ ${#WHEELS[@]} -eq 0 ]]; then
             echo "No wheels found in target/wheels/" >&2
             exit 1
           fi
-          for WHEEL in "${WHEELS[@]}"; do
-            echo "Uploading $WHEEL to Fury"
-            curl -f -F package=@"$WHEEL" "https://$FURY_TOKEN@push.fury.io/lancedb/"
+          if [[ ${#SDISTS[@]} -ne 1 ]]; then
+            echo "Expected one sdist in target/wheels/, found ${#SDISTS[@]}" >&2
+            exit 1
+          fi
+          for PACKAGE in "${WHEELS[@]}" "${SDISTS[@]}"; do
+            echo "Uploading $PACKAGE to Fury"
+            curl -f -F package=@"$PACKAGE" "https://$FURY_TOKEN@push.fury.io/lancedb/"
           done
       # NOTE: pypa/gh-action-pypi-publish must be invoked directly from a
       # workflow file, not from inside a composite action. When called from a
@@ -209,7 +309,7 @@ jobs:
   report-failure:
     name: Report Workflow Failure
     runs-on: ubuntu-latest
-    needs: [linux, mac, windows, publish]
+    needs: [linux, mac, windows, sdist, publish]
     permissions:
       contents: read
       issues: write

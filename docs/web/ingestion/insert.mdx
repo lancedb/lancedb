@@ -1,0 +1,237 @@
+---
+title: "Insert data"
+sidebarTitle: "Insert"
+description: "Append records, load file-backed data or batches, and verify ingestion."
+icon: plus
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Append records through the SDKs in OSS and Enterprise. For large Enterprise writes, see [large upload settings](#bulk-ingests-into-a-remote-table).
+---
+
+import {
+    TsCreateTableFromIterator as TsCreateTableFromIterator,
+    RsCreateTableFromIterator as RsCreateTableFromIterator,
+} from '/snippets/tables.mdx';
+import {
+    PyAddFromDataset as AddFromDataset,
+    PyCreateTableFromIterator as CreateTableFromIterator,
+} from '/snippets/ingestion_examples.mdx';
+
+import { RsExample as RsAddProgress } from '/snippets/ingestion_progress.mdx';
+import { PyAddProgress, TsAddProgressBody, TsAddProgressTail } from '/snippets/ingestion_examples.mdx';
+import { PyAppendRows } from '/snippets/ingestion_examples.mdx';
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+
+Use `add()` to append records to an existing table. It does not compare incoming
+keys with stored keys. Choose [merge insert](/ingestion/merge-insert) when the
+same record may arrive again and should update an existing row.
+
+## Append a first batch {#append}
+
+Install the Python SDK with `pip install lancedb`. This complete example starts
+with Alice, appends Bob and Charlie, and prints all three records.
+
+<CodeBlock filename="append_rows.py" language="python" icon="python">
+{PyAppendRows}
+</CodeBlock>
+
+The program uses temporary local storage. For a complete TypeScript or Rust
+example, see [Complete write workflow](#complete-example).
+Enterprise SQL offers [`INSERT`](/sql/dml/insert), including `INSERT ... SELECT`.
+
+## Prepare the input {#prepare}
+
+Match the table's schema, including required fields and vector dimensions.
+Supported input formats differ by SDK; see
+[Create a table](/ingestion/create-table). Inspect conversion errors before
+retrying, and verify the final row count and representative values.
+
+## Choose input for a large load {#large-datasets}
+
+Avoid building one large in-memory list when records already live in files
+or arrive as batches. Create a table with the intended schema, then append
+through the appropriate input path.
+
+<span id="bulk-ingestion-for-data-you-already-have"></span>
+### Read from files {#from-files-parquet-csv-etc}
+
+Python accepts a `pyarrow.dataset.Dataset`. This example writes a small Parquet
+file locally, creates an empty table with its schema, and appends the two records.
+For your own data, point the dataset reader at the input files instead.
+
+<CodeBlock filename="load_parquet.py" language="python" icon="python">
+{AddFromDataset}
+</CodeBlock>
+
+A file-backed source can be scanned without first loading the whole dataset
+into application memory. This Python input API is distinct from converting
+files to Arrow batches yourself in another language.
+
+<span id="iterator-ingestion-for-data-you-transform-on-the-fly"></span>
+### Produce batches during ingestion {#from-iterators-custom-batch-generation}
+
+Use batches when processing the input as it arrives. The Python example creates
+an empty table and appends ten records produced by a batch iterator.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{CreateTableFromIterator}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsCreateTableFromIterator}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsCreateTableFromIterator}
+</CodeBlock>
+</CodeGroup>
+
+The language APIs differ: the TypeScript example appends each constructed Arrow
+batch, while the Rust example supplies an Arrow reader when creating the table.
+These are input-format examples, not equivalent parallel-write benchmarks.
+
+### Control write parallelism {#write-parallelism}
+
+Python's `add()` can estimate parallelism for materialized inputs. A streaming
+reader may not expose its total size or support replay. Use `write_parallelism`
+when controlling the number of concurrent partitions; increasing it can also
+increase memory use. TypeScript does not expose that manual option.
+
+Measure with realistic row sizes and storage. Avoid one write per row when a
+batch will do, and avoid a large worker count for a small input.
+
+## Track completion and progress {#tracking-ingestion-progress}
+
+Python, TypeScript and Rust support progress callbacks when adding data.
+These examples start with Alice, append Bob and Charlie, and print the number
+of rows written as progress updates arrive. After the write succeeds, they
+query the table to show all three records.
+
+Each program uses a temporary local database and removes it when finished.
+
+- **Python:** install `lancedb`, save the code as `insert_progress.py`, and run
+  `python insert_progress.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `insert_progress.mts`,
+  and run `node insert_progress.mts` with Node.js 22.18 or later.
+- **Rust:** download the [Rust examples](/static/code/ingestion-feedback-rust.zip),
+  extract the project, and run `cargo run --locked --bin progress`.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyAddProgress}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsAddProgressBody}
+{TsAddProgressTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsAddProgress}
+</CodeBlock>
+</CodeGroup>
+
+For a progress bar in Python, install `tqdm` and pass `progress=True` instead
+of a callback.
+
+### Read progress updates
+
+Updates include row and byte counts, elapsed time, and parallel write activity.
+The field names differ by language:
+
+| Meaning | Python dictionary key | TypeScript property | Rust method |
+|:--------|:----------------------|:--------------------|:------------|
+| Rows written so far | `output_rows` | `outputRows` | `output_rows()` |
+| Bytes written so far | `output_bytes` | `outputBytes` | `output_bytes()` |
+| Expected row count, when known | `total_rows` | `totalRows` | `total_rows()` |
+| Elapsed time | `elapsed_seconds` | `elapsedSeconds` | `elapsed()` |
+| Active write tasks | `active_tasks` | `activeTasks` | `active_tasks()` |
+| Total write tasks | `total_tasks` | `totalTasks` | `total_tasks()` |
+| Final update | `done` | `done` | `done()` |
+
+Python and TypeScript report elapsed time in seconds; Rust returns a `Duration`.
+The expected row count may be unknown for streaming input. On the final update,
+it falls back to the number of rows written.
+
+Keep callbacks short and use the write operation's result to determine success.
+The final `done` update means progress reporting has ended; it can also occur
+after a write fails or is cancelled. Input errors before writing starts may
+produce no updates.
+
+TypeScript delivers callbacks asynchronously. Slow callbacks can queue up,
+and the `add()` promise may resolve before every callback has run. Exceptions
+from a TypeScript callback are logged and do not abort the write.
+
+## Verify writes and handle retries {#performance}
+
+Wait for the write operation's result, then check the expected records.
+Progress callbacks describe activity; they do not establish that a write
+succeeded. If a request fails after the server may have committed it, blindly
+repeating an append can duplicate rows. The client's automatic retries can do
+the same: on a remote table, the Python and TypeScript 0.40.0 clients resend an
+append after a retryable status such as `504`, even when the server had already
+committed it, and `add()` still returns success. Reconcile using your record
+IDs, or choose an upsert policy designed for replay.
+
+## Configure large uploads {#bulk-ingests-into-a-remote-table}
+
+<Badge color="red">Enterprise</Badge>
+
+This section applies only to remote tables (`db://` connections). Embedded (local) writes are unaffected.
+
+When you write to a remote LanceDB Enterprise table, the client sends the write as one HTTP `insert` request unless it splits the data into more than one partition, which it does for a large input it can measure or when you set [`write_parallelism`](#write-parallelism). A partitioned write goes up as a multipart write: the client cuts each partition into one or more `insert` parts and uploads them under a single upload id. Each part is streamed. Its size and duration still affect resource use and
+timeouts: it has to finish within the client read timeout while the server writes it to object storage, so on very large ingests an oversized part can run past that timeout and surface as:
+
+```text
+lancedb.remote.errors.HttpError: operation timed out
+```
+
+Two environment variables control how a multipart write's parts are cut. Both are picked up automatically by the Python and TypeScript clients, for clients that support these settings:
+
+| Variable | Default | What it controls |
+|----------|---------|------------------|
+| `LANCE_CLIENT_MAX_BYTES_PER_REQUEST` | 8 GiB | Maximum size of a single insert part, in LZ4-compressed Arrow IPC bytes. Set to `0` to disable splitting and send one request per partition. |
+| `LANCE_CLIENT_MAX_REQUEST_DURATION` | Half the read timeout | Maximum wall-clock time, in whole seconds, that any one insert part may stay open. Set to `0` to disable the time-based cut. |
+
+A part is cut after the input batch that reaches either limit, so cuts fall between batches. Lower the byte budget, with smaller input batches, when large ingests hit the read timeout; lower the duration when uploads are slow or throttled and the byte budget isn't the limiting factor.
+
+```bash
+export LANCE_CLIENT_MAX_BYTES_PER_REQUEST=1073741824  # 1 GiB
+export LANCE_CLIENT_MAX_REQUEST_DURATION=120          # 2 minutes
+```
+
+Splitting into more parts does not change the final table. The server stages the parts under their shared upload ID before committing
+the write. This upload protocol is separate from repeating an application-level
+`add()` after a timeout.
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

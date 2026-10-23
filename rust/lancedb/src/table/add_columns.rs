@@ -8,7 +8,9 @@ use std::sync::Arc;
 use lance::dataset::NewColumnTransform;
 
 use super::BaseTable;
+use super::computed_columns::ComputedColumnOptions;
 use super::schema_evolution::AddColumnsResult;
+use crate::function::FunctionApplication;
 use crate::{Error, Result};
 
 /// Adds columns to a table. See [`Table::add_columns`](super::Table::add_columns).
@@ -16,7 +18,9 @@ pub struct AddColumnsBuilder {
     parent: Arc<dyn BaseTable>,
     transform: Option<NewColumnTransform>,
     computed: Vec<(String, String)>,
+    function: Option<(FunctionApplication, Option<String>)>,
     read_columns: Option<Vec<String>>,
+    options: Option<ComputedColumnOptions>,
 }
 
 impl std::fmt::Debug for AddColumnsBuilder {
@@ -25,6 +29,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
             .field("parent", &self.parent)
             .field("has_transform", &self.transform.is_some())
             .field("computed", &self.computed)
+            .field("has_function", &self.function.is_some())
             .field("read_columns", &self.read_columns)
             .finish()
     }
@@ -36,7 +41,9 @@ impl AddColumnsBuilder {
             parent,
             transform: None,
             computed: Vec::new(),
+            function: None,
             read_columns: None,
+            options: None,
         }
     }
 
@@ -56,10 +63,11 @@ impl AddColumnsBuilder {
     /// every fragment that has none -- including fragments appended since the
     /// last refresh.
     ///
-    /// Refresh does not revisit a fragment it has filled, so mutating an input
-    /// leaves the value computed at fill time; recomputing means dropping the
-    /// column and declaring it again. An input cannot be renamed, retyped or
-    /// dropped while a declaration reads it, since the expression names it.
+    /// A refresh also recomputes the rows of a fragment whose inputs changed
+    /// since it was computed (see [`freshness`](super::freshness)), so a
+    /// mutated input is reflected by the next refresh. An input cannot be
+    /// renamed, retyped or dropped while a declaration reads it, since the
+    /// expression names it.
     ///
     /// On LanceDB Cloud and Enterprise the expression is planned by the
     /// server, and the refresh runs as a server job -- see
@@ -83,6 +91,48 @@ impl AddColumnsBuilder {
         self
     }
 
+    /// Declare every field of a named-struct Function result as one atomic
+    /// binding. Result-field aliases come from
+    /// [`FunctionApplication::columns`](crate::function::FunctionApplication::columns).
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # use lancedb::function::FunctionApplication;
+    /// # async fn declare(table: &Table, application: FunctionApplication) -> lancedb::Result<()> {
+    /// table.add_columns().function(application).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn function(mut self, application: FunctionApplication) -> Self {
+        self.function = Some((application, None));
+        self
+    }
+
+    /// Declare a scalar or entire named-struct Function result as one table
+    /// column. The physical column starts all-null and is materialized by the
+    /// remote Function refresh path.
+    ///
+    /// ```
+    /// # use lancedb::Table;
+    /// # use lancedb::function::FunctionApplication;
+    /// # async fn declare(table: &Table, application: FunctionApplication) -> lancedb::Result<()> {
+    /// table
+    ///     .add_columns()
+    ///     .function_as("embedding", application)
+    ///     .execute()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn function_as(
+        mut self,
+        name: impl Into<String>,
+        application: FunctionApplication,
+    ) -> Self {
+        self.function = Some((application, Some(name.into())));
+        self
+    }
+
     /// Limit which existing columns a [`NewColumnTransform::BatchUDF`] mapper
     /// receives. Every other transform, and a computed column, determines what
     /// it reads, so setting this alongside one is an error rather than a silent
@@ -92,27 +142,60 @@ impl AddColumnsBuilder {
         self
     }
 
+    /// Configure automatic refresh for every output declared in this call.
+    /// Settings are stored with the declaration. They require computed or
+    /// Function columns; local tables persist them without starting a scheduler.
+    ///
+    /// ```
+    /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};
+    /// # async fn declare(table: &Table) -> lancedb::Result<()> {
+    /// table.add_columns().computed("doubled", "x * 2")
+    ///     .computed_options(ComputedColumnOptions {
+    ///         auto_refresh_enabled: true,
+    ///         auto_refresh_interval_seconds: Some(300),
+    ///     }).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn computed_options(mut self, options: ComputedColumnOptions) -> Self {
+        self.options = Some(options);
+        self
+    }
+
     /// Add the columns.
     pub async fn execute(self) -> Result<AddColumnsResult> {
         let Self {
             parent,
             transform,
             computed,
+            function,
             read_columns,
+            options,
         } = self;
+        if let Some(options) = options {
+            options.validate()?;
+            if computed.is_empty() && function.is_none() {
+                return Err(Error::InvalidInput {
+                    message: "automatic refresh options require computed or Function columns"
+                        .into(),
+                });
+            }
+        }
+        let options = options.unwrap_or_default();
 
-        match (transform, computed.is_empty()) {
-            (None, true) => Err(Error::InvalidInput {
+        let declaration_count = usize::from(!computed.is_empty()) + usize::from(function.is_some());
+        if transform.is_some() && declaration_count != 0 || declaration_count > 1 {
+            return Err(Error::InvalidInput {
+                message: "add_columns cannot mix transforms, SQL computed columns, and a Function application; they cannot be added atomically in one call"
+                    .into(),
+            });
+        }
+
+        match (transform, computed.is_empty(), function) {
+            (None, true, None) => Err(Error::InvalidInput {
                 message: "add_columns requires a transform or a computed column".into(),
             }),
-            // The two commit through different transforms, so one call covering
-            // both would be two commits and could half-apply.
-            (Some(_), false) => Err(Error::InvalidInput {
-                message: "add_columns cannot mix a transform with computed columns; \
-                          they cannot be added atomically in one call"
-                    .into(),
-            }),
-            (Some(transform), true) => {
+            (Some(transform), true, None) => {
                 if read_columns.is_some() && !matches!(transform, NewColumnTransform::BatchUDF(_)) {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -122,7 +205,7 @@ impl AddColumnsBuilder {
                 }
                 parent.add_columns(transform, read_columns).await
             }
-            (None, false) => {
+            (None, false, None) => {
                 if read_columns.is_some() {
                     return Err(Error::InvalidInput {
                         message: "read_columns applies only to a BatchUDF transform; \
@@ -130,8 +213,20 @@ impl AddColumnsBuilder {
                             .into(),
                     });
                 }
-                parent.add_computed_columns(&computed).await
+                parent.add_computed_columns(&computed, options).await
             }
+            (None, true, Some((application, output_name))) => {
+                if read_columns.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "read_columns does not apply to a Function application; its inputs are already bound"
+                            .into(),
+                    });
+                }
+                parent
+                    .add_function_columns(&application, output_name.as_deref(), options)
+                    .await
+            }
+            _ => unreachable!("mixed add_columns modes were rejected above"),
         }
     }
 }
@@ -139,6 +234,9 @@ impl AddColumnsBuilder {
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+
+    use super::ComputedColumnOptions;
+    use crate::table::computed_columns::AUTO_REFRESH_INTERVAL_META_KEY;
 
     use arrow_array::{Int32Array, RecordBatch, record_batch};
     use arrow_schema::{DataType, Field, Schema};
@@ -151,6 +249,93 @@ mod tests {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("x", Int32, [1, 2, 3]), ("y", Int32, [10, 20, 30])).unwrap();
         conn.create_table(name, batch).execute().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn computed_options_commit_with_declaration() {
+        let table = table_with_two_columns("options").await;
+        let version = table.version().await.unwrap();
+        let options = ComputedColumnOptions {
+            auto_refresh_enabled: false,
+            auto_refresh_interval_seconds: Some(300),
+        };
+        let result = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .computed_options(options)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, version + 1);
+        let schema = table.schema().await.unwrap();
+        assert_eq!(
+            ComputedColumnOptions::from_metadata(
+                schema.field_with_name("doubled").unwrap().metadata()
+            )
+            .unwrap(),
+            options
+        );
+        for interval in [0, u64::MAX] {
+            let invalid = ComputedColumnOptions {
+                auto_refresh_interval_seconds: Some(interval),
+                ..options
+            };
+            assert!(
+                table
+                    .add_columns()
+                    .computed("bad", "x")
+                    .computed_options(invalid)
+                    .execute()
+                    .await
+                    .is_err()
+            );
+        }
+        assert!(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    "once".into(),
+                    "x".into()
+                )]))
+                .computed_options(options)
+                .execute()
+                .await
+                .is_err()
+        );
+        assert!(
+            table
+                .schema()
+                .await
+                .unwrap()
+                .field_with_name("bad")
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn omitted_refresh_interval_stays_unset() {
+        let table = table_with_two_columns("server_interval").await;
+        let version = table.version().await.unwrap();
+        let result = table
+            .add_columns()
+            .computed("doubled", "x * 2")
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(result.version, version + 1);
+        let schema = table.schema().await.unwrap();
+        let metadata = schema.field_with_name("doubled").unwrap().metadata();
+        assert!(!metadata.contains_key(AUTO_REFRESH_INTERVAL_META_KEY));
+        assert_eq!(
+            ComputedColumnOptions::from_metadata(metadata).unwrap(),
+            ComputedColumnOptions::default()
+        );
+        assert!(
+            serde_json::to_value(ComputedColumnOptions::default())
+                .unwrap()
+                .get("auto_refresh_interval_seconds")
+                .is_none()
+        );
     }
 
     #[tokio::test]

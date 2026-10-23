@@ -5,11 +5,15 @@
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import Dict, Optional, Union, Any, List, Iterable
+from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
 from ._lancedb import __version__ as __version__
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
+from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
+from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
+from ._lancedb import FunctionErrors as FunctionErrors
+from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -17,8 +21,31 @@ from .db import AsyncConnection, DBConnection, LanceDBConnection
 from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
-from .schema import blob, vector, BlobType
+from .schema import blob, vector
 from .job import AsyncJob, Job
+from .sql import AsyncQuery as AsyncSqlQuery
+from .sql import Query as SqlQuery
+from .sql import QueryDescription
+from .functions import (
+    AssignmentMapping as AssignmentMapping,
+    FunctionArtifactRequest as FunctionArtifactRequest,
+    FunctionApplication as FunctionApplication,
+    FunctionBinding as FunctionBinding,
+    FunctionRegistrationRequest as FunctionRegistrationRequest,
+    FunctionVersion as FunctionVersion,
+    PythonRuntimeSpec as PythonRuntimeSpec,
+    RefreshColumnResult as RefreshColumnResult,
+    UdfDefinition as UdfDefinition,
+    udf as udf,
+)
+from .secrets import EnvVarSecret as EnvVarSecret
+from .secrets import SecretInfo as SecretInfo
+from .materialized_view import (
+    AsyncMaterializedView,
+    MaterializedView,
+    MaterializedViewDefinition,
+)
+from .view import ViewDescription as ViewDescription
 from .table import AsyncTable, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
@@ -28,6 +55,26 @@ from .namespace import (
     LanceNamespaceDBConnection,
     AsyncLanceNamespaceDBConnection,
 )
+
+from .catalog import (
+    AsyncCatalog,
+    Catalog,
+    connect_catalog,
+    connect_catalog_async,
+)
+
+
+if TYPE_CHECKING:
+    from lance.blob import BlobType as BlobType
+
+
+def __getattr__(name: str):
+    if name == "BlobType":
+        from .schema import BlobType
+
+        globals()["BlobType"] = BlobType
+        return BlobType
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _check_s3_bucket_with_dots(
@@ -69,6 +116,7 @@ def connect(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     request_thread_pool: Optional[Union[int, ThreadPoolExecutor]] = None,
     client_config: Union[ClientConfig, Dict[str, Any], None] = None,
@@ -97,6 +145,9 @@ def connect(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -158,6 +209,18 @@ def connect(
     ...         "aws_secret_access_key": "***",
     ...         "aws_region": "us-east-1",
     ...     },
+    ... )
+
+    For Azure Blob Storage, credentials can be passed directly without setting
+    environment variables:
+
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
+    >>> db = lancedb.connect(  # doctest: +SKIP
+    ...     "az://my-container/my-database",
+    ...     storage_options=azure_storage_options,
     ... )
 
     For tests and temporary data, use an in-memory database:
@@ -226,6 +289,7 @@ def connect(
             api_key,
             region,
             host_override,
+            sql_host_override=sql_host_override,
             # TODO: remove this (deprecation warning downstream)
             request_thread_pool=request_thread_pool,
             client_config=client_config,
@@ -255,8 +319,8 @@ def tokenize(
     language: str = "English",
     max_token_length: Optional[int] = 40,
     lower_case: bool = True,
-    stem: bool = True,
-    remove_stop_words: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
     custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
@@ -267,6 +331,8 @@ def tokenize(
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
+    When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
+    applies: False for ``code`` and ``ngram``, True otherwise.
     """
 
     return _tokenize(
@@ -368,6 +434,7 @@ def deserialize_conn(
             parsed["api_key"],
             parsed.get("region", "us-east-1"),
             host_override=parsed.get("host_override"),
+            sql_host_override=parsed.get("sql_host_override"),
             client_config=parsed.get("client_config"),
             storage_options=storage_options,
         )
@@ -381,6 +448,7 @@ async def connect_async(
     api_key: Optional[str] = None,
     region: str = "us-east-1",
     host_override: Optional[str] = None,
+    sql_host_override: Optional[str] = None,
     read_consistency_interval: Optional[timedelta] = None,
     client_config: Optional[Union[ClientConfig, Dict[str, Any]]] = None,
     storage_options: Optional[Dict[str, str]] = None,
@@ -403,6 +471,9 @@ async def connect_async(
         The region to use for LanceDB Cloud.
     host_override: str, optional
         The override url for LanceDB Cloud.
+    sql_host_override: str, optional
+        The remote SQL service endpoint override. The client connects lazily when SQL
+        is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -446,6 +517,10 @@ async def connect_async(
     --------
 
     >>> import lancedb
+    >>> azure_storage_options = {
+    ...     "account_name": "some-account",
+    ...     "account_key": "some-key",
+    ... }
     >>> async def doctest_example():
     ...     # For a local directory, provide a path to the database
     ...     db = await lancedb.connect_async("~/.lancedb")
@@ -453,6 +528,11 @@ async def connect_async(
     ...     db = await lancedb.connect_async("s3://my-bucket/lancedb",
     ...                                      storage_options={
     ...                                          "aws_access_key_id": "***"})
+    ...     # Azure credentials can also be passed directly
+    ...     db = await lancedb.connect_async(
+    ...         "az://my-container/my-database",
+    ...         storage_options=azure_storage_options,
+    ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
     ...     # Connect to LanceDB cloud
@@ -481,6 +561,7 @@ async def connect_async(
             api_key,
             region,
             host_override,
+            sql_host_override,
             read_consistency_interval_secs,
             client_config,
             storage_options,
@@ -493,6 +574,14 @@ async def connect_async(
 
 
 __all__ = [
+    "Catalog",
+    "AsyncCatalog",
+    "connect_catalog",
+    "connect_catalog_async",
+    "AsyncMaterializedView",
+    "MaterializedView",
+    "MaterializedViewDefinition",
+    "ViewDescription",
     "connect",
     "connect_async",
     "tokenize",
@@ -500,6 +589,7 @@ __all__ = [
     "connect_namespace_async",
     "AsyncConnection",
     "AsyncJob",
+    "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
     "FtsToken",
@@ -514,8 +604,11 @@ __all__ = [
     "vector",
     "DBConnection",
     "Job",
+    "QueryDescription",
+    "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

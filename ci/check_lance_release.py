@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Determine whether a newer Lance tag exists and expose results for CI."""
+
 from __future__ import annotations
 
 import argparse
@@ -36,8 +37,16 @@ class SemVer:
     prerelease: Tuple[Union[int, str], ...]
 
     def __lt__(self, other: "SemVer") -> bool:  # pragma: no cover - simple comparison
-        if (self.major, self.minor, self.patch) != (other.major, other.minor, other.patch):
-            return (self.major, self.minor, self.patch) < (other.major, other.minor, other.patch)
+        if (self.major, self.minor, self.patch) != (
+            other.major,
+            other.minor,
+            other.patch,
+        ):
+            return (self.major, self.minor, self.patch) < (
+                other.major,
+                other.minor,
+                other.patch,
+            )
         if self.prerelease == other.prerelease:
             return False
         if not self.prerelease:
@@ -142,7 +151,9 @@ def read_current_version(repo_root: Path) -> str:
         deps = data["workspace"]["dependencies"]
         entry = deps["lance"]
     except KeyError as exc:  # pragma: no cover - configuration guard
-        raise RuntimeError("Failed to locate workspace.dependencies.lance in Cargo.toml") from exc
+        raise RuntimeError(
+            "Failed to locate workspace.dependencies.lance in Cargo.toml"
+        ) from exc
 
     if isinstance(entry, str):
         raw_version = entry

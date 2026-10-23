@@ -7,7 +7,6 @@ import shutil
 import subprocess
 import sys
 
-import lancedb
 import lancedb._lancedb as _lancedb
 import pytest
 

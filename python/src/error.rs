@@ -29,7 +29,10 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                 LanceError::InvalidInput { .. }
                 | LanceError::InvalidTableName { .. }
                 | LanceError::TableNotFound { .. }
+                | LanceError::NotAMaterializedView { .. }
                 | LanceError::Schema { .. }
+                | LanceError::DatabaseNotFound { .. }
+                | LanceError::DatabaseAlreadyExists { .. }
                 | LanceError::TableAlreadyExists { .. } => self.value_error(),
                 LanceError::CreateDir { .. } => self.os_error(),
                 LanceError::ObjectStore { .. } => Err(PyIOError::new_err(err.to_string())),
@@ -112,6 +115,12 @@ impl<T> PythonErrorExt<T> for std::result::Result<T, LanceError> {
                     let cls = py
                         .import(intern!(py, "lancedb.exceptions"))?
                         .getattr(intern!(py, "JobCancelledError"))?;
+                    Err(PyErr::from_value(cls.call1((err.to_string(),))?))
+                }),
+                LanceError::JobNotFound { .. } => Python::attach(|py| {
+                    let cls = py
+                        .import(intern!(py, "lancedb.exceptions"))?
+                        .getattr(intern!(py, "JobNotFoundError"))?;
                     Err(PyErr::from_value(cls.call1((err.to_string(),))?))
                 }),
                 _ => self.runtime_error(),
