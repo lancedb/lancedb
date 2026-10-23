@@ -7,7 +7,6 @@
 venv
 .venv
 
-.vscode
 .zed
 rust/target
 
@@ -43,3 +42,4 @@ target
 
 # Vale styles installed by `vale sync`
 /.vale/
+config.bat

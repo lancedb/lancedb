@@ -74,15 +74,22 @@
     "node": ">= 22"
   },
   "packageManager": "pnpm@11.1.1",
-  "cpu": ["x64", "arm64"],
-  "os": ["darwin", "linux", "win32"],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build:debug": "napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
+    "build:debug": "node init && napi build --platform --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir lancedb",
     "postbuild:debug": "shx mkdir -p dist && shx cp lancedb/*.node dist/ && node -e \"require('fs').writeFileSync('dist/package.json', JSON.stringify({name:'@lancedb/lancedb',type:'commonjs'}))\"",
-    "build:release": "napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
-    "build": "pnpm build:debug && pnpm tsc",
-    "build-release": "pnpm build:release && pnpm tsc",
+    "build:release": "node init && napi build --platform --release --dts ../lancedb/native.d.ts --js ../lancedb/native.js --output-dir dist",
+    "build": "node init && pnpm build:debug && pnpm tsc",
+    "build-release": "node init && pnpm build:release && pnpm tsc",
     "tsc": "tsc -b",
     "posttsc": "shx cp lancedb/native.d.ts dist/native.d.ts",
     "lint-ci": "biome ci .",
