@@ -806,8 +806,7 @@ def test_to_pandas_does_not_drop_fragment_selection_on_fallback():
         table.search().with_row_address(True).to_pandas(blob_mode="descriptions")
 
 
-@pytest.mark.parametrize("blob_mode", ["lazy", "descriptions", "bytes"])
-def test_to_pandas_reports_lance_dataset_failures(tmp_path, blob_mode):
+def test_to_pandas_reports_lance_dataset_failures(tmp_path):
     table = lancedb.connect(tmp_path).create_table(
         "dataset_failure",
         schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
@@ -819,7 +818,59 @@ def test_to_pandas_reports_lance_dataset_failures(tmp_path, blob_mode):
 
     table.to_lance = reject_credentials
     with pytest.raises(PermissionError, match="storage credentials rejected"):
-        table.search().to_pandas(blob_mode=blob_mode)
+        table.search().to_pandas(blob_mode="lazy")
+
+
+@pytest.mark.parametrize("blob_mode", ["lazy", "descriptions", "bytes"])
+@pytest.mark.parametrize("with_row_id", [None, True, False])
+def test_to_batches_blob_modes(tmp_path, monkeypatch, blob_mode, with_row_id):
+    table = _nested_blob_table(lancedb.connect(tmp_path), "batch_blob_modes")
+    query = table.search().select({"renamed": "info"})
+    if with_row_id is not None:
+        query.with_row_id(with_row_id)
+    fetched = []
+    fetch_blobs = table.fetch_blobs
+
+    def fetch(column, row_ids):
+        fetched.append(row_ids)
+        return fetch_blobs(column, row_ids)
+
+    monkeypatch.setattr(table, "fetch_blobs", fetch)
+    reader = query.to_batches(batch_size=1, blob_mode=blob_mode)
+    assert fetched == []
+    first = reader.read_next_batch()
+    assert first.schema == reader.schema
+    assert len(fetched) == (1 if blob_mode == "bytes" else 0)
+    batches = [first, *reader]
+    assert all(batch.schema == reader.schema for batch in batches)
+    assert all(batch.num_rows == 1 for batch in batches)
+    assert len(fetched) == (3 if blob_mode == "bytes" else 0)
+    if blob_mode == "bytes":
+        assert [row["renamed"] for batch in batches for row in batch.to_pylist()] == [
+            {"name": "first", "blob": b"hello"},
+            {"name": "second", "blob": None},
+            None,
+        ]
+    if blob_mode != "lazy":
+        assert ("_rowid" in reader.schema.names) == (with_row_id is True)
+        assert "_lance_row_id" not in str(reader.schema)
+    else:
+        assert "_rowid" in reader.schema.names
+
+
+@pytest.mark.parametrize("blob_mode", ["descriptions", "bytes"])
+def test_empty_to_batches_blob_schema(blob_mode):
+    table = _blob_table("empty_blob_batches", [{"id": 1, "image": b"one"}])
+    query = table.search().where("id < 0")
+    reader = query.to_batches(blob_mode=blob_mode)
+    assert reader.schema == query.to_arrow(blob_mode=blob_mode).schema
+    assert reader.read_all().num_rows == 0
+
+
+def test_to_batches_validates_blob_mode():
+    table = _blob_table("invalid_batch_blob_mode", [{"id": 1, "image": b"one"}])
+    with pytest.raises(ValueError, match="blob_mode must be one of"):
+        table.search().to_batches(blob_mode="handles")
 
 
 def test_to_pandas_keeps_to_arrow_overrides_without_blob_mode():
@@ -857,6 +908,12 @@ def test_take_queries_honor_blob_mode():
     ]
     description = table.take_row_ids([0]).to_list(blob_mode="descriptions")[0]["image"]
     assert "_lance_row_id" not in description
+    batches = table.take_row_ids([0]).to_batches(blob_mode="bytes")
+    assert batches.read_all().to_pylist() == [{"id": 1, "image": b"one"}]
+    batches = table.take_row_ids([0]).to_batches(blob_mode="descriptions")
+    assert "_rowid" not in batches.schema.names
+    assert "_lance_row_id" not in str(batches.schema)
+    assert batches.read_all().num_rows == 1
 
 
 def test_bytes_mode_follows_swapped_blob_aliases():
@@ -902,6 +959,8 @@ def test_bytes_mode_refused_under_namespace_query_pushdown(tmp_path):
         table.search().to_list(blob_mode="bytes")
     with pytest.raises(NotImplementedError, match="stable table snapshot"):
         table.take_row_ids([0]).to_list(blob_mode="bytes")
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        table.search().to_batches(blob_mode="bytes")
     descriptor = table.to_arrow(blob_mode="descriptions")["image"].to_pylist()[0]
     assert "_lance_row_id" not in descriptor
 
@@ -923,6 +982,8 @@ async def test_async_bytes_mode_refused_under_namespace_query_pushdown(tmp_path)
         await table.to_arrow(blob_mode="bytes")
     with pytest.raises(NotImplementedError, match="stable table snapshot"):
         await table.query().to_list(blob_mode="bytes")
+    with pytest.raises(NotImplementedError, match="stable table snapshot"):
+        await table.query().to_batches(blob_mode="bytes")
 
 
 def test_fetch_blobs_round_trip():
@@ -1975,6 +2036,10 @@ def test_blob_mode_for_every_query_shape(shape, blob_mode, with_row_id):
         assert all("_lance_row_id" not in image for image in images.values())
     df = query.to_pandas(blob_mode=blob_mode)
     assert dict(zip(df["id"], df["image"])) == images
+    if shape in ("scan", "vector"):
+        reader = query.to_batches(batch_size=1, blob_mode=blob_mode)
+        assert reader.schema == hits.schema
+        assert reader.read_all().equals(hits)
 
 
 @pytest.mark.asyncio
@@ -1999,6 +2064,48 @@ async def test_async_blob_bytes_for_every_query_shape(shape):
     }
     df = await query.to_pandas(blob_mode="bytes")
     assert dict(zip(df["id"], df["image"])) == {1: b"alpha", 2: b"beta"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["scan", "vector", "fts", "hybrid"])
+@pytest.mark.parametrize("blob_mode", ["lazy", "descriptions", "bytes"])
+async def test_async_to_batches_blob_modes(shape, blob_mode, monkeypatch):
+    db = await lancedb.connect_async("memory:///")
+    table = await _hybrid_blob_table_async(db)
+    query = table.query()
+    if shape in ("vector", "hybrid"):
+        query = query.nearest_to([1.0, 0.0])
+    if shape in ("fts", "hybrid"):
+        query = query.nearest_to_text("hello")
+    if shape == "scan":
+        query = query.where("id < 3")
+    query = query.select({"id": "id", "payload": "image"}).limit(2)
+    fetched = []
+    fetch_blobs = table.fetch_blobs
+
+    async def fetch(column, row_ids):
+        fetched.append(row_ids)
+        return await fetch_blobs(column, row_ids)
+
+    monkeypatch.setattr(table, "fetch_blobs", fetch)
+    reader = await query.to_batches(max_batch_length=1, blob_mode=blob_mode)
+    assert fetched == []
+    first = await reader.__anext__()
+    assert len(fetched) == (1 if blob_mode == "bytes" else 0)
+    batches = [first, *[batch async for batch in reader]]
+    assert all(batch.num_rows == 1 for batch in batches)
+    assert all(batch.schema == reader.schema for batch in batches)
+    if blob_mode == "bytes":
+        assert len(fetched) == 2
+        assert {
+            row["id"]: row["payload"] for b in batches for row in b.to_pylist()
+        } == {
+            1: b"alpha",
+            2: b"beta",
+        }
+    if blob_mode != "lazy":
+        assert "_rowid" not in reader.schema.names
+        assert "_lance_row_id" not in str(reader.schema)
 
 
 class _KeepAllScoresReranker(Reranker):
