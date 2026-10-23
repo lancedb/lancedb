@@ -38,6 +38,8 @@ import pyarrow.compute as pc
 import torch
 from torch.utils.data import DataLoader, IterableDataset, get_worker_info
 
+from . import _checkpoint
+
 from .permutation import (
     Permutation,
     PermutationBuilder,
@@ -395,6 +397,38 @@ class StreamingDataset(IterableDataset):
         capping peak memory when the consumer (e.g. a GPU training step) is
         slower than the transform stage.  Must be greater than zero.
         ``None`` (the default) imposes no limit.
+    checkpoint_mode:
+        ``"legacy"`` (default) preserves unverified compatibility checks, including
+        compaction resumes. New exports have a versioned envelope; this is not a
+        guarantee of wire compatibility with arbitrary historical consumers.
+        Older readers may ignore provenance entirely; enforcement requires a
+        version-aware reader, not just a new checkpoint envelope.
+        ``"snapshot"`` binds checkpoints to the built plan's branch/version,
+        selected input schema, semantic configuration, caller dataset identity,
+        and an automatic local native locator where available.
+        ``"logical_reference"`` instead trusts the caller's immutable revision;
+        snapshot coordinates and native locators are diagnostic in this mode.
+        This permits compaction/relocation only when logical contents and order
+        remain equivalent. It does not hash or verify all dataset contents.
+    checkpoint_identity:
+        Non-secret persistent dataset-generation identity, required outside legacy
+        mode. Do not reuse it after deletion/recreation. Ordinary local filesystem
+        tables additionally bind their resolved location, namespace and name in
+        snapshot mode. Remote, namespace-backed and in-memory handles have no
+        uniform durable native locator and rely on the caller's assertion.
+    checkpoint_revision:
+        Immutable logical revision required for logical-reference mode. The caller
+        must change it when data or logical order changes; reusing a false revision
+        cannot be detected. Snapshot mode rejects compaction versions unless the
+        original snapshot is reopened and remains available.
+    checkpoint_policy_id:
+        Non-secret immutable identity for application transform/batch/tail policy.
+        Required for transforms, custom split strategies or callable error policy.
+        Transform read-batch size is also compared because it can affect output.
+        The schema fingerprint covers selected input before the transform, not
+        arbitrary output of a user callable. Rank/worker counts are not compared,
+        preserving supported elastic resharding. Custom strategies retain their
+        existing physical permutation fingerprint and compaction restrictions.
     worker_info_override:
         If set, used in place of ``torch.utils.data.get_worker_info()`` to
         determine the DataLoader worker assignment.  Intended for unit tests
@@ -430,11 +464,28 @@ class StreamingDataset(IterableDataset):
         on_transform_error: Union[str, Callable[[Exception], bool]] = "raise",
         transform_queue_depth: Optional[int] = None,
         connection_factory: Optional[Callable[[str], Any]] = None,
+        checkpoint_mode: Literal["legacy", "snapshot", "logical_reference"] = "legacy",
+        checkpoint_identity: Optional[str] = None,
+        checkpoint_revision: Optional[str] = None,
+        checkpoint_policy_id: Optional[str] = None,
         worker_info_override=None,
         # Deprecated; use io_queue_depth instead.
         prefetch_batches: Optional[int] = None,
     ):
         super().__init__()
+        if checkpoint_mode not in ("legacy", "snapshot", "logical_reference"):
+            raise ValueError("invalid checkpoint_mode")
+        if checkpoint_mode != "legacy":
+            _checkpoint.identity(checkpoint_identity, "checkpoint_identity")
+            if checkpoint_mode == "logical_reference":
+                _checkpoint.identity(checkpoint_revision, "checkpoint_revision")
+            if (
+                transform is not None
+                or callable(on_transform_error)
+                or split_strategy is not None
+            ):
+                _checkpoint.identity(checkpoint_policy_id, "checkpoint_policy_id")
+        self._checkpoint_provenance = _checkpoint.legacy_provenance()
         if prefetch_batches is not None:
             logger.warning(
                 "prefetch_batches is deprecated and will be removed in a future "
@@ -669,6 +720,60 @@ class StreamingDataset(IterableDataset):
 
         if self._blocks_per_epoch == "auto":
             self._blocks_per_epoch = self._estimate_blocks_per_epoch()
+
+        if checkpoint_mode != "legacy":
+            metadata = self._perm_table.schema.metadata or {}
+            raw_version = metadata.get(b"base_version")
+            if raw_version is None:
+                raise ValueError(
+                    "checkpoint provenance requires a snapshot-pinned plan"
+                )
+            # The reader resolves the recorded snapshot without mutating the caller's
+            # handle. Its schema is the actual selected input, before any transform.
+            pinned = Permutation.from_tables(self._table, self._perm_table, split=0)
+            if columns is not None:
+                pinned = pinned.select_columns(columns)
+            config = {
+                "filter": filter,
+                "columns": None if columns is None else list(columns),
+                "schema": _checkpoint.schema_digest(pinned.schema),
+                "plan": "custom"
+                if split_strategy is not None
+                else "random"
+                if shuffle
+                else "sequential",
+                "seed": shuffle_seed if shuffle and split_strategy is None else None,
+                "epoch": epoch if split_strategy is None else None,
+                "clump_size": shuffle_clump_size
+                if shuffle and split_strategy is None
+                else None,
+                "num_splits": num_splits,
+                "policy_id": checkpoint_policy_id,
+                "transform": transform is not None,
+                "transform_batch_size": read_batch_size
+                if transform is not None
+                else None,
+                "error_policy": "callable"
+                if callable(on_transform_error)
+                else on_transform_error,
+                "pack_sequences": pack_sequences,
+                "eos_id": eos_id if pack_sequences is not None else None,
+                "pad_id": pad_id if pack_sequences is not None else None,
+                "blocks_per_epoch": self._blocks_per_epoch,
+            }
+            self._checkpoint_provenance = {
+                "mode": checkpoint_mode,
+                "guarantee": "caller_asserted",
+                "dataset_identity": checkpoint_identity,
+                "native_locator": _checkpoint.native_locator(table),
+                "snapshot": {
+                    "branch": metadata.get(b"base_branch", b"main").decode(),
+                    "version": int(raw_version),
+                },
+                "config": config,
+            }
+            if checkpoint_mode == "logical_reference":
+                self._checkpoint_provenance["logical_revision"] = checkpoint_revision
 
         # Contiguous block of global split indices assigned to this rank.
         splits_per_rank = num_splits // world_size
@@ -1524,6 +1629,7 @@ class StreamingDataset(IterableDataset):
         )
         if self._pack_sequences is not None:
             return {
+                **_checkpoint.envelope(self._checkpoint_provenance),
                 "shuffle_seed": self._shuffle_seed,
                 "num_splits": self._num_splits,
                 **perm_fingerprint,
@@ -1545,6 +1651,7 @@ class StreamingDataset(IterableDataset):
             for split in range(self._num_splits)
         ]
         return {
+            **_checkpoint.envelope(self._checkpoint_provenance),
             "shuffle_seed": self._shuffle_seed,
             "num_splits": self._num_splits,
             **perm_fingerprint,
@@ -1608,6 +1715,13 @@ class StreamingDataset(IterableDataset):
 
     def _commit_worker_state(self, state: dict, *, require_uniform: bool) -> None:
         """Merge one trainer-consumed worker batch into parent state."""
+        # This private transport receives our own worker snapshots. External
+        # restore/merge use the full detached payload parser; copying every token
+        # buffer here would add work on every trainer-consumed batch.
+        _checkpoint.compatible(
+            state.get("provenance", _checkpoint.legacy_provenance()),
+            self._checkpoint_provenance,
+        )
         for key, expected in (
             ("shuffle_seed", self._shuffle_seed),
             ("num_splits", self._num_splits),
@@ -1672,49 +1786,41 @@ class StreamingDataset(IterableDataset):
         )
         self._consumer_checkpoint_requires_uniform |= require_uniform
 
-    def load_state_dict(self, state: dict) -> None:
-        """Resume from a previously snapshotted state.
+    def load_state_dict(self, state: dict, *, allow_legacy: bool = False) -> None:
+        """Restore after validating the entire checkpoint, without partial mutation.
 
-        Raises ``ValueError`` if ``num_splits`` or ``shuffle_seed`` differ
-        from the checkpoint, since a different split structure or shuffle order
-        makes mid-epoch resumption meaningless. Also raises if the checkpoint
-        was built with ``split_strategy`` and records a permutation fingerprint
-        that does not match the current dataset's permutation -- this catches a
-        changed or non-deterministically-reseeded ``split_strategy`` that
-        ``num_splits``/``shuffle_seed`` alone cannot detect, since ``shuffle_seed``
-        is unused on that path. Checkpoints from ``split_random``/
-        ``split_sequential`` never carry this fingerprint (row ids are not stable
-        across compaction, so it would reject an otherwise-valid resume), and
-        continue to rely on ``shuffle_seed``/``num_splits`` alone as before.
-        Packed checkpoints pin ``pack_sequences``, ``eos_id``, ``pad_id``,
-        ``blocks_per_epoch``, and ``epoch``.
+        Snapshot and logical-reference modes reject legacy/unverified checkpoints
+        unless ``allow_legacy=True``. That explicit migration permanently labels
+        subsequent exports from this instance unverified; it cannot establish the
+        missing historical lineage. Unknown schema versions are always rejected.
+        Restore is not supported concurrently with iteration.
         """
-        if state["num_splits"] != self._num_splits:
-            raise ValueError(
-                f"num_splits mismatch: checkpoint has {state['num_splits']}, "
-                f"current dataset has {self._num_splits}"
-            )
-        if state["shuffle_seed"] != self._shuffle_seed:
-            raise ValueError(
-                f"shuffle_seed mismatch: checkpoint has {state['shuffle_seed']}, "
-                f"current dataset has {self._shuffle_seed}"
-            )
-        checkpoint_fingerprint = state.get("perm_fingerprint")
-        if (
-            checkpoint_fingerprint is not None
-            and checkpoint_fingerprint != self._perm_fingerprint
+        if type(allow_legacy) is not bool:
+            raise ValueError("allow_legacy must be a boolean")
+        candidate = _checkpoint.validate(state)
+        incoming = candidate["provenance"]
+        downgraded = incoming["mode"] == "legacy"
+        if not (downgraded and allow_legacy):
+            _checkpoint.compatible(incoming, self._checkpoint_provenance)
+        for key, expected in (
+            ("num_splits", self._num_splits),
+            ("shuffle_seed", self._shuffle_seed),
         ):
-            raise ValueError(
-                "permutation mismatch: this checkpoint was saved against a "
-                "different permutation (e.g. a split_strategy that resamples "
-                "differently between runs, such as bootstrap_sample with no "
-                "seed, or a changed callable) than the current dataset built. "
-                "Resuming would apply saved per-split positions to the wrong "
-                "rows."
-            )
-        self._consumer_checkpoint_requires_uniform = False
-
-        if "pack_buffers" in state or self._pack_sequences is not None:
+            if candidate[key] != expected:
+                raise ValueError(
+                    f"{key} mismatch: checkpoint has {candidate[key]}, "
+                    f"current dataset has {expected}"
+                )
+        if candidate.get("perm_fingerprint") is not None:
+            if candidate["perm_fingerprint"] != self._perm_fingerprint:
+                raise ValueError(
+                    "permutation mismatch: checkpoint belongs to "
+                    "a different permutation"
+                )
+        packed = "pack_buffers" in candidate
+        if packed != (self._pack_sequences is not None):
+            raise ValueError("checkpoint packing mode mismatch")
+        if packed:
             for key in (
                 "pack_sequences",
                 "eos_id",
@@ -1722,41 +1828,32 @@ class StreamingDataset(IterableDataset):
                 "blocks_per_epoch",
                 "epoch",
             ):
-                ours = getattr(self, f"_{key}")
-                if state.get(key) != ours:
-                    raise ValueError(
-                        f"{key} mismatch: checkpoint has {state.get(key)}, "
-                        f"current dataset has {ours}"
-                    )
-            self._pack_consumed = [int(c) for c in state["samples_consumed_per_split"]]
-            self._pack_blocks_emitted = [
-                int(c) for c in state["blocks_emitted_per_split"]
-            ]
-            self._pack_buffers = {
-                int(g): {"tokens": list(b["tokens"]), "starts": list(b["starts"])}
-                for g, b in state["pack_buffers"].items()
-            }
-            return
-
-        consumed = state["samples_consumed_per_split"]
-        if isinstance(consumed, list):
-            self._resume_offset = min(consumed) if consumed else 0
-            self._resume_samples = {
-                split: int(count) for split, count in enumerate(consumed)
-            }
+                if candidate.get(key) != getattr(self, f"_{key}"):
+                    raise ValueError(f"{key} mismatch in checkpoint")
+        samples = candidate["samples_consumed_per_split"]
+        positions = samples if packed else candidate["positions_consumed_per_split"]
+        for split, position in enumerate(positions):
+            size = Permutation.from_tables(
+                self._table, self._perm_table, split
+            ).num_rows
+            if position > size:
+                raise ValueError(
+                    f"checkpoint position exceeds logical split {split} size"
+                )
+        # Everything above is validation on detached objects. Commit only now.
+        if packed:
+            self._pack_consumed = samples
+            self._pack_blocks_emitted = candidate["blocks_emitted_per_split"]
+            self._pack_buffers = candidate["pack_buffers"]
         else:
-            self._resume_offset = int(consumed)
-            self._resume_samples = {}
-        # Older checkpoints predate positions_consumed_per_split; without
-        # skipped rows positions equal sample counts, so falling back to
-        # the per-split sample count (the .get default in __iter__) is exact.
-        positions = state.get("positions_consumed_per_split")
-        if positions is None:
-            self._resume_positions = {}
-        else:
-            self._resume_positions = {
-                split: int(pos) for split, pos in enumerate(positions)
-            }
+            self._resume_offset = min(samples)
+            self._resume_samples = dict(enumerate(samples))
+            self._resume_positions = dict(
+                enumerate(candidate["positions_consumed_per_split"])
+            )
+        self._consumer_checkpoint_requires_uniform = False
+        if downgraded:
+            self._checkpoint_provenance = _checkpoint.legacy_provenance()
 
     @staticmethod
     def merge_state_dicts(states: list[dict]) -> dict:
@@ -1771,6 +1868,12 @@ class StreamingDataset(IterableDataset):
 
         Raises ``ValueError`` if the states are empty, were not produced by
         the same run, or do not represent the same global step.
+
+        All payloads are validated before merging. Asserted-provenance checkpoints
+        cannot be mixed with unverified legacy checkpoints, in either input order.
+        Schema-less historical payloads and version-1 legacy payloads can be merged
+        together; the result remains explicitly unverified. Unknown schema versions
+        are rejected. Input payloads and nested buffers are not modified.
 
         The merge is always all-to-all and topology-agnostic: collect the
         ``state_dict()`` from every rank of the *previous* run into
@@ -1810,12 +1913,13 @@ class StreamingDataset(IterableDataset):
         """
         if not states:
             raise ValueError("merge_state_dicts requires at least one state dict")
+        states = [_checkpoint.validate(state) for state in states]
         first = states[0]
+        for state in states[1:]:
+            _checkpoint.compatible(first["provenance"], state["provenance"])
         packed = "pack_buffers" in first
         config_keys = ["shuffle_seed", "num_splits", "epoch"]
-        if "perm_fingerprint" in first:
-            # Absent only in checkpoints saved before this key existed; skip rather
-            # than KeyError so old checkpoints keep merging.
+        if any("perm_fingerprint" in state for state in states):
             config_keys.append("perm_fingerprint")
         if packed:
             config_keys.extend(
@@ -1826,12 +1930,10 @@ class StreamingDataset(IterableDataset):
             if ("pack_buffers" in state) != packed:
                 raise ValueError("cannot merge packed and unpacked state dicts")
             for key in config_keys:
-                if key not in state:
-                    continue
-                if state[key] != first[key]:
+                if state.get(key) != first.get(key):
                     raise ValueError(
                         f"{key} mismatch across state dicts: "
-                        f"{state[key]} != {first[key]}"
+                        f"{state.get(key)} != {first.get(key)}"
                     )
 
         if packed:
@@ -1860,6 +1962,13 @@ class StreamingDataset(IterableDataset):
                         state["blocks_emitted_per_split"][split],
                         state["samples_consumed_per_split"][split],
                     )
+                    if progress == owner_progress:
+                        ours = owner["pack_buffers"].get(split)
+                        theirs = state["pack_buffers"].get(split)
+                        if ours != theirs:
+                            raise ValueError(
+                                "conflicting packed buffers at equal progress"
+                            )
                     if progress > owner_progress:
                         owner = state
                         owner_progress = progress
@@ -1877,13 +1986,13 @@ class StreamingDataset(IterableDataset):
                     "step or do not cover every rank"
                 )
 
-            merged = dict(first)
+            merged = deepcopy(first)
             merged["samples_consumed_per_split"] = merged_consumed
             merged["blocks_emitted_per_split"] = merged_emitted
             merged["pack_buffers"] = merged_buffers
             return merged
 
-        merged = dict(first)
+        merged = deepcopy(first)
         merged["samples_consumed_per_split"] = [
             max(per_split)
             for per_split in zip(
