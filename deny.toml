@@ -74,6 +74,17 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2024-0449
     { id = "RUSTSEC-2024-0449", reason = "transitive via lindera (lance-tokenizer); no maintained upgrade available" },
 
+    # zip: extraction to disk preserves SUID/SGID bits and follows symlinks
+    # out of the destination. Reached only through candle, which reads .npy
+    # and pickle archives in memory (`ZipArchive::new` + `by_name`) and never
+    # extracts. The fix is zip >= 9; clearing it requires a candle release.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0367
+    # https://rustsec.org/advisories/RUSTSEC-2026-0368
+    # https://rustsec.org/advisories/RUSTSEC-2026-0369
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle, which never extracts archives; needs a candle release on zip >= 9" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle, which never extracts archives; needs a candle release on zip >= 9" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle, which never extracts archives; needs a candle release on zip >= 9" },
+
     # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
     # https://rustsec.org/advisories/RUSTSEC-2026-0176
     # https://rustsec.org/advisories/RUSTSEC-2026-0177
