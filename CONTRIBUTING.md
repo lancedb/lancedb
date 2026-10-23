@@ -33,10 +33,11 @@ git fetch upstream
 
 ## Setting up your development environment
 
-We have development environments for Python, Typescript, and Java. Each environment has its own setup instructions.
+We have development environments for Python, Typescript, Rust, and Java. Each environment has its own setup instructions.
 
 * [Python](python/CONTRIBUTING.md)
 * [Typescript](nodejs/CONTRIBUTING.md)
+* [Rust](rust/CONTRIBUTING.md)
 <!-- TODO: add Java contributing guide -->
 * [Documentation](docs/README.md)
 
