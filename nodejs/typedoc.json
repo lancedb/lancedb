@@ -4,7 +4,8 @@
     "lancedb/native.d.ts:VectorQuery",
     "lancedb/native.d.ts:TakeQuery",
     "lancedb/native.d.ts:RecordBatchIterator",
-    "lancedb/native.d.ts:NativeMergeInsertBuilder"
+    "lancedb/native.d.ts:NativeMergeInsertBuilder",
+    "lancedb/native.d.ts:TokenCacheOptions"
   ],
   "useHTMLEncodedBrackets": true,
   "useCodeBlocks": true,

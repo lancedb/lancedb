@@ -102,6 +102,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
+    #[snafu(display("Job '{job_id}' was not found"))]
+    JobNotFound { job_id: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -125,7 +127,7 @@ pub enum Error {
         "Hit retry limit for request_id={request_id} (\
         request_failures={request_failures}/{max_request_failures}, \
         connect_failures={connect_failures}/{max_connect_failures}, \
-        read_failures={read_failures}/{max_read_failures})"
+        read_failures={read_failures}/{max_read_failures}): {source}"
     ))]
     Retry {
         request_id: String,

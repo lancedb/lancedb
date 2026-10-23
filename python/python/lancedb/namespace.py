@@ -11,15 +11,16 @@ through a namespace abstraction.
 from __future__ import annotations
 
 import sys
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Union
+import warnings
+from typing import Any, Dict, Iterable, List, Optional, Union
+from uuid import UUID
 
 if sys.version_info >= (3, 12):
     from typing import override
 else:
     from overrides import override
 
-if TYPE_CHECKING:
-    from lancedb.query import Query
+from lancedb.query import Query
 
 from datetime import timedelta
 import pyarrow as pa
@@ -48,22 +49,32 @@ from lancedb._lancedb import (
     connect_namespace_client as _connect_namespace_client,
 )
 from lancedb.background_loop import LOOP
+from lancedb.arrow import AsyncRecordBatchReader
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.job import AsyncJob, Job
+from lancedb.listing import (
+    AsyncListing,
+    AsyncNamespaceListing,
+    AsyncTableListing,
+    Listing,
+    NamespaceListing,
+    TableListing,
+)
+from lancedb.sql import AsyncQuery as AsyncSqlQuery
+from lancedb.sql import QueryDescription, QueryParameters
 from lance_namespace import (
     LanceNamespace,
     connect as namespace_connect,
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
-    ListNamespacesResponse,
-    ListTablesResponse,
     NamespaceExistsRequest,
     TableExistsRequest,
 )
 from lancedb.materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
+    MaterializedViewSource,
     SelectArg,
 )
 from lancedb.table import AsyncTable, LanceTable, Table
@@ -75,6 +86,31 @@ from ._lancedb import Session
 
 
 _MAX_QUERY_K = 2**31 - 1
+
+
+def _create_table_storage_options(
+    storage_options: Optional[Dict[str, str]],
+    data_storage_version: Optional[str],
+    enable_v2_manifest_paths: Optional[bool],
+) -> Optional[Dict[str, str]]:
+    if data_storage_version is None and enable_v2_manifest_paths is None:
+        return storage_options
+    options = dict(storage_options or {})
+    for name, value in (
+        ("data_storage_version", data_storage_version),
+        ("enable_v2_manifest_paths", enable_v2_manifest_paths),
+    ):
+        if value is not None:
+            warnings.warn(
+                f"setting {name} directly on create_table is deprecated. "
+                "Use storage_options instead.",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            options[f"new_table_{name}"] = (
+                str(value).lower() if isinstance(value, bool) else value
+            )
+    return options
 
 
 def _query_to_namespace_request(
@@ -100,6 +136,11 @@ def _query_to_namespace_request(
 
     if not isinstance(query, Query):
         raise TypeError(f"Expected Query, got {type(query)}")
+    if query.search_effort is not None:
+        raise ValueError(
+            "namespace QueryTable does not support search_effort; "
+            "execute the query locally"
+        )
 
     vector_request = None
     if query.vector is not None:
@@ -185,8 +226,12 @@ def _query_to_namespace_request(
         kwargs["with_row_id"] = query.with_row_id
     if query.ef is not None:
         kwargs["ef"] = query.ef
+    if query.nprobes is not None:
+        kwargs["nprobes"] = query.nprobes
     if query.minimum_nprobes is not None:
-        kwargs["nprobes"] = query.minimum_nprobes
+        kwargs["minimum_nprobes"] = query.minimum_nprobes
+    if query.maximum_nprobes is not None:
+        kwargs["maximum_nprobes"] = query.maximum_nprobes
     if query.refine_factor is not None:
         kwargs["refine_factor"] = query.refine_factor
     if query.lower_bound is not None:
@@ -200,6 +245,13 @@ def _query_to_namespace_request(
     if query.distance_type is not None:
         kwargs["distance_type"] = query.distance_type
 
+    if kwargs.get("maximum_nprobes") == 0:
+        # The generated 0.13 model rejects LanceDB's unbounded sentinel;
+        # model_copy preserves direct wire pass-through to the Lance receiver.
+        maximum_nprobes = kwargs.pop("maximum_nprobes")
+        return QueryTableRequest(**kwargs).model_copy(
+            update={"maximum_nprobes": maximum_nprobes}
+        )
     return QueryTableRequest(**kwargs)
 
 
@@ -485,6 +537,14 @@ class LanceNamespaceDBConnection(DBConnection):
         self._uri = self._inner.uri
 
     @override
+    def is_open(self) -> bool:
+        return self._inner.is_open()
+
+    @override
+    def close(self) -> None:
+        self._inner.close()
+
+    @override
     def serialize(self) -> str:
         import json
 
@@ -509,12 +569,14 @@ class LanceNamespaceDBConnection(DBConnection):
     def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the database.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.
@@ -556,6 +618,9 @@ class LanceNamespaceDBConnection(DBConnection):
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
+        storage_options = _create_table_storage_options(
+            storage_options, data_storage_version, enable_v2_manifest_paths
+        )
         async_table = LOOP.run(
             self._inner.create_table(
                 name,
@@ -628,11 +693,14 @@ class LanceNamespaceDBConnection(DBConnection):
     def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> "MaterializedView":
         """Define a materialized view over a table in the root namespace.
         See
@@ -642,11 +710,45 @@ class LanceNamespaceDBConnection(DBConnection):
             self.open_table(
                 LOOP.run(
                     self._inner.create_materialized_view(
-                        name, source, select=select, where=where, limit=limit
+                        name,
+                        source,
+                        select=select,
+                        where=where,
+                        limit=limit,
+                        with_no_data=with_no_data,
+                        auto_refresh_enabled=auto_refresh_enabled,
+                        auto_refresh_interval_seconds=auto_refresh_interval_seconds,
                     )
                 ).name
             )
         )
+
+    @override
+    def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> Job[None]:
+        job = LOOP.run(
+            self._inner.create_materialized_view_async(
+                name,
+                source,
+                select=select,
+                where=where,
+                limit=limit,
+                with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
+        return Job(job)
 
     @override
     def open_materialized_view(self, name: str) -> "MaterializedView":
@@ -656,9 +758,44 @@ class LanceNamespaceDBConnection(DBConnection):
         return view
 
     @override
-    def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return LOOP.run(self._inner.list_materialized_views())
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> Listing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return Listing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
+
+    @override
+    def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        if namespace_path is None:
+            namespace_path = []
+        LOOP.run(
+            self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> Job[None]:
+        if namespace_path is None:
+            namespace_path = []
+        return Job(
+            LOOP.run(
+                self._inner.drop_materialized_view_async(
+                    name, namespace_path=namespace_path
+                )
+            )
+        )
 
     @override
     def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
@@ -722,7 +859,7 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """
         List child namespaces under the given namespace.
 
@@ -739,12 +876,12 @@ class LanceNamespaceDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._inner.list_namespaces(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -891,7 +1028,7 @@ class LanceNamespaceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
+    ) -> TableListing:
         """
         List all tables in this database with pagination support.
 
@@ -908,12 +1045,12 @@ class LanceNamespaceDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._inner.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -1080,12 +1217,14 @@ class AsyncLanceNamespaceDBConnection:
     async def table_names(
         self,
         page_token: Optional[str] = None,
-        limit: int = 10,
+        limit: Optional[int] = None,
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> Iterable[str]:
         """
         List table names in the namespace.
+
+        If limit is None, return all table names; zero returns an empty list.
 
         .. deprecated::
             Use :meth:`list_tables` instead, which provides proper pagination support.
@@ -1125,6 +1264,9 @@ class AsyncLanceNamespaceDBConnection:
         if mode.lower() not in ["create", "overwrite"]:
             raise ValueError("mode must be either 'create' or 'overwrite'")
         validate_table_name(name)
+        storage_options = _create_table_storage_options(
+            storage_options, data_storage_version, enable_v2_manifest_paths
+        )
         table = await self._inner.create_table(
             name,
             data,
@@ -1185,19 +1327,53 @@ class AsyncLanceNamespaceDBConnection:
     async def create_materialized_view(
         self,
         name: str,
-        source: str,
+        source: MaterializedViewSource,
         *,
         select: "SelectArg" = None,
         where: Optional[str] = None,
         limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> "AsyncMaterializedView":
         """Define a materialized view over a table in the root namespace."""
         view = await self._inner.create_materialized_view(
-            name, source, select=select, where=where, limit=limit
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
         )
         # Reopen through the namespace so the view's table carries the
         # namespace client and pushdown configuration a bare inner table lacks.
         return AsyncMaterializedView(await self.open_table(view.name))
+
+    async def create_materialized_view_async(
+        self,
+        name: str,
+        source: MaterializedViewSource,
+        *,
+        select: "SelectArg" = None,
+        where: Optional[str] = None,
+        limit: Optional[int] = None,
+        with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
+    ) -> AsyncJob[None]:
+        """Submit materialized-view creation and return its job."""
+        return await self._inner.create_materialized_view_async(
+            name,
+            source,
+            select=select,
+            where=where,
+            limit=limit,
+            with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+        )
 
     async def open_materialized_view(self, name: str) -> "AsyncMaterializedView":
         """Open the materialized view named ``name``."""
@@ -1205,9 +1381,38 @@ class AsyncLanceNamespaceDBConnection:
         await view.definition()
         return view
 
-    async def list_materialized_views(self) -> List[str]:
-        """The names of the materialized views in the root namespace."""
-        return await self._inner.list_materialized_views()
+    def list_materialized_views(
+        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
+    ) -> AsyncListing[str]:
+        """The names of the materialized views in the root namespace.
+
+        Returns a lazy iterator. ``page_limit`` limits each request, not the total;
+        ``page_token`` resumes from a saved token. Requests and errors occur during
+        iteration. See [pagination state][lancedb.listing.AsyncListing].
+        """
+        return AsyncListing(
+            self._inner.list_materialized_views(
+                page_token=page_token, page_limit=page_limit
+            )
+        )
+
+    async def drop_materialized_view(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a materialized view from the namespace."""
+        if namespace_path is None:
+            namespace_path = []
+        await self._inner.drop_materialized_view(name, namespace_path=namespace_path)
+
+    async def drop_materialized_view_async(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> AsyncJob[None]:
+        """Start dropping a materialized view and return its cleanup job."""
+        if namespace_path is None:
+            namespace_path = []
+        return await self._inner.drop_materialized_view_async(
+            name, namespace_path=namespace_path
+        )
 
     async def drop_table(self, name: str, namespace_path: Optional[List[str]] = None):
         """Drop a table from the namespace."""
@@ -1259,12 +1464,12 @@ class AsyncLanceNamespaceDBConnection:
             namespace_path = []
         await self._inner.drop_all_tables(namespace_path=namespace_path)
 
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> AsyncNamespaceListing:
         """
         List child namespaces under the given namespace.
 
@@ -1281,12 +1486,12 @@ class AsyncLanceNamespaceDBConnection:
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return await self._inner.list_namespaces(
+        return self._inner.list_namespaces(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
 
@@ -1416,12 +1621,12 @@ class AsyncLanceNamespaceDBConnection:
         except TableNotFoundError:
             return False
 
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
+    ) -> AsyncTableListing:
         """
         List all tables in this database with pagination support.
 
@@ -1438,14 +1643,49 @@ class AsyncLanceNamespaceDBConnection:
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return await self._inner.list_tables(
+        return self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
+
+    async def execute_query(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> AsyncRecordBatchReader:
+        """Execute SQL when supported by the underlying connection."""
+        return await self._inner.execute_query(
+            query,
+            default_namespace_path=default_namespace_path,
+            parameters=parameters,
+        )
+
+    async def execute_query_async(
+        self,
+        query: str,
+        *,
+        default_namespace_path: Optional[List[str]] = None,
+        parameters: Optional[QueryParameters] = None,
+    ) -> AsyncSqlQuery:
+        """Start executing SQL when supported by the underlying connection.
+
+        Namespace-backed local connections do not support SQL.
+        """
+        return await self._inner.execute_query_async(
+            query,
+            default_namespace_path=default_namespace_path,
+            parameters=parameters,
+        )
+
+    async def describe_query(self, query_id: UUID) -> QueryDescription:
+        """Describe a submitted SQL query when supported."""
+        return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
         """Get the namespace client for this connection.

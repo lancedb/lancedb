@@ -5,57 +5,45 @@
 //!
 //! A materialized view is a table whose contents are defined by a query over
 //! one source table and maintained by refresh rather than by writes. Creation
-//! commits an empty table carrying the kind-tagged definition in schema
-//! metadata; a kind added later reads back as unrefreshable, not as a plain
-//! table. Queries, indexes and search work on the view unchanged.
+//! commits an empty table carrying the defining query in schema metadata; a
+//! query this version cannot maintain reads back as unrefreshable, not as a
+//! plain table. Queries, indexes and search work on the view unchanged;
+//! writes to its rows or stored columns are refused.
 
+mod grouped;
+pub use grouped::IVF_PARTITION;
+mod query;
 pub mod refresh;
-
-#[cfg(test)]
-mod differential;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_schema::{DataType, Field as ArrowField, FieldRef, Schema as ArrowSchema, SchemaRef};
 use datafusion_common::ScalarValue;
-use lance_core::ROW_ID;
 use lance_datafusion::planner::Planner;
 use serde::{Deserialize, Serialize};
 
 use crate::connection::Connection;
-use crate::database::listing::OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS;
 use crate::database::{CreateTableRequest, Database, OpenTableRequest};
 use crate::embeddings::EmbeddingDefinition;
+use crate::function::FunctionBinding;
+use crate::job::Job;
+use crate::listing::{Listing, ListingOptions};
 use crate::table::Table;
-use crate::table::refresh::quote_identifier;
+use crate::table::computed_columns::{
+    FUNCTION_BINDINGS_META_KEY, computed_column_from_field, computed_columns,
+    ensure_declarations_are_planned, function_bindings_metadata,
+};
 use crate::table::{ColumnDefinition, ColumnKind};
 use crate::{Error, Result};
 
 pub use refresh::{RefreshMaterializedViewResult, RefreshMode};
 
-/// Schema metadata key holding the view definition, as kind-tagged JSON.
+/// Schema metadata key holding the view definition; see [`DEFINITION_FORMAT`].
 pub const DEFINITION_META_KEY: &str = "mv.definition";
 
-/// Schema metadata key holding the view's incarnation: a token minted at each
-/// physical creation of a view table, so a view dropped and recreated under
-/// the same name and definition is still told apart from the one a caller
-/// captured. A view whose metadata was replaced wholesale, or one declared
-/// before tokens existed, carries none until its next refresh mints one.
-pub const INCARNATION_META_KEY: &str = "mv.incarnation";
-
-/// Schema metadata key holding the source table version the view was last
-/// refreshed to. Absent until the first refresh.
-pub const SOURCE_VERSION_META_KEY: &str = "mv.source_version";
-
-/// Schema metadata key holding the wall-clock time of the last refresh,
-/// in milliseconds since the epoch.
-pub const REFRESHED_AT_MS_META_KEY: &str = "mv.refreshed_at_ms";
-
-/// Column recording which source row produced each view row: the source's
-/// stable `_rowid` at refresh time, which is why sources must keep stable
-/// row ids.
-pub const SOURCE_ROW_ID_COLUMN: &str = "__source_row_id";
+/// How many views may stand between a view and a plain table.
+const MAX_SOURCE_DEPTH: usize = 32;
 
 /// Field metadata namespace for declarations about schema structure, such as
 /// an unenforced primary key.
@@ -73,8 +61,27 @@ const EMBEDDING_FUNCTIONS_META_KEY: &str = "embedding_functions";
 /// produces, which is what lets a query embed its own text.
 const COLUMN_DEFINITIONS_META_KEY: &str = "lancedb::column_definitions";
 
-/// Value of the definition's `kind` tag for the projected `select` form.
+/// The newest layout this version reads under [`DEFINITION_META_KEY`]:
+/// `{"format": N, "query": "<SQL>"}`, the query as
+/// [`MaterializedViewDefinition::to_sql`] renders it. Format 2 identifies a
+/// query with `GROUP BY`, and format 1 an ordinary query. A reader refuses a newer format rather than
+/// guess at it. The layout also carries `"kind": "query"`, which readers
+/// older than the format number report as an unrefreshable view instead of
+/// failing to read the metadata.
+pub const DEFINITION_FORMAT: u64 = 2;
+
+/// The format `definition` is written in; see [`DEFINITION_FORMAT`].
+fn format_of(definition: &MaterializedViewDefinition) -> u64 {
+    if definition.is_grouped() { 2 } else { 1 }
+}
+
+/// Legacy `kind` tag of the structured layout written before
+/// [`DEFINITION_FORMAT`] existed; still read, never written.
 pub const SELECT_KIND: &str = "select";
+
+/// Legacy `kind` tag of the structured layout over a namespaced source;
+/// still read, never written.
+pub const NAMESPACED_SELECT_KIND: &str = "namespaced_select";
 
 /// Which view outputs each source column is projected to directly. A column
 /// may be projected more than once, so each carries every name the view gives
@@ -90,55 +97,311 @@ pub struct ViewProjection {
     pub expression: String,
 }
 
-/// The query that defines a materialized view.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MaterializedViewDefinition {
-    /// Name of the source table, in the same database as the view.
-    pub source_table: String,
-    /// The projected output columns, in view schema order.
-    pub projections: Vec<ViewProjection>,
-    /// SQL predicate selecting the source rows the view holds.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    /// Cap on the number of rows the view holds, in materialization order.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u64>,
-    /// Source columns the projections and filter read, derived at creation.
-    #[serde(default)]
-    pub inputs: Vec<String>,
+impl ViewProjection {
+    /// `SELECT *`: every source column, expanded when the view is planned.
+    /// A definition selecting it holds this projection alone.
+    ///
+    /// ```
+    /// use lancedb::materialized_view::{MaterializedViewDefinition, ViewProjection};
+    ///
+    /// let definition = MaterializedViewDefinition::from_sql("SELECT * FROM docs")?;
+    /// assert_eq!(definition.projections, [ViewProjection::star()]);
+    /// assert!(definition.selects_star());
+    /// # Ok::<(), lancedb::Error>(())
+    /// ```
+    pub fn star() -> Self {
+        Self {
+            output: "*".to_string(),
+            expression: "*".to_string(),
+        }
+    }
 }
 
-/// A view definition as read back from schema metadata. Non-exhaustive so a
-/// kind added later is additive.
+/// A `FROM` item computed per source row: each source row yields one view
+/// row per element, and projections read the element as `alias`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum MaterializedViewKind {
-    /// The projected `select` form.
-    Select(MaterializedViewDefinition),
-    /// A kind written by a newer version, reported so a caller can tell an
-    /// unrefreshable view apart from a plain table. Nothing produces this.
-    Unrecognized {
-        /// The kind as it was found in the metadata.
-        kind: String,
+pub struct ViewLateral {
+    /// Where the elements come from.
+    pub source: LateralSource,
+    /// The name the element is read through.
+    pub alias: String,
+}
+
+/// What a [`ViewLateral`] expands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LateralSource {
+    /// `UNNEST(column)`: a list column of the source table.
+    Unnest {
+        /// The list column.
+        column: String,
+    },
+    /// `name(args)`: a Function in `FROM` position, returning rows. Local
+    /// databases do not execute table functions during refresh.
+    Function {
+        /// The Function's name.
+        name: String,
+        /// Its arguments, as SQL expressions over the source table.
+        args: Vec<String>,
     },
 }
 
-/// Serialize `definition` into the kind-tagged form stored under
-/// [`DEFINITION_META_KEY`].
-pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) -> Result<String> {
-    let mut value = serde_json::to_value(definition).map_err(|e| Error::Runtime {
-        message: format!("failed to serialize view definition: {e}"),
-    })?;
-    value["kind"] = serde_json::Value::String(SELECT_KIND.to_string());
-    Ok(value.to_string())
+/// The engine's form of a [`ViewLateral`]: the list column it unnests.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ViewUnnest {
+    pub column: String,
+    pub alias: String,
 }
 
-/// Read a view declaration off a schema metadata map, if it carries one.
-/// `Ok(None)` for a plain table; a declaration that does not parse is an
-/// error, because treating a view as plain would let it be rewritten.
-pub fn materialized_view_kind(
+/// The list column refresh unnests for `definition`. `None` when the query
+/// has no lateral item.
+pub(crate) fn physical_unnest(
+    definition: &MaterializedViewDefinition,
+) -> Result<Option<ViewUnnest>> {
+    let Some(lateral) = &definition.lateral else {
+        return Ok(None);
+    };
+    let column = match &lateral.source {
+        LateralSource::Unnest { column } => column.clone(),
+        LateralSource::Function { name, .. } => {
+            return Err(Error::NotSupported {
+                message: format!(
+                    "'{name}' in FROM position is a Function; views over Function rows are \
+                     supported only on LanceDB Cloud and Enterprise"
+                ),
+            });
+        }
+    };
+    Ok(Some(ViewUnnest {
+        column,
+        alias: lateral.alias.clone(),
+    }))
+}
+
+/// The query that defines a materialized view, in the relational shape
+/// refresh maintains. Stored as SQL; see [`MaterializedViewDefinition::from_sql`]
+/// for the shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedViewDefinition {
+    /// Name of the source table, in the same database as the view.
+    pub source_table: String,
+    /// Namespace path holding the source table; empty is the root namespace.
+    pub source_namespace: Vec<String>,
+    /// The `FROM` item computed per source row, if any.
+    pub lateral: Option<ViewLateral>,
+    /// The projected output columns, in view schema order;
+    /// [`ViewProjection::star`] alone selects every source column. Empty is
+    /// a declaration that projects nothing yet, which
+    /// [`PreparedDeclaration::input_column`] can still add to.
+    pub projections: Vec<ViewProjection>,
+    /// SQL predicate selecting the rows the view holds.
+    pub filter: Option<String>,
+    /// `GROUP BY` expressions. A grouped view holds one row per group and is
+    /// recomputed in full whenever its source changes.
+    pub group_by: Vec<String>,
+    /// Cap on the number of rows the view holds, in materialization order.
+    pub limit: Option<u64>,
+}
+
+impl MaterializedViewDefinition {
+    /// Parse the defining query:
+    ///
+    /// ```sql
+    /// SELECT <column | expr AS name | *>, ...
+    /// FROM [ns.]table [, function(args) AS alias | , UNNEST(column) AS alias]
+    /// [WHERE predicate] [GROUP BY expr, ...] [LIMIT n]
+    /// ```
+    ///
+    /// A Function in `FROM` position yields one row per element it returns;
+    /// `CROSS JOIN [LATERAL]` spells the same relation. Any other clause is
+    /// refused: this engine cannot maintain it, and a definition it does not
+    /// fully understand must not be materialized.
+    ///
+    /// ```
+    /// use lancedb::materialized_view::MaterializedViewDefinition;
+    ///
+    /// let definition = MaterializedViewDefinition::from_sql(
+    ///     "select id, c.text from docs cross join lateral chunk(body) as c",
+    /// )?;
+    /// assert_eq!(definition.to_sql(), "SELECT id, c.text FROM docs, chunk(body) AS c");
+    /// # Ok::<(), lancedb::Error>(())
+    /// ```
+    pub fn from_sql(sql: &str) -> Result<Self> {
+        query::parse(sql)
+    }
+
+    /// The defining query in its canonical spelling, which is what is
+    /// stored and what [`Self::from_sql`] reads back equal.
+    pub fn to_sql(&self) -> String {
+        query::render(self)
+    }
+
+    /// The definition in its stored layout (see [`DEFINITION_FORMAT`]), as
+    /// the language bindings hand it across.
+    pub fn to_json(&self) -> Result<String> {
+        definition_to_metadata(self)
+    }
+
+    /// Whether the query has a `GROUP BY`.
+    pub fn is_grouped(&self) -> bool {
+        !self.group_by.is_empty()
+    }
+
+    /// Whether the query is `SELECT *`.
+    pub fn selects_star(&self) -> bool {
+        matches!(self.projections.as_slice(), [p] if *p == ViewProjection::star())
+    }
+}
+
+/// A view definition as read back from schema metadata. Non-exhaustive so
+/// a later outcome is additive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StoredDefinition {
+    /// A query this version can maintain.
+    Query(MaterializedViewDefinition),
+    /// Written by a newer version, reported so a caller can tell an
+    /// unrefreshable view apart from a plain table. `format` is the tag as
+    /// found: a format number, or a legacy `kind`.
+    Newer {
+        /// The format tag as stored.
+        format: String,
+    },
+}
+
+/// The backend-independent metadata needed to open a materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedViewInfo {
+    /// The defining SQL as stored.
+    pub definition_sql: String,
+    /// The definition parsed into the local refresh grammar, when supported.
+    pub parsed_definition: Option<MaterializedViewDefinition>,
+}
+
+/// The backend-independent request used to create a remote materialized view.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct CreateMaterializedViewRequest {
+    /// Name of the new view.
+    pub name: String,
+    /// Namespace in which to create the view.
+    pub namespace_path: Vec<String>,
+    /// Defining SELECT query.
+    pub query: String,
+    /// Whether to skip the initial population job.
+    pub with_no_data: bool,
+    /// Whether the server should refresh the view automatically.
+    pub auto_refresh_enabled: Option<bool>,
+    /// Refresh interval in seconds. When absent, the server determines when to refresh.
+    pub auto_refresh_interval_seconds: Option<f64>,
+}
+
+/// Prefix of the internal columns holding source columns a computed column
+/// reads without the view projecting them; see
+/// [`PreparedDeclaration::input_column`].
+pub const INPUT_COLUMN_PREFIX: &str = "__input_";
+
+/// The internal view column holding a copy of `source_column`; a nested
+/// path's separators become `__`, since a top-level name cannot hold `.`.
+pub fn input_column_name(source_column: &str) -> String {
+    format!("{INPUT_COLUMN_PREFIX}{}", source_column.replace('.', "__"))
+}
+
+/// The structured layout written before [`DEFINITION_FORMAT`]. Read only;
+/// refresh rewrites such a view in the current layout.
+#[derive(Deserialize)]
+struct LegacyDefinition {
+    source_table: String,
+    #[serde(default)]
+    source_namespace: Vec<String>,
+    projections: Vec<ViewProjection>,
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    limit: Option<u64>,
+}
+
+/// Serialize `definition` into the layout stored under
+/// [`DEFINITION_META_KEY`].
+pub(crate) fn definition_to_metadata(definition: &MaterializedViewDefinition) -> Result<String> {
+    Ok(definition_metadata_from_sql_with_format(
+        &definition.to_sql(),
+        format_of(definition),
+    ))
+}
+
+/// Serialize an arbitrary SQL definition into the materialized-view metadata
+/// envelope. Sophon uses this for SQL queries that are broader than the local
+/// refresh engine's supported shape.
+pub fn definition_metadata_from_sql(sql: &str) -> String {
+    definition_metadata_from_sql_with_format(sql, 1)
+}
+
+/// Serialize an arbitrary SQL definition together with the resolution
+/// defaults needed to plan unqualified identifiers on a later refresh.
+pub fn definition_metadata_from_sql_with_defaults(
+    sql: &str,
+    default_database: &str,
+    default_namespace_path: &[String],
+) -> String {
+    serde_json::json!({
+        "kind": "query",
+        "format": 1,
+        "query": sql,
+        "default_database": default_database,
+        "default_namespace_path": default_namespace_path,
+    })
+    .to_string()
+}
+
+fn definition_metadata_from_sql_with_format(sql: &str, format: u64) -> String {
+    serde_json::json!({
+        "kind": "query",
+        "format": format,
+        "query": sql,
+    })
+    .to_string()
+}
+
+/// Return the defining SQL stored in [`DEFINITION_META_KEY`], without
+/// requiring the local refresh parser to understand it.
+pub fn read_definition_sql(metadata: &HashMap<String, String>) -> Result<Option<String>> {
+    Ok(read_definition_sql_with_defaults(metadata)?.map(|definition| definition.query))
+}
+
+/// A stored SQL definition and the optional name-resolution defaults recorded
+/// by a remote SQL engine.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct MaterializedViewSqlDefinition {
+    /// The SQL query that defines the materialized view.
+    pub query: String,
+    /// The database used to resolve unqualified references when the view was created.
+    #[serde(default)]
+    pub default_database: Option<String>,
+    /// The namespace used to resolve unqualified references when the view was created.
+    #[serde(default)]
+    pub default_namespace_path: Option<Vec<String>>,
+}
+
+/// Read the SQL definition and its optional resolution defaults from
+/// [`DEFINITION_META_KEY`].
+pub fn read_definition_sql_with_defaults(
     metadata: &HashMap<String, String>,
-) -> Result<Option<MaterializedViewKind>> {
+) -> Result<Option<MaterializedViewSqlDefinition>> {
+    let Some(raw) = metadata.get(DEFINITION_META_KEY) else {
+        return Ok(None);
+    };
+    serde_json::from_str(raw)
+        .map(Some)
+        .map_err(|e| Error::Runtime {
+            message: format!("unreadable materialized view definition: {e}"),
+        })
+}
+
+/// Read a view definition off a schema metadata map, if it carries one.
+/// `Ok(None)` for a plain table; a definition that does not parse is an
+/// error, because treating a view as plain would let it be rewritten.
+pub fn read_definition(metadata: &HashMap<String, String>) -> Result<Option<StoredDefinition>> {
     let Some(raw) = metadata.get(DEFINITION_META_KEY) else {
         return Ok(None);
     };
@@ -146,32 +409,122 @@ pub fn materialized_view_kind(
         message: format!("unreadable materialized view definition: {e}"),
     };
     let value: serde_json::Value = serde_json::from_str(raw).map_err(|e| unreadable(&e))?;
+    if let Some(format) = value.get("format") {
+        let Some(format) = format.as_u64() else {
+            return Err(unreadable(&format!("format tag {format} is not a number")));
+        };
+        if format > DEFINITION_FORMAT {
+            return Ok(Some(StoredDefinition::Newer {
+                format: format.to_string(),
+            }));
+        }
+        let Some(sql) = value.get("query").and_then(|q| q.as_str()) else {
+            return Err(unreadable(&"missing query"));
+        };
+        let definition = MaterializedViewDefinition::from_sql(sql).map_err(|e| unreadable(&e))?;
+        // No correct writer tags a query below the format its shape needs.
+        if format < format_of(&definition) {
+            return Err(unreadable(&format!(
+                "format {format} cannot carry this query; it needs {}",
+                format_of(&definition)
+            )));
+        }
+        return Ok(Some(StoredDefinition::Query(definition)));
+    }
     let kind = value
         .get("kind")
         .and_then(|k| k.as_str())
-        .ok_or_else(|| unreadable(&"missing kind tag"))?;
-    if kind != SELECT_KIND {
-        return Ok(Some(MaterializedViewKind::Unrecognized {
-            kind: kind.to_string(),
+        .ok_or_else(|| unreadable(&"missing format tag"))?
+        .to_string();
+    if kind != SELECT_KIND && kind != NAMESPACED_SELECT_KIND {
+        return Ok(Some(StoredDefinition::Newer {
+            format: format!("kind '{kind}'"),
         }));
     }
-    let definition = serde_json::from_value(value).map_err(|e| unreadable(&e))?;
-    Ok(Some(MaterializedViewKind::Select(definition)))
+    let legacy: LegacyDefinition = serde_json::from_value(value).map_err(|e| unreadable(&e))?;
+    // No correct writer produced a tag that disagrees with the definition.
+    if (kind == SELECT_KIND) != legacy.source_namespace.is_empty() {
+        return Err(unreadable(&format!(
+            "kind '{kind}' does not match its source namespace {:?}",
+            legacy.source_namespace
+        )));
+    }
+    Ok(Some(StoredDefinition::Query(MaterializedViewDefinition {
+        source_table: legacy.source_table,
+        source_namespace: legacy.source_namespace,
+        lateral: None,
+        projections: legacy.projections,
+        filter: legacy.filter,
+        group_by: Vec::new(),
+        limit: legacy.limit,
+    })))
+}
+
+/// Refuse a user write to `name` when it is a materialized view, whose rows
+/// only refresh writes. Any stored definition counts, even one this version
+/// cannot read.
+pub(crate) fn ensure_not_a_view(
+    name: &str,
+    metadata: &HashMap<String, String>,
+    operation: &str,
+) -> Result<()> {
+    if metadata.contains_key(DEFINITION_META_KEY) {
+        return Err(Error::NotSupported {
+            message: format!(
+                "cannot {operation} '{name}': it is a materialized view, which only refresh writes"
+            ),
+        });
+    }
+    Ok(())
+}
+
+pub(crate) fn materialized_view_info_from_metadata(
+    name: &str,
+    metadata: &HashMap<String, String>,
+) -> Result<MaterializedViewInfo> {
+    match read_definition(metadata)? {
+        Some(StoredDefinition::Query(definition)) => Ok(MaterializedViewInfo {
+            definition_sql: definition.to_sql(),
+            parsed_definition: Some(definition),
+        }),
+        Some(StoredDefinition::Newer { format }) => Err(Error::NotSupported {
+            message: format!(
+                "materialized view '{name}' is stored in format {format}, which this version \
+                 of lancedb cannot refresh"
+            ),
+        }),
+        None => Err(Error::NotAMaterializedView {
+            name: name.to_string(),
+        }),
+    }
 }
 
 /// Resolve a definition against the source schema into the view's projected
-/// fields, with `inputs` filled in. Everything statically checkable is
-/// checked here rather than at refresh time. Empty `projections` selects
-/// every source column as the schema stands now.
+/// fields, with `inputs` filled in and every expression in its canonical
+/// spelling. Everything statically checkable is checked here rather than at
+/// refresh time. Empty `projections` selects every column as the schema
+/// stands now.
+#[derive(Debug)]
+pub(crate) struct Planned {
+    /// The definition with every expression in its canonical spelling and
+    /// `SELECT *` expanded.
+    pub definition: MaterializedViewDefinition,
+    /// The view's projected fields, in order.
+    pub fields: Vec<ArrowField>,
+    pub lineage: Lineage,
+    /// Source columns the query reads; a read through the unnest alias is
+    /// recorded as the list column present in the source schema.
+    pub inputs: Vec<String>,
+}
+
 pub(crate) fn plan(
     source_schema: SchemaRef,
-    source_table: &str,
-    projections: &[(String, String)],
-    filter: Option<&str>,
-    limit: Option<u64>,
-) -> Result<(MaterializedViewDefinition, Vec<ArrowField>, Lineage)> {
-    let filter = filter
-        .map(crate::expr::canonicalize_sql_predicate)
+    definition: &MaterializedViewDefinition,
+) -> Result<Planned> {
+    let filter = definition
+        .filter
+        .as_deref()
+        .map(query::canonical_expr)
         .transpose()
         .map_err(|err| match err {
             Error::InvalidInput { message } => Error::InvalidInput {
@@ -179,18 +532,46 @@ pub(crate) fn plan(
             },
             err => err,
         })?;
-    let projections: Vec<(String, String)> = if projections.is_empty() {
+    if definition.is_grouped() {
+        return grouped::plan(source_schema, definition, filter);
+    }
+    // Projections are typed against the source, or for an unnested view
+    // against the source with the list column replaced by its element
+    // under the alias, where `c.chunk` is an ordinary nested path.
+    let unnest = physical_unnest(definition)?;
+    let source_schema = match &unnest {
+        None => source_schema,
+        Some(unnest) => {
+            // A scan limit counts source rows, not the elements they expand to.
+            if definition.limit.is_some() {
+                return Err(Error::InvalidInput {
+                    message: "LIMIT is not supported together with UNNEST".to_string(),
+                });
+            }
+            flattened_schema(&source_schema, unnest)?
+        }
+    };
+    let projections: Vec<(String, String)> = if definition.selects_star() {
         source_schema
             .fields()
             .iter()
-            // A source that is itself a view carries its own provenance
-            // column; the new view records its own, not a copy.
-            .filter(|f| f.name() != SOURCE_ROW_ID_COLUMN)
-            .map(|f| (f.name().clone(), quote_identifier(f.name())))
+            .map(|f| (f.name().clone(), query::ident_sql(f.name())))
             .collect()
     } else {
-        projections.to_vec()
+        definition
+            .projections
+            .iter()
+            .map(|p| {
+                let expression =
+                    query::canonical_expr(&p.expression).map_err(|e| Error::InvalidExpression {
+                        column: p.output.clone(),
+                        message: e.to_string(),
+                    })?;
+                Ok((p.output.clone(), expression))
+            })
+            .collect::<Result<_>>()?
     };
+    let limit = definition.limit;
 
     // A scan takes the cap as i64. Rejecting it here keeps creation and
     // refresh from disagreeing about whether a view is valid.
@@ -214,25 +595,12 @@ pub(crate) fn plan(
                 name: output.clone(),
             });
         }
-        if output == SOURCE_ROW_ID_COLUMN || output == ROW_ID {
-            return Err(Error::InvalidInput {
-                message: format!("view column name '{output}' is reserved"),
-            });
-        }
-
         let parsed = planner
             .parse_expr(expression)
             .map_err(|e| Error::InvalidExpression {
                 column: output.clone(),
                 message: e.to_string(),
             })?;
-        // Before optimization: the simplifier folds a stable-but-not-immutable
-        // call like now() into a literal, hiding it from the check while the
-        // stored definition keeps the call.
-        ensure_immutable(&parsed, |message| Error::InvalidExpression {
-            column: output.clone(),
-            message,
-        })?;
         let expr = planner
             .optimize_expr(parsed)
             .map_err(|e| Error::InvalidExpression {
@@ -262,9 +630,16 @@ pub(crate) fn plan(
                     message: e.to_string(),
                 })?;
 
-        // Always nullable: what a refresh appends must fit the declared field
-        // whatever nullability the evaluator reports for a given batch.
-        let mut field = ArrowField::new(output, data_type, true);
+        // A projected column keeps its nullability; a computed value is
+        // nullable whatever the evaluator reports for a given batch.
+        let nullable = match projected_path(&expr).as_deref() {
+            Some([column]) => source_schema
+                .field_with_name(column)
+                .map(|f| f.is_nullable())
+                .unwrap_or(true),
+            _ => true,
+        };
+        let mut field = ArrowField::new(output, data_type, nullable);
         // Identity projections keep descriptive field metadata (blob markers);
         // computed values carry none. Structural declarations never come along.
         if let Some(source_field) = projected_field(&expr, &source_schema) {
@@ -284,90 +659,136 @@ pub(crate) fn plan(
     }
 
     if let Some(filter) = filter.as_deref() {
-        let expr = planner
-            .parse_filter(filter)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        ensure_immutable(&expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        let filter_inputs = resolve_inputs(&source_schema, &expr, |message| Error::InvalidInput {
-            message: format!("invalid view filter: {message}"),
-        })?;
-        // A committed filter has to be usable as a predicate.
-        let read_schema = project_schema(&source_schema, &filter_inputs);
-        let data_type = Planner::new(read_schema.clone())
-            .create_physical_expr(&expr)
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?
-            .data_type(read_schema.as_ref())
-            .map_err(|e| Error::InvalidInput {
-                message: format!("invalid view filter: {e}"),
-            })?;
-        if data_type != DataType::Boolean {
-            return Err(Error::InvalidInput {
-                message: format!("view filter must be a boolean predicate, not {data_type}"),
-            });
-        }
-        inputs.extend(filter_inputs);
+        inputs.extend(plan_filter(&source_schema, filter)?);
     }
 
-    inputs.sort();
-    inputs.dedup();
-
     let definition = MaterializedViewDefinition {
-        source_table: source_table.to_string(),
+        source_table: definition.source_table.clone(),
+        source_namespace: definition.source_namespace.clone(),
+        lateral: definition.lateral.clone(),
         projections: projections
             .into_iter()
             .map(|(output, expression)| ViewProjection { output, expression })
             .collect(),
         filter,
+        group_by: Vec::new(),
         limit,
-        inputs,
     };
-    Ok((definition, fields, lineage))
+    let mut inputs: Vec<String> = inputs
+        .iter()
+        .map(|input| recorded_input(unnest.as_ref(), input))
+        .collect();
+    inputs.sort();
+    inputs.dedup();
+    Ok(Planned {
+        definition,
+        fields,
+        lineage,
+        inputs,
+    })
 }
 
-/// Reject any function that is not immutable: a view definition has to
-/// evaluate identically across refreshes, or incremental maintenance would
-/// mix rows from different evaluations of the same definition.
-fn ensure_immutable(expr: &datafusion_expr::Expr, error: impl Fn(String) -> Error) -> Result<()> {
-    use datafusion_common::tree_node::{TreeNode, TreeNodeRecursion};
-    use datafusion_expr::Volatility;
-
-    // Labeled immutable but not determined by row values alone: version()
-    // depends on the build, the arrow_* introspectors on schema state.
-    const NOT_VALUE_DETERMINED: &[&str] =
-        &["version", "arrow_typeof", "arrow_field", "arrow_metadata"];
-
-    let mut offending: Option<String> = None;
-    expr.apply(|node| {
-        if let datafusion_expr::Expr::ScalarFunction(function) = node {
-            let name = function.func.name();
-            if function.func.signature().volatility != Volatility::Immutable
-                || NOT_VALUE_DETERMINED.contains(&name)
-            {
-                offending = Some(name.to_string());
-                return Ok(TreeNodeRecursion::Stop);
-            }
-        }
-        Ok(TreeNodeRecursion::Continue)
-    })
-    .map_err(|e| error(e.to_string()))?;
-    match offending {
-        Some(name) => Err(error(format!(
-            "function '{name}' is not immutable and would evaluate differently \
-             across refreshes"
-        ))),
-        None => Ok(()),
+/// Check that `filter` is a boolean predicate over `source_schema`, returning
+/// the columns it reads.
+pub(crate) fn plan_filter(source_schema: &SchemaRef, filter: &str) -> Result<Vec<String>> {
+    let expr = Planner::new(source_schema.clone())
+        .parse_filter(filter)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    let filter_inputs = resolve_inputs(source_schema, &expr, |message| Error::InvalidInput {
+        message: format!("invalid view filter: {message}"),
+    })?;
+    // A committed filter has to be usable as a predicate.
+    let read_schema = project_schema(source_schema, &filter_inputs);
+    let data_type = Planner::new(read_schema.clone())
+        .create_physical_expr(&expr)
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?
+        .data_type(read_schema.as_ref())
+        .map_err(|e| Error::InvalidInput {
+            message: format!("invalid view filter: {e}"),
+        })?;
+    if data_type != DataType::Boolean {
+        return Err(Error::InvalidInput {
+            message: format!("view filter must be a boolean predicate, not {data_type}"),
+        });
     }
+    Ok(filter_inputs)
+}
+
+/// The schema a projection over an unnested view is planned against: the
+/// source's, with the list column replaced by its element type under the
+/// alias.
+pub(crate) fn flattened_schema(
+    source_schema: &ArrowSchema,
+    unnest: &ViewUnnest,
+) -> Result<SchemaRef> {
+    let field = source_schema
+        .field_with_name(&unnest.column)
+        .map_err(|_| Error::InvalidInput {
+            message: format!(
+                "UNNEST column '{}' is not a column of the source",
+                unnest.column
+            ),
+        })?;
+    let DataType::List(element) = field.data_type() else {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "UNNEST column '{}' is {}, not a list",
+                unnest.column,
+                field.data_type()
+            ),
+        });
+    };
+    if source_schema.field_with_name(&unnest.alias).is_ok() {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "UNNEST alias '{}' collides with a source column",
+                unnest.alias
+            ),
+        });
+    }
+    let fields: Vec<ArrowField> = source_schema
+        .fields()
+        .iter()
+        .map(|f| {
+            if f.name() == &unnest.column {
+                ArrowField::new(&unnest.alias, element.data_type().clone(), true)
+            } else {
+                f.as_ref().clone()
+            }
+        })
+        .collect();
+    Ok(Arc::new(ArrowSchema::new(fields)))
 }
 
 /// The root of a possibly-dotted column path: `metadata.age` -> `metadata`.
 fn root(path: &str) -> &str {
     path.split('.').next().unwrap_or(path)
+}
+
+/// The field a dotted `path` names, walking struct children.
+fn field_at_path(schema: &ArrowSchema, path: &str) -> Option<ArrowField> {
+    let mut parts = path.split('.');
+    let mut field = schema.field_with_name(parts.next()?).ok()?.clone();
+    for part in parts {
+        let DataType::Struct(children) = field.data_type() else {
+            return None;
+        };
+        field = children.iter().find(|f| f.name() == part)?.as_ref().clone();
+    }
+    Some(field)
+}
+
+/// The source column recorded as read for `path`: for an unnested view a
+/// read through the alias is a read of the list column.
+fn recorded_input(unnest: Option<&ViewUnnest>, path: &str) -> String {
+    match unnest {
+        Some(unnest) if root(path) == unnest.alias => unnest.column.clone(),
+        _ => path.to_string(),
+    }
 }
 
 /// The columns `expr` reads, kept as the planner reports them (a nested
@@ -594,15 +1015,21 @@ fn project_schema(schema: &ArrowSchema, columns: &[String]) -> SchemaRef {
 }
 
 /// A validated view declaration, ready to become a table: the projected
-/// fields plus [`SOURCE_ROW_ID_COLUMN`], definition stamped in metadata.
+/// fields with the definition stamped in metadata.
 /// Produced only by [`prepare_declaration`].
 #[derive(Clone)]
 pub struct PreparedDeclaration {
     schema: SchemaRef,
     definition: MaterializedViewDefinition,
+    /// The source schema and the projection lineage, for placing a computed
+    /// column's inputs; `internal_inputs` counts the projections
+    /// [`PreparedDeclaration::input_column`] added after the declared ones.
+    source_schema: SchemaRef,
+    lineage: Lineage,
+    internal_inputs: usize,
     /// The source's own database: the only place
     /// [`PreparedDeclaration::create`] will put the view, because refresh
-    /// resolves the recorded source name through the view's database.
+    /// resolves the recorded source coordinate through the view's database.
     database: Arc<dyn Database>,
 }
 
@@ -620,107 +1047,421 @@ impl PreparedDeclaration {
         &self.definition
     }
 
-    /// Create the view table and verify it, consuming the declaration.
-    ///
-    /// The view goes in the source's own database, where refresh resolves the
-    /// recorded source name. Stable row ids are requested at both levels and
-    /// verified rather than trusted; nothing is rolled back on failure.
-    pub async fn create(self, name: &str) -> Result<MaterializedView> {
-        let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
-            vec![];
-        // Minted here, not at preparation: a declaration can be cloned and
-        // create more than one physical table, and each needs its own token.
-        let incarnation = uuid::Uuid::new_v4().to_string();
-        let mut metadata = self.schema.metadata().clone();
-        metadata.insert(INCARNATION_META_KEY.to_string(), incarnation.clone());
-        let schema = Arc::new(ArrowSchema::new_with_metadata(
-            self.schema.fields().clone(),
-            metadata,
-        ));
-        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-            Box::new(arrow_array::RecordBatchIterator::new(empty, schema));
-        let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
-        let write_params = request
-            .write_options
-            .lance_write_params
-            .get_or_insert_with(Default::default);
-        write_params.enable_stable_row_ids = true;
-        let store_params = write_params
-            .store_params
-            .get_or_insert_with(Default::default);
-        crate::connection::merge_storage_options(
-            store_params,
-            [(
-                OPT_NEW_TABLE_ENABLE_STABLE_ROW_IDS.to_string(),
-                "true".to_string(),
-            )],
-        );
-        let table = self.database.clone().create_table(request).await?;
-        let table = Table::new(table, self.database);
-        let stable = match table.as_native() {
-            Some(native) => native.dataset.get().await?.manifest.uses_stable_row_ids(),
-            None => false,
-        };
-        if !stable {
-            return Err(Error::Runtime {
+    /// The schema the view will have: the declared columns in order, any
+    /// internal projections added by [`PreparedDeclaration::input_column`].
+    pub fn schema(&self) -> &SchemaRef {
+        &self.schema
+    }
+
+    /// The view column that holds `source_column` for a computed column to
+    /// read: the column the view projects it to, if any, otherwise an
+    /// internal projection added here, named by [`input_column_name`].
+    pub fn input_column(&mut self, source_column: &str) -> Result<String> {
+        // A grouped view's rows are groups; no source row carries a value into one.
+        if self.definition.is_grouped() {
+            return Err(Error::InvalidInput {
                 message: format!(
-                    "view '{name}' was created without stable row ids: the database \
-                     ignored the creation option; the table remains and is not \
-                     usable as a materialized view"
+                    "a computed column on a grouped view cannot read source column \
+                     '{source_column}'; declare it on a view over the grouped view"
                 ),
             });
         }
+        if let Some(output) = self.lineage.get(source_column).and_then(|o| o.first()) {
+            return Ok(output.clone());
+        }
+        let name = input_column_name(source_column);
+        let field = field_at_path(&self.source_schema, source_column).ok_or_else(|| {
+            Error::InvalidInput {
+                message: format!("the source has no column '{source_column}' to read"),
+            }
+        })?;
+        if self.schema.field_with_name(&name).is_ok() {
+            return Err(Error::ColumnAlreadyExists { name });
+        }
+        let mut fields: Vec<ArrowField> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.push(without_declarations(&field.with_name(name.clone())));
+        self.definition.projections.push(ViewProjection {
+            output: name.clone(),
+            expression: source_column
+                .split('.')
+                .map(query::ident_sql)
+                .collect::<Vec<_>>()
+                .join("."),
+        });
+        self.lineage
+            .entry(source_column.to_string())
+            .or_default()
+            .push(name.clone());
+        self.internal_inputs += 1;
+        let mut metadata = self.schema.metadata().clone();
+        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
+        metadata.insert(
+            DEFINITION_META_KEY.to_string(),
+            definition_to_metadata(&self.definition)?,
+        );
+        self.schema = Arc::new(ArrowSchema::new_with_metadata(fields, metadata));
+        Ok(name)
+    }
+
+    /// Add computed columns, each at its position among the declared
+    /// columns, with the bindings any of them name.
+    ///
+    /// Refresh never computes such a column: every row it writes carries
+    /// NULL there, and the declaration's owner fills it, `refresh_column`
+    /// for a SQL declaration. A commit that fills only computed columns is
+    /// the one commit on a view refresh does not treat as drift. Declarations
+    /// are validated over the assembled schema, and read only columns the
+    /// view holds (see [`PreparedDeclaration::input_column`]).
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use std::collections::HashMap;
+    /// # use arrow_schema::{DataType, Field};
+    /// # use lancedb::materialized_view::prepare_declaration;
+    /// # use lancedb::table::computed_columns::{
+    /// #     COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+    /// # };
+    /// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut prepared = prepare_declaration(
+    ///     source,
+    ///     Some(&[("id".into(), "id".into())]),
+    ///     None,
+    ///     None,
+    /// )
+    /// .await?;
+    /// // `text` is not projected; the view holds it internally for the column to read.
+    /// let text = prepared.input_column("text")?;
+    /// let length = Field::new("length", DataType::Int32, true).with_metadata(HashMap::from([
+    ///     (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+    ///     (KIND_META_KEY.into(), SQL_KIND.into()),
+    ///     (EXPRESSION_META_KEY.into(), format!("length({text})")),
+    ///     (INPUTS_META_KEY.into(), format!("[\"{text}\"]")),
+    /// ]));
+    /// let view = prepared
+    ///     .with_computed_columns(vec![(1, length)], &[])?
+    ///     .create("lengths")
+    ///     .await?;
+    /// view.refresh().execute().await?; // rows land with `length` NULL
+    /// view.table().refresh_column("length").await?; // filled
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_computed_columns(
+        mut self,
+        columns: Vec<(usize, ArrowField)>,
+        bindings: &[FunctionBinding],
+    ) -> Result<Self> {
+        let invalid = |message: String| Error::InvalidInput { message };
+        if columns.is_empty() {
+            return Err(invalid("at least one computed column is needed".into()));
+        }
+        if !computed_columns(&self.schema).is_empty() {
+            return Err(invalid(
+                "computed columns were already declared on this view".into(),
+            ));
+        }
+        if self.definition.projections.is_empty() {
+            return Err(invalid(
+                "a view of computed columns alone must read at least one source column".into(),
+            ));
+        }
+        let visible_count = self.visible_count();
+        let mut fields: Vec<ArrowField> = self
+            .schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        let mut columns = columns;
+        columns.sort_by_key(|(position, _)| *position);
+        for (inserted, (position, field)) in columns.iter().enumerate() {
+            let name = field.name().as_str();
+            if name.starts_with(INPUT_COLUMN_PREFIX) {
+                return Err(invalid(format!("view column name '{name}' is reserved")));
+            }
+            if fields.iter().any(|f| f.name() == name) {
+                return Err(Error::ColumnAlreadyExists {
+                    name: name.to_string(),
+                });
+            }
+            if !field.is_nullable() {
+                return Err(invalid(format!(
+                    "computed column '{name}' must be nullable until a refresh fills it"
+                )));
+            }
+            if computed_column_from_field(field).is_none() {
+                return Err(invalid(format!(
+                    "column '{name}' does not carry a computed-column declaration"
+                )));
+            }
+            let limit = visible_count + inserted;
+            if *position > limit {
+                return Err(invalid(format!(
+                    "computed column '{name}' is placed at {position}, past the view's {limit} columns"
+                )));
+            }
+            // Positions index the select list, which counts the computed
+            // columns already inserted before this one.
+            fields.insert(*position, field.clone());
+        }
+        let mut metadata = self.schema.metadata().clone();
+        if !bindings.is_empty() {
+            metadata.insert(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                function_bindings_metadata(bindings)?,
+            );
+        }
+        rewrite_column_definitions(&mut metadata, self.schema.as_ref(), &fields)?;
+        let schema = ArrowSchema::new_with_metadata(fields, metadata);
+        ensure_declarations_are_planned(&schema)?;
+        self.schema = Arc::new(schema);
+        Ok(self)
+    }
+
+    /// Columns the declaration lists: everything before the internal
+    /// projections.
+    fn visible_count(&self) -> usize {
+        self.definition.projections.len() - self.internal_inputs
+            + computed_columns(&self.schema).len()
+    }
+
+    /// Create the view table and verify it, consuming the declaration.
+    ///
+    /// The view goes at the root of the source's own database, where refresh
+    /// resolves the recorded source coordinate.
+    pub async fn create(self, name: &str) -> Result<MaterializedView> {
+        self.create_in(&[], name).await
+    }
+
+    /// Create the view in `namespace_path`, empty for the root namespace.
+    /// Otherwise [`PreparedDeclaration::create`].
+    pub async fn create_in(
+        self,
+        namespace_path: &[String],
+        name: &str,
+    ) -> Result<MaterializedView> {
+        ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
+        let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
+            vec![];
+        let reader: Box<dyn arrow_array::RecordBatchReader + Send> =
+            Box::new(arrow_array::RecordBatchIterator::new(empty, self.schema));
+        let mut request = CreateTableRequest::new(name.to_string(), Box::new(reader));
+        request.namespace_path = namespace_path.to_vec();
+        let table = self.database.clone().create_table(request).await?;
+        let table = Table::new(table, self.database);
         Ok(MaterializedView {
             table,
-            definition: self.definition,
-            incarnation: Some(incarnation),
+            definition_sql: self.definition.to_sql(),
+            parsed_definition: Some(self.definition),
         })
     }
 }
 
-/// Validate a view declaration against its live source and hold what its
-/// creation needs. The declaration is canonicalized through the coordinate a
-/// refresh will resolve, so a handle that does not resolve back to itself is
-/// rejected, as is a namespaced source. Same creation-time checks as
-/// [`Connection::create_materialized_view`].
+/// Refuse to create `name` when following its source through each view's
+/// stored definition leads back to `name`: with no plain table beneath it,
+/// such a view would only ever refresh from itself. The walk follows the
+/// coordinates the views already record, so it opens one table per level.
+async fn ensure_no_source_cycle(
+    database: &Arc<dyn Database>,
+    namespace_path: &[String],
+    name: &str,
+    definition: &MaterializedViewDefinition,
+) -> Result<()> {
+    let mut path = vec![name.to_string()];
+    let mut next = (
+        definition.source_namespace.clone(),
+        definition.source_table.clone(),
+    );
+    for _ in 0..MAX_SOURCE_DEPTH {
+        let (namespace, source) = next;
+        path.push(source.clone());
+        if namespace == namespace_path && source == name {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "materialized view '{name}' would read itself: {}",
+                    path.join(" -> ")
+                ),
+            });
+        }
+        let table = match database
+            .open_table(OpenTableRequest {
+                name: source,
+                namespace_path: namespace,
+                index_cache_size: None,
+                lance_read_params: None,
+                location: None,
+                namespace_client: None,
+                managed_versioning: None,
+            })
+            .await
+        {
+            Ok(table) => table,
+            // A missing source ends the chain, so it cannot lead back here.
+            Err(Error::TableNotFound { .. }) => return Ok(()),
+            Err(e) => return Err(e),
+        };
+        let schema = table.schema().await?;
+        // Only a definition this version reads can be followed.
+        match read_definition(schema.metadata()) {
+            Ok(Some(StoredDefinition::Query(upstream))) => {
+                next = (upstream.source_namespace, upstream.source_table);
+            }
+            _ => return Ok(()),
+        }
+    }
+    Err(Error::InvalidInput {
+        message: format!(
+            "materialized view '{name}' would nest deeper than {MAX_SOURCE_DEPTH} views"
+        ),
+    })
+}
+
+/// Column definitions are positional over the view schema: carry each
+/// field's entry to its place in `fields`, physical for a field that had none.
+fn rewrite_column_definitions(
+    metadata: &mut HashMap<String, String>,
+    previous: &ArrowSchema,
+    fields: &[ArrowField],
+) -> Result<()> {
+    let Some(raw) = metadata.get(COLUMN_DEFINITIONS_META_KEY).cloned() else {
+        return Ok(());
+    };
+    let definitions: Vec<ColumnDefinition> =
+        serde_json::from_str(&raw).map_err(|e| Error::Runtime {
+            message: format!("unreadable column definitions on the view: {e}"),
+        })?;
+    let by_name: HashMap<&str, &ColumnDefinition> = previous
+        .fields()
+        .iter()
+        .zip(&definitions)
+        .map(|(field, definition)| (field.name().as_str(), definition))
+        .collect();
+    let rewritten: Vec<ColumnDefinition> = fields
+        .iter()
+        .map(|field| {
+            by_name
+                .get(field.name().as_str())
+                .map(|d| (*d).clone())
+                .unwrap_or(ColumnDefinition {
+                    kind: ColumnKind::Physical,
+                })
+        })
+        .collect();
+    metadata.insert(
+        COLUMN_DEFINITIONS_META_KEY.to_string(),
+        serde_json::to_string(&rewritten).map_err(|e| Error::Runtime {
+            message: format!("failed to serialize column definitions: {e}"),
+        })?,
+    );
+    Ok(())
+}
+
+/// Validate a view declaration over `source`: `projections` as
+/// `(name, SQL expression)` pairs, `None` selecting every source column.
+/// See [`MaterializedViewDefinition::from_sql`] for the query shape;
+/// [`prepare_definition`] takes a parsed query directly.
+pub async fn prepare_declaration(
+    source: &Table,
+    projections: Option<&[(String, String)]>,
+    filter: Option<&str>,
+    limit: Option<u64>,
+) -> Result<PreparedDeclaration> {
+    let definition = MaterializedViewDefinition {
+        source_table: source.name().to_string(),
+        source_namespace: source.namespace().to_vec(),
+        lateral: None,
+        projections: match projections {
+            None => vec![ViewProjection::star()],
+            Some(projections) => projections
+                .iter()
+                .map(|(output, expression)| ViewProjection {
+                    output: output.clone(),
+                    expression: expression.clone(),
+                })
+                .collect(),
+        },
+        filter: filter.map(str::to_string),
+        group_by: Vec::new(),
+        limit,
+    };
+    prepare_definition(source, definition).await
+}
+
+/// Validate `definition` over `source`, the table it names. The declaration
+/// is planned against the source as refresh will reach it, and the result
+/// creates the view with [`PreparedDeclaration::create`]. A query calling a
+/// Function in `FROM` position is not supported by local refresh.
 ///
-/// ```no_run
+/// ```
 /// # #![recursion_limit = "256"]
-/// # use lancedb::materialized_view::prepare_declaration;
-/// # async fn declare(source: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
-/// let prepared = prepare_declaration(
-///     source,
-///     &[("id".into(), "id".into()), ("double".into(), "value * 2".into())],
-///     Some("value > 0"),
-///     None,
-/// )
-/// .await?;
-/// let view = prepared.create("doubles").await?;
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+///
+/// # async fn declare(events: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT id, t.tag AS tag FROM events, UNNEST(tags) AS t WHERE id > 0",
+/// )?;
+/// let view = prepare_definition(events, definition)
+///     .await?
+///     .create("event_tags")
+///     .await?;
+/// view.refresh().execute().await?;
 /// # Ok(())
 /// # }
 /// ```
-pub async fn prepare_declaration(
+///
+/// A grouped view holds one row per group and is recomputed in full on
+/// every refresh after a source change:
+///
+/// ```
+/// # #![recursion_limit = "256"]
+/// use lancedb::materialized_view::{MaterializedViewDefinition, prepare_definition};
+///
+/// # async fn declare(events: &lancedb::Table) -> Result<(), Box<dyn std::error::Error>> {
+/// let definition = MaterializedViewDefinition::from_sql(
+///     "SELECT kind, count(*) AS n, array_agg(id) AS ids FROM events GROUP BY kind",
+/// )?;
+/// let view = prepare_definition(events, definition)
+///     .await?
+///     .create("events_by_kind")
+///     .await?;
+/// view.refresh().execute().await?;
+/// # Ok(())
+/// # }
+/// ```
+pub async fn prepare_definition(
     source: &Table,
-    projections: &[(String, String)],
-    filter: Option<&str>,
-    limit: Option<u64>,
+    definition: MaterializedViewDefinition,
+) -> Result<PreparedDeclaration> {
+    if definition.source_table != source.name() || definition.source_namespace != source.namespace()
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "the query reads '{}' in namespace {:?}, but the source handle is '{}' in {:?}",
+                definition.source_table,
+                definition.source_namespace,
+                source.name(),
+                source.namespace()
+            ),
+        });
+    }
+    prepare_with(source, definition).await
+}
+
+async fn prepare_with(
+    source: &Table,
+    definition: MaterializedViewDefinition,
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
             message: "materialized views are supported only on local databases".into(),
         });
     };
-    // The definition records the source by bare name; any other source
-    // form would be recorded as a name its refresh cannot resolve.
-    if !source.namespace().is_empty() {
-        return Err(Error::NotSupported {
-            message: format!(
-                "a namespaced source cannot be recorded in a view definition; \
-                 '{}' must be a root-namespace table",
-                source.name()
-            ),
-        });
-    }
+    let source_namespace = source.namespace().to_vec();
     let database = source
         .database_opt()
         .ok_or_else(|| Error::InvalidInput {
@@ -734,7 +1475,7 @@ pub async fn prepare_declaration(
     let resolved = database
         .open_table(OpenTableRequest {
             name: source.name().to_string(),
-            namespace_path: vec![],
+            namespace_path: source_namespace.clone(),
             index_cache_size: None,
             lance_read_params: None,
             location: None,
@@ -760,35 +1501,40 @@ pub async fn prepare_declaration(
             ),
         });
     }
-    if !native.dataset.get().await?.manifest.uses_stable_row_ids() {
-        return Err(Error::InvalidInput {
-            message: format!(
-                "materialized views require stable row ids on the source table; \
-                 create '{}' with storage option new_table_enable_stable_row_ids=true",
-                source.name()
-            ),
-        });
-    }
     refresh::ensure_no_mem_wal(
         native.dataset.get().await?.as_ref(),
         "source table",
         resolved.name(),
     )
     .await?;
+    // The internal-input prefix belongs to the declaration alone; the
+    // replan at refresh sees those projections and must accept them.
+    if let Some(reserved) = definition
+        .projections
+        .iter()
+        .find(|p| p.output.starts_with(INPUT_COLUMN_PREFIX))
+    {
+        return Err(Error::InvalidInput {
+            message: format!("view column name '{}' is reserved", reserved.output),
+        });
+    }
     let source_schema = resolved.schema().await?;
     let source_metadata = source_schema.metadata().clone();
-    let (definition, mut fields, lineage) = plan(
-        source_schema.clone(),
-        resolved.name(),
-        projections,
-        filter,
-        limit,
-    )?;
-    fields.push(ArrowField::new(
-        SOURCE_ROW_ID_COLUMN,
-        DataType::UInt64,
-        false,
-    ));
+    let Planned {
+        definition,
+        fields,
+        lineage,
+        ..
+    } = plan(source_schema.clone(), &definition)?;
+    if definition.is_grouped() {
+        grouped::check(native.dataset.get().await?.as_ref(), &definition).await?;
+    }
+    // What later projections (`input_column`) are planned against: for an
+    // unnested view the flattened schema, where the alias is a column.
+    let planning_schema = match physical_unnest(&definition)? {
+        None => source_schema.clone(),
+        Some(unnest) => flattened_schema(&source_schema, &unnest)?,
+    };
     // Only column-describing metadata comes along: structural declarations
     // describe how a table is written, and a view is written by refresh alone.
     let mut metadata: HashMap<String, String> = HashMap::new();
@@ -809,29 +1555,11 @@ pub async fn prepare_declaration(
     Ok(PreparedDeclaration {
         schema: Arc::new(ArrowSchema::new_with_metadata(fields, metadata)),
         definition,
+        source_schema: planning_schema,
+        lineage,
+        internal_inputs: 0,
         database,
     })
-}
-
-/// One row of [`Connection::list_materialized_views`]: a view's name and its
-/// definition kind, which may be one this version cannot refresh.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MaterializedViewEntry {
-    /// Name of the view's table.
-    pub name: String,
-    /// The view's definition as stored.
-    pub kind: MaterializedViewKind,
-}
-
-/// Materialized views are local-only; refuse a remote connection before any
-/// request is made.
-fn ensure_local(connection: &Connection) -> Result<()> {
-    if connection.uri().starts_with("db://") {
-        return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
-        });
-    }
-    Ok(())
 }
 
 /// Builds a materialized view. Created by
@@ -839,10 +1567,34 @@ fn ensure_local(connection: &Connection) -> Result<()> {
 pub struct CreateMaterializedViewBuilder {
     connection: Connection,
     name: String,
+    namespace: Vec<String>,
     source: String,
+    source_namespace: Vec<String>,
     projections: Vec<(String, String)>,
     filter: Option<String>,
     limit: Option<u64>,
+    with_no_data: bool,
+    auto_refresh_enabled: Option<bool>,
+    auto_refresh_interval_seconds: Option<f64>,
+}
+
+fn source_sql_identifier(
+    namespace_path: &[String],
+    source: &str,
+    namespace_in_schema_position: bool,
+) -> String {
+    fn quote(name: &str) -> String {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+
+    let namespace = if namespace_in_schema_position && !namespace_path.is_empty() {
+        vec![namespace_path.join("$")]
+    } else {
+        namespace_path.to_vec()
+    };
+    let mut parts = namespace.iter().map(|part| quote(part)).collect::<Vec<_>>();
+    parts.push(quote(source));
+    parts.join(".")
 }
 
 impl CreateMaterializedViewBuilder {
@@ -850,11 +1602,29 @@ impl CreateMaterializedViewBuilder {
         Self {
             connection,
             name,
+            namespace: Vec::new(),
             source,
+            source_namespace: Vec::new(),
             projections: Vec::new(),
             filter: None,
             limit: None,
+            with_no_data: false,
+            auto_refresh_enabled: None,
+            auto_refresh_interval_seconds: None,
         }
+    }
+
+    /// The namespace to create the view in. Defaults to the root namespace.
+    pub fn namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.namespace = namespace_path;
+        self
+    }
+
+    /// The namespace holding the source table; recorded in the definition
+    /// for refresh to resolve. Defaults to the root namespace.
+    pub fn source_namespace(mut self, namespace_path: Vec<String>) -> Self {
+        self.source_namespace = namespace_path;
+        self
     }
 
     /// The view's columns, as `(name, SQL expression)` pairs. Not calling
@@ -882,65 +1652,159 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Create the view: an empty table carrying the definition; refresh
-    /// computes the rows. The source must keep stable row ids -- they hold
-    /// provenance across compaction, and cannot be enabled later.
+    /// Create only the definition and empty backing table. By default create
+    /// also waits for the initial refresh so the returned view is populated.
+    pub fn with_no_data(mut self, with_no_data: bool) -> Self {
+        self.with_no_data = with_no_data;
+        self
+    }
+
+    /// Enable or disable automatic refresh on Cloud and Enterprise.
+    /// When omitted, the server determines whether automatic refresh is enabled.
+    /// Embedded databases do not support automatic refresh.
+    pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
+        self.auto_refresh_enabled = Some(enabled);
+        self
+    }
+
+    /// Set a positive, finite refresh interval in seconds on Cloud and Enterprise.
+    /// When omitted, the server determines when to refresh.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// db.create_materialized_view("recent_orders", "orders")
+    ///     .auto_refresh_enabled(true)
+    ///     .auto_refresh_interval_seconds(300.0)
+    ///     .execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn auto_refresh_interval_seconds(mut self, seconds: f64) -> Self {
+        self.auto_refresh_interval_seconds = Some(seconds);
+        self
+    }
+
+    fn query(&self) -> Result<String> {
+        fn quote(name: &str) -> String {
+            format!("\"{}\"", name.replace('"', "\"\""))
+        }
+
+        let projection = if self.projections.is_empty() {
+            "*".to_string()
+        } else {
+            self.projections
+                .iter()
+                .map(|(output, expression)| format!("{expression} AS {}", quote(output)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let source = source_sql_identifier(
+            &self.source_namespace,
+            &self.source,
+            self.connection.uri().starts_with("db://"),
+        );
+        let mut query = format!("SELECT {projection} FROM {source}");
+        if let Some(filter) = &self.filter {
+            query.push_str(" WHERE ");
+            query.push_str(filter);
+        }
+        if let Some(limit) = self.limit {
+            query.push_str(&format!(" LIMIT {limit}"));
+        }
+        Ok(query)
+    }
+
+    /// Submit creation and initial population, returning a [`Job`] that
+    /// settles when the view is ready.
+    pub async fn execute_async(self) -> Result<Job> {
+        if self.connection.uri().starts_with("db://") {
+            return self
+                .connection
+                .database()
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: self.name.clone(),
+                    namespace_path: self.namespace.clone(),
+                    query: self.query()?,
+                    with_no_data: self.with_no_data,
+                    auto_refresh_enabled: self.auto_refresh_enabled,
+                    auto_refresh_interval_seconds: self.auto_refresh_interval_seconds,
+                })
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            self.execute_native().await.map(|_| ())
+        })))
+    }
+
+    /// Create and populate the view, waiting until it is ready.
     pub async fn execute(self) -> Result<MaterializedView> {
-        ensure_local(&self.connection)?;
-        let source = self.connection.open_table(&self.source).execute().await?;
+        if !self.connection.uri().starts_with("db://") {
+            return self.execute_native().await;
+        }
+        let connection = self.connection.clone();
+        let name = self.name.clone();
+        let namespace = self.namespace.clone();
+        self.execute_async().await?.wait().await?;
+        let table = connection
+            .open_table(name)
+            .namespace(namespace)
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await
+    }
+
+    async fn execute_native(self) -> Result<MaterializedView> {
+        if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
+            return Err(Error::NotSupported {
+                message: "automatic materialized-view refresh requires Cloud or Enterprise"
+                    .to_string(),
+            });
+        }
+        let source = self
+            .connection
+            .open_table(&self.source)
+            .namespace(self.source_namespace.clone())
+            .execute()
+            .await?;
         let prepared = prepare_declaration(
             &source,
-            &self.projections,
+            (!self.projections.is_empty()).then_some(self.projections.as_slice()),
             self.filter.as_deref(),
             self.limit,
         )
         .await?;
-        prepared.create(&self.name).await
+        let view = prepared.create_in(&self.namespace, &self.name).await?;
+        if !self.with_no_data {
+            view.refresh().execute().await?;
+        }
+        Ok(view)
     }
 }
 
-/// A handle on a materialized view: the view table plus its parsed definition.
+/// A handle on a materialized view: the view table plus its defining SQL.
 #[derive(Debug, Clone)]
 pub struct MaterializedView {
     table: Table,
-    definition: MaterializedViewDefinition,
-    incarnation: Option<String>,
+    definition_sql: String,
+    parsed_definition: Option<MaterializedViewDefinition>,
 }
 
 impl MaterializedView {
     /// Interpret `table` as a materialized view: [`Error::NotAMaterializedView`]
-    /// for a plain table, [`Error::NotSupported`] for a kind this version
-    /// cannot refresh.
+    /// for a plain table. A remote definition broader than the local refresh
+    /// grammar remains available through [`Self::definition_sql`].
     pub async fn from_table(table: Table) -> Result<Self> {
-        // Same local-only boundary the connection-level entry points hold,
-        // applied before the schema read so a remote table costs no request.
-        if table.as_native().is_none() {
-            return Err(Error::NotSupported {
-                message: "materialized views are supported only on local databases".into(),
-            });
-        }
-        let schema = table.schema().await?;
-        let incarnation = schema.metadata().get(INCARNATION_META_KEY).cloned();
-        match materialized_view_kind(schema.metadata())? {
-            Some(MaterializedViewKind::Select(definition)) => Ok(Self {
-                table,
-                definition,
-                incarnation,
-            }),
-            Some(MaterializedViewKind::Unrecognized { kind }) => Err(Error::NotSupported {
-                message: format!(
-                    "materialized view '{}' is defined by '{kind}', which this version of \
-                     lancedb cannot refresh",
-                    table.name()
-                ),
-            }),
-            None => Err(Error::NotAMaterializedView {
-                name: table.name().to_string(),
-            }),
-        }
+        let info = table.base_table().materialized_view_info().await?;
+        Ok(Self {
+            table,
+            definition_sql: info.definition_sql,
+            parsed_definition: info.parsed_definition,
+        })
     }
 
-    /// The view, as the table it is. Queries, indexes and search all apply.
+    /// The view, as the table it is. Queries, indexes and search all apply;
+    /// writes such as `add`, `update`, `delete` and `merge_insert` do not.
     pub fn table(&self) -> &Table {
         &self.table
     }
@@ -950,23 +1814,28 @@ impl MaterializedView {
         self.table.name()
     }
 
-    /// The query that defines the view.
-    pub fn definition(&self) -> &MaterializedViewDefinition {
-        &self.definition
+    /// The query parsed into the local refresh grammar.
+    ///
+    /// Sophon may store SQL broader than the local grammar; use
+    /// [`Self::definition_sql`] when the original SQL is sufficient.
+    pub fn definition(&self) -> Result<&MaterializedViewDefinition> {
+        self.parsed_definition
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message:
+                    "this materialized-view definition is supported only by the remote SQL engine"
+                        .to_string(),
+            })
     }
 
-    /// The view's incarnation token as of when this handle was opened; see
-    /// [`RefreshMaterializedViewBuilder::expect_incarnation`]. `None` for a
-    /// view that has none yet (see [`INCARNATION_META_KEY`]).
-    pub fn incarnation(&self) -> Option<&str> {
-        self.incarnation.as_deref()
+    /// The complete SQL query that defines the view.
+    pub fn definition_sql(&self) -> &str {
+        &self.definition_sql
     }
 
     /// Recompute the view from its source.
     ///
-    /// By default the refresh is incremental when the source's changes can be
-    /// reconciled into the view, and otherwise rebuilds; see
-    /// [`RefreshMaterializedViewBuilder`].
+    /// Every refresh rebuilds the view from the selected source version.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
@@ -980,9 +1849,7 @@ impl MaterializedView {
     pub fn refresh(&self) -> RefreshMaterializedViewBuilder {
         RefreshMaterializedViewBuilder {
             view: self.clone(),
-            full: false,
             source_version: None,
-            expected_incarnation: None,
         }
     }
 }
@@ -990,54 +1857,47 @@ impl MaterializedView {
 /// Builds a refresh. Created by [`MaterializedView::refresh`].
 pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
-    full: bool,
     source_version: Option<u64>,
-    expected_incarnation: Option<String>,
 }
 
 impl RefreshMaterializedViewBuilder {
-    /// Rebuild the view even where an incremental refresh would do.
-    pub fn full(mut self, full: bool) -> Self {
-        self.full = full;
-        self
-    }
-
-    /// Refresh to this source table version instead of the latest.
+    /// Refresh a local view to this source table version instead of the latest.
+    /// Remote SQL refreshes do not support source-version pinning.
     pub fn source_version(mut self, version: u64) -> Self {
         self.source_version = Some(version);
         self
     }
 
-    /// Refresh only if the view is still the incarnation that minted `token`
-    /// (see [`MaterializedView::incarnation`]): a refresh requested against
-    /// one declaration must not land in a view dropped and recreated since,
-    /// even under the same name and definition.
-    ///
-    /// Best effort. The token is read from the latest stored manifest before
-    /// planning and again immediately before every commit, but it is not part
-    /// of the commit's own condition, so a recreation that lands between that
-    /// final read and the commit is not caught.
-    pub fn expect_incarnation(mut self, token: impl Into<String>) -> Self {
-        self.expected_incarnation = Some(token.into());
-        self
+    /// Submit the refresh and return a job that settles with its result.
+    pub async fn execute_async(self) -> Result<Job<RefreshMaterializedViewResult>> {
+        if self.view.table.as_native().is_none() {
+            return self
+                .view
+                .table
+                .base_table()
+                .refresh_materialized_view_async(self.source_version)
+                .await;
+        }
+        Ok(Job::spawned(tokio::spawn(async move {
+            refresh::execute_refresh(&self.view.table, self.source_version).await
+        })))
     }
 
+    /// Refresh the view, waiting for the job to finish.
     pub async fn execute(self) -> Result<RefreshMaterializedViewResult> {
-        refresh::execute_refresh(
-            &self.view.table,
-            self.full,
-            self.source_version,
-            self.expected_incarnation.as_deref(),
-        )
-        .await
+        if self.view.table.as_native().is_some() {
+            return refresh::execute_refresh(&self.view.table, self.source_version).await;
+        }
+        self.execute_async().await?.wait().await
     }
 }
 
 impl Connection {
     /// Define a materialized view named `name` over `source`.
     ///
-    /// The view is created empty, with the definition recorded in its schema
-    /// metadata; refresh computes the rows. Local databases only.
+    /// The definition is recorded in schema metadata and the initial refresh
+    /// is completed before this method returns. Use
+    /// [`CreateMaterializedViewBuilder::with_no_data`] to skip population.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
@@ -1049,7 +1909,7 @@ impl Connection {
     ///     .only_if("age >= 18")
     ///     .execute()
     ///     .await?;
-    /// view.refresh().execute().await?;
+    /// assert_eq!(view.table().count_rows(None).await?, 1);
     /// # Ok(())
     /// # }
     /// ```
@@ -1066,1050 +1926,460 @@ impl Connection {
         &self,
         name: impl Into<String>,
     ) -> Result<MaterializedView> {
-        ensure_local(self)?;
         let table = self.open_table(name).execute().await?;
         MaterializedView::from_table(table).await
     }
 
-    /// The materialized views in this database, unrefreshable kinds included.
-    /// Costs a table open per table; one that cannot be opened is skipped
-    /// rather than failing the listing.
-    pub async fn list_materialized_views(&self) -> Result<Vec<MaterializedViewEntry>> {
-        ensure_local(self)?;
-        let names = self.table_names().execute().await?;
-        let mut views = Vec::new();
-        for name in names {
-            let Ok(table) = self.open_table(&name).execute().await else {
-                continue;
-            };
-            let schema = table.schema().await?;
-            if let Some(kind) = materialized_view_kind(schema.metadata())? {
-                views.push(MaterializedViewEntry { name, kind });
-            }
+    /// The names of materialized views in the root namespace.
+    ///
+    /// Results are fetched lazily, one page at a time. See [`Listing`]
+    /// for cached-result and continuation-token semantics. Errors terminate iteration.
+    ///
+    /// ```
+    /// # async fn example(connection: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut items = connection.list_materialized_views(Default::default());
+    /// while let Some(item) = items.try_next().await? {
+    ///     println!("{item:?}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_materialized_views(&self, options: ListingOptions) -> Listing<String> {
+        let database = self.database().clone();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            async move { database.list_materialized_views(&[], options).await }
+        })
+    }
+
+    /// Drop a materialized view.
+    ///
+    /// The view may become unavailable before its physical data is removed.
+    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
+    /// job and wait for it explicitly.
+    pub async fn drop_materialized_view(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await
+                .map(|_| ());
         }
-        Ok(views)
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table(name, namespace_path).await
+    }
+
+    /// Start dropping a materialized view and return its cleanup job.
+    ///
+    /// This validates that the named resource is a materialized view rather
+    /// than an ordinary table. Call [`Job::wait`] before assuming physical
+    /// cleanup has finished. When the backend performs cleanup inline, the
+    /// returned job is already finished and has no job ID.
+    ///
+    /// ```no_run
+    /// # use lancedb::Connection;
+    /// # async fn drop_view(conn: &Connection) -> lancedb::Result<()> {
+    /// let job = conn.drop_materialized_view_async("daily_sales", &[]).await?;
+    /// job.wait().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn drop_materialized_view_async(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<Job> {
+        let name = name.as_ref();
+        if self.uri().starts_with("db://") {
+            return self
+                .database()
+                .drop_materialized_view_async(name, namespace_path)
+                .await;
+        }
+        let table = self
+            .open_table(name)
+            .namespace(namespace_path.to_vec())
+            .execute()
+            .await?;
+        MaterializedView::from_table(table).await?;
+        self.drop_table_async(name, namespace_path).await
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use arrow_array::record_batch;
+    use arrow_array::{RecordBatch, record_batch};
 
     use super::*;
     use crate::connect;
-    use crate::table::WriteOptions;
 
-    async fn people_db() -> Connection {
+    #[test]
+    fn remote_source_namespace_uses_one_sql_schema_position() {
+        let namespace = vec!["analytics".to_string(), "daily".to_string()];
+        assert_eq!(
+            source_sql_identifier(&namespace, "source", true),
+            "\"analytics$daily\".\"source\""
+        );
+        assert_eq!(
+            source_sql_identifier(&namespace, "source", false),
+            "\"analytics\".\"daily\".\"source\""
+        );
+    }
+
+    #[test]
+    fn sql_definition_defaults_share_one_metadata_value() {
+        let metadata = HashMap::from([(
+            DEFINITION_META_KEY.to_string(),
+            definition_metadata_from_sql_with_defaults(
+                "SELECT * FROM source",
+                "db",
+                &["analytics".to_string()],
+            ),
+        )]);
+
+        let definition = read_definition_sql_with_defaults(&metadata)
+            .unwrap()
+            .unwrap();
+        assert_eq!(definition.query, "SELECT * FROM source");
+        assert_eq!(definition.default_database.as_deref(), Some("db"));
+        assert_eq!(
+            definition.default_namespace_path,
+            Some(vec!["analytics".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_always_rebuilds_without_source_row_ids() {
         let conn = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(
-            ("name", Utf8, ["ada", "grace", "alan"]),
-            ("age", Int32, [36, 85, 41])
-        )
-        .unwrap();
-        conn.create_table("people", batch)
-            .write_options(stable_row_ids())
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
             .execute()
             .await
             .unwrap();
-        conn
-    }
-
-    /// Sources must keep stable row ids; see the create-time gate.
-    pub(super) fn stable_row_ids() -> WriteOptions {
-        WriteOptions {
-            lance_write_params: Some(lance::dataset::WriteParams {
-                enable_stable_row_ids: true,
-                ..Default::default()
-            }),
-        }
-    }
-
-    /// The error a doomed declaration against `people` produces.
-    async fn declare_err(
-        cfg: impl FnOnce(CreateMaterializedViewBuilder) -> CreateMaterializedViewBuilder,
-    ) -> Error {
-        let conn = people_db().await;
-        cfg(conn.create_materialized_view("bad", "people"))
-            .execute()
-            .await
-            .unwrap_err()
-    }
-
-    #[tokio::test]
-    async fn test_create_records_the_definition() {
-        let conn = people_db().await;
         let view = conn
-            .create_materialized_view("adults", "people")
-            .select([("name", "name"), ("shout", "upper(name)")])
-            .only_if("age >= 18")
-            .limit(10)
+            .create_materialized_view("copy", "src")
             .execute()
             .await
             .unwrap();
 
-        assert_eq!(view.name(), "adults");
-        assert_eq!(
-            view.definition(),
-            &MaterializedViewDefinition {
-                source_table: "people".into(),
-                projections: vec![
-                    ViewProjection {
-                        output: "name".into(),
-                        expression: "name".into()
-                    },
-                    ViewProjection {
-                        output: "shout".into(),
-                        expression: "upper(name)".into()
-                    },
-                ],
-                filter: Some("age >= 18".into()),
-                limit: Some(10),
-                inputs: vec!["age".into(), "name".into()],
-            }
-        );
-
-        // The definition round-trips off the stored schema, not the handle.
-        let reopened = conn.open_materialized_view("adults").await.unwrap();
-        assert_eq!(reopened.definition(), view.definition());
-    }
-
-    #[tokio::test]
-    async fn test_view_schema_is_derived_from_the_query() {
-        let conn = people_db().await;
-        let view = conn
-            .create_materialized_view("shapes", "people")
-            .select([("shout", "upper(name)"), ("next_age", "age + 1")])
-            .execute()
-            .await
-            .unwrap();
-
-        let schema = view.table().schema().await.unwrap();
-        assert_eq!(
-            schema.field_with_name("shout").unwrap().data_type(),
-            &DataType::Utf8
-        );
-        assert_eq!(
-            schema.field_with_name("next_age").unwrap().data_type(),
-            &DataType::Int32
-        );
-        assert_eq!(
-            schema
-                .field_with_name(SOURCE_ROW_ID_COLUMN)
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
+        assert!(
+            view.table()
+                .schema()
+                .await
                 .unwrap()
-                .data_type(),
-            &DataType::UInt64
+                .field_with_name("__source_row_id")
+                .is_err()
         );
+
+        source
+            .add(record_batch!(("x", Int32, [3])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let refreshed = view.refresh().execute().await.unwrap();
+        assert_eq!(refreshed.mode, RefreshMode::Rebuild);
+        assert_eq!(refreshed.rows_written, 3);
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
+
+        let unchanged = view.refresh().execute().await.unwrap();
+        assert_eq!(unchanged.mode, RefreshMode::Rebuild);
+        assert_eq!(unchanged.rows_written, 3);
+
+        source.delete("true").await.unwrap();
+        let emptied = view.refresh().execute().await.unwrap();
+        assert_eq!(emptied.mode, RefreshMode::Rebuild);
+        assert_eq!(emptied.rows_written, 0);
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
     }
 
-    /// No projection selects every source column, expanded now: the schema
-    /// captured at creation is the definition.
-    #[tokio::test]
-    async fn test_default_projection_captures_the_source_schema() {
-        let conn = people_db().await;
-        let view = conn
-            .create_materialized_view("copy", "people")
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            view.definition()
-                .projections
-                .iter()
-                .map(|p| p.output.as_str())
-                .collect::<Vec<_>>(),
-            vec!["name", "age"]
-        );
-        assert_eq!(view.definition().inputs, vec!["age", "name"]);
+    fn reader(batch: RecordBatch) -> Box<dyn arrow_array::RecordBatchReader + Send> {
+        let schema = batch.schema();
+        Box::new(arrow_array::RecordBatchIterator::new(
+            vec![Ok(batch)],
+            schema,
+        ))
     }
 
-    #[tokio::test]
-    async fn test_unknown_column_fails_at_create_time() {
-        let conn = people_db().await;
-        let err = conn
-            .create_materialized_view("bad", "people")
-            .select([("x", "missing + 1")])
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::InvalidExpression { column, .. } if column == "x"));
-        let names = conn.table_names().execute().await.unwrap();
-        assert!(!names.contains(&"bad".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_unknown_filter_column_fails_at_create_time() {
-        let err = declare_err(|b| b.only_if("missing > 1")).await;
-        assert!(matches!(err, Error::InvalidInput { message } if message.contains("missing")));
-    }
-
-    #[tokio::test]
-    async fn test_duplicate_output_is_rejected() {
-        let err = declare_err(|b| b.select([("dup", "age"), ("dup", "age + 1")])).await;
-        assert!(matches!(err, Error::ColumnAlreadyExists { name } if name == "dup"));
-    }
-
-    #[tokio::test]
-    async fn test_reserved_output_name_is_rejected() {
-        let err = declare_err(|b| b.select([(SOURCE_ROW_ID_COLUMN, "age")])).await;
-        assert!(matches!(err, Error::InvalidInput { message } if message.contains("reserved")));
-    }
-
-    #[tokio::test]
-    async fn test_missing_source_fails() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let err = conn
-            .create_materialized_view("v", "nope")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::TableNotFound { .. }));
-    }
-
-    /// Provenance has to survive source compactions and updates, and stable
-    /// row ids cannot be enabled after a table exists -- so the requirement
-    /// is checked at the last moment the caller can still act on it.
-    #[tokio::test]
-    async fn test_source_without_stable_row_ids_is_refused() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(("x", Int32, [1, 2])).unwrap();
-        conn.create_table("plain", batch).execute().await.unwrap();
-
-        let err = conn
-            .create_materialized_view("v", "plain")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidInput { message } if message.contains("stable row ids"))
-        );
-        assert!(
-            !conn
-                .table_names()
-                .execute()
-                .await
-                .unwrap()
-                .contains(&"v".to_string())
-        );
-    }
-
-    #[tokio::test]
-    async fn test_name_collision_fails() {
-        let conn = people_db().await;
-        let err = conn
-            .create_materialized_view("people", "people")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::TableAlreadyExists { .. }));
-    }
-
-    #[tokio::test]
-    async fn test_a_plain_table_is_not_a_view() {
-        let conn = people_db().await;
-        let table = conn.open_table("people").execute().await.unwrap();
-        let err = MaterializedView::from_table(table).await.unwrap_err();
-        assert!(matches!(err, Error::NotAMaterializedView { name } if name == "people"));
-
-        let err = conn.open_materialized_view("people").await.unwrap_err();
-        assert!(matches!(err, Error::NotAMaterializedView { .. }));
-    }
-
-    /// The reason the kind is tagged: a definition written by a newer version
-    /// reads back as a view this one cannot refresh, not as a plain table.
-    #[tokio::test]
-    async fn test_unrecognized_kind_is_refused_by_name() {
-        let conn = people_db().await;
-        conn.create_materialized_view("v", "people")
-            .execute()
-            .await
-            .unwrap();
-        let table = conn.open_table("v").execute().await.unwrap();
-        table
-            .as_native()
-            .unwrap()
-            .replace_schema_metadata(HashMap::from([(
-                DEFINITION_META_KEY.to_string(),
-                r#"{"kind": "join"}"#.to_string(),
-            )]))
-            .await
-            .unwrap();
-
-        let err = conn.open_materialized_view("v").await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { message } if message.contains("join")));
-    }
-
-    #[tokio::test]
-    async fn test_list_reports_views_and_only_views() {
-        let conn = people_db().await;
-        conn.create_materialized_view("adults", "people")
-            .only_if("age >= 18")
-            .execute()
-            .await
-            .unwrap();
-
-        let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(
-            views.iter().map(|v| v.name.as_str()).collect::<Vec<_>>(),
-            vec!["adults"]
-        );
-        let MaterializedViewKind::Select(definition) = &views[0].kind else {
-            panic!("expected a select view");
-        };
-        assert_eq!(definition.filter.as_deref(), Some("age >= 18"));
-    }
-
-    /// The creation option outranks a connection configured to create
-    /// unstable tables: the view still gets stable row ids, on the same
-    /// store (no fork -- the table must be reachable through the
-    /// connection afterwards).
-    #[tokio::test]
-    async fn test_view_is_stable_despite_connection_override() {
-        let conn = connect("memory://")
-            .storage_options([("new_table_enable_stable_row_ids", "false")])
-            .execute()
-            .await
-            .unwrap();
-        let batch = record_batch!(("x", Int32, [1])).unwrap();
-        conn.create_table("src", batch)
-            .storage_option("new_table_enable_stable_row_ids", "true")
-            .execute()
-            .await
-            .unwrap();
-
-        let view = conn
-            .create_materialized_view("v", "src")
-            .execute()
-            .await
-            .unwrap();
-        let stable = view
-            .table()
-            .as_native()
-            .unwrap()
-            .dataset
-            .get()
-            .await
-            .unwrap()
-            .manifest
-            .uses_stable_row_ids();
-        assert!(stable);
-        conn.open_materialized_view("v").await.unwrap();
-    }
-
-    /// A committed filter has to be usable as a predicate.
-    #[tokio::test]
-    async fn test_non_boolean_filter_is_rejected() {
-        let err = declare_err(|b| b.only_if("age + 1")).await;
-        assert!(matches!(err, Error::InvalidInput { message } if message.contains("boolean")));
-    }
-
-    /// Nested references stay dotted paths; resolution is by root field.
-    #[tokio::test]
-    async fn test_struct_columns_can_be_declared() {
-        use arrow_array::{ArrayRef, Int32Array, StructArray};
-
-        let conn = connect("memory://").execute().await.unwrap();
-        let ages = StructArray::from(vec![(
-            Arc::new(ArrowField::new("age", DataType::Int32, false)),
-            Arc::new(Int32Array::from(vec![36, 17])) as ArrayRef,
-        )]);
-        let batch =
-            arrow_array::RecordBatch::try_from_iter(vec![("metadata", Arc::new(ages) as ArrayRef)])
-                .unwrap();
-        conn.create_table("people", batch)
-            .write_options(stable_row_ids())
-            .execute()
-            .await
-            .unwrap();
-
-        let view = conn
-            .create_materialized_view("ages", "people")
-            .select([("age", "metadata.age")])
-            .only_if("metadata.age >= 18")
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(view.definition().inputs, vec!["metadata.age"]);
-        let schema = view.table().schema().await.unwrap();
-        assert_eq!(
-            schema.field_with_name("age").unwrap().data_type(),
-            &DataType::Int32
-        );
-    }
-
-    /// A newer-kind view must not disappear from the listing.
-    #[tokio::test]
-    async fn test_unrecognized_kind_is_listed_with_its_kind() {
-        let conn = people_db().await;
-        conn.create_materialized_view("v", "people")
-            .execute()
-            .await
-            .unwrap();
-        let table = conn.open_table("v").execute().await.unwrap();
-        table
-            .as_native()
-            .unwrap()
-            .replace_schema_metadata(HashMap::from([(
-                DEFINITION_META_KEY.to_string(),
-                r#"{"kind": "join"}"#.to_string(),
-            )]))
-            .await
-            .unwrap();
-
-        let views = conn.list_materialized_views().await.unwrap();
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].name, "v");
-        assert_eq!(
-            views[0].kind,
-            MaterializedViewKind::Unrecognized {
-                kind: "join".into()
-            }
-        );
-    }
-
-    /// Remote connections are refused before any request is made.
-    #[cfg(feature = "remote")]
-    #[tokio::test]
-    async fn test_remote_connection_is_refused_up_front() {
-        let conn = connect("db://nowhere")
-            .api_key("sk_test")
-            .region("us-east-1")
-            .execute()
-            .await
-            .unwrap();
-        let err = conn
-            .create_materialized_view("v", "src")
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.open_materialized_view("v").await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-        let err = conn.list_materialized_views().await.unwrap_err();
-        assert!(matches!(err, Error::NotSupported { .. }));
-    }
-
-    /// A definition must evaluate identically across refreshes; anything
-    /// less makes incremental maintenance a mix of evaluations.
-    #[tokio::test]
-    async fn test_volatile_and_unstable_expressions_are_rejected() {
-        let conn = people_db().await;
-        for expression in [
-            "random()",
-            "now()",
-            "version()",
-            "arrow_typeof(age)",
-            "arrow_metadata(age, 'k')",
-        ] {
-            let err = conn
-                .create_materialized_view("bad", "people")
-                .select([("x", expression)])
-                .execute()
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(err, Error::InvalidExpression { message, .. }
-                    if message.contains("not immutable")),
-                "{expression} was not rejected"
-            );
-        }
-        for filter in ["age > random() * 100", "age >= 0 and now() is not null"] {
-            let err = conn
-                .create_materialized_view("bad", "people")
-                .only_if(filter)
-                .execute()
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(err, Error::InvalidInput { message } if message.contains("not immutable")),
-                "{filter} was not rejected"
-            );
-        }
-    }
-
-    /// A column projected as itself stays the column it was: blob discovery
-    /// and the blob APIs key off field metadata, which a bare rebuild of the
-    /// field would drop.
-    #[tokio::test]
-    async fn test_identity_projection_keeps_field_metadata() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let schema = Arc::new(ArrowSchema::new_with_metadata(
-            vec![
-                ArrowField::new("id", DataType::Int32, true),
-                crate::blob("payload", true),
-            ],
-            HashMap::new(),
-        ));
-        conn.create_empty_table("src", schema)
-            .write_options(stable_row_ids())
-            .execute()
-            .await
-            .unwrap();
-
-        let view = conn
-            .create_materialized_view("v", "src")
-            .execute()
-            .await
-            .unwrap();
-        let view_schema = view.table().schema().await.unwrap();
-
-        let payload = view_schema.field_with_name("payload").unwrap();
-        assert!(
-            crate::blob::is_blob(payload),
-            "default projection dropped the blob marker: {:?}",
-            payload.metadata()
-        );
-        assert_eq!(
-            view.table().blob_columns().await.unwrap(),
-            vec!["payload".to_string()],
-            "blob discovery no longer finds the projected column"
-        );
-        assert!(view_schema.metadata().contains_key(DEFINITION_META_KEY));
-        // Structural declarations describe how a table is written; a view is
-        // written by refresh, and its fields are always nullable.
-        assert!(!view_schema.metadata().contains_key("lance:primary_key"));
-
-        // A computed column is a new value and carries no source metadata.
-        let computed = conn
-            .create_materialized_view("c", "src")
-            .select([("payload", "payload"), ("n", "id + 1")])
-            .execute()
-            .await
-            .unwrap();
-        let computed_schema = computed.table().schema().await.unwrap();
-        assert!(crate::blob::is_blob(
-            computed_schema.field_with_name("payload").unwrap()
-        ));
-        assert!(
-            computed_schema
-                .field_with_name("n")
-                .unwrap()
-                .metadata()
-                .is_empty()
-        );
-    }
-
-    /// A nested column projected straight through is still that column, and a
-    /// declaration buried in a struct child binds as hard as one on top.
-    #[tokio::test]
-    async fn test_nested_projection_metadata_and_declarations() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let payload = crate::blob("payload", true).with_metadata(HashMap::from([
-            ("lance-encoding:blob".to_string(), "true".to_string()),
-            (
-                "lance-schema:unenforced-primary-key".to_string(),
-                "0".to_string(),
+    fn assert_refused<T: std::fmt::Debug>(result: Result<T>, operation: &str) {
+        match result {
+            Err(Error::NotSupported { message }) => assert!(
+                message.contains("is a materialized view, which only refresh writes"),
+                "{operation}: {message}"
             ),
-        ]));
-        let schema = Arc::new(ArrowSchema::new(vec![
-            ArrowField::new("id", DataType::Int32, true),
-            ArrowField::new("meta", DataType::Struct(vec![payload].into()), true),
-        ]));
-        conn.create_empty_table("src", schema)
-            .write_options(stable_row_ids())
-            .execute()
-            .await
-            .unwrap();
-
-        // A nested path is a direct projection: the leaf's metadata comes with
-        // it, so the blob stays a blob rather than a plain struct.
-        let lifted = conn
-            .create_materialized_view("lifted", "src")
-            .select([("payload", "meta.payload")])
-            .execute()
-            .await
-            .unwrap();
-        let field = lifted.table().schema().await.unwrap();
-        let field = field.field_with_name("payload").unwrap().clone();
-        assert_eq!(
-            field.metadata().get("lance-encoding:blob"),
-            Some(&"true".to_string()),
-            "nested projection lost the leaf's metadata"
-        );
-        assert!(
-            !field
-                .metadata()
-                .contains_key("lance-schema:unenforced-primary-key"),
-            "a structural declaration rode along"
-        );
-
-        // Projecting the struct whole must not carry the child's declaration
-        // out to a view whose fields are nullable.
-        let whole = conn
-            .create_materialized_view("whole", "src")
-            .select([("meta", "meta")])
-            .execute()
-            .await
-            .unwrap();
-        let schema = whole.table().schema().await.unwrap();
-        let DataType::Struct(children) = schema.field_with_name("meta").unwrap().data_type() else {
-            panic!("meta is not a struct");
-        };
-        let child = children.iter().find(|c| c.name() == "payload").unwrap();
-        assert!(
-            !child
-                .metadata()
-                .contains_key("lance-schema:unenforced-primary-key"),
-            "a nested declaration survived: {:?}",
-            child.metadata()
-        );
-        assert_eq!(
-            child.metadata().get("lance-encoding:blob"),
-            Some(&"true".to_string())
-        );
+            other => panic!("{operation} on a view was not refused: {other:?}"),
+        }
     }
 
-    /// A map's entries are fields like any other, and a declaration on one
-    /// binds the view's writes just as hard as one on top.
     #[tokio::test]
-    async fn test_map_declarations_are_stripped() {
+    async fn a_view_cannot_lead_back_to_itself() {
         let conn = connect("memory://").execute().await.unwrap();
-        let value =
-            ArrowField::new("value", DataType::Utf8, false).with_metadata(HashMap::from([(
-                "lance-schema:unenforced-clustering-key:position".to_string(),
-                "1".to_string(),
-            )]));
-        let entries = ArrowField::new(
-            "entries",
-            DataType::Struct(vec![ArrowField::new("key", DataType::Utf8, false), value].into()),
-            false,
-        );
-        let schema = Arc::new(ArrowSchema::new(vec![ArrowField::new(
-            "props",
-            DataType::Map(Arc::new(entries), false),
-            true,
-        )]));
-        conn.create_empty_table("src", schema)
-            .write_options(stable_row_ids())
+        let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m", "src")
             .execute()
             .await
             .unwrap();
+        conn.create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        conn.drop_table("src", &[]).await.unwrap();
 
-        let view = conn
-            .create_materialized_view("view", "src")
+        let err = conn
+            .create_materialized_view("src", "m2")
+            .execute()
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("materialized view 'src' would read itself: src -> m2 -> m -> src"),
+            "{err}"
+        );
+        assert!(conn.open_table("src").execute().await.is_err());
+
+        // Back under a plain table, the same chain is fine to extend.
+        conn.create_table("src", rows()).execute().await.unwrap();
+        conn.create_materialized_view("m3", "m2")
             .execute()
             .await
             .unwrap();
-        let schema = view.table().schema().await.unwrap();
-        let DataType::Map(entries, _) = schema.field_with_name("props").unwrap().data_type() else {
-            panic!("props is not a map");
-        };
-        let DataType::Struct(children) = entries.data_type() else {
-            panic!("map entries are not a struct");
-        };
-        let value = children.iter().find(|c| c.name() == "value").unwrap();
-        assert!(
-            !value
-                .metadata()
-                .contains_key("lance-schema:unenforced-clustering-key:position"),
-            "a declaration survived inside a map: {:?}",
-            value.metadata()
-        );
     }
 
-    /// A computed column is declared by field metadata. Projecting one --
-    /// as itself or under an alias -- must carry its description without its
-    /// declaration, which the target table would reject as foreign.
     #[tokio::test]
-    async fn test_view_over_a_computed_column() {
+    async fn direct_writes_to_a_view_are_refused() {
+        use arrow_schema::Schema;
+        use datafusion::prelude::SessionContext;
+        use lance::dataset::{ColumnAlteration, NewColumnTransform};
+
+        use crate::table::AddDataMode;
+        use crate::table::datafusion::BaseTableAdapter;
+
         let conn = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(("id", Int32, [1, 2])).unwrap();
         let source = conn
-            .create_table("src", batch)
-            .write_options(stable_row_ids())
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
             .execute()
+            .await
+            .unwrap();
+        let view = conn
+            .create_materialized_view("m", "src")
+            .execute()
+            .await
+            .unwrap();
+        let downstream = conn
+            .create_materialized_view("m2", "m")
+            .execute()
+            .await
+            .unwrap();
+        let table = view.table();
+        let row = || record_batch!(("x", Int32, [99])).unwrap();
+
+        assert_refused(table.add(row()).execute().await, "add");
+        assert_refused(
+            table
+                .add(row())
+                .mode(AddDataMode::Overwrite)
+                .execute()
+                .await,
+            "overwrite",
+        );
+        assert_refused(
+            table.update().column("x", "x + 1").execute().await,
+            "update",
+        );
+        assert_refused(table.delete("x = 1").await, "delete");
+        let mut merge = table.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        assert_refused(merge.execute(reader(row())).await, "merge_insert");
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::SqlExpressions(vec![(
+                    "y".into(),
+                    "x * 2".into(),
+                )]))
+                .execute()
+                .await,
+            "add_columns",
+        );
+        assert_refused(
+            table
+                .add_columns()
+                .transform(NewColumnTransform::AllNulls(Arc::new(Schema::new(vec![
+                    ArrowField::new("y", DataType::Int32, true),
+                ]))))
+                .execute()
+                .await,
+            "add_columns (nulls)",
+        );
+        assert_refused(
+            table
+                .alter_columns(&[ColumnAlteration::new("x".into()).rename("z".into())])
+                .await,
+            "alter_columns",
+        );
+        assert_refused(table.drop_columns(&["x"]).await, "drop_columns");
+        assert_refused(
+            downstream.table().add(row()).execute().await,
+            "add to a chained view",
+        );
+
+        let ctx = SessionContext::new();
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap();
+        ctx.register_table("m", Arc::new(adapter)).unwrap();
+        let insert = match ctx.sql("INSERT INTO m VALUES (99)").await {
+            Ok(frame) => frame.collect().await.map(|_| ()),
+            Err(error) => Err(error),
+        };
+        let message = insert.unwrap_err().to_string();
+        assert!(message.contains("is a materialized view"), "{message}");
+
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+        assert_eq!(table.schema().await.unwrap().fields().len(), 1);
+
+        // Refresh, chained, is the writer.
+        source.add(row()).execute().await.unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            downstream.refresh().execute().await.unwrap().rows_written,
+            3
+        );
+        assert_eq!(
+            downstream
+                .table()
+                .count_rows(Some("x = 99".into()))
+                .await
+                .unwrap(),
+            1
+        );
+
+        // The source is a plain table and still takes every write.
+        source
+            .update()
+            .column("x", "x + 1")
+            .execute()
+            .await
+            .unwrap();
+        source.delete("x = 2").await.unwrap();
+        let mut merge = source.merge_insert(&["x"]);
+        merge.when_not_matched_insert_all();
+        merge
+            .execute(reader(record_batch!(("x", Int32, [7])).unwrap()))
             .await
             .unwrap();
         source
             .add_columns()
-            .computed("doubled", "id * 2")
+            .transform(NewColumnTransform::SqlExpressions(vec![(
+                "y".into(),
+                "x * 2".into(),
+            )]))
             .execute()
             .await
             .unwrap();
-
-        // Default projection reaches the computed column too.
-        let whole = conn
-            .create_materialized_view("whole", "src")
-            .execute()
-            .await
-            .unwrap();
-        let schema = whole.table().schema().await.unwrap();
-        let field = schema.field_with_name("doubled").unwrap();
-        assert!(
-            !field
-                .metadata()
-                .keys()
-                .any(|k| k.starts_with("computed_column")),
-            "a computed-column declaration rode along: {:?}",
-            field.metadata()
-        );
-
-        // And under an alias.
-        conn.create_materialized_view("aliased", "src")
-            .select([("twice", "doubled")])
-            .execute()
-            .await
-            .unwrap();
+        source.drop_columns(&["y"]).await.unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
     }
 
-    /// Embedding configuration names columns. It comes along only for the
-    /// columns a view actually projects, under the names the view gives them.
     #[tokio::test]
-    async fn test_embedding_config_follows_the_projection() {
-        let config = r#"[{"name":"f","model":{},"source_column":"text","vector_column":"vec"}]"#;
+    async fn indexes_and_optimize_still_apply_to_a_view() {
+        use crate::index::Index;
+        use crate::table::{CompactionOptions, OptimizeAction};
+
         let conn = connect("memory://").execute().await.unwrap();
-        let schema = Arc::new(ArrowSchema::new_with_metadata(
-            vec![
-                ArrowField::new("text", DataType::Utf8, true),
-                ArrowField::new("vec", DataType::Float32, true),
-            ],
-            HashMap::from([("embedding_functions".to_string(), config.to_string())]),
-        ));
-        conn.create_empty_table("src", schema)
-            .write_options(stable_row_ids())
-            .execute()
-            .await
-            .unwrap();
-
-        let carried = |view: &MaterializedView| {
-            let view = view.table().clone();
-            async move {
-                view.schema()
-                    .await
-                    .unwrap()
-                    .metadata()
-                    .get("embedding_functions")
-                    .cloned()
-            }
-        };
-
-        // Both columns projected as themselves: kept as it stands.
-        let whole = conn
-            .create_materialized_view("whole", "src")
-            .execute()
-            .await
-            .unwrap();
-        let kept = carried(&whole).await.expect("config dropped");
-        assert!(kept.contains(r#""source_column":"text""#), "{kept}");
-        assert!(kept.contains(r#""vector_column":"vec""#), "{kept}");
-
-        // Only the source column: the configuration names a vector column the
-        // view does not have, so it describes nothing and goes.
-        let partial = conn
-            .create_materialized_view("partial", "src")
-            .select([("text", "text")])
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(carried(&partial).await, None);
-
-        // Renamed: the configuration follows the names the view uses.
-        let renamed = conn
-            .create_materialized_view("renamed", "src")
-            .select([("body", "text"), ("embedding", "vec")])
-            .execute()
-            .await
-            .unwrap();
-        let remapped = carried(&renamed).await.expect("config dropped");
-        assert!(remapped.contains(r#""source_column":"body""#), "{remapped}");
-        assert!(
-            remapped.contains(r#""vector_column":"embedding""#),
-            "{remapped}"
-        );
-
-        // The Node bindings spell the same configuration in camelCase, and
-        // the Rust definition names the destination `dest_column`.
-        for (config, source_key, dest_key) in [
-            (
-                r#"[{"name":"f","model":{},"sourceColumn":"text","vectorColumn":"vec"}]"#,
-                "sourceColumn",
-                "vectorColumn",
-            ),
-            (
-                r#"[{"name":"f","model":{},"source_column":"text","dest_column":"vec"}]"#,
-                "source_column",
-                "dest_column",
-            ),
-        ] {
-            let schema = Arc::new(ArrowSchema::new_with_metadata(
-                vec![
-                    ArrowField::new("text", DataType::Utf8, true),
-                    ArrowField::new("vec", DataType::Float32, true),
-                ],
-                HashMap::from([("embedding_functions".to_string(), config.to_string())]),
-            ));
-            let name = format!("src_{source_key}");
-            conn.create_empty_table(&name, schema)
-                .write_options(stable_row_ids())
-                .execute()
-                .await
-                .unwrap();
-            let view = conn
-                .create_materialized_view(format!("v_{source_key}"), &name)
-                .select([("body", "text"), ("embedding", "vec")])
-                .execute()
-                .await
-                .unwrap();
-            let carried = carried(&view).await.expect("config dropped");
-            assert!(
-                carried.contains(&format!(r#""{source_key}":"body""#)),
-                "{carried}"
-            );
-            assert!(
-                carried.contains(&format!(r#""{dest_key}":"embedding""#)),
-                "{carried}"
-            );
-        }
-
-        // A computed column is not the source column under another name.
-        let computed = conn
-            .create_materialized_view("computed", "src")
-            .select([("body", "upper(text)"), ("embedding", "vec")])
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(carried(&computed).await, None);
-
-        // One column projected twice is two columns in the view, and the
-        // configuration has to describe both rather than whichever came last.
-        let twice = conn
-            .create_materialized_view("twice", "src")
-            .select([("body", "text"), ("a", "vec"), ("b", "vec")])
-            .execute()
-            .await
-            .unwrap();
-        let carried = carried(&twice).await.expect("config dropped");
-        let entries: Vec<serde_json::Value> = serde_json::from_str(&carried).unwrap();
-        let mut vectors: Vec<&str> = entries
-            .iter()
-            .filter_map(|e| e["vector_column"].as_str())
-            .collect();
-        vectors.sort_unstable();
-        assert_eq!(vectors, ["a", "b"], "{carried}");
-    }
-
-    /// The native Rust producer records embeddings as column definitions
-    /// rather than as `embedding_functions`, and a query embeds its own text
-    /// through them. They are positional, so the view's list covers every one
-    /// of its fields.
-    #[tokio::test]
-    async fn test_native_column_definitions_follow_the_projection() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let rich = crate::table::TableDefinition::new(
-            Arc::new(ArrowSchema::new(vec![
-                ArrowField::new("text", DataType::Utf8, true),
-                ArrowField::new("vector", DataType::Float32, true),
-            ])),
-            vec![
-                ColumnDefinition {
-                    kind: ColumnKind::Physical,
-                },
-                ColumnDefinition {
-                    kind: ColumnKind::Embedding(EmbeddingDefinition::new(
-                        "text",
-                        "model",
-                        Some("vector"),
-                    )),
-                },
-            ],
-        )
-        .into_rich_schema();
-        conn.create_empty_table("src", rich)
-            .write_options(stable_row_ids())
-            .execute()
-            .await
-            .unwrap();
-
-        let view = conn
-            .create_materialized_view("view", "src")
-            .select([("body", "text"), ("embedding", "vector")])
-            .execute()
-            .await
-            .unwrap();
-        let schema = view.table().schema().await.unwrap();
-        let raw = schema
-            .metadata()
-            .get(COLUMN_DEFINITIONS_META_KEY)
-            .expect("the view dropped the native column definitions");
-        let definitions: Vec<ColumnDefinition> = serde_json::from_str(raw).unwrap();
-        assert_eq!(
-            definitions.len(),
-            schema.fields().len(),
-            "column definitions are positional"
-        );
-        let ColumnKind::Embedding(embedding) = &definitions[1].kind else {
-            panic!("the embedding column came back physical: {raw}");
-        };
-        assert_eq!(embedding.source_column, "body");
-        assert_eq!(embedding.dest_column.as_deref(), Some("embedding"));
-        assert_eq!(embedding.embedding_name, "model");
-        assert!(matches!(definitions[0].kind, ColumnKind::Physical));
-        assert!(matches!(definitions[2].kind, ColumnKind::Physical));
-
-        // Without the column the function reads, the view cannot recompute
-        // the embedding, so it carries no definition for it.
-        let partial = conn
-            .create_materialized_view("partial", "src")
-            .select([("embedding", "vector")])
-            .execute()
-            .await
-            .unwrap();
-        assert_eq!(
-            partial
-                .table()
-                .schema()
-                .await
-                .unwrap()
-                .metadata()
-                .get(COLUMN_DEFINITIONS_META_KEY),
-            None
-        );
-    }
-
-    /// A scan takes the cap as i64, so a larger one is refused where it is
-    /// declared rather than at the refresh that cannot run it. What a cap of
-    /// zero means is a refresh question, tested there.
-    #[tokio::test]
-    async fn test_limit_above_i64_max_is_refused_at_creation() {
-        let conn = people_db().await;
-        let err = conn
-            .create_materialized_view("too_big", "people")
-            .limit(i64::MAX as u64 + 1)
-            .execute()
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, Error::InvalidInput { message } if message.contains("exceeds the maximum")),
-            "got {err:?}"
-        );
-
-        // The boundary itself is accepted.
-        conn.create_materialized_view("at_max", "people")
-            .limit(i64::MAX as u64)
-            .execute()
-            .await
-            .unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_drop_is_drop_table() {
-        let conn = people_db().await;
-        conn.create_materialized_view("v", "people")
-            .execute()
-            .await
-            .unwrap();
-        conn.drop_table("v", &[]).await.unwrap();
-        assert!(conn.list_materialized_views().await.unwrap().is_empty());
-    }
-
-    /// The public declaration contract: prepare validates the source and
-    /// create consumes the declaration into a verified view table; a
-    /// source that cannot anchor refresh and a target outside the
-    /// source's database are both refused.
-    #[tokio::test]
-    async fn prepare_and_create_bind_the_declaration_lifecycle() {
-        let conn = connect("memory://").execute().await.unwrap();
-        let batch = record_batch!(("id", Int32, [1, 2]), ("value", Int32, [3, 4])).unwrap();
         let source = conn
-            .create_table("src", batch.clone())
-            .write_options(stable_row_ids())
+            .create_table("src", record_batch!(("x", Int32, [1, 2, 3])).unwrap())
             .execute()
             .await
             .unwrap();
-
-        let projections = [
-            ("id".to_string(), "id".to_string()),
-            ("double".to_string(), "value * 2".to_string()),
-        ];
-        let prepared = prepare_declaration(&source, &projections, Some("value > 0"), None)
-            .await
-            .unwrap();
-        assert_eq!(prepared.definition().source_table, "src");
-
-        let view = prepared.create("v").await.unwrap();
-        let schema = view.table().schema().await.unwrap();
-        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
-        assert_eq!(names, ["id", "double", SOURCE_ROW_ID_COLUMN]);
-        assert!(schema.metadata().contains_key(DEFINITION_META_KEY));
-
-        // The same call rejects a source without stable row ids, so an
-        // external creation path cannot skip the check.
-        conn.create_table("plain", batch).execute().await.unwrap();
-        let plain = conn.open_table("plain").execute().await.unwrap();
-        let err = prepare_declaration(&plain, &[], None, None)
-            .await
-            .unwrap_err();
-        assert!(err.to_string().contains("stable row ids"), "{err}");
-
-        // A handle whose location does not resolve back through its name is
-        // refused: the definition would record a name reaching other data.
-        let plain_uri = plain
-            .as_native()
-            .unwrap()
-            .dataset
-            .get()
-            .await
-            .unwrap()
-            .uri()
-            .to_string();
-        let masquerade = conn
-            .open_table("src")
-            .location(plain_uri)
+        let view = conn
+            .create_materialized_view("m", "src")
             .execute()
             .await
             .unwrap();
-        let err = prepare_declaration(&masquerade, &[], None, None)
+        view.table()
+            .create_index(&["x"], Index::Auto)
+            .execute()
             .await
-            .unwrap_err();
-        assert!(
-            err.to_string().contains("does not resolve to itself"),
-            "{err}"
+            .unwrap();
+        assert_eq!(view.table().list_indices().await.unwrap().len(), 1);
+        view.table()
+            .optimize(OptimizeAction::Compact {
+                options: CompactionOptions::default(),
+                remap_options: None,
+            })
+            .await
+            .unwrap();
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+
+        source
+            .add(record_batch!(("x", Int32, [4])).unwrap())
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 4);
+        view.table().optimize(OptimizeAction::All).await.unwrap();
+        assert_eq!(
+            view.table().count_rows(Some("x > 2".into())).await.unwrap(),
+            2
         );
+    }
 
-        // A table created at a custom location is refused outright: its
-        // recorded name reaches nothing at the database root, so the
-        // canonical reopen fails before any URI comparison.
-        let custom = conn
-            .create_table(
-                "custom_loc",
-                record_batch!(("id", Int32, [1, 2]), ("value", Int32, [3, 4])).unwrap(),
-            )
-            .location("memory://elsewhere/custom_loc")
-            .write_options(stable_row_ids())
+    #[tokio::test]
+    async fn computed_columns_of_a_view_are_still_filled_and_dropped() {
+        use crate::table::computed_columns::{
+            COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,
+        };
+
+        let conn = connect("memory://").execute().await.unwrap();
+        let source = conn
+            .create_table("src", record_batch!(("x", Int32, [1, 2])).unwrap())
             .execute()
             .await
             .unwrap();
-        let err = prepare_declaration(&custom, &[], None, None)
+        let prepared = prepare_declaration(&source, Some(&[("x".into(), "x".into())]), None, None)
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("custom_loc"), "{err}");
-
-        // A namespaced source cannot be recorded in the definition: the
-        // bare name refresh resolves would reach a different table or none.
-        let namespaced = crate::table::NativeTable::create(
-            "memory://ns_src",
-            "ns_src",
-            vec!["ns".to_string()],
-            Box::new(arrow_array::RecordBatchIterator::new(
-                vec![],
-                std::sync::Arc::new(arrow_schema::Schema::new(vec![arrow_schema::Field::new(
-                    "id",
-                    arrow_schema::DataType::Int32,
-                    true,
-                )])),
-            )) as Box<dyn arrow_array::RecordBatchReader + Send>,
-            None,
-            None,
-            None,
-            None,
-            std::collections::HashSet::new(),
-        )
-        .await
-        .unwrap();
-        let namespaced = Table::new(std::sync::Arc::new(namespaced), conn.database().clone());
-        let err = prepare_declaration(&namespaced, &[], None, None)
+            .unwrap();
+        let doubled =
+            ArrowField::new("doubled", DataType::Int32, true).with_metadata(HashMap::from([
+                (COMPUTED_COLUMN_META_KEY.into(), "true".into()),
+                (KIND_META_KEY.into(), SQL_KIND.into()),
+                (EXPRESSION_META_KEY.into(), "x * 2".into()),
+                (INPUTS_META_KEY.into(), "[\"x\"]".into()),
+            ]));
+        let view = prepared
+            .with_computed_columns(vec![(1, doubled)], &[])
+            .unwrap()
+            .create("m")
             .await
-            .unwrap_err();
-        assert!(err.to_string().contains("namespaced source"), "{err}");
+            .unwrap();
+        view.refresh().execute().await.unwrap();
+        view.table().refresh_column("doubled").await.unwrap();
+        assert_eq!(
+            view.table()
+                .count_rows(Some("doubled = x * 2".into()))
+                .await
+                .unwrap(),
+            2
+        );
+        assert_refused(
+            view.table().drop_columns(&["x", "doubled"]).await,
+            "drop_columns of a stored and a computed column",
+        );
+        view.table().drop_columns(&["doubled"]).await.unwrap();
+        view.refresh().execute().await.unwrap();
+        assert_eq!(view.table().count_rows(None).await.unwrap(), 2);
     }
 }

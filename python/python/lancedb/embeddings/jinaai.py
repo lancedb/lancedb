@@ -5,9 +5,10 @@
 import os
 import io
 import base64
+from functools import cached_property
 from urllib.parse import urlparse
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar, List, Union, Optional, Any, Dict
+from typing import TYPE_CHECKING, List, Union, Optional, Any, Dict
 
 import numpy as np
 import pyarrow as pa
@@ -51,7 +52,6 @@ class JinaEmbeddings(EmbeddingFunction):
 
     name: str = "jina-clip-v1"
     api_key: Optional[str] = None
-    _session: ClassVar = None
 
     def ndims(self):
         # TODO: fix hardcoding
@@ -206,8 +206,7 @@ class JinaEmbeddings(EmbeddingFunction):
         texts: list[str] or np.ndarray (of str)
             The texts to embed
         """
-        self._init_client()
-        resp = JinaEmbeddings._session.post(  # type: ignore
+        resp = self._session.post(
             API_URL, json={"input": input, "model": self.name}
         ).json()
         if "data" not in resp:
@@ -220,14 +219,15 @@ class JinaEmbeddings(EmbeddingFunction):
 
         return [result["embedding"] for result in sorted_embeddings]
 
-    def _init_client(self):
+    @cached_property
+    def _session(self):
         import requests
 
-        if JinaEmbeddings._session is None:
-            if self.api_key is None and os.environ.get("JINA_API_KEY") is None:
-                api_key_not_found_help("jina")
-            api_key = self.api_key or os.environ.get("JINA_API_KEY")
-            JinaEmbeddings._session = requests.Session()
-            JinaEmbeddings._session.headers.update(
-                {"Authorization": f"Bearer {api_key}", "Accept-Encoding": "identity"}
-            )
+        if self.api_key is None and os.environ.get("JINA_API_KEY") is None:
+            api_key_not_found_help("jina")
+        api_key = self.api_key or os.environ.get("JINA_API_KEY")
+        session = requests.Session()
+        session.headers.update(
+            {"Authorization": f"Bearer {api_key}", "Accept-Encoding": "identity"}
+        )
+        return session

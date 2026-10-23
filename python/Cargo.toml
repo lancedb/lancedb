@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.38.0"
+version = "0.41.0-beta.13"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -8,19 +8,22 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 
 [lib]
 name = "_lancedb"
 crate-type = ["cdylib"]
 
 [dependencies]
+arc-swap = "1.9"
 arrow = { workspace = true, features = ["pyarrow"] }
 async-trait.workspace = true
 bytes.workspace = true
 lancedb.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
+# The workspace path dependency includes the patched crate in Maturin sources.
+lance-arrow.workspace = true
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
 lance-io.workspace = true
@@ -28,7 +31,7 @@ env_logger.workspace = true
 log.workspace = true
 # Maturin enables extension-module mode for Python builds. Keeping it out of
 # Cargo features lets Rust unit tests link against libpython.
-pyo3 = { version = "0.28", features = ["abi3-py310", "chrono"] }
+pyo3 = { version = "0.28", features = ["abi3-py310", "chrono", "uuid"] }
 chrono.workspace = true
 pyo3-async-runtimes = { version = "0.28", features = [
     "attributes",
@@ -40,6 +43,7 @@ serde.workspace = true
 serde_json.workspace = true
 snafu.workspace = true
 tokio.workspace = true
+uuid.workspace = true
 libc = "0.2"
 
 [build-dependencies]
