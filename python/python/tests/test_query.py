@@ -675,10 +675,10 @@ def test_blob_v2_vector_projection_and_plain_scan_options(tmp_db, monkeypatch):
 
     query = table.search().where("id = 1")
 
-    def fail_to_arrow(*args, **kwargs):
-        raise AssertionError("the native scanner should handle bytes with flatten")
+    def fail_to_lance(*args, **kwargs):
+        raise AssertionError("blob v2 bytes should not open a pylance dataset")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    monkeypatch.setattr(table, "to_lance", fail_to_lance)
     assert query.to_pandas(blob_mode="bytes", flatten=True)["blob"].tolist() == [b"one"]
 
     flattened_lazy = table.search().where("id = 1").to_pandas(flatten=True)

@@ -268,7 +268,11 @@ async def replace_v2_blob_columns_with_bytes(
     row_ids = _hit_row_ids(tbl, present)
     for output_name, source_name in present.items():
         tbl = _set_blob_column(
-            tbl, output_name, await fetch_blobs(source_name, row_ids)
+            tbl,
+            output_name,
+            await fetch_blobs(source_name, row_ids)
+            if row_ids
+            else pa.array([], type=pa.large_binary()),
         )
     return tbl
 
@@ -283,7 +287,13 @@ def replace_v2_blob_columns_with_bytes_sync(
         return tbl
     row_ids = _hit_row_ids(tbl, present)
     for output_name, source_name in present.items():
-        tbl = _set_blob_column(tbl, output_name, fetch_blobs(source_name, row_ids))
+        tbl = _set_blob_column(
+            tbl,
+            output_name,
+            fetch_blobs(source_name, row_ids)
+            if row_ids
+            else pa.array([], type=pa.large_binary()),
+        )
     return tbl
 
 

@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 from functools import singledispatch
-from typing import List, Optional, Tuple, Union
+from typing import AsyncIterator, List, Optional, Tuple, Union
 
 from lancedb.pydantic import LanceModel, model_to_dict
 import pyarrow as pa
@@ -30,6 +30,7 @@ class AsyncRecordBatchReader:
             The schema of the batches produced by the stream.
             Accessing the schema does not consume any data from the stream
         """
+        self._inner: AsyncIterator[pa.RecordBatch]
         if isinstance(inner, pa.Table):
             self._inner = self._async_iter_from_table(inner, max_batch_length)
             self.schema: pa.Schema = inner.schema
@@ -38,6 +39,16 @@ class AsyncRecordBatchReader:
             self.schema: pa.Schema = inner.schema
         else:
             raise TypeError("inner must be a RecordBatchStream or a Table")
+
+    @classmethod
+    def _from_batches(
+        cls, schema: pa.Schema, batches: AsyncIterator[pa.RecordBatch]
+    ) -> "AsyncRecordBatchReader":
+        """Wrap a transformed stream without consuming its first batch."""
+        reader = cls.__new__(cls)
+        reader.schema = schema
+        reader._inner = batches
+        return reader
 
     async def read_all(self) -> List[pa.RecordBatch]:
         """
