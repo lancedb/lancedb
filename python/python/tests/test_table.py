@@ -2773,6 +2773,8 @@ def test_update_typed_map_arrow_scalar(mem_db: DBConnection, map_type, entries):
     assert result.rows_updated == 1
     assert actual.type == map_type
     assert actual.to_pylist() == [entries, entries]
+
+
 @pytest.mark.parametrize("use_arrow_scalar", [False, True])
 @pytest.mark.parametrize(
     "decimal_type, value",
