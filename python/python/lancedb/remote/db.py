@@ -36,7 +36,7 @@ from lancedb.remote import ClientConfig, RetryConfig, TimeoutConfig, TlsConfig
 import pyarrow as pa
 
 from ..common import DATA
-from lancedb.listing import Listing
+from lancedb.listing import Listing, NamespaceListing, TableListing
 from ..db import DBConnection, LOOP
 from ..functions import FunctionVersion, UdfDefinition
 from ..job import AsyncJob, Job
@@ -54,8 +54,6 @@ from lance_namespace import (
     CreateNamespaceResponse,
     DescribeNamespaceResponse,
     DropNamespaceResponse,
-    ListNamespacesResponse,
-    ListTablesResponse,
 )
 from ..pydantic import LanceModel
 from ..table import Table
@@ -112,6 +110,7 @@ def _client_config_to_dict(config: ClientConfig) -> dict[str, Any]:
         "user_agent": config.user_agent,
         "retry_config": _retry_config_to_dict(config.retry_config),
         "timeout_config": _timeout_config_to_dict(config.timeout_config),
+        "blob_request_concurrency": config.blob_request_concurrency,
         "extra_headers": config.extra_headers,
         "id_delimiter": config.id_delimiter,
         "tls_config": _tls_config_to_dict(config.tls_config),
@@ -267,7 +266,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -283,12 +282,12 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -378,7 +377,7 @@ class RemoteDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
+    ) -> TableListing:
         """List a page of tables in this database.
 
         Parameters
@@ -395,12 +394,12 @@ class RemoteDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -722,6 +721,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         from .table import RemoteTable
 
@@ -733,6 +734,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(
@@ -754,6 +757,8 @@ class RemoteDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -763,6 +768,8 @@ class RemoteDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)

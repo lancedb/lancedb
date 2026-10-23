@@ -544,25 +544,25 @@ pub trait QueryBase {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     fn order_by(self, ordering: Option<Vec<ColumnOrdering>>) -> Self;
 
-    /// Control MemWAL read routing for this query.
+    /// Control RTE read routing for this query.
     ///
-    /// By default (unset), when the table carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]), reads are routed through the LSM
+    /// By default (unset), when the table carries an RTE write spec (see
+    /// [`crate::Table::enable_rte`]), reads are routed through the LSM
     /// scanner so they also return data written via the `merge_insert` LSM path
     /// that has not yet been compacted into the base table (active/frozen
-    /// memtables and flushed generations); a table without a spec reads the base
+    /// memtables and SSTables); a table without a spec reads the base
     /// table.
     ///
-    /// - `use_lsm(true)` forces LSM routing and errors if the table has no
-    ///   MemWAL write spec.
-    /// - `use_lsm(false)` bypasses the MemWAL and reads the base table only,
+    /// - `use_rte(true)` forces RTE routing and errors if the table has no
+    ///   RTE write spec.
+    /// - `use_rte(false)` bypasses the RTE and reads the base table only,
     ///   even when a spec is present.
     ///
     /// Note: the LSM scanner does not support every query shape (e.g. reranking,
-    /// hybrid search, `order_by`). On a MemWAL table those shapes error unless
-    /// `use_lsm(false)` is set, because a base-only read would silently
-    /// exclude un-compacted MemWAL data.
-    fn use_lsm(self, enable: bool) -> Self;
+    /// hybrid search, `order_by`). On an RTE table those shapes error unless
+    /// `use_rte(false)` is set, because a base-only read would silently
+    /// exclude un-compacted RTE data.
+    fn use_rte(self, enable: bool) -> Self;
 }
 
 pub trait HasQuery {
@@ -634,8 +634,8 @@ impl<T: HasQuery> QueryBase for T {
         self
     }
 
-    fn use_lsm(mut self, enable: bool) -> Self {
-        self.mut_query().use_lsm = Some(enable);
+    fn use_rte(mut self, enable: bool) -> Self {
+        self.mut_query().use_rte = Some(enable);
         self
     }
 }
@@ -898,19 +898,19 @@ pub struct QueryRequest {
     /// This allows ordering query results by one or more columns in either ascending or descending order.
     pub order_by: Option<Vec<ColumnOrdering>>,
 
-    /// Controls MemWAL read routing. When unset (the default), a query against a
-    /// table that carries a MemWAL write spec (see
-    /// [`crate::Table::set_lsm_write_spec`]) is routed through the LSM scanner so
+    /// Controls RTE read routing. When unset (the default), a query against a
+    /// table that carries an RTE write spec (see
+    /// [`crate::Table::enable_rte`]) is routed through the LSM scanner so
     /// it also sees data written via the `merge_insert` LSM path that has not yet
     /// been compacted into the base table — the active and frozen in-memory
-    /// memtables and the flushed (L0) generations, deduplicated by primary key
+    /// memtables and the SSTables, deduplicated by primary key
     /// against the base table (newest generation wins); a table without a spec
     /// reads the base table.
     ///
-    /// - `Some(true)` forces LSM routing and errors if the table has no MemWAL
+    /// - `Some(true)` forces RTE routing and errors if the table has no RTE
     ///   write spec.
-    /// - `Some(false)` reads only the base table, bypassing the MemWAL.
-    pub use_lsm: Option<bool>,
+    /// - `Some(false)` reads only the base table, bypassing the RTE.
+    pub use_rte: Option<bool>,
 }
 
 impl Default for QueryRequest {
@@ -930,7 +930,7 @@ impl Default for QueryRequest {
             norm: None,
             disable_scoring_autoprojection: false,
             order_by: None,
-            use_lsm: None,
+            use_rte: None,
         }
     }
 }
@@ -1127,6 +1127,11 @@ pub struct VectorQueryRequest {
     /// If unset, Lance's default is used. Zero represents an explicitly unbounded
     /// maximum on request and wire representations.
     pub maximum_nprobes: Option<usize>,
+    /// Optional initial IVF search effort in [0, 1].
+    ///
+    /// None preserves Auto and fixed `nprobes`; any explicit value overrides
+    /// `nprobes` while retaining explicit minimum and maximum bounds.
+    pub search_effort: Option<f64>,
     /// The lower bound (inclusive) of the distance to search for.
     pub lower_bound: Option<f32>,
     /// The upper bound (exclusive) of the distance to search for.
@@ -1153,6 +1158,7 @@ impl Default for VectorQueryRequest {
             nprobes: None,
             minimum_nprobes: None,
             maximum_nprobes: None,
+            search_effort: None,
             lower_bound: None,
             upper_bound: None,
             ef: None,
@@ -1165,6 +1171,17 @@ impl Default for VectorQueryRequest {
 }
 
 impl VectorQueryRequest {
+    pub(crate) fn validate_search_effort(&self) -> Result<()> {
+        if let Some(effort) = self.search_effort
+            && (!effort.is_finite() || !(0.0..=1.0).contains(&effort))
+        {
+            return Err(Error::InvalidInput {
+                message: format!("search_effort must be finite and in [0, 1], got {effort}"),
+            });
+        }
+        Ok(())
+    }
+
     fn add_query_vector(&mut self, vector: impl IntoQueryVector) -> Result<()> {
         let vector = vector.to_query_vector(&DataType::Float32, "default")?;
         let array =
@@ -1279,7 +1296,8 @@ impl VectorQuery {
     /// you the desired recall.
     ///
     /// LanceDB retains this as `nprobes` through local and remote request
-    /// construction. Lance sets both probe bounds to this value. For more
+    /// construction. Lance sets both probe bounds to this value only when
+    /// [`Self::search_effort`] is unset. For more
     /// fine-grained control see [`VectorQuery::minimum_nprobes`] and
     /// [`VectorQuery::maximum_nprobes`].
     ///
@@ -1291,6 +1309,31 @@ impl VectorQuery {
             });
         }
         self.request.nprobes = Some(nprobes);
+        Ok(self)
+    }
+
+    /// Set the initial IVF search effort to a finite value in [0, 1].
+    ///
+    /// None (the default) resolves to 0.5, preserving Auto probing. At 0 the
+    /// search starts at the caller minimum; at 1 it searches all partitions
+    /// within the caller maximum. Intermediate values interpolate around Auto.
+    /// Later probing may continue when too few candidates are found.
+    /// Any explicit value, including 0.5, overrides [`Self::nprobes`] regardless
+    /// of setter order. Explicit minimum and maximum bounds still apply.
+    /// This does not change refinement or HNSW ef and is not a recall guarantee.
+    /// Lance's MemWAL LSM scanner does not yet support this option.
+    ///
+    /// ```
+    /// # use lancedb::{Table, query::{QueryBase, ExecutableQuery}};
+    /// # async fn example(table: &Table) -> lancedb::Result<()> {
+    /// let results = table.query().nearest_to([0.1, 0.2].as_slice())?
+    ///     .search_effort(0.75)?.execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn search_effort(mut self, search_effort: impl Into<Option<f64>>) -> Result<Self> {
+        self.request.search_effort = search_effort.into();
+        self.request.validate_search_effort()?;
         Ok(self)
     }
 
@@ -1333,6 +1376,8 @@ impl VectorQuery {
     ///
     /// If this value is greater than minimum_nprobes then the excess partitions will
     /// only be searched if the initial search does not return enough results.
+    /// The bound applies per index segment to initial and later probing without
+    /// disabling Auto probing.
     ///
     /// This can be useful when there is a narrow filter to allow these queries to
     /// spend more time searching and avoid potential false negatives.
@@ -2448,6 +2493,26 @@ mod tests {
         assert_eq!(query.request.nprobes, None);
         assert_eq!(query.request.minimum_nprobes, None);
         assert_eq!(query.request.maximum_nprobes, None);
+        assert_eq!(query.request.search_effort, None);
+
+        let effort_query = query
+            .clone()
+            .nprobes(20)
+            .unwrap()
+            .search_effort(0.5)
+            .unwrap();
+        assert_eq!(effort_query.request.search_effort, Some(0.5));
+        assert_eq!(effort_query.request.nprobes, Some(20));
+        assert_eq!(effort_query.request.minimum_nprobes, None);
+        assert_eq!(effort_query.request.maximum_nprobes, None);
+        assert_eq!(
+            effort_query
+                .search_effort(None)
+                .unwrap()
+                .request
+                .search_effort,
+            None
+        );
         assert_eq!(
             *query
                 .request
@@ -3741,8 +3806,12 @@ mod tests {
         assert_eq!(results[0].num_columns(), 1);
     }
 
+    #[rstest::rstest]
+    #[case::single_row(1)]
+    #[case::two_rows(2)]
+    #[case::three_rows(3)]
     #[tokio::test]
-    async fn test_take_offsets_preserves_duplicate_multiplicity() {
+    async fn test_take_offsets_preserves_duplicate_multiplicity(#[case] max_batch_length: u32) {
         let tmp_dir = tempdir().unwrap();
         let table = make_test_table(&tmp_dir).await;
 
@@ -3750,7 +3819,7 @@ mod tests {
             .take_offsets(vec![5, 1, 5, 17])
             .select(Select::Columns(vec!["id".to_string()]))
             .execute_with_options(QueryExecutionOptions {
-                max_batch_length: 2,
+                max_batch_length,
                 ..Default::default()
             })
             .await
@@ -3759,7 +3828,11 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(results.len(), 2);
+        assert!(
+            results
+                .iter()
+                .all(|batch| batch.num_rows() <= max_batch_length as usize)
+        );
         assert!(results.iter().all(|batch| batch.num_columns() == 1));
         let mut ids = results
             .iter()

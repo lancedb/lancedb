@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+import asyncio
 from datetime import timedelta
 from pathlib import Path
 import sys
@@ -31,18 +32,24 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import EnforceOverrides, override  # type: ignore
 
-from lancedb.listing import AsyncListing, Listing
+from lancedb.listing import (
+    AsyncListing,
+    AsyncNamespaceListing,
+    AsyncTableListing,
+    Listing,
+    NamespaceListing,
+    TableListing,
+    validate_page_limit,
+)
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 from lance_namespace import (
     LanceNamespace,
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
     connect as namespace_connect,
 )
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
@@ -170,7 +177,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -186,12 +193,12 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return ListNamespacesResponse(namespaces=[], page_token=None)
+        return NamespaceListing(AsyncNamespaceListing(None, empty=True))
 
     def create_namespace(
         self,
@@ -316,8 +323,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -333,7 +340,7 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         raise NotImplementedError(
@@ -607,6 +614,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
@@ -631,6 +640,13 @@ class DBConnection(EnforceOverrides):
             Cap the view at this many rows, in materialization order.
         with_no_data: bool, default False
             Skip the initial refresh and leave the backing table empty.
+        auto_refresh_enabled: bool, optional
+            Enable or disable automatic refresh on Cloud and Enterprise.
+            When omitted, the server determines whether automatic refresh is enabled.
+            Embedded databases do not support automatic refresh.
+        auto_refresh_interval_seconds: float, optional
+            Positive, finite refresh interval in seconds on Cloud and Enterprise.
+            When omitted, the server determines when to refresh.
 
         Returns
         -------
@@ -649,6 +665,8 @@ class DBConnection(EnforceOverrides):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
@@ -1288,6 +1306,10 @@ class LanceDBConnection(DBConnection):
         self.storage_options = storage_options
         self._manifest_enabled = manifest_enabled
         self._namespace_client_properties = namespace_client_properties
+        # The native connection does not expose the Python Session wrapper.
+        # Keep the object supplied by the caller so this property stays
+        # synchronous for debugger inspection.
+        self._session = session
         if _inner is not None:
             self._conn = _inner
             # Native-derived wrappers resolve this in their async reconstruction
@@ -1354,7 +1376,12 @@ class LanceDBConnection(DBConnection):
 
     @property
     def session(self) -> Optional[Session]:
-        return self._conn.session
+        """Return the session supplied when this connection was opened.
+
+        None when the caller did not pass a session, including connections
+        reconstructed with :meth:`from_inner`.
+        """
+        return self._session
 
     @property
     def uri(self) -> str:
@@ -1415,7 +1442,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -1431,16 +1458,14 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
@@ -1491,8 +1516,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -1508,12 +1533,12 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -1706,6 +1731,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -1734,6 +1761,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return MaterializedView(self.open_table(name))
@@ -1748,6 +1777,8 @@ class LanceDBConnection(DBConnection):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> Job[None]:
         job = LOOP.run(
             self._conn.create_materialized_view_async(
@@ -1757,6 +1788,8 @@ class LanceDBConnection(DBConnection):
                 where=where,
                 limit=limit,
                 with_no_data=with_no_data,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             )
         )
         return Job(job)
@@ -2257,12 +2290,12 @@ class AsyncConnection(object):
         else:
             return None
 
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> AsyncNamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -2277,15 +2310,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListNamespacesResponse
+        AsyncNamespaceListing
             Response containing namespace names and optional pagination token
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_namespaces(
+        validate_page_limit(limit)
+        inner = self._inner.list_namespaces(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListNamespacesResponse(**result)
+        if limit == 0:
+            return AsyncNamespaceListing(None, empty=True)
+        return AsyncNamespaceListing(inner, page_token)
 
     async def create_namespace(
         self,
@@ -2364,13 +2400,13 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> AsyncTableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -2386,15 +2422,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListTablesResponse
+        AsyncTableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_tables(
+        validate_page_limit(limit)
+        inner = self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListTablesResponse(**result)
+        if limit == 0:
+            return AsyncTableListing(None, empty=True)
+        return AsyncTableListing(inner, page_token)
 
     async def table_names(
         self,
@@ -2633,8 +2672,16 @@ class AsyncConnection(object):
         if fill_value is None:
             fill_value = 0.0
 
-        data, schema = sanitize_create_table(
-            data, schema, metadata, on_bad_vectors, fill_value
+        # Input preparation may advance a user-provided iterator.  Keep that work
+        # off the background event loop so an iterator can use the synchronous
+        # LanceDB API without blocking the loop that API needs to make progress.
+        data, schema = await asyncio.to_thread(
+            sanitize_create_table,
+            data,
+            schema,
+            metadata,
+            on_bad_vectors,
+            fill_value,
         )
         validate_schema(schema)
 
@@ -2767,6 +2814,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
         See
@@ -2782,6 +2831,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncMaterializedView(AsyncTable(inner))
@@ -2795,6 +2846,8 @@ class AsyncConnection(object):
         where: Optional[str] = None,
         limit: Optional[int] = None,
         with_no_data: bool = False,
+        auto_refresh_enabled: Optional[bool] = None,
+        auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
@@ -2810,6 +2863,8 @@ class AsyncConnection(object):
             filter=where,
             limit=limit,
             with_no_data=with_no_data,
+            auto_refresh_enabled=auto_refresh_enabled,
+            auto_refresh_interval_seconds=auto_refresh_interval_seconds,
             **native_options,
         )
         return AsyncJob(inner)

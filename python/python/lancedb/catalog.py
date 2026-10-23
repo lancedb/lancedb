@@ -3,11 +3,13 @@
 
 """Remote catalogs manage databases through a server's root namespace."""
 
+from functools import cached_property
 from datetime import timedelta
 from typing import Any, AsyncIterator, Iterator, Optional, Union
 
 from . import _lancedb
 from .background_loop import LOOP
+from .authz import AsyncAuthorization, Authorization
 from .db import AsyncConnection, DBConnection
 from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
@@ -86,6 +88,11 @@ class AsyncCatalog:
     def __init__(self, inner: _lancedb.Catalog):
         self._inner = inner
 
+    @cached_property
+    def authz(self) -> AsyncAuthorization:
+        """Authorization sharing this catalog's scope and credentials."""
+        return AsyncAuthorization(self._inner.authz)
+
     @property
     def uri(self) -> str:
         """The catalog's root namespace endpoint."""
@@ -156,6 +163,11 @@ class Catalog:
         self._client_config = client_config
         self._sql_host_override = sql_host_override
         self._oauth_config = oauth_config
+
+    @cached_property
+    def authz(self) -> Authorization:
+        """Authorization sharing this catalog's scope and credentials."""
+        return Authorization(self._inner.authz)
 
     @property
     def uri(self) -> str:
