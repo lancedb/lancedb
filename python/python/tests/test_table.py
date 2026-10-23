@@ -12,10 +12,10 @@ import warnings
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from time import sleep
 from typing import List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import lancedb
 from lancedb import table as table_module
@@ -111,6 +111,32 @@ def test_basic(mem_db: DBConnection):
 
     expected_data = pa.Table.from_pylist(data, schema=expected_schema)
     assert table.to_arrow() == expected_data
+
+
+@pytest.mark.parametrize("enable_v2", [False, True])
+def test_migrate_v2_manifest_paths(tmp_path, enable_v2):
+    db = lancedb.connect(
+        tmp_path,
+        storage_options={"new_table_enable_v2_manifest_paths": str(enable_v2).lower()},
+    )
+    table = db.create_table("calls", [{"id": 1, "vector": [1.0, 1.0]}])
+    table.add([{"id": 2, "vector": [2.0, 2.0]}])
+    expected_data = table.to_arrow()
+    expected_versions = table.list_versions()
+    assert table.uses_v2_manifest_paths() == enable_v2
+
+    # Migration is also safe to repeat on a table already using v2 paths.
+    for _ in range(2):
+        table.migrate_v2_manifest_paths()
+        assert table.uses_v2_manifest_paths()
+        reopened = db.open_table("calls")
+        assert reopened.uses_v2_manifest_paths()
+        assert reopened.to_arrow() == expected_data
+        assert reopened.list_versions() == expected_versions
+
+    manifests = list((tmp_path / "calls.lance" / "_versions").glob("*.manifest"))
+    assert len(manifests) == len(expected_versions)
+    assert all(len(path.stem) == 20 and path.stem.isdigit() for path in manifests)
 
 
 def test_search_preserves_nulls_from_sliced_arrow_table(mem_db: DBConnection):
@@ -252,6 +278,30 @@ def test_create_table_infers_large_int_vectors(mem_db: DBConnection):
     vector_column = table.to_arrow().column("vector")
     assert vector_column.type == pa.list_(pa.float32(), 2)
     assert vector_column.to_pylist() == [[0.0, 300.0]]
+
+
+def test_create_table_all_null_vector_column(mem_db: DBConnection):
+    # A vector column can legitimately arrive with every value null, e.g. when
+    # the embeddings have not been computed yet. The dimension is unknowable in
+    # that case, so schema inference must not crash and should leave the column
+    # as a variable-length list rather than a fixed-size one.
+    data = pa.table(
+        {
+            "id": pa.array([1, 2]),
+            "vector": pa.array([None, None], type=pa.list_(pa.float32())),
+        }
+    )
+
+    table = mem_db.create_table("all_null_vector", data=data)
+
+    vector_field = table.schema.field("vector")
+    assert pa.types.is_list(vector_field.type)
+    assert vector_field.type.value_type == pa.float32()
+
+    result = table.to_arrow()
+    assert result.num_rows == 2
+    assert result.column("vector").to_pylist() == [None, None]
+    assert table.count_rows() == 2
 
 
 @pytest.mark.asyncio
@@ -490,6 +540,30 @@ def test_add(mem_db: DBConnection):
         ],
     )
     _add(table, schema)
+
+
+def test_add_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+    target = mem_db.create_table("target", schema=source.schema)
+
+    def batches():
+        for _ in range(5):
+            yield source.search().limit(10).to_arrow()
+
+    target.add(batches())
+
+    assert target.count_rows() == 50
+
+
+def test_create_table_from_iterator_that_queries_table(mem_db: DBConnection):
+    source = mem_db.create_table("source", data=pa.table({"id": range(16)}))
+
+    def batches():
+        yield source.search().limit(10).to_arrow()
+
+    target = mem_db.create_table("target", data=batches())
+
+    assert target.count_rows() == 10
 
 
 def test_add_releases_arrow_buffers_without_gc(mem_db: DBConnection):
@@ -965,6 +1039,63 @@ def test_polars(mem_db: DBConnection):
     # make sure filtering isn't broken
     filtered_result = result.filter(pl.col("item").is_in(["foo", "bar"])).collect()
     assert len(filtered_result) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_versions_timestamp_precision():
+    # 2026-10-03T01:03:49.274Z in nanoseconds. Float math turns .274000 into
+    # .273999, so make sure the conversion is exact.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = table_module.AsyncTable(FakeInner())
+    versions = await table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_list_versions_timestamp_precision_sync(mem_db: DBConnection):
+    # The sync LanceTable.list_versions delegates to AsyncTable.list_versions,
+    # which is the path the parity report hit.
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = mem_db.create_table("ts_precision", data=[{"id": 1}])
+    table._table = table_module.AsyncTable(FakeInner())
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
+
+
+def test_list_versions_timestamp_precision_remote():
+    # RemoteTable.list_versions also delegates to AsyncTable.list_versions.
+    from lancedb.remote.table import RemoteTable
+
+    ts_nanos = 1790989429274000000
+
+    class FakeInner:
+        def name(self):
+            return "ts_precision"
+
+        async def list_versions(self):
+            return [{"version": 1, "timestamp": ts_nanos, "metadata": {}}]
+
+    table = RemoteTable(table_module.AsyncTable(FakeInner()), "dev")
+    versions = table.list_versions()
+
+    expected = datetime.fromtimestamp(ts_nanos // 1_000_000_000)
+    assert versions[0]["timestamp"] == expected + timedelta(microseconds=274000)
+    assert versions[0]["timestamp"].microsecond == 274000
 
 
 def test_versioning(mem_db: DBConnection):
@@ -1502,6 +1633,25 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.cancel()
 
 
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
+def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("invalid_timeout", [{"id": 1}])
+    with pytest.raises(TypeError):
+        getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    assert table.list_indices() == []
+
+
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", [None, timedelta(seconds=1)])
+def test_create_index_valid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("valid_timeout", [{"id": 1}])
+    result = getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    if result is not None:
+        result.wait()
+    assert len(table.list_indices()) == 1
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
@@ -1640,6 +1790,51 @@ def test_create_index_method(mock_create_index, mem_db: DBConnection):
         name=None,
         train=True,
     )
+
+
+@pytest.mark.parametrize("api", ["legacy", "unified"])
+@pytest.mark.parametrize("cuda_failure", ["unavailable", "init_error"])
+def test_create_index_cuda_failure_suggests_cpu(
+    api, cuda_failure, mem_db: DBConnection
+):
+    table = mem_db.create_table(
+        f"test_cuda_unavailable_{api}",
+        data=[{"vector": [3.1, 4.1]}, {"vector": [5.9, 26.5]}],
+    )
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = cuda_failure == "init_error"
+    if cuda_failure == "init_error":
+        torch.cuda.init.side_effect = RuntimeError("CUDA driver initialization failed")
+
+    with (
+        patch.dict(sys.modules, {"torch": torch}),
+        patch.object(table, "to_lance") as to_lance,
+    ):
+        if api == "legacy":
+            with (
+                pytest.warns(DeprecationWarning, match="create_index"),
+                pytest.raises(RuntimeError, match="accelerator=None.*CPU"),
+            ):
+                table.create_index(
+                    metric="dot",
+                    num_partitions=1,
+                    num_sub_vectors=1,
+                    vector_column_name="vector",
+                    accelerator="cuda",
+                )
+        else:
+            with pytest.raises(RuntimeError, match="accelerator=None.*CPU"):
+                table.create_index(
+                    "vector",
+                    config=IvfPq(
+                        distance_type="dot",
+                        num_partitions=1,
+                        num_sub_vectors=1,
+                        accelerator="cuda",
+                    ),
+                )
+
+    to_lance.return_value.create_index.assert_not_called()
 
 
 @patch("lancedb.table.AsyncTable.create_index")
@@ -2527,6 +2722,51 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
 
     assert result.rows_updated == 1
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.parametrize("use_arrow_scalar", [False, True])
+@pytest.mark.parametrize(
+    "decimal_type, value",
+    [
+        (pa.decimal128(10, 2), "9.99"),
+        (pa.decimal128(10, 2), "-9.99"),
+        (pa.decimal128(10, 2), "0.00"),
+        (pa.decimal128(10, 2), "1.23E+5"),
+        (pa.decimal128(38, 18), "1E-18"),
+        (pa.decimal128(38, 18), "12345678901234567.123456789012345678"),
+        (pa.decimal128(38, 18), "12345678901234567890.123456789012345678"),
+        (pa.decimal128(38, 18), "-12345678901234567890.123456789012345678"),
+        (
+            pa.decimal256(76, 38),
+            "12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+        (
+            pa.decimal256(76, 38),
+            "-12345678901234567890123456789012345678."
+            "12345678901234567890123456789012345678",
+        ),
+    ],
+)
+def test_update_decimal(mem_db: DBConnection, decimal_type, value, use_arrow_scalar):
+    expected = Decimal(value)
+    table = mem_db.create_table(
+        "my_table",
+        pa.table(
+            {
+                "id": [1, 2],
+                "price": pa.array([Decimal("1"), expected], type=decimal_type),
+            }
+        ),
+    )
+    update = table.to_arrow()["price"][1] if use_arrow_scalar else expected
+    with localcontext() as context:
+        context.prec = 6
+        result = table.update(where="id = 1", values={"price": update})
+    assert result.rows_updated == 1
+    actual = table.to_arrow()
+    assert actual.schema.field("price").type == decimal_type
+    assert actual["price"].to_pylist() == [expected, expected]
 
 
 def test_update_types(mem_db: DBConnection):
@@ -3545,6 +3785,42 @@ def test_multiple_vector_columns(mem_db: DBConnection):
     assert result1["text"][0] != result2["text"][0]
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        (0.0, 0.0),
+        pa.array([0.0, 0.0]),
+        pa.chunked_array([[0.0], [0.0]]),
+    ],
+)
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+def test_sync_search_accepts_supported_vector_containers(
+    mem_db: DBConnection, query, query_type
+):
+    schema = pa.schema(
+        [
+            pa.field("id", pa.int64()),
+            pa.field("small", pa.list_(pa.float32(), 2)),
+            pa.field("large", pa.list_(pa.float32(), 3)),
+        ]
+    )
+    table = mem_db.create_table(
+        "supported_vector_containers",
+        data=pa.table(
+            {
+                "id": [1, 2],
+                "small": [[0.0, 0.0], [1.0, 1.0]],
+                "large": [[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]],
+            },
+            schema=schema,
+        ),
+    )
+
+    result = table.search(query, query_type=query_type).limit(1).to_arrow()
+
+    assert result["id"].to_pylist() == [1]
+
+
 def test_create_scalar_index(mem_db: DBConnection):
     vec_array = pa.array(
         [[1, 1], [2, 2], [3, 3], [4, 4], [5, 5]], pa.list_(pa.float32(), 2)
@@ -3751,6 +4027,24 @@ def test_empty_query(mem_db: DBConnection):
     assert df.num_rows == 42
 
 
+@pytest.mark.parametrize("query", [[], np.array([], dtype=np.float32)])
+@pytest.mark.parametrize("vector_column_name", [None, "vector"])
+@pytest.mark.parametrize("query_type", ["auto", "vector"])
+@pytest.mark.parametrize("multiple_vector_columns", [False, True])
+def test_search_empty_vector(
+    mem_db, query, vector_column_name, query_type, multiple_vector_columns
+):
+    fields = [pa.field("vector", pa.list_(pa.float32(), 8))]
+    if multiple_vector_columns:
+        fields.append(pa.field("vec2", pa.list_(pa.float32(), 4)))
+    table = mem_db.create_table("empty_vector_query", schema=pa.schema(fields))
+
+    with pytest.raises(ValueError, match="^Query vector must not be empty$"):
+        table.search(
+            query, vector_column_name=vector_column_name, query_type=query_type
+        ).limit(3).to_arrow()
+
+
 def test_search_with_schema_inf_single_vector(mem_db: DBConnection):
     class MyTable(LanceModel):
         text: str
@@ -3868,6 +4162,26 @@ def test_search_nested_vector_no_candidates(mem_db: DBConnection):
 
     with pytest.raises(ValueError, match="no vector column"):
         table.search([0.0, 1.0]).limit(1).to_arrow()
+
+
+def test_search_single_vector_column_wrong_query_dim(mem_db: DBConnection):
+    """A query vector whose dimension doesn't match the (only) vector column
+    must still resolve that column, surfacing a dimension-mismatch error from
+    query execution rather than a misleading "no vector column" error."""
+    schema = pa.schema(
+        [
+            pa.field("id", pa.uint32(), False),
+            pa.field("vector_col", pa.list_(pa.float32(), 32), False),
+        ]
+    )
+    table = mem_db.create_table(
+        "wrong_query_dim",
+        data=[{"id": 1, "vector_col": [0.1] * 32}],
+        schema=schema,
+    )
+
+    with pytest.raises(ValueError, match="dim"):
+        table.search([0.01] * 120).limit(1).to_arrow()
 
 
 def test_compact_cleanup(tmp_db: DBConnection):
@@ -4144,12 +4458,124 @@ async def test_add_columns_with_schema(mem_db_async: AsyncConnection):
     )
 
 
-def test_alter_columns(mem_db: DBConnection):
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+def test_alter_columns(mem_db: DBConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = mem_db.create_table("my_table", data=data)
-    alter_columns_res = table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert table.to_arrow().column_names == ["new_id"]
+
+
+INVALID_COLUMN_ALTERATIONS = [
+    (({"path": "id"},), "One of rename, nullable or data_type"),
+    (
+        ({"path": "id", "nulable": False},),  # spellchecker:disable-line
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+    ),
+    (
+        (
+            {
+                "path": "id",
+                "rename": "new_id",
+                "nulable": False,  # spellchecker:disable-line
+            },
+        ),
+        "Unknown column alteration key 'nulable'",  # spellchecker:disable-line
+    ),
+    (
+        ({"path": "id", "rename": "new_id"}, {"path": "id"}),
+        "One of rename, nullable or data_type",
+    ),
+]
+
+
+def test_alter_columns_nullable_false(mem_db: DBConnection):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    result = table.alter_columns({"path": "id", "nullable": False})
+    assert result.version == 2
+    assert not table.schema.field("id").nullable
+
+
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+def test_alter_columns_rejects_invalid(mem_db: DBConnection, alterations, match):
+    table = mem_db.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = table.version
+    initial_schema = table.schema
+
+    with pytest.raises(ValueError, match=match):
+        table.alter_columns(*alterations)
+
+    assert table.version == initial_version
+    assert table.schema == initial_schema
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("alterations, match", INVALID_COLUMN_ALTERATIONS)
+async def test_alter_columns_rejects_invalid_async(
+    mem_db_async: AsyncConnection, alterations, match
+):
+    table = await mem_db_async.create_table("my_table", data=pa.table({"id": [0, 1]}))
+    initial_version = await table.version()
+    initial_schema = await table.schema()
+
+    with pytest.raises(ValueError, match=match):
+        await table.alter_columns(*alterations)
+
+    assert await table.version() == initial_version
+    assert await table.schema() == initial_schema
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+@pytest.mark.parametrize(
+    "value_type, values, inferred_type",
+    [
+        (pa.float64(), [1.25, 2.5], pa.float32()),
+        (pa.int32(), [0, 255], pa.uint8()),
+        (pa.int32(), [-1, 256], pa.float32()),
+    ],
+)
+async def test_inferred_vector_field_metadata(
+    tmp_db: DBConnection,
+    tmp_db_async: AsyncConnection,
+    asynchronous,
+    list_type,
+    value_type,
+    values,
+    inferred_type,
+):
+    metadata = {
+        "lancedb:description": "Embedding values",
+        "lancedb:tag:model": "test-model",
+    }
+    schema = pa.schema(
+        [
+            pa.field(
+                "vector", list_type(value_type), nullable=False, metadata=metadata
+            ),
+            pa.field("text", pa.string(), metadata={"description": "Source text"}),
+        ],
+        metadata={"description": "Source dataset"},
+    )
+    rows = [{"vector": values, "text": "first"}, {"vector": values, "text": "second"}]
+    data = pa.Table.from_pylist(rows, schema=schema)
+    if asynchronous:
+        await tmp_db_async.create_table("vector_metadata", data=data)
+        table = await tmp_db_async.open_table("vector_metadata")
+        actual_schema = await table.schema()
+        actual_data = await table.to_arrow()
+    else:
+        tmp_db.create_table("vector_metadata", data=data)
+        table = tmp_db.open_table("vector_metadata")
+        actual_schema = table.schema
+        actual_data = table.to_arrow()
+    expected_schema = schema.set(
+        0, schema.field("vector").with_type(pa.list_(inferred_type, 2))
+    )
+    assert actual_schema.equals(expected_schema, check_metadata=True)
+    assert actual_data.to_pylist() == rows
 
 
 def test_update_field_metadata(mem_db: DBConnection):
@@ -4177,10 +4603,11 @@ def test_update_field_metadata(mem_db: DBConnection):
 
 
 @pytest.mark.asyncio
-async def test_alter_columns_async(mem_db_async: AsyncConnection):
+@pytest.mark.parametrize("rename_key", ["rename", "name"])
+async def test_alter_columns_async(mem_db_async: AsyncConnection, rename_key):
     data = pa.table({"id": [0, 1]})
     table = await mem_db_async.create_table("my_table", data=data)
-    alter_columns_res = await table.alter_columns({"path": "id", "rename": "new_id"})
+    alter_columns_res = await table.alter_columns({"path": "id", rename_key: "new_id"})
     assert alter_columns_res.version == 2
     assert (await table.to_arrow()).column_names == ["new_id"]
     alter_columns_res = await table.alter_columns(
@@ -4307,7 +4734,8 @@ async def test_optimize(mem_db_async: AsyncConnection):
     assert stats.prune.bytes_removed == 0
     assert stats.prune.old_versions_removed == 0
 
-    stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(cleanup_older_than=timedelta(seconds=0))
     assert stats.prune.bytes_removed > 0
     assert stats.prune.old_versions_removed == 3
 
@@ -4335,10 +4763,84 @@ async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_pat
 
     stats = await table.optimize(delete_unverified=False)
     assert stats.prune.old_versions_removed == 0
-    stats = await table.optimize(
-        cleanup_older_than=timedelta(seconds=0), delete_unverified=True
-    )
+    with pytest.warns(UserWarning, match="concurrent"):
+        stats = await table.optimize(
+            cleanup_older_than=timedelta(seconds=0), delete_unverified=True
+        )
     assert stats.prune.old_versions_removed == 2
+
+
+@pytest.mark.asyncio
+async def test_optimize_warns_on_zero_cleanup(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": [1]}])
+    with pytest.warns(UserWarning, match="concurrent"):
+        await table.optimize(cleanup_older_than=timedelta(0))
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        await table.optimize(cleanup_older_than=timedelta(days=1))
+        await table.optimize()
+
+
+def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"x": [1]}])
+    with warnings.catch_warnings(record=True) as seen:
+        warnings.simplefilter("default")
+        table.optimize(cleanup_older_than=timedelta(0))
+        table.optimize(cleanup_older_than=timedelta(0))
+    assert [w.filename for w in seen] == [__file__, __file__]
+    assert all("concurrent" in str(w.message) for w in seen)
+
+
+def test_optimize_retains_tagged_versions(tmp_db: DBConnection):
+    # A tagged version older than the cleanup cutoff must be retained, not make
+    # optimize() fail part-way (after compaction, before the index step).
+    table = tmp_db.create_table(
+        "test", data=pa.table({"id": list(range(100)), "text": ["a"] * 100})
+    )
+    table.create_index("id", config=BTree())
+    table.tags.create("release-1", table.version)
+    tagged_version = table.version
+    for i in range(3):
+        table.add(pa.table({"id": [1000 + i], "text": ["new"]}))
+    assert table.stats()["fragment_stats"]["num_fragments"] == 4
+    assert table.index_stats("id_idx").num_unindexed_rows == 3
+    sleep(1.1)
+
+    table.optimize(cleanup_older_than=timedelta(seconds=1))
+
+    # The index step ran after the prune step
+    assert table.index_stats("id_idx").num_unindexed_rows == 0
+    # It stays optimizable
+    table.optimize(cleanup_older_than=timedelta(seconds=1))
+    assert table.stats()["fragment_stats"]["num_fragments"] == 1
+
+    # Untagged old versions were pruned, the tagged one was retained
+    versions = [v["version"] for v in table.list_versions()]
+    assert tagged_version in versions
+    for added in range(tagged_version + 1, tagged_version + 4):
+        assert added not in versions
+    assert len(table) == 103
+
+    table.checkout("release-1")
+    assert len(table) == 100
+    assert table.to_arrow().num_rows == 100
+
+
+@pytest.mark.asyncio
+async def test_optimize_retains_tagged_versions_async(tmp_db_async: AsyncConnection):
+    table = await tmp_db_async.create_table("test", data=[{"x": [1]}])
+    await table.tags.create("keep", await table.version())
+    await table.add(data=[{"x": [2]}])
+    await table.add(data=[{"x": [3]}])
+    sleep(1.1)
+
+    stats = await table.optimize(cleanup_older_than=timedelta(seconds=1))
+    assert stats.prune.old_versions_removed >= 1
+
+    await table.checkout("keep")
+    assert await table.count_rows() == 1
+    assert await table.query().to_arrow() == pa.table({"x": [[1]]})
 
 
 def test_replace_field_metadata(tmp_path):
@@ -4355,22 +4857,25 @@ def test_stats(mem_db: DBConnection):
         "my_table",
         data=[{"text": "foo", "id": 0}, {"text": "bar", "id": 1}],
     )
-    assert len(table) == 2
+    table.add([{"text": "baz", "id": 1}])
+    assert len(table) == 3
     stats = table.stats()
     print(f"{stats=}")
     assert stats == {
-        # Full on-disk size of the data file, footer and metadata included.
-        "total_bytes": 637,
-        "num_rows": 2,
+        # Full on-disk size of the data files, footer and metadata included:
+        # 637 bytes for the two-row fragment plus 415 for the one-row fragment.
+        "total_bytes": 1052,
+        "num_rows": 3,
+        "num_deleted_rows": 0,
         "num_indices": 0,
         "fragment_stats": {
-            "num_fragments": 1,
-            "num_small_fragments": 1,
+            "num_fragments": 2,
+            "num_small_fragments": 2,
             "lengths": {
-                "min": 2,
+                "min": 1,
                 "max": 2,
-                "mean": 2,
-                "p25": 2,
+                "mean": 1,
+                "p25": 1,
                 "p50": 2,
                 "p75": 2,
                 "p99": 2,
@@ -4378,12 +4883,94 @@ def test_stats(mem_db: DBConnection):
         },
     }
 
+    # Both rows with id = 1 are deleted, but that empties the second fragment,
+    # which is dropped outright rather than kept with a deletion file, so only
+    # the row marked in the surviving fragment is counted.
+    table.delete("id = 1")
     # Index files count toward total_bytes too (only deletion files and
     # manifests are excluded).
     table.create_index("id", config=BTree())
     stats_with_index = table.stats()
     assert stats_with_index["num_indices"] == 1
     assert stats_with_index["total_bytes"] > stats["total_bytes"]
+    assert stats_with_index["num_rows"] == 1
+    assert stats_with_index["num_deleted_rows"] == 1
+    assert stats_with_index["fragment_stats"]["num_fragments"] == 1
+
+
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+def test_create_table_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            mem_db.create_table("test", data=data)
+        return
+
+    table = mem_db.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert table.schema == schema
+    assert table.to_arrow().to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+async def test_create_table_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            await mem_db_async.create_table("test", data=data)
+        return
+
+    table = await mem_db_async.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert await table.schema() == schema
+    assert (await table.to_arrow()).to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_add_empty_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, on_bad_vectors
+):
+    table = mem_db.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        # The default scannable path still requires an input schema. This
+        # fix does not change its validation policy for schema-less input.
+        with pytest.raises(ValueError, match="empty iterator"):
+            table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        # Sanitization has the existing table schema available.
+        table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert table.to_arrow().to_pylist() == [{"id": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+async def test_add_empty_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, on_bad_vectors
+):
+    table = await mem_db_async.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="empty iterator"):
+            await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert (await table.to_arrow()).to_pylist() == [{"id": 1}]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):
@@ -4608,3 +5195,53 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert result.published_version == 4
     assert await job.status() == "finished"
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
+
+
+@pytest.mark.parametrize("interval", [None, 300])
+def test_computed_auto_refresh_options(tmp_path, interval):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("refresh_options", [{"x": 1}])
+    before = table.version
+    table.add_columns(
+        computed={"doubled": "x * 2", "tripled": "x * 3"},
+        auto_refresh_enabled=False,
+        auto_refresh_interval_seconds=interval,
+    )
+    assert table.version == before + 1
+    for column in ("doubled", "tripled"):
+        metadata = table.schema.field(column).metadata
+        assert metadata[b"computed_column.auto_refresh_enabled"] == b"false"
+        if interval is None:
+            assert b"computed_column.auto_refresh_interval_seconds" not in metadata
+        else:
+            assert metadata[b"computed_column.auto_refresh_interval_seconds"] == b"300"
+    table.refresh_column("doubled")
+    assert table.to_arrow()["doubled"].to_pylist() == [2]
+
+
+@pytest.mark.parametrize("value", [0, -1, True, 1.5, "300", 2**64])
+def test_computed_auto_refresh_rejects_invalid_interval(tmp_path, value):
+    table = lancedb.connect(tmp_path).create_table("invalid_options", [{"x": 1}])
+    with pytest.raises(ValueError, match="auto_refresh_interval_seconds"):
+        table.add_columns(
+            computed={"doubled": "x * 2"}, auto_refresh_interval_seconds=value
+        )
+    assert table.schema.names == ["x"]
+
+
+def test_auto_refresh_options_require_computed_columns(tmp_path):
+    table = lancedb.connect(tmp_path).create_table("invalid_kind", [{"x": 1}])
+    with pytest.raises(ValueError, match="require computed"):
+        table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
+
+
+@pytest.mark.asyncio
+async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("server_interval", [{"x": 1}])
+    before = await table.version()
+    await table.add_columns(computed={"doubled": "x * 2"})
+    assert await table.version() == before + 1
+    metadata = (await table.schema()).field("doubled").metadata
+    assert metadata[b"computed_column.auto_refresh_enabled"] == b"true"
+    assert b"computed_column.auto_refresh_interval_seconds" not in metadata

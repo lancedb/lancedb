@@ -84,6 +84,18 @@ def test_public_function_values_are_in_api_reference():
             False,
         ),
         (
+            "remote_initialized_function_application.json",
+            "remote_initialized_function_application.canonical.json",
+            FunctionApplication,
+            False,
+        ),
+        (
+            "remote_initialized_function_binding.json",
+            "remote_initialized_function_binding.canonical.json",
+            FunctionBinding,
+            False,
+        ),
+        (
             "remote_refresh_job.json",
             "remote_refresh_result.canonical.json",
             RefreshColumnResult,
@@ -150,6 +162,29 @@ def test_function_version_binds_named_columns_as_one_immutable_application():
     ] == [("text", "column", "documents.body")]
 
 
+def test_function_version_names_its_namespace_as_a_separate_field():
+    """A Function is named by its parts, as a Secret is; a root one states no
+    namespace."""
+    value = job_result("remote_function_job.json")
+    root = FunctionVersion.from_json(json.dumps(value))
+    assert root.namespace_path == ()
+    assert "namespace_path" not in json.loads(root.to_canonical_json())
+
+    nested = FunctionVersion(**{**value, "namespace_path": ["analytics", "features"]})
+    assert nested.name == "embed"
+    assert nested.namespace_path == ("analytics", "features")
+    assert json.loads(nested.to_canonical_json())["namespace_path"] == [
+        "analytics",
+        "features",
+    ]
+    application = nested(text=col("documents.body"))
+    assert application.function.name == "embed"
+    assert application.function.namespace_path == ("analytics", "features")
+    assert json.loads(application.to_canonical_json())["function"][
+        "namespace_path"
+    ] == ["analytics", "features"]
+
+
 def test_function_version_binding_validates_names_and_direct_columns():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
@@ -157,7 +192,7 @@ def test_function_version_binding_validates_names_and_direct_columns():
 
     with pytest.raises(TypeError, match=r"missing inputs: \['text'\]"):
         version()
-    with pytest.raises(TypeError, match=r"unknown inputs: \['body'\]"):
+    with pytest.raises(TypeError, match=r"unknown arguments: \['body'\]"):
         version(text=col("text"), body=col("body"))
     with pytest.raises(TypeError, match="direct col"):
         version(text=col("text").lower())
@@ -269,6 +304,35 @@ def test_binding_and_refresh_result_keep_stable_remote_fields():
     assert RefreshColumnResult.from_json(result.to_canonical_json()) == result
 
 
+def test_initialization_travels_on_the_application_and_binding():
+    application = FunctionApplication.from_json(
+        fixture("remote_initialized_function_application.json")
+    )
+    assert application.initialization["temperature"] == 0.25
+    assert application.initialization["retry"]["backoff"] == (1, 2, 4)
+    application._ensure_declarable()
+
+    binding = FunctionBinding.from_json(
+        fixture("remote_initialized_function_binding.json")
+    )
+    assert binding.initialization_row() == {
+        "model": "text-embedding-3-small",
+        "dimensions": 512,
+    }
+    assert (
+        FunctionBinding.from_json(
+            fixture("remote_function_binding.json")
+        ).initialization_row()
+        is None
+    )
+
+    signature = FunctionVersion.from_json(
+        json.dumps(job_result("remote_function_job.json"))
+    ).signature
+    assert signature.initialization == ()
+    assert "initialization" not in json.loads(signature.to_canonical_json())
+
+
 def test_function_literal_numeric_domain_matches_rust():
     with pytest.raises(ValueError, match="floating-point Function literals"):
         FunctionApplication.from_json(fixture("remote_function_application_float.json"))
@@ -334,8 +398,21 @@ class _FunctionDeclarationInner:
     def __init__(self):
         self.calls = []
 
-    async def add_function_columns(self, application_json, output_name):
-        self.calls.append((json.loads(application_json), output_name))
+    async def add_function_columns(
+        self,
+        application_json,
+        output_name,
+        auto_refresh_enabled,
+        auto_refresh_interval_seconds,
+    ):
+        self.calls.append(
+            (
+                json.loads(application_json),
+                output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        )
         return "declared"
 
 
@@ -356,14 +433,18 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
+    assert inner.calls[-1][2:] == (None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
-    result = await table.add_columns(bare)
+    result = await table.add_columns(
+        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+    )
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
+    assert inner.calls[-1][2:] == (False, 300)
 
 
 @pytest.mark.asyncio

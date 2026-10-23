@@ -29,8 +29,8 @@ use crate::index::Index;
 use crate::index::vector::{VectorIndex, suggested_num_sub_vectors};
 use crate::utils::{
     resolve_lance_fts_field_path, supported_bitmap_data_type, supported_btree_data_type,
-    supported_fm_data_type, supported_fts_data_type, supported_label_list_data_type,
-    supported_vector_data_type, supported_zonemap_data_type,
+    supported_fm_data_type, supported_label_list_data_type, supported_vector_data_type,
+    supported_zonemap_data_type, validate_fts_field,
 };
 
 use super::NativeTable;
@@ -160,6 +160,12 @@ impl NativeTable {
             builder = builder.name(name);
         }
         builder.await?;
+        // A writer already open was built before this index existed, so it has
+        // to pick it up here or a read needing it is refused until it reopens.
+        self.dataset
+            .shard_writer()
+            .refresh_maintained_indexes(&dataset)
+            .await;
         self.dataset.update(dataset);
         Ok(())
     }
@@ -286,7 +292,7 @@ impl NativeTable {
                 ))
             }
             Index::FTS(fts_opts) => {
-                Self::validate_index_type(field, "FTS", supported_fts_data_type)?;
+                validate_fts_field(field)?;
                 Ok(Box::new(fts_opts))
             }
             Index::IvfFlat(index) => {
@@ -2076,6 +2082,50 @@ mod tests {
         let index = index_configs.into_iter().next().unwrap();
         assert_eq!(index.index_type, crate::index::IndexType::LabelList);
         assert_eq!(index.columns, vec!["tags".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn test_list_indices_with_missing_fts_index_files() {
+        let tmp_dir = tempdir().unwrap();
+        let uri = tmp_dir.path().to_str().unwrap();
+        let conn = connect(uri).execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1, 2, 3]),
+            ("text", Utf8, ["alpha", "beta", "gamma"])
+        )
+        .unwrap();
+        let table = conn.create_table("t", batch).execute().await.unwrap();
+        table
+            .create_index(&["text"], Index::FTS(FtsIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        table
+            .create_index(&["id"], Index::BTree(BTreeIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+
+        let fts_uuid = table
+            .list_indices()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|index| index.name == "text_idx")
+            .and_then(|index| index.index_uuid)
+            .unwrap();
+        std::fs::remove_dir_all(tmp_dir.path().join("t.lance/_indices").join(fts_uuid)).unwrap();
+
+        // A new connection, so the index cache cannot serve the deleted files.
+        let conn = connect(uri).execute().await.unwrap();
+        let table = conn.open_table("t").execute().await.unwrap();
+        let mut indices = table.list_indices().await.unwrap();
+        indices.sort_by(|a, b| a.name.cmp(&b.name));
+        let names = indices.iter().map(|i| i.name.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, vec!["id_idx", "text_idx"]);
+        assert_eq!(indices[1].index_type, crate::index::IndexType::FTS);
+        assert_eq!(indices[1].index_details, None);
+        assert!(indices[0].index_details.is_some());
     }
 
     #[tokio::test]

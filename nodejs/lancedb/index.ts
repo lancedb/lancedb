@@ -26,6 +26,7 @@ export {
   MaterializedViewDefinition,
   MaterializedViewSelect,
 } from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -83,19 +84,22 @@ export {
 } from "./arrow";
 
 export { blob, isBlobField, BlobFile } from "./blob";
-export type { BlobOptions } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
-  ListTablesOptions,
   OpenTableOptions,
-  ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
-  ListNamespacesResponse,
-  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
@@ -114,6 +118,7 @@ export {
   VectorQuery,
   TakeQuery,
   AnalyzePlanDistributedMetrics,
+  BlobMode,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,
@@ -159,10 +164,10 @@ export {
   WriteProgress,
   FtsToken,
   TokenizeTableOptions,
-  LsmWriteSpec,
-  LsmStats,
-  BucketStats,
-  GenerationStats,
+  RTEWriteSpec,
+  RTEStats,
+  TableShardStats,
+  SsTableStats,
   MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
@@ -194,6 +199,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -410,10 +416,10 @@ export async function connect(
     throw new Error("uri is required");
   }
 
-  finalOptions = (finalOptions as ConnectionOptions) ?? {};
-  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>finalOptions).storageOptions,
-  );
+  finalOptions = {
+    ...finalOptions,
+    storageOptions: cleanseStorageOptions(finalOptions.storageOptions),
+  };
 
   // Create native header provider if one was provided
   let nativeProvider: NativeJsHeaderProvider | undefined;
@@ -620,11 +626,10 @@ export async function connectNamespace(
     properties = configOrProperties as Record<string, string>;
   }
 
-  const finalOptions: ConnectNamespaceOptions = (options ??
-    {}) as ConnectNamespaceOptions;
-  finalOptions.storageOptions = cleanseStorageOptions(
-    finalOptions.storageOptions,
-  );
+  const finalOptions: ConnectNamespaceOptions = {
+    ...options,
+    storageOptions: cleanseStorageOptions(options?.storageOptions),
+  };
 
   const nativeConn = await LanceDbConnection.newWithNamespace(
     implName,
@@ -637,6 +642,8 @@ export async function connectNamespace(
 export {
   Catalog,
   CatalogOptions,
-  ListDatabasesResponse,
+  DatabaseNames,
   connectCatalog,
 } from "./catalog";
+
+export { Listing, ListingOptions } from "./listing";

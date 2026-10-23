@@ -40,7 +40,12 @@ import {
 } from "apache-arrow";
 import { Buffers } from "apache-arrow/data";
 import { typedArrayToArrowType } from "./arrow_type";
-import { coerceBlobValue, isBlobField } from "./blob";
+import {
+  blobToRead,
+  coerceBlobValue,
+  isBlobField,
+  withBlobBytes,
+} from "./blob";
 import { type EmbeddingFunction } from "./embedding/embedding_function";
 import {
   EmbeddingFunctionConfig,
@@ -56,6 +61,7 @@ import {
 import { inferSchema } from "./schema";
 
 export * from "apache-arrow";
+export type { Data as ArrowData } from "apache-arrow";
 export type SchemaLike =
   | Schema
   | {
@@ -66,11 +72,20 @@ export type SchemaLike =
 export type FieldLike =
   | Field
   | {
-      type: string;
+      type: string | DataTypeLike;
       name: string;
       nullable: boolean;
       metadata?: Map<string, string>;
     };
+/**
+ * A `DataType` from any copy or version of apache-arrow.
+ *
+ * Arrow 21 brands its classes with `unique symbol` properties, so a type
+ * object from a second copy of the library no longer satisfies the `DataType`
+ * type of this one even though it is structurally identical. Inputs that only
+ * need to be sanitized accept this looser shape instead.
+ */
+export type DataTypeLike = DataType | { readonly typeId: number };
 
 /**
  * Create an Arrow field backed by LanceDB's JSON extension type.
@@ -440,6 +455,39 @@ export function makeArrowTable(
     );
   }
 
+  if (schema !== undefined) {
+    // Validate blob values up front and give every one the full
+    // storage shape, so inference sees the same struct whether a row
+    // passed bytes, a URI, or a partial struct.
+    data = mapBlobInputs(data, schema, (value, field, row, storageField) => {
+      if (value === undefined) {
+        return value;
+      }
+      try {
+        const normalized = coerceBlobValue(value, storageField);
+        if (
+          normalized === null ||
+          !(storageField.type instanceof Struct) ||
+          storageField.type.children.length === 2
+        ) {
+          return normalized;
+        }
+        // Keep even unused range children during schema inference. Otherwise
+        // creating a range-capable table with inline data would lose them.
+        return Object.fromEntries(
+          storageField.type.children.map((child) => [
+            child.name,
+            normalized[child.name as keyof typeof normalized] ?? null,
+          ]),
+        );
+      } catch (e) {
+        throw new Error(
+          `Invalid value for blob field ${field} at row ${row}: ${(e as Error).message}`,
+        );
+      }
+    });
+  }
+
   let schemaMetadata = schema?.metadata || new Map<string, string>();
   if (metadata !== undefined) {
     schemaMetadata = new Map([...schemaMetadata, ...metadata]);
@@ -501,6 +549,138 @@ function containsBlobField(field: Field): boolean {
   );
 }
 
+type BlobInputVisitor = (
+  value: unknown,
+  field: string,
+  row: number,
+  storageField: Field,
+) => unknown;
+
+/**
+ * Calls `visit` on every value that lands in a blob column of `schema`,
+ * including blobs nested in structs and lists, and replaces it with the
+ * result. Records and arrays are copied only where a value changed, so the
+ * caller's data is never mutated.
+ */
+function mapBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema: Schema,
+  visit: BlobInputVisitor,
+): Array<Record<string, unknown>> {
+  if (!schema.fields.some(containsBlobField)) {
+    return data;
+  }
+  return data.map((record, row) =>
+    isObject(record)
+      ? mapBlobFields(record, schema.fields, "", row, visit)
+      : record,
+  );
+}
+
+function mapBlobFields(
+  record: Record<string, unknown>,
+  fields: Field[],
+  prefix: string,
+  row: number,
+  visit: BlobInputVisitor,
+): Record<string, unknown> {
+  let out: Record<string, unknown> | undefined;
+  for (const field of fields) {
+    if (!containsBlobField(field) || !Object.hasOwn(record, field.name)) {
+      continue;
+    }
+    const value = record[field.name];
+    const mapped = mapBlobField(
+      value,
+      field,
+      `${prefix}${field.name}`,
+      row,
+      visit,
+    );
+    if (mapped !== value) {
+      out ??= { ...record };
+      out[field.name] = mapped;
+    }
+  }
+  return out ?? record;
+}
+
+function mapBlobField(
+  value: unknown,
+  field: Field,
+  label: string,
+  row: number,
+  visit: BlobInputVisitor,
+): unknown {
+  if (isBlobField(field)) {
+    return visit(value, label, row, field);
+  }
+  if (field.type instanceof Struct && isObject(value)) {
+    return mapBlobFields(value, field.type.children, `${label}.`, row, visit);
+  }
+  if (isList(field.type) && Array.isArray(value)) {
+    const child = field.type.children[0];
+    let out: unknown[] | undefined;
+    for (const [index, element] of value.entries()) {
+      const mapped = mapBlobField(
+        element,
+        child,
+        `${label}[${index}]`,
+        row,
+        visit,
+      );
+      if (mapped !== element) {
+        out ??= [...value];
+        out[index] = mapped;
+      }
+    }
+    return out ?? value;
+  }
+  return value;
+}
+
+/**
+ * Reads `Blob` / `File` values in the blob columns of `schema` into bytes so
+ * the synchronous conversion in {@link makeArrowTable} can accept them.
+ * Returns `data` itself when there is nothing to read.
+ */
+export async function resolveBlobInputs(
+  data: Array<Record<string, unknown>>,
+  schema?: SchemaLike,
+): Promise<Array<Record<string, unknown>>> {
+  if (schema === undefined || schema === null) {
+    return data;
+  }
+  const sanitized = sanitizeSchema(schema);
+  // Keyed by the Blob itself, so rows sharing one Blob (bare or as
+  // `{ data }`) read it once and share the bytes.
+  const reads = new Map<Blob, Promise<Uint8Array>>();
+  mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    if (source !== undefined && !reads.has(source)) {
+      reads.set(
+        source,
+        source.arrayBuffer().then((buffer) => new Uint8Array(buffer)),
+      );
+    }
+    return value;
+  });
+  if (reads.size === 0) {
+    return data;
+  }
+  const bytes = new Map(
+    await Promise.all(
+      [...reads].map(async ([source, read]) => [source, await read] as const),
+    ),
+  );
+  return mapBlobInputs(data, sanitized, (value) => {
+    const source = blobToRead(value);
+    return source === undefined
+      ? value
+      : withBlobBytes(value, bytes.get(source) as Uint8Array);
+  });
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return (
     typeof value === "object" &&
@@ -538,11 +718,11 @@ function transposeData(
   const valuesPath = [...path, field.name];
   if (isBlobField(field) && field.type instanceof Struct) {
     const blobRows = data.map((datum) =>
-      coerceBlobValue(valueAtPath(datum, valuesPath)),
+      coerceBlobValue(valueAtPath(datum, valuesPath), field),
     );
     const childVectors = field.type.children.map((child) => {
       const values = blobRows.map((row) =>
-        row == null ? null : (row[child.name as "data" | "uri"] ?? null),
+        row == null ? null : (row[child.name as keyof typeof row] ?? null),
       );
       return makeVector(values, child.type, undefined, child.nullable);
     });
@@ -1004,6 +1184,11 @@ export async function convertToTable(
     );
   }
 
+  processedData = await resolveBlobInputs(
+    processedData,
+    makeTableOptions?.schema,
+  );
+
   const table = makeArrowTable(processedData, makeTableOptions);
   return await applyEmbeddings(table, embeddings, makeTableOptions?.schema);
 }
@@ -1059,6 +1244,71 @@ export async function fromRecordsToStreamBuffer(
   return Buffer.from(await writer.toUint8Array());
 }
 
+// `Type.Utf8View` / `Type.BinaryView` as numbers: the enum members only exist
+// in Arrow 21+, and this module compiles against every supported release.
+const UTF8_VIEW_TYPE_ID = 24;
+const BINARY_VIEW_TYPE_ID = 23;
+
+/**
+ * Copy a Utf8View / BinaryView `Data` into a single `Data` of `type`.
+ */
+function materializeViewData(child: ArrowData, type: DataType): ArrowData {
+  const builder = makeBuilder({ type, nullValues: [null] });
+  for (const value of new Vector([child])) {
+    builder.append(value);
+  }
+  return builder.finish().flush();
+}
+
+/**
+ * Rebuild any top-level Utf8View / BinaryView column as Utf8 / Binary.
+ *
+ * Lance stores the view types as their offset-based equivalents anyway, so
+ * nothing is lost. Doing it here also sidesteps an Arrow JS 21 bug: its IPC
+ * writer emits a truncated views buffer for a *sliced* view array, which the
+ * Rust reader rejects with "Need at least N bytes in buffers[0]".
+ *
+ * The record batches are rebuilt positionally rather than through a
+ * `Record<string, Vector>`: JavaScript enumerates integer-like keys first, so
+ * a field named e.g. `"1"` would otherwise be paired with the wrong column.
+ *
+ * Tables without view columns are returned as-is.
+ */
+function materializeViewColumns(table: ArrowTable): ArrowTable {
+  const replacements = new Map<number, DataType>();
+  table.schema.fields.forEach((field, i) => {
+    if (field.type.typeId === UTF8_VIEW_TYPE_ID) {
+      replacements.set(i, new Utf8());
+    } else if (field.type.typeId === BINARY_VIEW_TYPE_ID) {
+      replacements.set(i, new Binary());
+    }
+  });
+  if (replacements.size === 0) {
+    return table;
+  }
+  const fields = table.schema.fields.map((field, i) => {
+    const type = replacements.get(i);
+    return type === undefined
+      ? field
+      : new Field(field.name, type, field.nullable, field.metadata);
+  });
+  const schema = new Schema(fields, table.schema.metadata);
+  const batches = table.batches.map((batch) => {
+    const children = batch.data.children.map((child, i) => {
+      const type = replacements.get(i);
+      return type === undefined ? child : materializeViewData(child, type);
+    });
+    const data = makeData({
+      type: new Struct(fields),
+      length: batch.numRows,
+      nullCount: 0,
+      children,
+    });
+    return new RecordBatch(schema, data);
+  });
+  return new ArrowTable(schema, batches);
+}
+
 /**
  * Serialize an Arrow Table into a buffer using the Arrow IPC File serialization
  *
@@ -1075,7 +1325,9 @@ export async function fromTableToBuffer(
   if (schema !== undefined && schema !== null) {
     schema = sanitizeSchema(schema);
   }
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   validateBlobSchema(tableWithEmbeddings.schema);
   const writer = RecordBatchFileWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
@@ -1146,7 +1398,8 @@ export async function fromRecordBatchToBuffer(
 export async function fromRecordBatchToStreamBuffer(
   batch: RecordBatch,
 ): Promise<Buffer> {
-  const writer = RecordBatchStreamWriter.writeAll([batch]);
+  const table = materializeViewColumns(new ArrowTable([batch]));
+  const writer = RecordBatchStreamWriter.writeAll(table);
   return Buffer.from(await writer.toUint8Array());
 }
 
@@ -1163,7 +1416,9 @@ export async function fromTableToStreamBuffer(
   embeddings?: EmbeddingFunctionConfig,
   schema?: SchemaLike,
 ): Promise<Buffer> {
-  const tableWithEmbeddings = await applyEmbeddings(table, embeddings, schema);
+  const tableWithEmbeddings = materializeViewColumns(
+    await applyEmbeddings(table, embeddings, schema),
+  );
   const writer = RecordBatchStreamWriter.writeAll(tableWithEmbeddings);
   return Buffer.from(await writer.toUint8Array());
 }
@@ -1290,7 +1545,7 @@ export function ensureNestedFieldsExist(
     for (const field of schema.fields) {
       if (field.name in row) {
         if (
-          field.type.constructor.name === "Struct" &&
+          isPlainStructField(field) &&
           row[field.name] !== null &&
           row[field.name] !== undefined
         ) {
@@ -1307,15 +1562,23 @@ export function ensureNestedFieldsExist(
       } else {
         // Keep a missing struct valid while filling each of its children with
         // null. This is distinct from an explicitly null struct value.
-        completeRow[field.name] =
-          field.type.constructor.name === "Struct"
-            ? ensureStructFieldsExist({}, field.type as Struct)
-            : null;
+        completeRow[field.name] = isPlainStructField(field)
+          ? ensureStructFieldsExist({}, field.type as Struct)
+          : null;
       }
     }
 
     return completeRow;
   });
+}
+
+/**
+ * Blob fields are Arrow structs, but their values are bytes, URIs, or
+ * `{ data } | { uri }` inputs that the blob coercion in `makeArrowTable`
+ * handles, so they must not be filled in like ordinary structs.
+ */
+function isPlainStructField(field: Field): boolean {
+  return field.type.constructor.name === "Struct" && !isBlobField(field);
 }
 
 /**
@@ -1331,7 +1594,7 @@ function ensureStructFieldsExist(
   for (const childField of structType.children) {
     if (childField.name in data) {
       if (
-        childField.type.constructor.name === "Struct" &&
+        isPlainStructField(childField) &&
         data[childField.name] !== null &&
         data[childField.name] !== undefined
       ) {
@@ -1347,10 +1610,9 @@ function ensureStructFieldsExist(
     } else {
       // Keep a missing struct valid while filling each of its children with
       // null. This is distinct from an explicitly null struct value.
-      completeStruct[childField.name] =
-        childField.type.constructor.name === "Struct"
-          ? ensureStructFieldsExist({}, childField.type as Struct)
-          : null;
+      completeStruct[childField.name] = isPlainStructField(childField)
+        ? ensureStructFieldsExist({}, childField.type as Struct)
+        : null;
     }
   }
 

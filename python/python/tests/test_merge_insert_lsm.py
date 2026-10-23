@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Tests for the MemWAL LSM ``merge_insert`` dispatch."""
+"""Tests for the RTE LSM ``merge_insert`` dispatch."""
 
 from datetime import timedelta
 
 import lancedb
 import pyarrow as pa
 import pytest
-from lancedb._lancedb import LsmWriteSpec
+from lancedb._lancedb import RTEWriteSpec
 from lancedb.index import FTS, IvfPq
 
 SCHEMA = pa.schema(
@@ -49,12 +49,12 @@ def _region_reader(rows):
 
 
 def _bucket_table(tmp_path):
-    """A table with ``id`` as the primary key and a single-bucket LSM spec."""
+    """A table with ``id`` as the primary key and a single-bucket RTE spec."""
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
     # num_buckets = 1: every row routes to the single bucket.
-    table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 1))
+    table.enable_rte(RTEWriteSpec.bucket("id", 1))
     return table
 
 
@@ -67,7 +67,7 @@ def test_lsm_merge_insert_bucket(tmp_path):
         .when_not_matched_insert_all()
         .execute(_reader([3, 4, 5]))
     )
-    # LSM path: rows go to the MemWAL, so only num_rows is populated.
+    # LSM path: rows go to the RTE, so only num_rows is populated.
     assert result.num_rows == 3
     assert result.version == 0
     assert result.num_inserted_rows == 0
@@ -78,7 +78,7 @@ def test_lsm_merge_insert_unsharded(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
     result = (
         table.merge_insert("id")
         .when_matched_update_all()
@@ -92,7 +92,7 @@ def test_lsm_merge_insert_identity(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _region_reader([(1, "us"), (2, "us")]))
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.identity("region"))
+    table.enable_rte(RTEWriteSpec.identity("region"))
     # All rows share one identity value, so they route to one shard.
     result = (
         table.merge_insert([])
@@ -103,31 +103,31 @@ def test_lsm_merge_insert_identity(tmp_path):
     assert result.num_rows == 2
 
 
-def test_lsm_merge_insert_use_lsm_false(tmp_path):
+def test_lsm_merge_insert_use_rte_false(tmp_path):
     table = _bucket_table(tmp_path)  # rows id = 1, 2, 3
-    # use_lsm(False) opts out: the standard path runs and commits even with a spec.
+    # use_rte(False) opts out: the standard path runs and commits even with a spec.
     result = (
         table.merge_insert("id")
         .when_not_matched_insert_all()
-        .use_lsm(False)
+        .use_rte(False)
         .execute(_reader([3, 4, 5]))
     )
     assert result.num_inserted_rows == 2
     assert table.count_rows() == 5
 
 
-def test_lsm_merge_insert_use_lsm_true_without_spec_errors(tmp_path):
-    # A table with a primary key but no LSM write spec installed.
+def test_lsm_merge_insert_use_rte_true_without_spec_errors(tmp_path):
+    # A table with a primary key but no RTE write spec installed.
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    # use_lsm(True) demands MemWAL routing; without a spec it errors.
-    with pytest.raises(Exception, match="use_lsm"):
+    # use_rte(True) demands RTE routing; without a spec it errors.
+    with pytest.raises(Exception, match="use_rte"):
         (
             table.merge_insert("id")
             .when_matched_update_all()
             .when_not_matched_insert_all()
-            .use_lsm(True)
+            .use_rte(True)
             .execute(_reader([3, 4, 5]))
         )
 
@@ -145,7 +145,7 @@ def test_lsm_merge_insert_validate_single_shard_off(tmp_path):
 
 
 def test_lsm_merge_insert_no_spec_uses_standard_path(tmp_path):
-    # A table with a primary key but no LSM write spec installed.
+    # A table with a primary key but no RTE write spec installed.
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
@@ -186,7 +186,7 @@ def test_lsm_close_writers(tmp_path):
         .when_not_matched_insert_all()
         .execute(_reader([7, 8]))
     )
-    table.close_lsm_writers()
+    table.close_rte_writers()
     # The writer reopens lazily on the next merge_insert.
     result = (
         table.merge_insert([])
@@ -204,14 +204,14 @@ async def test_async_lsm_merge_insert(tmp_path):
     )
     table = await db.create_table("t", _reader([1, 2, 3]))
     await table.set_unenforced_primary_key("id")
-    await table.set_lsm_write_spec(LsmWriteSpec.bucket("id", 1))
+    await table.enable_rte(RTEWriteSpec.bucket("id", 1))
 
     builder = (
         table.merge_insert([]).when_matched_update_all().when_not_matched_insert_all()
     )
     result = await builder.execute(_reader([3, 4, 5]))
     assert result.num_rows == 3
-    await table.close_lsm_writers()
+    await table.close_rte_writers()
 
 
 def _lsm_upsert(table, ids):
@@ -228,7 +228,7 @@ def test_lsm_read_sees_active_memtable(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))  # base ids 1,2,3
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
 
     _lsm_upsert(table, [4, 5])  # active memtable only, not committed to base
 
@@ -236,8 +236,8 @@ def test_lsm_read_sees_active_memtable(tmp_path):
     lsm = table.search().to_arrow()
     assert sorted(lsm["id"].to_pylist()) == [1, 2, 3, 4, 5]
 
-    # use_lsm(False) bypasses the MemWAL and reads the base table only.
-    base_only = table.search().use_lsm(False).to_arrow()
+    # use_rte(False) bypasses the RTE and reads the base table only.
+    base_only = table.search().use_rte(False).to_arrow()
     assert sorted(base_only["id"].to_pylist()) == [1, 2, 3]
 
 
@@ -245,7 +245,7 @@ def test_lsm_read_dedup_newest_wins(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))  # id 2 -> value 1
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
 
     _lsm_upsert(table, [2, 3, 4])  # ids 2,3,4 -> values 0,1,2
 
@@ -258,31 +258,31 @@ def test_lsm_read_dedup_newest_wins(tmp_path):
 def test_lsm_read_without_spec_reads_base(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
-    table.set_unenforced_primary_key("id")  # no LSM write spec
+    table.set_unenforced_primary_key("id")  # no RTE write spec
 
-    # No spec: default read and use_lsm(False) both read the base table, no error.
+    # No spec: default read and use_rte(False) both read the base table, no error.
     assert sorted(table.search().to_arrow()["id"].to_pylist()) == [1, 2, 3]
-    assert sorted(table.search().use_lsm(False).to_arrow()["id"].to_pylist()) == [
+    assert sorted(table.search().use_rte(False).to_arrow()["id"].to_pylist()) == [
         1,
         2,
         3,
     ]
 
 
-def test_lsm_read_unsupported_shape_errors_without_use_lsm_false(tmp_path):
+def test_lsm_read_unsupported_shape_errors_without_use_rte_false(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
     _lsm_upsert(table, [4])
 
-    # with_row_id is unsupported by the LSM scanner; on a MemWAL table the default
+    # with_row_id is unsupported by the LSM scanner; on an RTE table the default
     # (auto-routed) read hard-errors instead of silently reading a stale base.
     with pytest.raises(Exception):
         table.search().with_row_id(True).to_arrow()
 
-    # use_lsm(False) is the escape hatch: it reads the base table only.
-    base = table.search().with_row_id(True).use_lsm(False).to_arrow()
+    # use_rte(False) is the escape hatch: it reads the base table only.
+    base = table.search().with_row_id(True).use_rte(False).to_arrow()
     assert sorted(base["id"].to_pylist()) == [1, 2, 3]
 
 
@@ -293,7 +293,7 @@ async def test_async_lsm_read(tmp_path):
     )
     table = await db.create_table("t", _reader([1, 2, 3]))
     await table.set_unenforced_primary_key("id")
-    await table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    await table.enable_rte(RTEWriteSpec.unsharded())
 
     builder = (
         table.merge_insert([]).when_matched_update_all().when_not_matched_insert_all()
@@ -331,7 +331,7 @@ def _vector_reader(rows):
 def _vector_table(tmp_path):
     """Base table whose vector column is indexed so its rows are visible to the LSM
     vector scanner (the base arm uses ``fast_search`` — indexed data only), plus an
-    unsharded LSM spec that maintains that index for the memtable.
+    unsharded RTE spec that maintains that index for the memtable.
 
     Rows 1,2 are category ``a``, row 3 is ``b``, and 4..60 are filler ``c`` that
     give the tiny IVF index enough data to train.
@@ -353,9 +353,7 @@ def _vector_table(tmp_path):
         "vector", config=IvfPq(num_partitions=1, num_sub_vectors=2, num_bits=4)
     )
     index_name = table.list_indices()[0].name
-    table.set_lsm_write_spec(
-        LsmWriteSpec.unsharded().with_maintained_indexes([index_name])
-    )
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([index_name]))
     return table
 
 
@@ -379,9 +377,9 @@ def test_lsm_read_vector_sees_memtable(tmp_path):
     assert {1, 2, 3} <= ids  # indexed base rows
     assert 1000 in ids  # in-flight memtable row
 
-    # use_lsm(False) bypasses the MemWAL, so the in-flight row is not visible.
+    # use_rte(False) bypasses the RTE, so the in-flight row is not visible.
     base_ids = set(
-        table.search(query).use_lsm(False).limit(100).to_arrow()["id"].to_pylist()
+        table.search(query).use_rte(False).limit(100).to_arrow()["id"].to_pylist()
     )
     assert {1, 2, 3} <= base_ids
     assert 1000 not in base_ids
@@ -453,9 +451,7 @@ def test_lsm_read_fts_sees_memtable(tmp_path):
     # Native FTS index (tantivy is not compatible with the LSM memtable index).
     table.create_index("text", config=FTS())
     index_name = table.list_indices()[0].name
-    table.set_lsm_write_spec(
-        LsmWriteSpec.unsharded().with_maintained_indexes([index_name])
-    )
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([index_name]))
 
     # in-flight doc 4 lands in the memtable's maintained FTS index.
     (
@@ -498,8 +494,8 @@ def test_lsm_read_vector_unsupported_knobs_error(tmp_path):
     with pytest.raises(Exception, match="use_index"):
         table.search(query).bypass_vector_index().to_arrow()
 
-    # use_lsm(False) is the escape hatch: the base-only standard path honors them.
-    base = table.search(query).distance_range(0.0, 100.0).use_lsm(False).to_arrow()
+    # use_rte(False) is the escape hatch: the base-only standard path honors them.
+    base = table.search(query).distance_range(0.0, 100.0).use_rte(False).to_arrow()
     assert 1000 not in set(base["id"].to_pylist())
 
 
@@ -544,7 +540,7 @@ def test_lsm_read_fts_unmaintained_index_errors(tmp_path):
     table.create_index("text", config=FTS())
     # No maintained indexes: the active memtable FTS arm cannot serve un-compacted
     # docs, so the search would silently omit them — reject instead.
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([]))
     with pytest.raises(Exception, match="maintained"):
         table.search("fox", query_type="fts", fts_columns="text").to_arrow()
 
@@ -553,7 +549,7 @@ def test_lsm_read_time_travel_errors(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
     pinned = table.version
     table.add(_reader([4, 5]))  # standard add commits a newer version
     table.checkout(pinned)  # detached head at the historical version
@@ -562,8 +558,8 @@ def test_lsm_read_time_travel_errors(tmp_path):
     # historical version is rejected.
     with pytest.raises(Exception, match="time-travel"):
         table.search().to_arrow()
-    # use_lsm(False) reads the base table at the pinned version.
-    base = table.search().use_lsm(False).to_arrow()
+    # use_rte(False) reads the base table at the pinned version.
+    base = table.search().use_rte(False).to_arrow()
     assert sorted(base["id"].to_pylist()) == [1, 2, 3]
 
 
@@ -571,14 +567,14 @@ def test_lsm_read_take_row_ids_errors(tmp_path):
     db = lancedb.connect(tmp_path, read_consistency_interval=timedelta(seconds=0))
     table = db.create_table("t", _reader([1, 2, 3]))
     table.set_unenforced_primary_key("id")
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded())
+    table.enable_rte(RTEWriteSpec.unsharded())
     _lsm_upsert(table, [4])
     # take-by-row-id auto-routes through the LSM scanner, which has no stable _rowid,
     # so it hard-errors instead of failing with an opaque column-not-found error.
     with pytest.raises(Exception, match="row id"):
         table.take_row_ids([0, 1]).to_arrow()
-    # use_lsm(False) is the escape hatch: it reads the base table.
-    base = table.take_row_ids([0, 1]).use_lsm(False).to_arrow()
+    # use_rte(False) is the escape hatch: it reads the base table.
+    base = table.take_row_ids([0, 1]).use_rte(False).to_arrow()
     assert base.num_rows == 2
 
 
@@ -588,9 +584,7 @@ def test_lsm_read_fts_postfilter_errors(tmp_path):
     table.set_unenforced_primary_key("id")
     table.create_index("text", config=FTS())
     index_name = table.list_indices()[0].name
-    table.set_lsm_write_spec(
-        LsmWriteSpec.unsharded().with_maintained_indexes([index_name])
-    )
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([index_name]))
     # The LSM scanner always prefilters; postfilter on FTS changes result semantics,
     # so it hard-errors (previously only the vector arm rejected it).
     with pytest.raises(Exception, match="postfilter"):
@@ -608,9 +602,7 @@ def test_lsm_read_fts_multiple_same_type_indexes_errors(tmp_path):
     table.set_unenforced_primary_key("id")
     table.create_index("text", config=FTS(), name="fts_a")
     table.create_index("text", config=FTS(), name="fts_b", replace=False)
-    table.set_lsm_write_spec(
-        LsmWriteSpec.unsharded().with_maintained_indexes(["fts_a"])
-    )
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes(["fts_a"]))
     # Two FTS indexes on the column: the base planner's chosen index is ambiguous, so
     # the scanner can't pick a catch-up watermark and rejects rather than risk
     # dropping rows the actually-used index has not caught up to.
@@ -631,7 +623,7 @@ def test_lsm_read_vector_unmaintained_index_errors(tmp_path):
     )
     # Spec with NO maintained indexes: the base vector index's catch-up is untracked,
     # so the scanner rejects rather than risk dropping compacted-but-unindexed rows.
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([]))
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([]))
     with pytest.raises(Exception, match="maintained"):
         table.search([1.0] * VECTOR_DIM).to_arrow()
 
@@ -644,7 +636,7 @@ def test_lsm_read_fts_optimized_index_not_rejected(tmp_path):
     table.add(_fts_reader([(i, "lazy fox") for i in range(6, 11)]))
     table.optimize()  # may split the FTS index into multiple physical segments
     name = table.list_indices()[0].name
-    table.set_lsm_write_spec(LsmWriteSpec.unsharded().with_maintained_indexes([name]))
+    table.enable_rte(RTEWriteSpec.unsharded().with_maintained_indexes([name]))
     # Multiple physical segments of one logical index must not be miscounted as
     # multiple indexes and rejected.
     ids = set(

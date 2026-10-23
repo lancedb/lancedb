@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use arrow_array::cast::AsArray;
 use arrow_array::{Array, FixedSizeListArray, UInt32Array};
 use arrow_buffer::NullBuffer;
-use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema, SchemaRef};
+use arrow_schema::{DataType, Schema as ArrowSchema, SchemaRef};
 use datafusion::catalog::default_table_source::provider_as_source;
 use datafusion::datasource::empty::EmptyTable;
 use datafusion::execution::FunctionRegistry;
@@ -36,7 +36,6 @@ use datafusion_sql::sqlparser::parser::Parser;
 use futures::StreamExt;
 use lance::Dataset;
 use lance::index::{DatasetIndexExt, DatasetIndexInternalExt};
-use lance_core::ROW_ID;
 use lance_datafusion::exec::SessionContextExt;
 use lance_index::metrics::NoOpMetricsCollector;
 use lance_index::vector::ivf::{IvfTransformer, new_ivf_transformer};
@@ -46,8 +45,7 @@ use uuid::Uuid;
 
 use super::refresh::to_view_batch;
 use super::{
-    MaterializedViewDefinition, Planned, SOURCE_ROW_ID_COLUMN, ViewProjection, ensure_immutable,
-    plan_filter, query, without_declarations,
+    MaterializedViewDefinition, Planned, ViewProjection, plan_filter, query, without_declarations,
 };
 use crate::{Error, Result};
 
@@ -61,11 +59,11 @@ pub const IVF_PARTITION: &str = "ivf_partition";
 
 /// The index `ivf_partition(column)` assigns by.
 #[derive(Debug, Clone)]
-struct IvfBinding {
+pub(super) struct IvfBinding {
     index: Uuid,
-    transformer: Arc<IvfTransformer>,
+    pub(super) transformer: Arc<IvfTransformer>,
     /// A cosine index assigns L2 over unit vectors, as lance's index path does.
-    normalize: bool,
+    pub(super) normalize: bool,
 }
 
 /// `bindings` maps a source column to its index; planning runs unbound.
@@ -73,6 +71,26 @@ struct IvfBinding {
 struct IvfPartition {
     signature: Signature,
     bindings: HashMap<String, IvfBinding>,
+}
+
+impl IvfBinding {
+    /// The partition of each vector, NULL where there is none: a null vector,
+    /// or one the assigner could not place (a zero vector under cosine). A
+    /// NULL bucket is honest, membership in bucket 0 is not.
+    pub(super) fn assign(&self, vectors: &FixedSizeListArray) -> lance_core::Result<UInt32Array> {
+        let normalized;
+        let vectors = if self.normalize {
+            normalized = normalize_fsl(vectors)?;
+            &normalized
+        } else {
+            vectors
+        };
+        let partitions = self.transformer.compute_partitions(vectors)?;
+        Ok(UInt32Array::new(
+            partitions.values().clone(),
+            NullBuffer::union(vectors.nulls(), partitions.nulls()),
+        ))
+    }
 }
 
 impl PartialEq for IvfPartition {
@@ -132,31 +150,14 @@ impl ScalarUDFImpl for IvfPartition {
             return datafusion_common::exec_err!("{IVF_PARTITION}({column}) has no index bound");
         };
         let vectors = args.args[0].to_array(args.number_rows)?;
-        let vectors = vectors.as_fixed_size_list();
-        let normalized;
-        let vectors = if binding.normalize {
-            normalized =
-                normalize_fsl(vectors).map_err(|e| DataFusionError::External(Box::new(e)))?;
-            &normalized
-        } else {
-            vectors
-        };
         let partitions = binding
-            .transformer
-            .compute_partitions(vectors)
+            .assign(vectors.as_fixed_size_list())
             .map_err(|e| DataFusionError::External(Box::new(e)))?;
-        // A null vector falls in no partition, and neither does one the
-        // assigner could not place (a zero vector under cosine): a NULL bucket
-        // is honest, membership in bucket 0 is not.
-        let partitions = UInt32Array::new(
-            partitions.values().clone(),
-            NullBuffer::union(vectors.nulls(), partitions.nulls()),
-        );
         Ok(ColumnarValue::Array(Arc::new(partitions)))
     }
 }
 
-fn session(bindings: HashMap<String, IvfBinding>) -> SessionState {
+pub(super) fn session(bindings: HashMap<String, IvfBinding>) -> SessionState {
     let mut state = SessionStateBuilder::new().with_default_features().build();
     let ivf = IvfPartition {
         signature: Signature::any(1, Volatility::Immutable),
@@ -210,12 +211,17 @@ pub(super) async fn check(source: &Dataset, definition: &MaterializedViewDefinit
 
 /// Bind every `ivf_partition(column)` in `definition` to the IVF index on
 /// that column of `source`.
-async fn bind(
+pub(super) async fn bind(
     source: &Dataset,
     definition: &MaterializedViewDefinition,
 ) -> Result<HashMap<String, IvfBinding>> {
     let schema = Arc::new(ArrowSchema::from(source.schema()));
-    let planned = logical_plan(&session(HashMap::new()), empty_source(&schema), definition)?;
+    let planned = logical_plan(
+        &session(HashMap::new()),
+        empty_source(&schema),
+        definition,
+        false,
+    )?;
     let mut bindings = HashMap::new();
     for column in ivf_columns(&planned)? {
         bindings.insert(column.clone(), bind_column(source, &column).await?);
@@ -304,25 +310,25 @@ async fn bind_column(source: &Dataset, column: &str) -> Result<IvfBinding> {
     })
 }
 
-fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
-    let mut fields = source_schema.fields().to_vec();
-    fields.push(Arc::new(ArrowField::new(ROW_ID, DataType::UInt64, false)));
-    provider_as_source(Arc::new(EmptyTable::new(Arc::new(ArrowSchema::new(
-        fields,
-    )))))
+pub(super) fn empty_source(source_schema: &SchemaRef) -> Arc<dyn TableSource> {
+    provider_as_source(Arc::new(EmptyTable::new(source_schema.clone())))
 }
 
-/// The query DataFusion runs: the view's projections plus the group's
-/// smallest source row id, which stands as the row's provenance. The filter
-/// is not here; the lance scan applies it, as for any other view.
-fn sql(definition: &MaterializedViewDefinition) -> String {
+/// The query DataFusion runs. `filtered` puts the view's predicate in the
+/// query for a caller whose rows did not come from a Lance scan that already
+/// applied it.
+fn sql(definition: &MaterializedViewDefinition, filtered: bool) -> String {
     let items: Vec<String> = definition
         .projections
         .iter()
         .map(|p| format!("{} AS {}", p.expression, query::ident_sql(&p.output)))
         .collect();
+    let predicate = match (filtered, &definition.filter) {
+        (true, Some(filter)) => format!(" WHERE {filter}"),
+        _ => String::new(),
+    };
     format!(
-        "SELECT {}, min({ROW_ID}) AS {ROW_ID} FROM {SOURCE} GROUP BY {}",
+        "SELECT {} FROM {SOURCE}{predicate} GROUP BY {}",
         items.join(", "),
         definition.group_by.join(", ")
     )
@@ -383,15 +389,16 @@ impl ContextProvider for Provider<'_> {
     }
 }
 
-fn logical_plan(
+pub(super) fn logical_plan(
     state: &SessionState,
     source: Arc<dyn TableSource>,
     definition: &MaterializedViewDefinition,
+    filtered: bool,
 ) -> Result<LogicalPlan> {
     let invalid = |e: &dyn std::fmt::Display| Error::InvalidInput {
         message: format!("invalid grouped view: {e}"),
     };
-    let statement = Parser::parse_sql(&GenericDialect {}, &sql(definition))
+    let statement = Parser::parse_sql(&GenericDialect {}, &sql(definition, filtered))
         .map_err(|e| invalid(&e))?
         .pop()
         .ok_or_else(|| invalid(&"empty query"))?;
@@ -414,11 +421,6 @@ pub(super) fn plan(
     };
     let mut projections: Vec<ViewProjection> = Vec::with_capacity(definition.projections.len());
     for p in &definition.projections {
-        if p.output == SOURCE_ROW_ID_COLUMN || p.output == ROW_ID {
-            return Err(Error::InvalidInput {
-                message: format!("view column name '{}' is reserved", p.output),
-            });
-        }
         if projections.iter().any(|seen| seen.output == p.output) {
             return Err(Error::ColumnAlreadyExists {
                 name: p.output.clone(),
@@ -450,6 +452,7 @@ pub(super) fn plan(
         &session(HashMap::new()),
         empty_source(&source_schema),
         &definition,
+        false,
     )?;
     ivf_columns(&planned)?;
 
@@ -463,14 +466,11 @@ pub(super) fn plan(
             message: format!("invalid grouped view: {e}"),
         })?;
     for expr in &exprs {
-        ensure_immutable(expr, |message| Error::InvalidInput {
-            message: format!("invalid grouped view: {message}"),
-        })?;
         inputs.extend(
             expr.column_refs()
                 .into_iter()
                 .map(|c| c.name.clone())
-                .filter(|name| name != ROW_ID && source_schema.field_with_name(name).is_ok()),
+                .filter(|name| source_schema.field_with_name(name).is_ok()),
         );
     }
     inputs.sort();
@@ -480,7 +480,6 @@ pub(super) fn plan(
         .schema()
         .fields()
         .iter()
-        .filter(|f| f.name() != ROW_ID)
         .map(|f| without_declarations(f))
         .collect();
     Ok(Planned {
@@ -500,7 +499,6 @@ pub(super) async fn stream(
     rows_written: Arc<AtomicU64>,
 ) -> Result<SendableRecordBatchStream> {
     let mut scanner = source.scan();
-    scanner.with_row_id();
     if let Some(filter) = &definition.filter {
         scanner.filter(filter)?;
     }
@@ -510,7 +508,7 @@ pub(super) async fn stream(
     let state = session(bind(source, definition).await?);
     let ctx = SessionContext::new_with_state(state.clone());
     let source = ctx.read_one_shot(scan)?.into_view();
-    let planned = logical_plan(&state, provider_as_source(source), definition)?;
+    let planned = logical_plan(&state, provider_as_source(source), definition, false)?;
     let groups = ctx
         .execute_logical_plan(planned)
         .await?

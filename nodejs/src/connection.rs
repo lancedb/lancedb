@@ -16,8 +16,7 @@ use crate::table::Table;
 use lancedb::connection::{ConnectBuilder, Connection as LanceDBConnection, connect_namespace};
 
 use lance_namespace::models::{
-    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
-    ListTablesRequest,
+    CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest,
 };
 use lancedb::ipc::{ipc_file_to_batches, ipc_file_to_schema};
 
@@ -32,18 +31,6 @@ pub struct DescribeNamespaceResponse {
 }
 
 #[napi(object)]
-pub struct ListNamespacesResponse {
-    pub namespaces: Vec<String>,
-    pub page_token: Option<String>,
-}
-
-#[napi(object)]
-pub struct ListTablesResponse {
-    pub tables: Vec<String>,
-    pub page_token: Option<String>,
-}
-
-#[napi(object)]
 pub struct CreateNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
     pub transaction_id: Option<String>,
@@ -53,6 +40,32 @@ pub struct CreateNamespaceResponse {
 pub struct DropNamespaceResponse {
     pub properties: Option<HashMap<String, String>>,
     pub transaction_id: Option<Vec<String>>,
+}
+
+/// What a database records about one view.
+#[napi(object)]
+pub struct ViewDescription {
+    pub name: String,
+    pub namespace_path: Vec<String>,
+    pub query: String,
+    pub default_database: String,
+    pub default_namespace_path: Vec<String>,
+    /// The view's schema as an empty Arrow IPC file, the way a table reports
+    /// its own.
+    pub schema: Buffer,
+}
+
+impl ViewDescription {
+    fn from_inner(view: lancedb::view::ViewDescription) -> napi::Result<Self> {
+        Ok(Self {
+            name: view.name,
+            namespace_path: view.namespace_path,
+            query: view.query,
+            default_database: view.default_database,
+            default_namespace_path: view.default_namespace_path,
+            schema: crate::util::schema_to_buffer(&view.schema)?,
+        })
+    }
 }
 
 impl Connection {
@@ -213,31 +226,20 @@ impl Connection {
         op.execute().await.default_error()
     }
 
-    /// List a page of tables in the database.
+    /// Lazily list tables in the database.
     #[napi(catch_unwind)]
-    pub async fn list_tables(
+    pub fn list_tables(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListTablesResponse> {
-        let request = ListTablesRequest {
-            // The root namespace is an empty path, not an absent one: a namespace-backed
-            // database rejects a request that names no namespace.
-            id: Some(namespace_path.unwrap_or_default()),
-            page_token,
-            limit: limit.map(|limit| i32::try_from(limit).unwrap_or(i32::MAX)),
-            ..Default::default()
-        };
-        let response = self
-            .get_inner()?
-            .list_tables(request)
-            .await
-            .default_error()?;
-        Ok(ListTablesResponse {
-            tables: response.tables,
-            page_token: response.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_tables(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     /// Create table from a Apache Arrow IPC (file) buffer.
@@ -345,13 +347,15 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    pub async fn list_materialized_views(&self) -> napi::Result<Vec<String>> {
-        let views = self
-            .get_inner()?
-            .list_materialized_views()
-            .await
-            .default_error()?;
-        Ok(views)
+    pub fn list_materialized_views(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?
+                .list_materialized_views(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Drop a materialized view.
@@ -366,6 +370,86 @@ impl Connection {
             .drop_materialized_view(&name, &ns)
             .await
             .default_error()
+    }
+
+    /// Create a view: a named query planned on every read.
+    #[napi(catch_unwind)]
+    pub async fn create_view(
+        &self,
+        name: String,
+        query: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .create_view(&name, &query, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// What the database records about one view.
+    #[napi(catch_unwind)]
+    pub async fn describe_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<ViewDescription> {
+        let ns = namespace_path.unwrap_or_default();
+        let view = self
+            .get_inner()?
+            .describe_view(&name, &ns)
+            .await
+            .default_error()?;
+        ViewDescription::from_inner(view)
+    }
+
+    /// Drop a view and wait for its definition to be deleted. The tables it
+    /// reads are untouched.
+    #[napi(catch_unwind)]
+    pub async fn drop_view(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<()> {
+        let ns = namespace_path.unwrap_or_default();
+        self.get_inner()?
+            .drop_view(&name, &ns)
+            .await
+            .default_error()
+    }
+
+    /// Start dropping a view and return the job deleting its definition.
+    #[napi(catch_unwind)]
+    pub async fn drop_view_async(
+        &self,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> napi::Result<crate::job::Job> {
+        let ns = namespace_path.unwrap_or_default();
+        let job = self
+            .get_inner()?
+            .drop_view_async(&name, &ns)
+            .await
+            .default_error()?;
+        Ok(crate::job::Job::new(job))
+    }
+
+    /// The names of the views in one namespace.
+    #[napi(catch_unwind)]
+    pub fn list_views(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_views(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
     }
 
     /// Start dropping a materialized view and return its cleanup job.
@@ -488,9 +572,15 @@ impl Connection {
 
     /// List server-side jobs across the database's tables.
     #[napi(catch_unwind)]
-    pub async fn list_jobs(&self) -> napi::Result<Vec<crate::job::JobInfo>> {
-        let jobs = self.get_inner()?.list_jobs().await.default_error()?;
-        Ok(jobs.into_iter().map(Into::into).collect())
+    pub fn list_jobs(
+        &self,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> napi::Result<crate::listing::JobListing> {
+        Ok(crate::listing::JobListing::new(
+            self.get_inner()?
+                .list_jobs(crate::listing::options(page_token, page_limit)),
+        ))
     }
 
     /// Request cancellation of a server-side job by id. Returns true if the
@@ -498,6 +588,34 @@ impl Connection {
     #[napi(catch_unwind)]
     pub async fn cancel_job(&self, job_id: String) -> napi::Result<bool> {
         self.get_inner()?.cancel_job(&job_id).await.default_error()
+    }
+
+    /// Pause a server-side job by id: its workers drain and it stays parked
+    /// until resumed. Returns "pausing", "already_paused", or "committing".
+    #[napi(catch_unwind)]
+    pub async fn pause_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self.get_inner()?.pause_job(&job_id).await.default_error()?;
+        Ok(match status {
+            lancedb::database::PauseJobStatus::Pausing => "pausing".to_string(),
+            lancedb::database::PauseJobStatus::AlreadyPaused => "already_paused".to_string(),
+            lancedb::database::PauseJobStatus::Committing => "committing".to_string(),
+        })
+    }
+
+    /// Resume a paused server-side job by id. Returns "resumed",
+    /// "still_pausing", or "not_paused".
+    #[napi(catch_unwind)]
+    pub async fn resume_job(&self, job_id: String) -> napi::Result<String> {
+        let status = self
+            .get_inner()?
+            .resume_job(&job_id)
+            .await
+            .default_error()?;
+        Ok(match status {
+            lancedb::database::ResumeJobStatus::Resumed => "resumed".to_string(),
+            lancedb::database::ResumeJobStatus::StillPausing => "still_pausing".to_string(),
+            lancedb::database::ResumeJobStatus::NotPaused => "not_paused".to_string(),
+        })
     }
 
     #[napi(catch_unwind)]
@@ -521,28 +639,19 @@ impl Connection {
     }
 
     #[napi(catch_unwind)]
-    /// List child namespaces under the given namespace path
-    pub async fn list_namespaces(
+    /// Lazily list child namespaces under the given namespace path
+    pub fn list_namespaces(
         &self,
         namespace_path: Option<Vec<String>>,
         page_token: Option<String>,
         limit: Option<u32>,
-    ) -> napi::Result<ListNamespacesResponse> {
-        let req = ListNamespacesRequest {
-            id: namespace_path,
-            page_token,
-            limit: limit.map(|l| l as i32),
-            ..Default::default()
-        };
-        let resp = self
-            .get_inner()?
-            .list_namespaces(req)
-            .await
-            .default_error()?;
-        Ok(ListNamespacesResponse {
-            namespaces: resp.namespaces,
-            page_token: resp.page_token,
-        })
+    ) -> napi::Result<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_namespaces(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, limit),
+            ),
+        ))
     }
 
     #[napi(catch_unwind)]

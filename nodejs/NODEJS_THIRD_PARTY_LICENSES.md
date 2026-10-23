@@ -275,6 +275,7 @@
 [@types/node@20.16.10](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
 [@types/node@20.17.9](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
 [@types/node@22.7.4](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
+[@types/node@25.9.8](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
 [@types/semver@7.5.6](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
 [@types/stack-utils@2.0.3](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
 [@types/tmp@0.2.6](https://github.com/DefinitelyTyped/DefinitelyTyped) - MIT
@@ -306,6 +307,9 @@
 [apache-arrow@16.0.0](https://github.com/apache/arrow) - Apache-2.0
 [apache-arrow@17.0.0](https://github.com/apache/arrow) - Apache-2.0
 [apache-arrow@18.0.0](https://github.com/apache/arrow) - Apache-2.0
+[apache-arrow@19.0.1](https://github.com/apache/arrow) - Apache-2.0
+[apache-arrow@20.0.0](https://github.com/apache/arrow) - Apache-2.0
+[apache-arrow@21.2.0](https://github.com/apache/arrow-js) - Apache-2.0
 [argparse@1.0.10](https://github.com/nodeca/argparse) - MIT
 [argparse@2.0.1](https://github.com/nodeca/argparse) - Python-2.0
 [array-back@3.1.0](https://github.com/75lb/array-back) - MIT
@@ -348,6 +352,7 @@
 [color@4.2.3](https://github.com/Qix-/color) - MIT
 [combined-stream@1.0.8](https://github.com/felixge/node-combined-stream) - MIT
 [command-line-args@5.2.1](https://github.com/75lb/command-line-args) - MIT
+[command-line-args@6.0.2](https://github.com/75lb/command-line-args) - MIT
 [command-line-usage@7.0.1](https://github.com/75lb/command-line-usage) - MIT
 [concat-map@0.0.1](https://github.com/substack/node-concat-map) - MIT
 [convert-source-map@2.0.0](https://github.com/thlorenz/convert-source-map) - MIT
@@ -398,12 +403,14 @@
 [file-entry-cache@6.0.1](https://github.com/royriojas/file-entry-cache) - MIT
 [fill-range@7.1.1](https://github.com/jonschlinkert/fill-range) - MIT
 [find-replace@3.0.0](https://github.com/75lb/find-replace) - MIT
+[find-replace@5.0.2](https://github.com/75lb/find-replace) - MIT
 [find-up@4.1.0](https://github.com/sindresorhus/find-up) - MIT
 [find-up@5.0.0](https://github.com/sindresorhus/find-up) - MIT
 [flat-cache@3.2.0](https://github.com/jaredwray/flat-cache) - MIT
 [flatbuffers@1.12.0](https://github.com/google/flatbuffers) - Apache*
 [flatbuffers@23.5.26](https://github.com/google/flatbuffers) - Apache*
 [flatbuffers@24.3.25](https://github.com/google/flatbuffers) - Apache-2.0
+[flatbuffers@25.9.23](https://github.com/google/flatbuffers) - Apache-2.0
 [flatted@3.2.9](https://github.com/WebReflection/flatted) - ISC
 [follow-redirects@1.15.6](https://github.com/follow-redirects/follow-redirects) - MIT
 [foreground-child@3.3.0](https://github.com/tapjs/foreground-child) - ISC
@@ -644,6 +651,7 @@
 [uc.micro@2.1.0](https://github.com/markdown-it/uc.micro) - MIT
 [undici-types@5.26.5](https://github.com/nodejs/undici) - MIT
 [undici-types@6.19.8](https://github.com/nodejs/undici) - MIT
+[undici-types@7.24.6](https://github.com/nodejs/undici) - MIT
 [update-browserslist-db@1.0.13](https://github.com/browserslist/update-db) - MIT
 [uri-js@4.4.1](https://github.com/garycourt/uri-js) - BSD-2-Clause
 [uuid@9.0.1](https://github.com/uuidjs/uuid) - MIT

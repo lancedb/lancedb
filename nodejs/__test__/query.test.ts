@@ -110,6 +110,129 @@ describe("Query outputSchema", () => {
   });
 });
 
+describe("Query empty results", () => {
+  let tmpDir: tmp.DirResult;
+  let table: Table;
+
+  beforeEach(async () => {
+    tmpDir = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(tmpDir.name);
+    const schema = new Schema(
+      [
+        new Field("id", new Int64(), false),
+        new Field(
+          "text",
+          new Utf8(),
+          true,
+          new Map([["description", "searchable text"]]),
+        ),
+        new Field(
+          "vector",
+          new FixedSizeList(2, new Field("item", new Float32())),
+          true,
+        ),
+      ],
+      new Map([["source", "empty-query-regression"]]),
+    );
+    table = await db.createTable(
+      "test",
+      makeArrowTable([{ id: 1n, text: "hello", vector: [1, 2] }], { schema }),
+    );
+  });
+
+  afterEach(() => {
+    tmpDir.removeCallback();
+  });
+
+  it.each([
+    {
+      name: "filtered scan",
+      query: (table: Table) => table.query().where("id < 0"),
+      fields: ["id", "text", "vector"],
+    },
+    {
+      name: "zero limit",
+      query: (table: Table) => table.query().limit(0),
+      fields: ["id", "text", "vector"],
+    },
+    {
+      name: "column projection",
+      query: (table: Table) =>
+        table.query().where("id < 0").select(["text", "id"]),
+      fields: ["text", "id"],
+    },
+    {
+      name: "dynamic projection",
+      query: (table: Table) =>
+        table.query().where("id < 0").select({ doubled: "id * 2" }),
+      fields: ["doubled"],
+    },
+    {
+      name: "filtered vector search",
+      query: (table: Table) =>
+        table.search([0.5, 0.5]).where("id < 0").limit(3),
+      fields: ["id", "text", "vector", "_distance"],
+    },
+    {
+      name: "vector projection with row id",
+      query: (table: Table) =>
+        table
+          .vectorSearch([0.5, 0.5])
+          .where("id < 0")
+          .select(["id"])
+          .withRowId(),
+      fields: ["id", "_distance", "_rowid"],
+    },
+    {
+      name: "fast search without an index",
+      query: (table: Table) => table.search([0.5, 0.5]).fastSearch(),
+      fields: ["id", "text", "vector", "_distance"],
+    },
+    {
+      name: "take with no offsets",
+      query: (table: Table) => table.takeOffsets([]).select(["text"]),
+      fields: ["text"],
+    },
+  ])("preserves the output schema for $name", async ({ query, fields }) => {
+    const result = await query(table).toArrow({ maxBatchLength: 1 });
+
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((field) => field.name)).toEqual(fields);
+    for (const name of fields) {
+      expect(result.getChild(name)).not.toBeNull();
+      expect(result.getChild(name)?.length).toBe(0);
+    }
+  });
+
+  it("preserves types, nullability, and metadata", async () => {
+    const result = await table.query().where("id < 0").toArrow();
+    const schema = await table.schema();
+
+    expect(result.schema).toEqual(schema);
+    expect(result.getChild("id")?.type.toString()).toBe("Int64");
+    expect(result.schema.fields[0].nullable).toBe(false);
+    expect(result.schema.fields[1].metadata.get("description")).toBe(
+      "searchable text",
+    );
+    expect(result.schema.metadata.get("source")).toBe("empty-query-regression");
+  });
+
+  it("preserves the score column for full-text search with no matches", async () => {
+    await table.createIndex("text", { config: Index.fts() });
+    const result = await table
+      .search("missing", "fts")
+      .select(["id"])
+      .toArrow();
+
+    expect(result.numRows).toBe(0);
+    expect(result.schema.fields.map((field) => field.name)).toEqual([
+      "id",
+      "_score",
+    ]);
+    expect(result.getChild("_score")?.type.toString()).toBe("Float32");
+  });
+});
+
 describe("Search pagination", () => {
   let tmpDir: tmp.DirResult;
   let table: Table;
@@ -402,5 +525,108 @@ describe("Query orderBy", () => {
       [1n, 1.0, "b"],
       [2n, 0.5, "c"],
     ]);
+  });
+});
+
+describe("IVF search effort", () => {
+  let directory: tmp.DirResult;
+  let table: Table;
+  const vector = Array.from({ length: 16 }, (_, i) => (i === 0 ? 1 : 0));
+
+  beforeEach(async () => {
+    directory = tmp.dirSync({ unsafeCleanup: true });
+    const db = await connect(directory.name);
+    const rows = Array.from({ length: 512 }, (_, id) => ({
+      id,
+      vector: Array.from(
+        { length: 16 },
+        (_, j) =>
+          (Math.floor(id / 32) === j ? 1 : 0) + Math.sin(id * 17 + j) * 0.001,
+      ),
+    }));
+    table = await db.createTable("effort", rows.slice(0, 256));
+    await table.add(rows.slice(256));
+    await table.createIndex("vector", {
+      config: Index.ivfFlat({ numPartitions: 16 }),
+    });
+  });
+
+  afterEach(() => {
+    directory.removeCallback();
+  });
+
+  it.each([
+    [null, 6],
+    [0, 1],
+    [0.25, 3],
+    [0.5, 6],
+    [0.75, 10],
+    [1, 16],
+  ])(
+    "preserves effort %s through execution and probe precedence",
+    async (effort, expected) => {
+      const partitions = async (query: ReturnType<Table["vectorSearch"]>) => {
+        const plan = await query.limit(8).analyzePlan();
+        const matches = [...plan.matchAll(/partitions_searched=(\d+)/g)];
+        expect(matches.length).toBeGreaterThan(0);
+        return matches.reduce((total, match) => total + Number(match[1]), 0);
+      };
+      expect(
+        await partitions(table.vectorSearch(vector).searchEffort(effort)),
+      ).toBe(expected);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).nprobes(1).searchEffort(effort),
+        ),
+      ).toBe(effort === null ? 1 : expected);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).searchEffort(effort).nprobes(1),
+        ),
+      ).toBe(effort === null ? 1 : expected);
+      expect(
+        await partitions(
+          table
+            .vectorSearch(vector)
+            .searchEffort(effort)
+            .nprobes(1)
+            .searchEffort(null),
+        ),
+      ).toBe(1);
+      expect(
+        await partitions(
+          table.vectorSearch(vector).searchEffort(effort).maximumNprobes(2),
+        ),
+      ).toBeLessThanOrEqual(2);
+      const actual = await table
+        .vectorSearch(vector)
+        .searchEffort(effort)
+        .limit(8)
+        .toArray();
+      const exact = await table
+        .vectorSearch(vector)
+        .bypassVectorIndex()
+        .limit(8)
+        .toArray();
+      const ids = new Set(exact.map((row) => row.id));
+      expect(
+        actual.filter((row) => ids.has(row.id)).length / 8,
+      ).toBeGreaterThanOrEqual(0.5);
+    },
+  );
+
+  it.each([
+    -0.1,
+    1.1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])("rejects invalid effort %s before execution", (effort) => {
+    expect(() => table.vectorSearch(vector).searchEffort(effort)).toThrow(
+      "search_effort must be finite and in [0, 1]",
+    );
+    expect(() =>
+      table.vectorSearch(vector).fullTextSearch("dog").searchEffort(effort),
+    ).toThrow("search_effort must be finite and in [0, 1]");
   });
 });
