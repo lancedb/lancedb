@@ -19,6 +19,8 @@ import {
     PyFunctionApply as FunctionApply,
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
+    PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassApply as FunctionClassApply,
 } from '/snippets/function.mdx';
 import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
 
@@ -142,6 +144,45 @@ Filling then works as it does for a SQL computed column: a later refresh fills
 rows added since the last one and recomputes rows whose inputs changed, and
 leaves filled rows with unchanged inputs alone. See
 [Refresh a column](/feature-engineering/refresh-column).
+
+## Keep state in a class {#classes}
+
+A function that loads a model or opens a client should not do it for every
+row. Decorate a class instead: its `__init__` does the expensive setup once,
+and `__call__` handles each row or batch.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassDefine}
+</CodeBlock>
+
+Registering the class does not construct it. `@udf` reads the signature of
+`__init__` and packages the source, so the client never loads the model. On
+the cluster, each instance of the function calls `__init__` once. It then calls
+`__call__` for every row or batch it processes, and `close()`, if defined, once
+when it retires. Import heavy packages inside `__init__`, as above, so only the
+worker needs them installed, and declare them in `pip`.
+
+State belongs to one instance. An instance reuses it across every batch it
+serves, but instances do not share it, so each one holds its own copy of the
+model. Plan memory, or a GPU, for one copy per instance.
+
+The annotated parameters of `__init__` are the function's initialization
+fields. Their values come from each binding rather than from the function, so
+one registered version can run with different settings on different columns:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassApply}
+</CodeBlock>
+
+Pass the application to `add_columns` as [above](#apply). Initialization values
+are fixed for every row of a binding and take booleans, integers, floats,
+strings, and lists or structs of them. A parameter with a default may be
+omitted. Initialization values are stored with the binding, so keep
+credentials out of them: pass `secrets=[EnvVarSecret(...)]` to
+`create_function` and read the variable in `__init__`.
+
+Calling the decorated class in your own process constructs it, the same as an
+undecorated class, so local tests can create an instance and call it directly.
 
 ## Read and produce blobs {#blobs}
 
