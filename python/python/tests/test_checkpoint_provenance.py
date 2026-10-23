@@ -88,13 +88,20 @@ def test_snapshot_uses_built_plan_and_rejects_new_version(tables):
 
 
 @pytest.mark.parametrize("shuffle", [False, True])
-def test_logical_reference_compaction_exact_remaining(tables, shuffle):
+@pytest.mark.parametrize("filter", [None, "id >= 4 AND id < 14"])
+@pytest.mark.parametrize("num_splits,clump", [(1, None), (2, 2)])
+def test_logical_reference_compaction_exact_remaining(
+    tables, shuffle, filter, num_splits, clump
+):
     a, _ = tables
     a.add(pa.table({"id": list(range(8, 16)), "value": list(range(8, 16))}))
     opts = dict(
         checkpoint_mode="logical_reference",
         checkpoint_revision="immutable-r1",
         shuffle=shuffle,
+        filter=filter,
+        num_splits=num_splits,
+        shuffle_clump_size=clump,
     )
     state, expected = checkpoint(make(a, **opts))
     ids_before = (
@@ -543,3 +550,127 @@ def test_caller_batch_policy_change_has_real_effect_and_is_rejected(tables):
     changed = make(a, checkpoint_policy_id="application-batch-size-3")
     with pytest.raises(ValueError, match=r"config\.policy_id"):
         changed.load_state_dict(state)
+
+
+def test_ordinary_identity_is_completed_and_default_plan_unchanged(tables):
+    a, _ = tables
+    for shuffle in [False, True]:
+        plain = make(a, shuffle=shuffle, checkpoint_mode="legacy")
+        asserted = make(a, shuffle=shuffle)
+        assert plain._perm_table.to_arrow() == asserted._perm_table.to_arrow()
+        before = plain._perm_table.schema.metadata
+        after = dict(asserted._perm_table.schema.metadata)
+        digest = after.pop(b"checkpoint_plan_identity").decode()
+        assert after == before
+        assert asserted._perm_table.schema.names == ["row_id", "split_id"]
+        assert digest == asserted.state_dict()["provenance"]["config"]["plan_identity"]
+        assert b"checkpoint_plan_identity" not in before
+
+
+def test_draft_checkpoint_without_ordinary_identity_fails_closed(tables):
+    a, _ = tables
+    dataset = make(a)
+    state = dataset.state_dict()
+    del state["provenance"]["config"]["plan_identity"]
+    before = dataset.state_dict()
+    for allow_legacy in [False, True]:
+        with pytest.raises(ValueError, match="config fields"):
+            dataset.load_state_dict(state, allow_legacy=allow_legacy)
+        assert dataset.state_dict() == before
+
+
+def test_ordinary_identity_detects_changed_plan_with_equal_config(tables, monkeypatch):
+    from lancedb.permutation import PermutationBuilder
+
+    a, _ = tables
+    first = make(a, shuffle=True, shuffle_seed=42)
+    original = PermutationBuilder.split_random
+
+    def changed_producer(self, **kwargs):
+        # Simulate an implementation revision mapping the same public seed to a
+        # different native permutation. Both descriptors retain seed 42.
+        kwargs["seed"] += 1
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(PermutationBuilder, "split_random", changed_producer)
+    other = make(a, shuffle=True, shuffle_seed=42)
+    assert first._perm_table.to_arrow()["row_id"].to_pylist() != (
+        other._perm_table.to_arrow()["row_id"].to_pylist()
+    )
+    state = first.state_dict()
+    assert state["shuffle_seed"] == other.state_dict()["shuffle_seed"] == 42
+    before = other.state_dict()
+    with pytest.raises(ValueError, match=r"config\.plan_identity"):
+        other.load_state_dict(state)
+    assert other.state_dict() == before
+    for states in ([state, before], [before, state]):
+        with pytest.raises(ValueError, match=r"config\.plan_identity"):
+            StreamingDataset.merge_state_dicts(states)
+    assert other.state_dict() == before
+
+
+def test_eligible_count_binds_discarded_tail(tmp_path):
+    db = lancedb.connect(tmp_path / "db")
+    a = db.create_table("a", pa.table({"id": list(range(8))}))
+    b = db.create_table("b", pa.table({"id": list(range(9))}))
+    first = make(a, num_splits=2)
+    second = make(b, num_splits=2)
+    # Both fixed-two plans emit only eight occurrences. The filtered population
+    # still differs and must not share an identity merely because its tail drops.
+    assert first._perm_table.count_rows() == second._perm_table.count_rows() == 8
+    assert (
+        first.state_dict()["provenance"]["config"]["plan_identity"]
+        != second.state_dict()["provenance"]["config"]["plan_identity"]
+    )
+
+
+def test_missing_native_completion_fails_closed(tables, monkeypatch):
+    import lancedb.streaming as streaming
+
+    original = streaming.permutation_builder
+
+    def without_completion(table):
+        builder = original(table)
+        delegate = builder._async
+
+        class MissingIdentity:
+            def _with_checkpoint_identity(self):
+                return self
+
+            def __getattr__(self, name):
+                return getattr(delegate, name)
+
+        builder._async = MissingIdentity()
+        return builder
+
+    monkeypatch.setattr(streaming, "permutation_builder", without_completion)
+    a, _ = tables
+    with pytest.raises(ValueError, match="completed plan identity"):
+        make(a)
+
+
+@pytest.mark.parametrize("digest", [b"bad", b"logical-occurrences-v2:" + b"0" * 64])
+def test_malformed_native_completion_fails_at_construction(tables, monkeypatch, digest):
+    from lancedb.permutation import PermutationBuilder
+
+    original = PermutationBuilder.execute
+
+    def malformed(self):
+        table = original(self)
+
+        class ChangedMetadata:
+            @property
+            def schema(self):
+                metadata = dict(table.schema.metadata)
+                metadata[b"checkpoint_plan_identity"] = digest
+                return table.schema.with_metadata(metadata)
+
+            def __getattr__(self, name):
+                return getattr(table, name)
+
+        return ChangedMetadata()
+
+    monkeypatch.setattr(PermutationBuilder, "execute", malformed)
+    a, _ = tables
+    with pytest.raises(ValueError, match="completed plan identity"):
+        make(a)

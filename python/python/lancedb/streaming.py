@@ -410,9 +410,17 @@ class StreamingDataset(IterableDataset):
         snapshot coordinates and native locators are diagnostic in this mode.
         This permits compaction/relocation only when logical contents and order
         remain equivalent. It does not hash or verify all dataset contents.
-        Matching configuration does not guarantee identical shuffles across native
-        algorithm/library changes or platforms. No native algorithm revision is
-        recorded here; resume requires a compatible producer runtime.
+        Ordinary asserted plans also bind a native digest of final logical
+        occurrence order. For the same canonical eligible source scan order, it
+        detects changed split/shuffle output even with the same public seed,
+        without using compaction-sensitive physical row IDs. It does not detect
+        content reorderings that reassign the same ordinal pattern.
+        This is not a dataset-content or transform-runtime compatibility proof.
+        Earlier unreleased asserted version-1 drafts lacking this identity reject.
+        This opt-in builds disk-backed sidecars and external sorts after the usual
+        plan construction; it adds IO and temporary disk use. Legacy mode does not
+        request these sidecars. The memory setting bounds sort reservations, not
+        total process memory.
     checkpoint_identity:
         Non-secret persistent dataset-generation identity, required outside legacy
         mode. Do not reuse it after deletion/recreation. Ordinary local filesystem
@@ -654,6 +662,8 @@ class StreamingDataset(IterableDataset):
 
         # Build the permutation table once, deterministically.
         builder = permutation_builder(table)
+        if checkpoint_mode != "legacy" and split_strategy is None:
+            builder._async._with_checkpoint_identity()
         if filter is not None:
             builder = builder.filter(filter)
         if split_strategy is not None:
@@ -711,11 +721,9 @@ class StreamingDataset(IterableDataset):
             ).execute()
         else:
             self._perm_table = builder.split_sequential(fixed=num_splits).execute()
-        # Only the split_strategy path needs a permutation fingerprint in the
-        # checkpoint (see `_checkpoint_snapshot`): split_random/split_sequential are
-        # already fully pinned by shuffle_seed/num_splits, and a fingerprint over raw
-        # row ids would spuriously reject an otherwise-valid resume after those row
-        # ids get renumbered by compaction (row ids are not stable by default).
+        # Custom strategies retain the physical-plan fingerprint. Ordinary asserted
+        # plans instead carry a native logical-occurrence digest, which survives
+        # compaction when the filtered logical scan and final order are unchanged.
         self._uses_split_strategy = split_strategy is not None
         # Lazily computed and cached by `_perm_fingerprint` -- `_perm_table` never
         # changes after construction, so this is correct to compute once.
@@ -740,6 +748,9 @@ class StreamingDataset(IterableDataset):
                 "filter": filter,
                 "columns": None if columns is None else list(columns),
                 "schema": _checkpoint.schema_digest(pinned.schema),
+                "plan_identity": None
+                if split_strategy is not None
+                else (metadata.get(b"checkpoint_plan_identity", b"").decode()),
                 "plan": "custom"
                 if split_strategy is not None
                 else "random"
@@ -764,6 +775,10 @@ class StreamingDataset(IterableDataset):
                 "pad_id": pad_id if pack_sequences is not None else None,
                 "blocks_per_epoch": self._blocks_per_epoch,
             }
+            if split_strategy is None and not config["plan_identity"]:
+                raise ValueError(
+                    "checkpoint provenance requires a completed plan identity"
+                )
             self._checkpoint_provenance = {
                 "mode": checkpoint_mode,
                 "guarantee": "caller_asserted",
@@ -777,6 +792,11 @@ class StreamingDataset(IterableDataset):
             }
             if checkpoint_mode == "logical_reference":
                 self._checkpoint_provenance["logical_revision"] = checkpoint_revision
+            # Validate native completion and the descriptor at construction, too;
+            # malformed or future native identities must never export as asserted.
+            self._checkpoint_provenance = _checkpoint.provenance(
+                _checkpoint.envelope(self._checkpoint_provenance)
+            )
 
         # Contiguous block of global split indices assigned to this rank.
         splits_per_rank = num_splits // world_size
@@ -1592,7 +1612,7 @@ class StreamingDataset(IterableDataset):
 
     @property
     def _perm_fingerprint(self) -> str:
-        """Cheap identity check for the built permutation, computed once and cached
+        """Identity check for the built custom permutation, computed once and cached
         (``_perm_table`` never changes after construction).
 
         Only meaningful -- and only recorded in a checkpoint -- for the
@@ -1603,12 +1623,10 @@ class StreamingDataset(IterableDataset):
         entirely -- e.g. a ``bootstrap_sample`` with no seed (or any changed
         callable) can rebuild a completely different permutation on the next run
         while ``shuffle_seed`` keeps its same default value and the existing check
-        passes anyway. ``split_random``/``split_sequential`` are already fully
-        pinned by ``shuffle_seed``/``num_splits`` and must *not* additionally be
-        fingerprinted: this hashes physical row ids, which are not stable across
-        compaction by default, so checking it on those paths would reject an
-        otherwise-valid resume after the table gets compacted between save and
-        load even though the seeded permutation itself is unchanged.
+        passes anyway. Ordinary plans use a separate logical-occurrence digest in
+        asserted modes: hashing physical row IDs here would reject compaction even
+        when logical occurrence order is unchanged. Legacy mode retains only its
+        historical seed/split checks and requires a compatible producer runtime.
         """
         if self._perm_fingerprint_cache is None:
             arrow_tbl = self._perm_table.to_arrow()
@@ -1621,10 +1639,8 @@ class StreamingDataset(IterableDataset):
         return self._perm_fingerprint_cache
 
     def _checkpoint_snapshot(self) -> dict:
-        # Only recorded for split_strategy: split_random/split_sequential are
-        # already fully pinned by shuffle_seed/num_splits below, and row ids are not
-        # stable across compaction by default, so fingerprinting them unconditionally
-        # would reject an otherwise-valid resume after the table got compacted.
+        # Custom strategies retain physical-plan identity. Ordinary asserted plans
+        # bind logical occurrences in provenance; legacy remains unverified.
         perm_fingerprint = (
             {"perm_fingerprint": self._perm_fingerprint}
             if (self._uses_split_strategy)

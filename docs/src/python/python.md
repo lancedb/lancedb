@@ -628,10 +628,25 @@ order. Loading legacy state into an asserted dataset requires
 `allow_legacy=True`; exports from that instance then remain unverified. Unknown
 future schema versions cannot use this migration path.
 
-Matching configuration alone does not establish shuffle compatibility across
-library/native algorithm changes or platforms. The current descriptor does not
-record a native construction-algorithm revision. Resume requires a compatible
-producer runtime; it is not a cross-version or cross-platform shuffle guarantee.
+Ordinary asserted plans also record a digest of the actual ordered logical
+occurrences, including the eligible row count. For the same canonical eligible
+source scan order, this detects a different resulting split/shuffle plan even if
+the public seed/configuration matches. It does not detect content reorderings that
+reassign the same ordinal pattern. Snapshot mode relies on the pinned backend's
+scan-order contract; logical-reference mode relies on the caller's assertion of
+unchanged logical contents and order. The digest permits
+compaction when logical scan and plan order are unchanged. It does not hash the
+dataset contents or establish transform/runtime compatibility. Custom strategies
+retain their existing physical permutation fingerprint. Legacy mode remains
+unverified. Earlier unreleased asserted version-1 checkpoints without this digest
+are rejected, including when `allow_legacy=True`.
+
+The opt-in digest uses disk-backed sidecars and three external sorts after the
+usual plan construction. This adds IO and temporary disk use; the sort memory
+setting is not a total process memory cap. The private sidecar scratch limit is
+100GiB, covering its spools and correlation sorts, separately from the existing
+permutation sorter/shuffler. Exceeding it aborts construction without an identity;
+there is no unverified fallback. Legacy mode does not request sidecars.
 
 Rank and worker counts are excluded from identity so supported elastic
 resharding remains available. Collect every previous rank's checkpoint and call

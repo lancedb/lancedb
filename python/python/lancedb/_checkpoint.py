@@ -100,6 +100,7 @@ def provenance(state):
         "columns",
         "schema",
         "plan",
+        "plan_identity",
         "seed",
         "epoch",
         "clump_size",
@@ -119,6 +120,19 @@ def provenance(state):
     integer(config["num_splits"], "config num_splits", 1)
     if config["plan"] not in ("random", "sequential", "custom"):
         raise ValueError("invalid provenance plan")
+    if config["plan"] == "custom":
+        if config["plan_identity"] is not None:
+            raise ValueError("custom plans use the existing permutation fingerprint")
+    else:
+        digest = config["plan_identity"]
+        prefix = "logical-occurrences-v1:"
+        if (
+            not isinstance(digest, str)
+            or not digest.startswith(prefix)
+            or len(digest) != len(prefix) + 64
+            or any(c not in "0123456789abcdef" for c in digest[len(prefix) :])
+        ):
+            raise ValueError("ordinary checkpoint requires a completed plan identity")
     return deepcopy(p)
 
 
@@ -138,6 +152,7 @@ def compatible(left, right):
                 "columns",
                 "schema",
                 "plan",
+                "plan_identity",
                 "seed",
                 "epoch",
                 "clump_size",
