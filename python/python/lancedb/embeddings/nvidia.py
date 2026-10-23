@@ -11,13 +11,14 @@ from pydantic import Field, model_validator
 from ..util import attempt_import_or_raise
 from .base import TextEmbeddingFunction
 from .registry import register
-from .utils import TEXT, MissingApiKeyError
+from .utils import TEXT, MissingApiKeyError, retry_with_exponential_backoff
 
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+# Hosted model ID -> (default dimensions, minimum dimensions)
 MODEL_DIMENSIONS = {
-    "nvidia/nemotron-3.5-embed-1b": 2048,
-    "nvidia/nemotron-3.5-embed-8b": 4096,
+    "nvidia/nemotron-3.5-embed-1b": (2048, 128),
+    "nvidia/nemotron-3.5-embed-8b": (4096, 1),
 }
 
 
@@ -27,7 +28,8 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
 
     Uses the optional ``openai`` package for NVIDIA-hosted and self-hosted NIM
     ``/v1/embeddings`` endpoints. Documents use ``input_type="passage"`` and
-    queries use ``input_type="query"``. Image inputs are not supported.
+    queries use ``input_type="query"``. Null and empty strings get a null
+    embedding. Image inputs are not supported.
 
     Parameters
     ----------
@@ -40,14 +42,16 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
     base_url : str
         API base URL including ``/v1``. Defaults to NVIDIA's hosted API.
     api_key : str, optional
-        Registry variable reference, such as ``$var:nvidia-key``. Otherwise uses
-        ``NVIDIA_API_KEY``. Custom endpoints can run without authentication.
+        Registry variable reference, such as ``$var:nvidia-key``. Otherwise the
+        hosted API uses ``NVIDIA_API_KEY``. Custom endpoints only receive an
+        explicit ``api_key`` and can run without authentication.
     batch_size : int
         Maximum inputs per request (default 32). Reduce for deployment limits.
     truncate : str
         ``END`` (default) truncates overlong text; ``NONE`` rejects it.
     max_retries : int
-        Inherited LanceDB retry limit. The OpenAI client's own retries are disabled.
+        Inherited LanceDB retry limit, applied to each request. The OpenAI
+        client's own retries are disabled.
 
     Examples
     --------
@@ -74,11 +78,11 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
 
     @model_validator(mode="after")
     def _validate_dimensions(self):
-        native_dim = MODEL_DIMENSIONS.get(self.name)
-        if native_dim is None and self.dim is None:
+        dimensions = MODEL_DIMENSIONS.get(self.name)
+        if dimensions is None and self.dim is None:
             raise ValueError("Set dim explicitly for self-hosted NIM model IDs")
-        if native_dim is not None and self.dim is not None:
-            minimum = 128 if native_dim == 2048 else 1
+        if dimensions is not None and self.dim is not None:
+            native_dim, minimum = dimensions
             if not minimum <= self.dim <= native_dim:
                 raise ValueError(
                     f"{self.name} supports dimensions from {minimum} to {native_dim}"
@@ -93,45 +97,55 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
         return [] if self.base_url.rstrip("/") == NVIDIA_BASE_URL else [self.base_url]
 
     def ndims(self) -> int:
-        return self.dim if self.dim is not None else MODEL_DIMENSIONS[self.name]
+        return self.dim if self.dim is not None else MODEL_DIMENSIONS[self.name][0]
 
     def compute_query_embeddings(
         self, query: str, *args, **kwargs
-    ) -> List[List[float]]:
+    ) -> List[Optional[List[float]]]:
         return self._embed(query, input_type="query")
 
-    def generate_embeddings(self, texts: TEXT) -> List[List[float]]:
+    def generate_embeddings(self, texts: TEXT) -> List[Optional[List[float]]]:
         return self._embed(texts, input_type="passage")
 
+    # Retry each request rather than the whole call, so a transient failure does
+    # not resend batches that already succeeded, and invalid inputs or responses
+    # fail at once instead of being retried.
+    def compute_query_embeddings_with_retry(
+        self, query: str, *args, **kwargs
+    ) -> List[Optional[List[float]]]:
+        return self._embed(query, input_type="query", max_retries=self.max_retries)
+
+    def compute_source_embeddings_with_retry(
+        self, texts: TEXT, *args, **kwargs
+    ) -> List[Optional[List[float]]]:
+        return self._embed(texts, input_type="passage", max_retries=self.max_retries)
+
     def _embed(
-        self, texts: TEXT, *, input_type: Literal["passage", "query"]
-    ) -> List[List[float]]:
+        self,
+        texts: TEXT,
+        *,
+        input_type: Literal["passage", "query"],
+        max_retries: int = 0,
+    ) -> List[Optional[List[float]]]:
         texts = list(self.sanitize_input(texts))
-        if any(not isinstance(text, str) for text in texts):
+        if any(text is not None and not isinstance(text, str) for text in texts):
             raise ValueError("NVIDIA embeddings support text strings only")
-        embeddings = []
-        for start in range(0, len(texts), self.batch_size):
-            batch = texts[start : start + self.batch_size]
-            response = self._client.embeddings.create(
-                model=self.name,
-                input=batch,
-                dimensions=self.ndims(),
-                encoding_format="float",
-                extra_body={
-                    "input_type": input_type,
-                    "modality": "text",
-                    "truncate": self.truncate,
-                },
-            )
-            data = getattr(response, "data", None)
-            if not isinstance(data, list) or len(data) != len(batch):
+        request = self._request
+        if max_retries > 0:
+            request = retry_with_exponential_backoff(request, max_retries=max_retries)
+        embeddings = [None] * len(texts)
+        valid = [index for index, text in enumerate(texts) if text]
+        for start in range(0, len(valid), self.batch_size):
+            rows = valid[start : start + self.batch_size]
+            data = request([texts[row] for row in rows], input_type)
+            if not isinstance(data, list) or len(data) != len(rows):
                 raise ValueError("NVIDIA returned an unexpected number of embeddings")
             indices = [getattr(item, "index", None) for item in data]
             if any(type(index) is not int for index in indices) or sorted(
                 indices
-            ) != list(range(len(batch))):
+            ) != list(range(len(rows))):
                 raise ValueError("NVIDIA returned invalid embedding indices")
-            for item in sorted(data, key=lambda item: item.index):
+            for row, item in zip(rows, sorted(data, key=lambda item: item.index)):
                 vector = getattr(item, "embedding", None)
                 if (
                     not isinstance(vector, list)
@@ -145,14 +159,30 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
                         "NVIDIA returned an invalid embedding: expected "
                         f"{self.ndims()} finite numeric values"
                     )
-                embeddings.append(vector)
+                embeddings[row] = vector
         return embeddings
+
+    def _request(self, batch: List[str], input_type: str):
+        response = self._client.embeddings.create(
+            model=self.name,
+            input=batch,
+            dimensions=self.ndims(),
+            encoding_format="float",
+            extra_body={
+                "input_type": input_type,
+                "modality": "text",
+                "truncate": self.truncate,
+            },
+        )
+        return getattr(response, "data", None)
 
     @cached_property
     def _client(self):
         openai = attempt_import_or_raise("openai")
-        api_key = self.api_key or os.environ.get("NVIDIA_API_KEY")
-        if not api_key and not self.endpoints():
+        hosted = not self.endpoints()
+        # Never send the hosted API key from the environment to a custom endpoint
+        api_key = self.api_key or (os.environ.get("NVIDIA_API_KEY") if hosted else None)
+        if not api_key and hosted:
             raise MissingApiKeyError(
                 "Set NVIDIA_API_KEY or provide api_key via a registry variable"
             )

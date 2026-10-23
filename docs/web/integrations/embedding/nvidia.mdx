@@ -7,6 +7,8 @@ description: Text embeddings with Nemotron 3.5 Embed 1B and 8B in the Python SDK
 The Python SDK registers `nvidia` for client-side text embedding with NVIDIA-hosted
 and self-hosted NIM endpoints. Documents use `input_type="passage"`; searches use
 `input_type="query"`. This provider supports text only, with floating-point output.
+Null and empty text values get a null vector without a request; pass
+`on_bad_vectors="null"` or `"drop"` to `add` to keep or skip those rows.
 Image and combined text/image inputs are not supported by this integration.
 
 Install the optional client and set your NVIDIA API key:
@@ -55,10 +57,10 @@ The hosted API documents these exact IDs and dimensions:
 | `name` | `nvidia/nemotron-3.5-embed-1b` | Model ID sent to the endpoint. |
 | `dim` | Model default above | Output dimensions; required for other served model IDs. |
 | `base_url` | `https://integrate.api.nvidia.com/v1` | API base including `/v1`. |
-| `api_key` | `NVIDIA_API_KEY` environment variable | Alternatively, a registry reference such as `$var:nvidia-key`. |
+| `api_key` | `NVIDIA_API_KEY` for the hosted API | Alternatively, a registry reference such as `$var:nvidia-key`. |
 | `batch_size` | `32` | Maximum inputs per request. Reduce for your deployment's limits. |
 | `truncate` | `END` | Truncate overlong text at the end, or use `NONE` to reject it. |
-| `max_retries` | `7` | LanceDB's existing retry policy for automatic document/query embedding. |
+| `max_retries` | `7` | LanceDB's retry policy, applied to each request during automatic document/query embedding. |
 
 Requests specify `modality="text"` and `encoding_format="float"`. Returned vectors
 are checked for count, input indices, dimensions, and finite numeric values.
@@ -78,9 +80,9 @@ func = get_registry().get("nvidia").create(
 )
 ```
 
-Custom endpoints may run without a key. For authenticated endpoints, use
-`NVIDIA_API_KEY` or `get_registry().set_var("nvidia-key", key)` with
-`api_key="$var:nvidia-key"`. Registry references, rather than secret values, are
+Custom endpoints may run without a key. `NVIDIA_API_KEY` is only sent to the
+hosted API, so for authenticated endpoints use
+`get_registry().set_var("nvidia-key", key)` with `api_key="$var:nvidia-key"`. Registry references, rather than secret values, are
 stored in the schema. Restore registry variables in each process. Before using
 a custom endpoint restored from table metadata in a new process, call
 `get_registry().allow_endpoint("http://localhost:8000/v1")`.

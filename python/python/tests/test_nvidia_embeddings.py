@@ -3,6 +3,7 @@
 
 import json
 import os
+from typing import Optional
 
 import lancedb
 import numpy as np
@@ -69,7 +70,9 @@ def nvidia_api(monkeypatch):
         client.close()
 
 
-@pytest.mark.parametrize("name,dimensions", MODEL_DIMENSIONS.items())
+@pytest.mark.parametrize(
+    "name,dimensions", [(name, dims[0]) for name, dims in MODEL_DIMENSIONS.items()]
+)
 def test_hosted_models(nvidia_api, name, dimensions):
     requests, _ = nvidia_api
     func = get_registry().get("nvidia").create(name=name)
@@ -114,11 +117,47 @@ def test_batching_and_response_order(nvidia_api, texts):
     assert len(requests) == 2
 
 
-@pytest.mark.parametrize("texts", [[None], [b"image"], [["nested"]], [123]])
-def test_rejects_non_text(nvidia_api, texts):
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["alpha", None, "", "beta"],
+        pa.array(["alpha", None, "", "beta"]),
+    ],
+)
+def test_null_and_empty_inputs(nvidia_api, texts):
     requests, _ = nvidia_api
+    func = NvidiaEmbeddings.create(dim=128)
+    result = func.compute_source_embeddings(texts)
+    assert [vector and vector[:2] for vector in result] == [[1, 0], None, None, [0, 1]]
+    assert [json.loads(r.content)["input"] for r in requests] == [["alpha", "beta"]]
+    assert func.compute_source_embeddings([None, ""]) == [None, None]
+    assert len(requests) == 1
+
+
+def test_table_with_null_text(nvidia_api, tmp_path):
+    func = NvidiaEmbeddings.create(dim=128)
+
+    class Document(LanceModel):
+        text: Optional[str] = func.SourceField()
+        vector: Optional[Vector(func.ndims())] = func.VectorField()
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("docs", schema=Document)
+    table.add([{"text": "alpha"}, {"text": None}], on_bad_vectors="null")
+    rows = table.to_arrow().to_pylist()
+    assert rows[0]["vector"][:2] == [1, 0]
+    assert rows[1]["vector"] is None
+
+
+@pytest.mark.parametrize("texts", [[b"image"], [["nested"]], [123]])
+def test_rejects_non_text(nvidia_api, monkeypatch, texts):
+    requests, _ = nvidia_api
+    monkeypatch.setattr("lancedb.embeddings.utils.time.sleep", pytest.fail)
+    func = NvidiaEmbeddings.create()
     with pytest.raises(ValueError, match="text strings only"):
-        NvidiaEmbeddings.create().compute_source_embeddings(texts)
+        func.compute_source_embeddings(texts)
+    with pytest.raises(ValueError, match="text strings only"):
+        func.compute_source_embeddings_with_retry(texts)
     assert requests == []
 
 
@@ -159,6 +198,18 @@ def test_invalid_response(nvidia_api, data, error):
     responses.append(httpx.Response(200, json={"data": data}))
     with pytest.raises(ValueError, match=error):
         NvidiaEmbeddings.create(dim=128).compute_source_embeddings(["alpha"])
+
+
+def test_invalid_response_is_not_retried(nvidia_api, monkeypatch):
+    import httpx
+
+    requests, responses = nvidia_api
+    monkeypatch.setattr("lancedb.embeddings.utils.time.sleep", pytest.fail)
+    responses.append(httpx.Response(200, json={"data": []}))
+    func = NvidiaEmbeddings.create(dim=128)
+    with pytest.raises(ValueError, match="number of embeddings"):
+        func.compute_source_embeddings_with_retry(["alpha"])
+    assert len(requests) == 1
 
 
 def test_missing_response_data(nvidia_api):
@@ -215,6 +266,26 @@ def test_retry_policy(nvidia_api, monkeypatch, status, expected_calls):
     assert len(requests) == expected_calls
 
 
+def test_retry_resends_only_failed_batch(nvidia_api, monkeypatch):
+    import httpx
+
+    requests, responses = nvidia_api
+    monkeypatch.setattr("lancedb.embeddings.utils.time.sleep", lambda _: None)
+    vector = [1.0] + [0.0] * 127
+    responses.append(
+        httpx.Response(200, json={"data": [{"index": 0, "embedding": vector}]})
+    )
+    responses.append(httpx.Response(429, json={"error": {"message": "slow down"}}))
+    func = NvidiaEmbeddings.create(dim=128, batch_size=1, max_retries=1)
+    result = func.compute_source_embeddings_with_retry(["alpha", "beta"])
+    assert [v[:2] for v in result] == [[1, 0], [0, 1]]
+    assert [json.loads(r.content)["input"] for r in requests] == [
+        ["alpha"],
+        ["beta"],
+        ["beta"],
+    ]
+
+
 def test_credentials_and_metadata(nvidia_api, monkeypatch):
     requests, _ = nvidia_api
     registry = get_registry()
@@ -264,10 +335,7 @@ def test_missing_key_and_unauthenticated_nim(nvidia_api, monkeypatch):
     from lancedb.embeddings.utils import MissingApiKeyError
 
     requests, _ = nvidia_api
-    monkeypatch.delenv("NVIDIA_API_KEY")
-    with pytest.raises(MissingApiKeyError, match="NVIDIA_API_KEY"):
-        NvidiaEmbeddings.create().compute_query_embeddings_with_retry("alpha")
-    assert requests == []
+    # The hosted key in NVIDIA_API_KEY is not sent to custom endpoints.
     func = NvidiaEmbeddings.create(
         name="nvidia/Nemotron-3.5-Embed-1B-BF16",
         base_url="http://localhost:8000/v1",
@@ -275,6 +343,10 @@ def test_missing_key_and_unauthenticated_nim(nvidia_api, monkeypatch):
     )
     func.compute_query_embeddings("alpha")
     assert requests[0].headers["authorization"] == "Bearer not-required"
+    monkeypatch.delenv("NVIDIA_API_KEY")
+    with pytest.raises(MissingApiKeyError, match="NVIDIA_API_KEY"):
+        NvidiaEmbeddings.create().compute_query_embeddings_with_retry("alpha")
+    assert len(requests) == 1
 
 
 @pytest.mark.parametrize("name", MODEL_DIMENSIONS)
