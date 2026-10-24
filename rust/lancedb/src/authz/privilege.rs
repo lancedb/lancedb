@@ -81,7 +81,7 @@ pub enum Privilege {
     /// - can read server configuration.
     Operate,
 
-    /// On the catalog: can register a storage integration.
+    /// On a namespace: can register a storage integration.
     CreateStorageIntegration,
 
     /// A future privilege name, preserved verbatim.
@@ -301,10 +301,10 @@ mod tests {
     use super::Privilege;
 
     #[test]
-    fn storage_integration_creation_is_catalog_scoped() {
+    fn storage_integration_creation_is_namespace_scoped() {
         let privilege = Privilege::CreateStorageIntegration;
-        assert!(privilege.valid_for_system());
-        assert!(!privilege.valid_for_namespace());
+        assert!(!privilege.valid_for_system());
+        assert!(privilege.valid_for_namespace());
         assert!(!privilege.valid_for_database());
         assert!(!privilege.valid_for_storage_integration());
         assert!(privilege.is_write());
