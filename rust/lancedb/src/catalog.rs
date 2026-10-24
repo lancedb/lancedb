@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Catalogs manage databases and storage integrations at the server root.
+//! Catalogs manage databases at the server root. Storage integrations belong to databases.
 //!
 //! ```
 //! # #[cfg(feature = "remote")]

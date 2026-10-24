@@ -378,7 +378,6 @@ class DBConnection(EnforceOverrides):
         """
         pass
 
-    @abstractmethod
     def create_storage_integration(
         self,
         name: str,
@@ -392,13 +391,11 @@ class DBConnection(EnforceOverrides):
     ) -> StorageIntegrationInfo:
         raise NotImplementedError
 
-    @abstractmethod
     def describe_storage_integration(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> StorageIntegrationInfo:
         raise NotImplementedError
 
-    @abstractmethod
     def list_storage_integrations(
         self,
         *,
@@ -408,7 +405,6 @@ class DBConnection(EnforceOverrides):
     ) -> Listing[str]:
         raise NotImplementedError
 
-    @abstractmethod
     def drop_storage_integration(
         self, name: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:

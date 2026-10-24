@@ -32,7 +32,6 @@ class StorageIntegrationInfo:
     namespace_path: list[str]
     storage_provider: Literal["S3"]
     storage_prefix: str
-    aws_role_arn: Optional[str]
     aws_region: Optional[str]
     aws_account_id: str
     aws_iam_principal_arn: str
@@ -42,6 +41,7 @@ class StorageIntegrationInfo:
     trust_policy: Optional[Dict[str, Any]]
     permissions_policy: Dict[str, Any]
     configuration_instructions: str
+    aws_role_arn: Optional[str] = None
     aws_access_key_id_secret: Optional[SecretReference] = None
     aws_secret_access_key_secret: Optional[SecretReference] = None
 

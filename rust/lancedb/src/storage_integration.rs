@@ -108,7 +108,7 @@ pub struct StorageIntegrationInfo {
     pub namespace_path: Vec<String>,
     pub storage_provider: StorageProvider,
     pub storage_prefix: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub aws_role_arn: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aws_access_key_id_secret: Option<SecretReference>,
