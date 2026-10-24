@@ -604,7 +604,7 @@ async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow
             max_nprobes: None,
         },
     };
-    let provider = VectorQueryTable::try_new(Arc::new(ds), options).await?;
+    let provider = VectorQueryTable::try_new(Arc::new(ds.clone()), options.clone()).await?;
     let batches = SessionContext::new()
         .read_table(Arc::new(provider))?
         .collect()
@@ -615,5 +615,18 @@ async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow
         actual.iter().map(|(a, b, _)| (*a, *b)).collect::<Vec<_>>(),
         vec![(0, 1 << 32), (1, (1 << 32) + 1)]
     );
+    let dedup = VectorQueryTable::try_new(
+        Arc::new(ds),
+        VectorQueryOptions {
+            dedup: true,
+            ..options
+        },
+    )
+    .await?;
+    let rows = SessionContext::new()
+        .read_table(Arc::new(dedup))?
+        .collect()
+        .await?;
+    assert_eq!(rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     Ok(())
 }
