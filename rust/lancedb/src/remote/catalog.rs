@@ -12,7 +12,6 @@ use lance_namespace::models::{
     CreateNamespaceRequest, DescribeNamespaceRequest, DropNamespaceRequest, ListNamespacesRequest,
 };
 
-use super::client::RequestResultExt;
 use super::db::RemoteDatabase;
 use super::{ClientConfig, HeaderProvider, OAuthConfig, OAuthHeaderProvider};
 use crate::catalog::{

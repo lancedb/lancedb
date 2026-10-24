@@ -7,7 +7,7 @@ use std::time::Duration;
 use futures::{StreamExt, future::poll_fn};
 
 use lancedb::catalog::{CatalogConnection, CreateDatabaseRequest, DropDatabaseRequest};
-use pyo3::exceptions::PyStopAsyncIteration;
+use pyo3::exceptions::{PyStopAsyncIteration, PyValueError};
 use pyo3::{Bound, PyAny, PyRef, PyResult, Python, pyclass, pyfunction, pymethods};
 
 use crate::connection::{Connection, PyClientConfig};
