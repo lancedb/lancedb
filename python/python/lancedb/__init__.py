@@ -48,7 +48,7 @@ from .materialized_view import (
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
-from .table import AsyncTable, Table
+from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -594,6 +594,7 @@ __all__ = [
     "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "CompactionOptions",
     "FtsToken",
     "col",
     "Expr",
