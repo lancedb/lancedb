@@ -14,7 +14,7 @@ import lancedb
 from lancedb.authz import Object, Privilege
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.catalog import Catalog, AsyncCatalog
-from lancedb.storage_integration import SecretReference
+from lancedb.storage_integration import SecretReference, StorageIntegrationInfo
 
 
 INFO = json.loads(
@@ -30,6 +30,7 @@ ROLE = "arn:aws:iam::123456789012:role/access"
 @contextlib.contextmanager
 def remote_server():
     calls = []
+    state = {"info": dict(INFO)}
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *_args):
@@ -38,6 +39,13 @@ def remote_server():
         def respond(self):
             url = urllib.parse.urlsplit(self.path)
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            if url.path == "/v1/namespace/system/describe":
+                assert self.headers.get("x-lancedb-database") is None
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b"{}")
+                return
             assert self.headers.get("x-lancedb-database") == "system"
             request = json.loads(body) if body else {}
             calls.append((self.command, url.path, request))
@@ -54,9 +62,9 @@ def remote_server():
             elif url.path.endswith("/drop"):
                 result = {"dropped": True}
             else:
-                result = dict(INFO)
+                result = dict(state["info"])
                 if request.get("aws_access_key_id_secret"):
-                    result["aws_role_arn"] = None
+                    result.pop("aws_role_arn", None)
                     result["trust_policy"] = None
                     result["aws_access_key_id_secret"] = request[
                         "aws_access_key_id_secret"
@@ -64,6 +72,8 @@ def remote_server():
                     result["aws_secret_access_key_secret"] = request[
                         "aws_secret_access_key_secret"
                     ]
+            if url.path.endswith("/create"):
+                state["info"] = dict(result)
             payload = json.dumps(result).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -168,6 +178,7 @@ def test_static_credentials_use_explicit_cross_database_secret_references():
             ),
         )
         assert info.aws_role_arn is None
+        assert db.describe_storage_integration("raw") == info
         assert info.aws_access_key_id_secret.database == "shared"
         assert "aws_role_arn" not in calls[0][2]
         assert calls[0][2]["aws_access_key_id_secret"] == {
@@ -182,4 +193,16 @@ def test_static_credentials_use_explicit_cross_database_secret_references():
                 aws_role_arn=ROLE,
                 aws_access_key_id_secret="key",
             )
-        assert len(calls) == 1
+        assert len(calls) == 2
+
+
+def test_metadata_defaults_an_omitted_role_to_none():
+    data = dict(INFO)
+    data.pop("aws_role_arn")
+    assert StorageIntegrationInfo(**data).aws_role_arn is None
+
+
+def test_namespace_connections_keep_existing_apis_available(tmp_path):
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    with pytest.raises(NotImplementedError):
+        db.create_storage_integration("raw", "s3://customer/raw/", aws_role_arn=ROLE)

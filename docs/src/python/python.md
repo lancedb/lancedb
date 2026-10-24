@@ -223,8 +223,8 @@ catalog.authz.add_acl(
 
 Creation grants ownership to the creator. Describing an integration requires
 `USAGE` on that integration; dropping it requires `OWNERSHIP`. Listing integrations
-requires `USAGE` on the System object. These grants are independent of database
-and namespace grants and are managed through `catalog.authz`.
+requires `USAGE` on the selected database and namespace. Describing and dropping
+also require parent `USAGE` grants. Manage these grants through `catalog.authz`.
 
 By default, the `list_acls` function lists all the access control entries in
 the system. By adding a function parameter, the output is filtered to just ACLs
