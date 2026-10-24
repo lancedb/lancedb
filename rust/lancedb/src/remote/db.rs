@@ -318,6 +318,13 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        if parsed.db_name.is_empty() && host_overrides.rest.is_none() {
+            return Err(Error::InvalidInput {
+                message:
+                    "A host override is required when connecting to the storage root with 'db://'"
+                        .to_string(),
+            });
+        }
         Self::try_new_with_identity(
             uri,
             api_key,
@@ -1707,7 +1714,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // TODO: Implement namespace-aware drop_all_tables
         let _namespace_path = namespace_path; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
-            message: "Dropping all tables is not currently supported in the remote API".to_string(),
+            message: "Dropping all tables is not currently supported in the remote API. \
+                      List tables and call drop_table for each table instead."
+                .to_string(),
         })
     }
 

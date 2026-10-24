@@ -378,23 +378,30 @@ pub struct ParsedDbUrl {
 
 /// Parse a database URL and extract the database name and optional prefix.
 ///
-/// Expected format: `db://db_name` or `db://db_name/prefix`
+/// Expected format: `db://db_name`, `db://db_name/prefix`, or `db://` when
+/// connecting to the storage root through a host override.
 pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
     let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
         message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
     })?;
     debug_assert_eq!(parsed_url.scheme(), "db");
-    if !parsed_url.has_host() {
-        return Err(Error::InvalidInput {
-            message: format!("Invalid database URL (missing host) '{}'", db_url),
-        });
-    }
-    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
-        .map_err(|err| Error::InvalidInput {
-            message: format!("Invalid encoded database name: {err}"),
-        })?
-        .into_owned();
-    validate_database_name(&db_name)?;
+    let db_name = match parsed_url.host_str() {
+        Some(db_name) => {
+            let db_name = urlencoding::decode(db_name)
+                .map_err(|err| Error::InvalidInput {
+                    message: format!("Invalid encoded database name: {err}"),
+                })?
+                .into_owned();
+            validate_database_name(&db_name)?;
+            db_name
+        }
+        None if matches!(parsed_url.path(), "" | "/") => String::new(),
+        None => {
+            return Err(Error::InvalidInput {
+                message: format!("Invalid database URL (missing host) '{}'", db_url),
+            });
+        }
+    };
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
