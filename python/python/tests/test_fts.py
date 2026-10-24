@@ -26,7 +26,9 @@ from lancedb.db import DBConnection
 from lancedb.index import FTS
 from lancedb.query import (
     BoostQuery,
+    CombinedFieldsQuery,
     DocumentGranularity,
+    FullTextOperator,
     MatchQuery,
     MultiMatchQuery,
     PhraseQuery,
@@ -1321,6 +1323,78 @@ def test_match_query_fuzziness_search(tmp_db, options, expected):
     assert sorted(row["text"] for row in results) == sorted(expected)
 
 
+@pytest.mark.parametrize(
+    "operator,combined_ids,multi_match_ids",
+    [
+        # Combined fields treat the columns as one field, so AND also matches
+        # row 0, where "john" is in the title and "smith" is in the body.
+        (FullTextOperator.AND, {0, 1}, {1}),
+        (FullTextOperator.OR, {0, 1, 2}, {0, 1, 2}),
+    ],
+)
+def test_combined_fields_query(mem_db, operator, combined_ids, multi_match_ids):
+    table = mem_db.create_table(
+        "people",
+        pa.table(
+            {
+                "id": [0, 1, 2],
+                "title": ["john", "john smith", "john"],
+                "body": ["smith", "foo", "alice"],
+            }
+        ),
+    )
+    table.create_index("title", config=FTS())
+    table.create_index("body", config=FTS())
+
+    def ids(query):
+        return {row["id"] for row in table.search(query).select(["id"]).to_list()}
+
+    combined = CombinedFieldsQuery("john smith", ["title", "body"], operator=operator)
+    multi_match = MultiMatchQuery("john smith", ["title", "body"], operator=operator)
+    assert ids(combined) == combined_ids
+    assert ids(multi_match) == multi_match_ids
+
+
+def test_combined_fields_query_boosts(mem_db):
+    table = mem_db.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    table.create_index("title", config=FTS())
+    table.create_index("body", config=FTS())
+
+    results = table.search(
+        CombinedFieldsQuery("hello", ["title", "body"], boosts=[1.5, 1.0])
+    ).to_list()
+    assert len(results) == 1
+
+    # Each weight must be at least 1, and there must be one per column.
+    with pytest.raises(ValueError, match="boost"):
+        table.search(
+            CombinedFieldsQuery("hello", ["title", "body"], boosts=[0.5, 1.0])
+        ).to_list()
+    with pytest.raises(ValueError, match="boosts"):
+        table.search(
+            CombinedFieldsQuery("hello", ["title", "body"], boosts=[1.0])
+        ).to_list()
+
+
+@pytest.mark.asyncio
+async def test_combined_fields_query_round_trip(mem_db_async):
+    table = await mem_db_async.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    query = CombinedFieldsQuery(
+        "hello world",
+        ["title", "body"],
+        boosts=[2.0, 1.0],
+        operator=FullTextOperator.AND,
+    )
+
+    query_obj = table.query().nearest_to_text(query).to_query_object()
+
+    assert query_obj.full_text_query.query == query
+
+
 def test_fts_query_to_json():
     """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
@@ -1455,6 +1529,17 @@ def test_fts_query_to_json():
         '"boost":1.0,"fuzziness":0,"max_expansions":50,"operator":"Or",'
         '"prefix_length":0},{"column":"title","terms":"python","boost":1.0,'
         '"fuzziness":0,"max_expansions":50,"operator":"Or","prefix_length":0}]}}'
+    )
+    assert json_str == expected
+
+    # Test CombinedFieldsQuery
+    combined_fields = CombinedFieldsQuery(
+        "python", ["tags", "title"], boosts=[2.0, 1.0], operator=FullTextOperator.AND
+    )
+    json_str = combined_fields.to_json()
+    expected = (
+        '{"combined_fields":{"query":"python","columns":["tags","title"],'
+        '"boost":[2.0,1.0],"operator":"And"}}'
     )
     assert json_str == expected
 

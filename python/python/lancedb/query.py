@@ -443,6 +443,7 @@ class FullTextQueryType(str, Enum):
     MATCH_PHRASE = "match_phrase"
     BOOST = "boost"
     MULTI_MATCH = "multi_match"
+    COMBINED_FIELDS = "combined_fields"
     BOOLEAN = "boolean"
 
 
@@ -665,6 +666,42 @@ class MultiMatchQuery(FullTextQuery):
 
     def query_type(self) -> FullTextQueryType:
         return FullTextQueryType.MULTI_MATCH
+
+
+@pydantic.dataclasses.dataclass
+class CombinedFieldsQuery(FullTextQuery):
+    """
+    Combined-fields (BM25F) query for full-text search.
+
+    Unlike `MultiMatchQuery`, which scores each column on its own and keeps
+    the best one, this query treats the columns as a single virtual field, so
+    term statistics are blended across them. A query term can then match in
+    any of the columns, e.g. a first name in one column and a last name in
+    another.
+
+    Parameters
+    ----------
+    query : str
+        The query string to match against.
+    columns : list[str]
+        The columns combined into the virtual field. Every column must have the
+        same tokenizer configuration, and at least one must have an FTS index.
+    boosts : list[float], optional
+        The weight of each column, aligned with `columns`. Each weight must be
+        at least 1. If not provided, every column has a weight of 1.
+    operator : FullTextOperator, default OR
+        The operator to use for combining the query terms.
+        If `AND`, every term must appear in at least one of the columns.
+        If `OR`, at least one term must match.
+    """
+
+    query: str
+    columns: list[str]
+    boosts: Optional[list[float]] = pydantic.Field(None, kw_only=True)
+    operator: FullTextOperator = pydantic.Field(FullTextOperator.OR, kw_only=True)
+
+    def query_type(self) -> FullTextQueryType:
+        return FullTextQueryType.COMBINED_FIELDS
 
 
 @pydantic.dataclasses.dataclass
