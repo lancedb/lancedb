@@ -5,11 +5,19 @@ on:
     branches:
       - main
     paths:
+      - Cargo.toml
+      - python/pyproject.toml
+      - ci/check_cargo_lock.py
+      - ci/check_sdist.py
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml
   pull_request:
     paths:
+      - Cargo.toml
+      - python/pyproject.toml
+      - ci/check_cargo_lock.py
+      - ci/check_sdist.py
       - ci/set_lance_version.py
       - ci/tests/**
       - .github/workflows/ci-scripts.yml
@@ -26,5 +34,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - name: Install test dependencies
+        run: python -m pip install packaging
       - name: Run tests
         run: python -m unittest discover -s ci/tests -v

@@ -240,22 +240,60 @@ pub fn expr_lit(value: Bound<'_, PyAny>) -> PyResult<PyExpr> {
 
 fn parse_decimal(s: &str) -> PyResult<(i128, u8, i8)> {
     let s = s.trim();
-    let dot_pos = s.find('.');
-    let scale = if let Some(pos) = dot_pos {
-        (s.len() - pos - 1) as i8
-    } else {
-        0
+    let (mantissa, exponent) = match s.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (
+            mantissa,
+            exponent.parse::<i64>().map_err(|e| {
+                PyValueError::new_err(format!("failed to parse decimal exponent: {}", e))
+            })?,
+        ),
+        None => (s, 0),
     };
+    let fractional_digits = mantissa.find('.').map_or(0, |pos| mantissa.len() - pos - 1);
+    // Keep the coefficient intact instead of expanding an exponent into zeros.
+    // Arrow Decimal128 has at most 38 digits and an i8 scale (at most 38).
+    let mut scale = i64::try_from(fractional_digits)
+        .ok()
+        .and_then(|fractional_digits| fractional_digits.checked_sub(exponent))
+        .and_then(|scale| i8::try_from(scale).ok())
+        .filter(|scale| *scale <= 38)
+        .ok_or_else(|| PyValueError::new_err("decimal scale is outside Decimal128 range"))?;
 
-    let digits = s.replace('.', "");
-    let val = digits
+    let digits = mantissa.replace('.', "");
+    let mut val = digits
         .parse::<i128>()
         .map_err(|e| PyValueError::new_err(format!("failed to parse decimal digits: {}", e)))?;
 
-    // Precision is total number of digits
-    let precision = digits.trim_start_matches('-').len() as u8;
+    // Positive scale cannot exceed precision, including for tiny values such as 1E-38.
+    let mut precision = digits
+        .trim_start_matches('-')
+        .len()
+        .max(usize::try_from(scale).unwrap_or(0));
+    if scale < 0 {
+        // Arrow cannot cast SQL text to a decimal with negative scale. Normalize
+        // positive exponents within Decimal128's bounded coefficient range.
+        if val != 0 {
+            let shift = -i16::from(scale) as u32;
+            precision += shift as usize;
+            if precision > 38 {
+                return Err(PyValueError::new_err(
+                    "decimal precision exceeds Decimal128 maximum of 38",
+                ));
+            }
+            val = 10_i128
+                .checked_pow(shift)
+                .and_then(|factor| val.checked_mul(factor))
+                .ok_or_else(|| PyValueError::new_err("decimal coefficient exceeds i128 range"))?;
+        }
+        scale = 0;
+    }
+    if precision > 38 {
+        return Err(PyValueError::new_err(
+            "decimal precision exceeds Decimal128 maximum of 38",
+        ));
+    }
 
-    Ok((val, precision, scale))
+    Ok((val, precision as u8, scale))
 }
 
 /// Call an arbitrary registered SQL function by name.

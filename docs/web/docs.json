@@ -327,6 +327,7 @@
               "management/namespace",
               "management/table",
               "tables/branching",
+              "tables/realtime-engine",
               "management/materialized-view",
               "management/view"
             ]
@@ -349,6 +350,7 @@
             "pages": [
               "enterprise/index",
               "enterprise/architecture",
+              "enterprise/distributed-search",
               "enterprise/deployment/index",
               "deployment/storage",
               "deployment/monitoring",

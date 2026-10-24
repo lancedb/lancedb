@@ -8,6 +8,8 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
+If no wheel is published for your platform, pip builds `lancedb` from the source distribution. That build needs a [Rust toolchain](https://rustup.rs/) and [protoc](https://grpc.io/docs/protoc-installation/) (the Protocol Buffers compiler) on your `PATH`, and can take a while.
+
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
 The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C) for full performance on modern hardware. Pre-Haswell hosts — Intel Sandy Bridge / Ivy Bridge / Westmere; AMD Bulldozer / Piledriver / Steamroller — don't have AVX2 and crash with `Illegal instruction` at `import lancedb`.
@@ -37,6 +39,33 @@ Stable releases are created about every 2 weeks. For the latest features and bug
 ```bash
 pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 ```
+
+If you also need the optional `lance` Python API, install the `pylance` extra
+and include the Lance preview index:
+
+```bash
+pip install --pre \
+  --extra-index-url https://pypi.fury.io/lancedb/ \
+  --extra-index-url https://pypi.fury.io/lance-format/ \
+  "lancedb[pylance]"
+```
+
+With uv, also select the best matching version across the indexes:
+
+```bash
+uv pip install --prerelease allow \
+  --index https://pypi.fury.io/lancedb/ \
+  --index https://pypi.fury.io/lance-format/ \
+  --index-strategy unsafe-best-match \
+  "lancedb[pylance]"
+```
+
+The LanceDB preview index contains old `pylance` releases; current Lance previews
+are published to the `lance-format` index. By default, uv only considers versions
+from the first index containing a package, which can select an old `pylance` or
+backtrack to an older LanceDB release. `unsafe-best-match` searches all configured
+indexes, like pip; use it only with indexes you trust. Install the extra rather
+than an unconstrained `pylance` so LanceDB's minimum supported version is enforced.
 
 ### Threading in CPU-limited containers
 
