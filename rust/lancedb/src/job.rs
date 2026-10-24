@@ -636,6 +636,14 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn local_typed_result_decode_errors_are_runtime_errors() {
+        assert!(matches!(
+            TerminalResult::local(Value::Null).decode::<u64>(),
+            Err(Error::Runtime { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn mapped_spawned_job_reuses_outcome() {
         let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
