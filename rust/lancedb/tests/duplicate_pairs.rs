@@ -670,11 +670,11 @@ async fn similarity_worker_stripes_preserve_cross_block_candidates() -> anyhow::
     let make = |worker, count| {
         DuplicatePairsExec::try_new(dataset.clone(), config.clone(), tasks.clone())?
             .with_method(method)?
-            .with_sharding(
-                lancedb::table::datafusion::udtf::duplicate_pairs::DuplicatePairsSharding {
-                    rows_per_shard: 3,
-                    shard_index: worker,
-                    shard_count: count,
+            .with_blocking(
+                lancedb::table::datafusion::udtf::duplicate_pairs::DuplicatePairsBlocking {
+                    rows_per_block: 3,
+                    worker_index: worker,
+                    worker_count: count,
                 },
             )
     };
