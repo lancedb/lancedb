@@ -910,6 +910,8 @@ class Query(pydantic.BaseModel):
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
+        # Keep the unset value for this opt-in flag, as in the sync builders.
+        query.fast_search = req.fast_search or None
         query.with_row_id = req.with_row_id
         # use_rte is a genuine tri-state (None / True / False); preserve it as-is
         # so a round-tripped query keeps an explicit False.
