@@ -86,6 +86,7 @@ def test_sync_debugger_inspection_does_not_use_background_loop(tmp_path, monkeyp
 
     assert members["uri"] == str(tmp_path)
     assert members["read_consistency_interval"] is None
+    assert members["session"] is None
     assert repr(db) == f"LanceDBConnection(uri={str(tmp_path)!r})"
     assert repr(table) == f"LanceTable(name='test', _conn={db!r})"
 
@@ -105,6 +106,8 @@ def test_read_consistency_interval_does_not_use_background_loop(tmp_path, monkey
 
     assert db.read_consistency_interval == consistency_interval
     assert db_from_inner.read_consistency_interval == consistency_interval
+    assert db.session is None
+    assert db_from_inner.session is None
 
 
 def test_ingest_pd(tmp_path):
@@ -243,6 +246,40 @@ def test_db_contains_and_len_include_all_table_name_pages(tmp_db: lancedb.DBConn
     for idx in range(20):
         assert f"table_{idx}" in tmp_db
     assert "does_not_exist" not in tmp_db
+
+
+@pytest.mark.asyncio
+async def test_table_listing_defaults_and_zero_limit(tmp_path):
+    names = [f"t{i:03}" for i in range(130)]
+    for name in names:
+        (tmp_path / f"{name}.lance").mkdir()
+
+    db = lancedb.connect(tmp_path)
+    assert db.table_names() == names
+    assert db.table_names(limit=None) == names
+    assert db.table_names(limit=0) == []
+    first = db.list_tables()
+    assert first.tables == names[:100]
+    assert first.page_token
+    second = db.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    assert db.list_tables(limit=200).tables == names
+    empty = db.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
+
+    adb = await lancedb.connect_async(tmp_path)
+    assert await adb.table_names() == names
+    assert await adb.table_names(limit=0) == []
+    first = await adb.list_tables()
+    assert first.tables == names[:100]
+    second = await adb.list_tables(page_token=first.page_token)
+    assert second.tables == names[100:]
+    assert second.page_token is None
+    empty = await adb.list_tables(limit=0)
+    assert empty.tables == []
+    assert empty.page_token is None
 
 
 def test_db_contains_stops_after_matching_table_page(

@@ -112,9 +112,42 @@ class Fm:
 class FTS:
     """Describe a FTS index configuration.
 
-    `FTS` is a full-text search index that can be used on `String` columns
+    `FTS` supports string columns, lists of strings, and JSON columns created
+    from PyArrow ``pa.json_()``. JSON columns use Lance's JSON-aware tokenizer
+    and are stored as ``LargeBinary`` with the ``lance.json`` logical type.
+    Arbitrary binary columns are not supported.
 
-    For example, it works with `title`, `description`, `content`, etc.
+    JSON queries use ``path,str,value`` triples. Paths are relative to the JSON
+    column and use dots for nested object keys. For example,
+    ``meta.tag,str,nature`` matches the string value at ``$.meta.tag``;
+    it does not search other paths or JSON key names. The value is processed
+    with the configured text tokenizer. Use ``str``, not ``string``.
+
+    Create and query a JSON index through the modern API::
+
+        import pyarrow as pa
+        from lancedb.index import FTS
+
+        table = db.create_table(
+            "documents",
+            pa.table({"doc": pa.array(
+                ['{"meta":{"tag":"nature"}}'], type=pa.json_()
+            )}),
+        )
+        table.create_index("doc", config=FTS())
+        table.search(
+            "meta.tag,str,nature", query_type="fts", fts_columns="doc"
+        ).to_list()
+
+    Create the index on the JSON column itself, not a JSON subpath such as
+    ``doc.meta.tag``. JSON-path scalar indexes do not provide FTS path scoping.
+    Plain text such as ``nature`` is not a valid JSON FTS query. The current
+    Lance tokenizer can panic on malformed triples; see
+    https://github.com/lance-format/lance/issues/8812.
+
+    Remote tables use the same ``FTS()`` configuration and require a server
+    that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
+    before searching a newly created remote index with its default name.
 
     Examples
     --------
@@ -138,6 +171,7 @@ class FTS:
         - "simple": Splits text by whitespace and punctuation.
         - "whitespace": Split text by whitespace, but not punctuation.
         - "raw": No tokenization. The entire text is treated as a single token.
+        - "code": Tokenizes source code and identifiers.
         - "ngram": N-gram tokenizer for substring-style matching.
         - "icu": ICU dictionary-based word segmentation.
         - "icu/split": ICU segmentation with simple-style delimiter splitting.
@@ -151,12 +185,16 @@ class FTS:
         ignored.
     lower_case : bool, default True
         Whether to convert the token to lower case. This makes queries case-insensitive.
-    stem : bool, default True
+    stem : bool, optional
         Whether to stem the token. Stemming reduces words to their root form.
         For example, in English "running" and "runs" would both be reduced to "run".
-    remove_stop_words : bool, default True
+        ``None`` uses the base tokenizer's default: False for ``code`` and
+        ``ngram``, True otherwise.
+    remove_stop_words : bool, optional
         Whether to remove stop words. Stop words are common words that are often
         removed from text before indexing. For example, in English "the" and "and".
+        ``None`` uses the base tokenizer's default: False for ``code`` and
+        ``ngram``, True otherwise.
     custom_stop_words : list of str, optional
         Custom words replace the built-in language stop words
         and only take effect when ``remove_stop_words`` is True. ``None`` uses
@@ -197,8 +235,8 @@ class FTS:
     language: str = "English"
     max_token_length: Optional[int] = 40
     lower_case: bool = True
-    stem: bool = True
-    remove_stop_words: bool = True
+    stem: Optional[bool] = None
+    remove_stop_words: Optional[bool] = None
     ascii_folding: bool = True
     ngram_min_length: int = 3
     ngram_max_length: int = 3

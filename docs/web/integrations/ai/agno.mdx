@@ -1,0 +1,151 @@
+---
+title: "Agno"
+sidebarTitle: "Agno"
+description: "Build a search assistant using the Agno agent framework with LanceDB as the knowledge backend."
+---
+
+import {
+  PyFrameworksAgnoAgent,
+  PyFrameworksAgnoCliChat,
+  PyFrameworksAgnoIngestYoutube,
+  PyFrameworksAgnoSetup,
+} from '/snippets/integrations.mdx';
+
+[Agno](https://docs.agno.com/introduction) is a framework for building agentic AI applications.
+It supports LanceDB as a knowledge backend, allowing you to easily ingest and retrieve external content for your agents.
+
+When you pair Agno's `Knowledge` system with LanceDB, you get a clean Agentic RAG setup.
+We'll walk through the steps below to build a YouTube transcript-aware Agno assistant that can:
+- Ingest a transcript from a YouTube video via the YouTube API
+- Store embeddings and metadata in LanceDB
+- Retrieve context during responses with hybrid search
+- Ask questions about the video content in a CLI chat loop
+
+## Prerequisites {#prerequisites}
+
+Install dependencies:
+
+<CodeGroup>
+```bash pip icon="terminal"
+pip install -U agno openai lancedb youtube-transcript-api beautifulsoup4
+```
+
+```bash uv icon="terminal"
+uv add agno openai lancedb youtube-transcript-api beautifulsoup4
+```
+</CodeGroup>
+
+## Step 1: Configure LanceDB-backed knowledge {#step-1-configure-lancedb-backed-knowledge}
+
+First, you can initialize the core `Knowledge` object that your agent will use for retrieval.
+It configures LanceDB as the vector store, enables hybrid search with native LanceDB FTS, and sets the embedding model.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoSetup}
+</CodeBlock>
+
+## Step 2: Fetch and ingest the YouTube transcript {#step-2-fetch-and-ingest-the-youtube-transcript}
+
+Next, extract a YouTube video ID, fetch the full transcript, and flatten it into text for indexing.
+The snippet shown below then inserts that transcript text into the Agno knowledge base, which writes vectors and metadata to LanceDB.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoIngestYoutube}
+</CodeBlock>
+
+<Info>
+This path explicitly fetches the transcript first, then inserts transcript text into LanceDB through Agno.
+</Info>
+
+## Step 3: Create an Agno agent with knowledge search {#step-3-create-an-agno-agent-with-knowledge-search}
+
+The next step is to construct an Agno `Agent` and attach the knowledge base you just populated.
+With `search_knowledge=True`, the agent performs retrieval before answering, so responses stay grounded in transcript context.
+
+In Agno, retrieval is exposed as a tool call that the model can invoke at runtime.
+When `search_knowledge=True`, Agno makes a knowledge-search tool (shown in output as `search_knowledge_base(...)`) available to the model; the model decides when to call it, Agno executes the tool, and the returned context is fed back into the final answer.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoAgent}
+</CodeBlock>
+
+## Step 4: Start a CLI chat loop {#step-4-start-a-cli-chat-loop}
+
+You can now ask an initial question and then start an interactive loop for follow-up queries.
+Each prompt runs through the same retrieval pipeline, so you can iteratively inspect what the transcript contains.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+  {PyFrameworksAgnoCliChat}
+</CodeBlock>
+
+<Info>
+Want local-first inference? Replace OpenAI model/embedder classes with Agno's Ollama providers. See Agno's Ollama knowledge examples: [docs.agno.com/examples/models/ollama/chat/knowledge](https://docs.agno.com/examples/models/ollama/chat/knowledge).
+</Info>
+
+### Question 1 {#question-1}
+
+The following question is asked in the CLI chat loop:
+```
+┏━ Message ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃ Q: What kinds of data can LanceDB handle?                                        ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ Tool Calls ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃ • search_knowledge_base(query=What kinds of data can LanceDB handle?)            ┃
+┃ • search_knowledge_base(query=LanceDB images audio video handle kinds of data    ┃
+┃ can handle 'LanceDB can handle' 'kinds of data' 'images audio video' transcript) ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ Response (19.1s) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃                                                                                  ┃
+┃  • Images, audio, video — i.e., multimodal AI data and “all manners of things    ┃
+┃    you don't put into traditional databases” (per the transcript).               ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+```
+
+We get the response based on the transcript's contents as expected.
+
+### Question 2 {#question-2}
+
+Let's ask a more specific question about the CEO of LanceDB, which is also in the transcript:
+
+```
+You: What is the name of the CEO of LanceDB? 
+INFO Found 10 documents                                                             
+┏━ Message ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃ What is the name of the CEO of LanceDB?                                          ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ Tool Calls ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃ • search_knowledge_base(query=CEO of LanceDB)                                    ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+┏━ Response (16.7s) ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+┃                                                                                  ┃
+┃                                                                                  ┃
+┃  • According to the retrieved YouTube transcript/title, the CEO of LanceDB is    ┃
+┃    Chang She.                                                                    ┃
+┃                                                                                  ┃
+┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+```
+
+We get the response based on the transcript's contents and title as expected.
+
+## Why this works well {#why-this-works-well}
+
+To start, LanceDB OSS can run from a local directory, so transcript data can stay on your machine when you are using the OSS stack.
+
+- You do not need to maintain a separate transcript parser in your application code.
+- You do not need to hand-roll chunking and retrieval orchestration across multiple modules.
+- One explicit Agno `Knowledge` object, backed by LanceDB, defines both ingestion and search behavior in one place.
+- Fewer moving parts means the tutorial stays readable and the same pattern is easier to carry into production code.
+
+As your application needs grow, you can migrate to LanceDB [Enterprise](/enterprise) for
+convenience features like automatic compaction and reindexing and the ability to scale to
+really large datasets.

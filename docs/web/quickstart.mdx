@@ -1,0 +1,327 @@
+---
+title: Quickstart
+sidebarTitle: "Quickstart"
+description: "Install LanceDB, create a table, and run your first vector search."
+icon: rocket
+---
+import { PyConnect, TsConnect, RsConnect, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
+import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartVectorSearch1, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1 } from '/snippets/quickstart.mdx';
+
+This quickstart uses a local database and works without an account or API key.
+
+Follow the steps below, or jump to the [complete examples](#code) to copy a runnable program.
+
+## 1\. Install LanceDB {#1-install-lancedb}
+
+Choose your language. Python uses Polars to display the search results. TypeScript needs Node.js 22.18 or later to run the `.mts` example directly.
+
+<CodeGroup>
+```bash Python (pip) icon="python"
+pip install lancedb polars
+```
+
+```bash Python (uv) icon="python"
+uv venv
+uv pip install lancedb polars
+```
+
+```bash TypeScript icon="square-js"
+npm install @lancedb/lancedb
+```
+
+```bash Rust icon="rust"
+cargo init --name lancedb_quickstart
+cargo add lancedb@0.31.0 --features polars,remote
+cargo add tokio --features macros,rt-multi-thread
+```
+</CodeGroup>
+
+Run the Rust commands in a new, empty directory. The `polars` feature provides DataFrame output; `remote` also lets this example connect to Enterprise.
+
+<Accordion title="Python pre-release builds and older CPUs">
+### Python pre-release builds {#python-pre-release-builds}
+
+To pick up the latest features and bug fixes
+before the next stable release, install a pre-release from LanceDB's Fury index.
+
+<CodeGroup>
+```bash Python (pip) icon="terminal"
+pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
+```
+
+```bash Python (uv) icon="terminal"
+uv venv
+uv pip install --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
+
+# To add to pyproject.toml, use:
+uv add --prerelease allow --index https://pypi.fury.io/lancedb/ lancedb
+```
+</CodeGroup>
+
+If you also need the optional `lance` Python API, install the `pylance` extra and
+include the Lance preview index:
+
+<CodeGroup>
+```bash Python (pip) icon="terminal"
+pip install --pre \
+  --extra-index-url https://pypi.fury.io/lancedb/ \
+  --extra-index-url https://pypi.fury.io/lance-format/ \
+  "lancedb[pylance]"
+```
+
+```bash Python (uv) icon="terminal"
+uv pip install --prerelease allow \
+  --index https://pypi.fury.io/lancedb/ \
+  --index https://pypi.fury.io/lance-format/ \
+  --index-strategy unsafe-best-match \
+  "lancedb[pylance]"
+```
+</CodeGroup>
+
+The LanceDB preview index contains old `pylance` releases; current Lance previews
+are published to the `lance-format` index. By default, uv only considers versions
+from the first index containing a package, which can select an old `pylance` or
+backtrack to an older LanceDB release. `unsafe-best-match` searches all configured
+indexes, like pip; use it only with indexes you trust. Install the extra rather
+than an unconstrained `pylance` so LanceDB's minimum supported version is enforced.
+
+<Note>
+Pre-release builds receive the same level of testing as stable releases, but their availability is not guaranteed
+for more than 6 months after release. For real-world workloads, we recommend you use the latest stable release
+as far as possible.
+</Note>
+
+### Older x86_64 CPUs {#older-x86-cpus}
+The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C). On older x86_64 CPUs without AVX2
+(Intel Sandy Bridge, Ivy Bridge, Westmere; AMD Bulldozer, Piledriver, Steamroller), `import lancedb` crashes
+with `Illegal instruction`.
+
+Install `lancedb-compat` instead. It exposes the same API (`import lancedb` still works), is built at the
+`x86-64-v2` baseline, and uses runtime SIMD dispatch to still use AVX2, FMA, or AVX-512 when available:
+
+```bash Python (pip) icon="terminal"
+pip install lancedb-compat
+```
+
+The two packages share the same `lancedb/` namespace and conflict at install time, so pick one. To switch,
+uninstall the other first (`pip uninstall lancedb && pip install lancedb-compat`).
+
+
+</Accordion>
+
+## 2\. Connect to a database {#2-connect-to-a-lancedb-database}
+
+### Use a local directory {#connect-via-local-directory-path}
+
+LanceDB creates an `ex_lancedb` directory to store your tables. No server is needed.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnect}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {"import * as lancedb from \"@lancedb/lancedb\";\n\n"}
+    {TsConnect}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {"use lancedb::connect;\n\n"}
+    {RsConnect}
+    </CodeBlock>
+</CodeGroup>
+
+The [complete examples](#code) include the imports and entry points for each language. For Python's async API, see [Connecting to a database](/basics/connect).
+
+<Accordion title="Connect to LanceDB Enterprise instead">
+### Connect to LanceDB Enterprise {#connect-to-lancedb-enterprise}
+
+Use the database URI, API key, and endpoint provided by your administrator or the LanceDB team. Replace the placeholders below with those details. Use the deployment's region if provided; otherwise keep `us-east-1`.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyConnectEnterprisePlaceholders}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {"import * as lancedb from \"@lancedb/lancedb\";\n\n"}
+    {TsConnectEnterprisePlaceholders}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {"use lancedb::connect;\n\n"}
+    {RsConnectEnterprisePlaceholders}
+    </CodeBlock>
+</CodeGroup>
+
+<Note>
+In application code, load credentials from environment variables or a secrets manager. See [connection settings](/basics/connect#enterprise) for an example.
+</Note>
+
+Need a deployment? [Contact the LanceDB team](https://www.lancedb.com/contact). For differences between local and server execution, see [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
+</Accordion>
+
+<Accordion title="Connect directly to object storage instead">
+### Connect via object storage URIs {#connect-via-object-storage-uris}
+
+Use an `s3://`, `gs://`, or `az://` URI in place of the local path. See [Configuring storage](/deployment/storage) for credentials and provider-specific options.
+</Accordion>
+
+## 3\. Create a table and add data {#3-create-a-new-table}
+
+Each row describes a character and stores a vector alongside their name, description, and stats.
+
+<Info>
+These vectors are made up for this example. In your application, use an embedding model to generate vectors from your data.
+</Info>
+
+<Accordion title="Character records">
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartData}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartData}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartDefineStruct}
+    {RsQuickstartData}
+    </CodeBlock>
+</CodeGroup>
+</Accordion>
+
+Create a `characters` table from those records:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartCreateTable}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartCreateTable}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartCreateTable}
+    </CodeBlock>
+</CodeGroup>
+
+This example uses overwrite mode so you can run it again. It replaces any existing `characters` table in the database you connect to.
+
+Add one more character:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartAddData}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartAddData}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartAddData}
+    </CodeBlock>
+</CodeGroup>
+
+## 4\. Search the table {#4-semantic-search}
+
+Find the two vectors closest to the query vector. This example uses a fixed vector; it does not call an embedding model.
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartVectorSearch1}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartVectorSearch1}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartVectorSearch1}
+    </CodeBlock>
+</CodeGroup>
+
+Merlin and Morgana come back first. Python and Rust display a Polars DataFrame; TypeScript displays an array of results. The `_distance` column measures how far each result is from your query vector, with smaller values indicating a closer match.
+
+## Complete examples {#code}
+
+Each example below creates the local database, adds four characters, and prints the two closest matches. Use the dependencies from step 1.
+
+<Accordion title="Python: quickstart.py">
+Save this as `quickstart.py` and run `python quickstart.py`. If you installed with uv, run `uv run quickstart.py`.
+
+<CodeGroup>
+    <CodeBlock filename="quickstart.py" language="Python" icon="python">
+    {PyConnect}
+    {PyQuickstartData}
+    {PyQuickstartCreateTable}
+    {PyQuickstartAddData}
+    {PyQuickstartVectorSearch1}
+    </CodeBlock>
+</CodeGroup>
+</Accordion>
+
+<Accordion title="TypeScript: quickstart.mts">
+Save this as `quickstart.mts` and run `node quickstart.mts` from the directory where you installed LanceDB.
+
+<CodeGroup>
+    <CodeBlock filename="quickstart.mts" language="TypeScript" icon="square-js">
+    {"import * as lancedb from \"@lancedb/lancedb\";\n\n"}
+    {TsConnect}
+    {TsQuickstartData}
+    {TsQuickstartCreateTable}
+    {TsQuickstartAddData}
+    {TsQuickstartVectorSearch1}
+    </CodeBlock>
+</CodeGroup>
+</Accordion>
+
+<Accordion title="Rust: src/main.rs">
+Replace `src/main.rs` with this program, then run `cargo run` from your project directory. The schema and Arrow conversion helpers are included.
+
+<CodeGroup>
+    <CodeBlock filename="src/main.rs" language="Rust" icon="rust">
+    {"use lancedb::connect;\n\n"}
+    {RsQuickstartDefineStruct}
+    {"\n#[tokio::main]\nasync fn main() -> Result<(), Box<dyn std::error::Error>> {\n"}
+    {RsConnect}
+    {RsQuickstartData}
+    {RsQuickstartCreateTable}
+    {RsQuickstartAddData}
+    {RsQuickstartVectorSearch1}
+    {"\nOk(())\n}\n"}
+    </CodeBlock>
+</CodeGroup>
+</Accordion>
+
+## Next steps {#next-steps}
+
+You've created a table, added rows, and searched it. Continue with the guides below.
+
+### Filter results {#5-curation}
+
+Combine vector search with metadata filters, such as `stats.magic >= 4`. See [SQL filtering](/search/filtering).
+
+### Extend your table {#extensions}
+
+#### Add a derived feature {#6-add-a-derived-feature}
+
+Add columns calculated from existing fields. See [Adding columns](/management/table#schema-add-new-columns).
+
+#### Computed columns {#computed-columns}
+
+Declare a column and choose when to fill or refresh it. See [Computed columns](/feature-engineering/add-computed-column).
+
+#### Store multimodal data {#7-store-multimodal-data}
+
+Store images, audio, and other binary data alongside vectors and metadata. See [Multimodal data types](/management/table#multimodal).
+
+#### Train on your data {#8-train}
+
+Read table data into PyTorch for training. See [Data loading](/training/data-loading).
+
+<Columns cols={2}>
+<Card title="Basic table operations" icon="table" href="/management/table">
+Create, update, and manage your tables.
+</Card>
+<Card title="Build a RAG app" icon="search" href="/tutorials/agents/contextual-rag">
+Use retrieved context in a language model application.
+</Card>
+<Card title="Indexing" icon="layer-group" href="/indexing/">
+Speed up queries on larger datasets.
+</Card>
+<Card title="Embedding models" icon="vector-square" href="/embedding/">
+Generate vectors from your own data.
+</Card>
+</Columns>

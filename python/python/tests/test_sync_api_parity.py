@@ -86,21 +86,18 @@ def test_remote_replace_field_metadata():
 
 
 @pytest.mark.parametrize("custom_session", [False, True])
-def test_local_session_exposes_database_cache(tmp_path, custom_session):
+def test_local_properties_and_metadata(tmp_path, custom_session):
     supplied = lancedb.Session() if custom_session else None
     db = lancedb.connect(
         tmp_path, session=supplied, read_consistency_interval=timedelta(seconds=5)
     )
     session = db.session
-    assert isinstance(session, lancedb.Session)
-    before = session.size_bytes
+    assert session is supplied
+    before = session.size_bytes if session is not None else 0
     table = db.create_table("rfm", [{"id": i} for i in range(3)])
     assert table.to_arrow().num_rows == 3
-    assert session.size_bytes > before
-    assert db.session.size_bytes == session.size_bytes
     if supplied is not None:
-        assert supplied.size_bytes == session.size_bytes
-        assert supplied.approx_num_items == session.approx_num_items
+        assert supplied.size_bytes > before
     assert db.read_consistency_interval == timedelta(seconds=5)
     assert table.namespace == []
     assert table.id == "rfm"
@@ -109,23 +106,6 @@ def test_local_session_exposes_database_cache(tmp_path, custom_session):
     with pytest.warns(DeprecationWarning):
         table.replace_field_metadata("id", {"a": "b"})
     assert table.schema.field("id").metadata == {b"a": b"b"}
-
-
-def test_local_session_after_close(tmp_path):
-    db = lancedb.connect(tmp_path)
-    db.close()
-    with pytest.raises(RuntimeError, match="Connection is closed"):
-        _ = db.session
-
-
-def test_local_session_from_inner(tmp_path):
-    from lancedb.background_loop import LOOP
-    from lancedb.db import LanceDBConnection
-
-    async_db = LOOP.run(lancedb.connect_async(tmp_path))
-    db = LanceDBConnection.from_inner(async_db._inner, None)
-    assert isinstance(db.session, lancedb.Session)
-    db.close()
 
 
 def test_namespace_connection_properties_remain_writable(tmp_path):

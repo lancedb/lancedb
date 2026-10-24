@@ -68,27 +68,29 @@ ignore = [
     # https://rustsec.org/advisories/RUSTSEC-2025-0119
     { id = "RUSTSEC-2025-0119", reason = "transitive via hf-hub/indicatif; cosmetic formatting crate" },
 
-    # rustls-webpki 0.101.7 (old major line): name-constraint checks for
-    # URI / wildcard names. Pulled in only via the legacy rustls 0.21 chain
-    # from aws-smithy-http-client. The 0.103 line we actively use is patched.
-    # Clearing the 0.101 copy requires the aws-sdk chain to migrate off
-    # rustls 0.21.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0098
-    # https://rustsec.org/advisories/RUSTSEC-2026-0099
-    { id = "RUSTSEC-2026-0098", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-    { id = "RUSTSEC-2026-0099", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
-
-    # rustls-webpki 0.101.7: reachable panic in CRL parsing. Same legacy
-    # rustls 0.21 chain from aws-smithy-http-client as above. The 0.103 line
-    # we actively use is upgraded to 0.103.13 which contains the fix.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0104
-    { id = "RUSTSEC-2026-0104", reason = "only affects rustls-webpki 0.101 from legacy aws-smithy/rustls 0.21 chain" },
+    # unsafe-libyaml: unmaintained. Transitive via lance-tokenizer → lindera
+    # → serde_yaml_ng. No maintained upgrade exists; clearing it requires
+    # lindera to move off serde_yaml_ng.
+    # https://rustsec.org/advisories/RUSTSEC-2024-0449
+    { id = "RUSTSEC-2024-0449", reason = "transitive via lindera (lance-tokenizer); no maintained upgrade available" },
 
     # pyo3 advisories in the Python bindings; tracked pending a patched pyo3 release.
     # https://rustsec.org/advisories/RUSTSEC-2026-0176
     # https://rustsec.org/advisories/RUSTSEC-2026-0177
     { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
     { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
+
+    # zip < 9.0.0: SUID/SGID bits, symlink targets and permissions applied through
+    # symlinks during archive extraction. Transitive via candle-core (optional
+    # local-embedding feature); every published candle release pins zip < 9
+    # (0.9.x/0.10.x ^7.2, 0.11.0 ^8.6), so no dependency bump clears it.
+    # LanceDB never extracts archives; the zip crate is only linked.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0367
+    # https://rustsec.org/advisories/RUSTSEC-2026-0368
+    # https://rustsec.org/advisories/RUSTSEC-2026-0369
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
 
     # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
     # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
@@ -108,12 +110,6 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
-
-    # h2 0.3: empty DATA frames can be queued without limit. The patched
-    # h2 0.4 line is locked to 0.4.16, but no patched 0.3 release exists.
-    # The old copy is pulled in by aws-smithy's legacy hyper 0.14 client.
-    # https://rustsec.org/advisories/RUSTSEC-2026-0258
-    { id = "RUSTSEC-2026-0258", reason = "h2 0.3 via legacy aws-smithy/hyper 0.14; no patched 0.3 release" },
 ]
 
 # ---------------------------------------------------------------------------
@@ -197,4 +193,6 @@ allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # releases are cut to crates.io. Allow that specific host.
 allow-git = [
     "https://github.com/lance-format/lance",
+    # Pinned by Lance for the multipart write mode API (see [patch.crates-io] in Cargo.toml).
+    "https://github.com/apache/arrow-rs-object-store",
 ]
