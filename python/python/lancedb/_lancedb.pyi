@@ -930,6 +930,7 @@ class DropColumnsResult:
     version: int
 
 class AsyncPermutationBuilder:
+    def _with_checkpoint_identity(self) -> AsyncPermutationBuilder: ...
     def select(self, projections: Dict[str, str]) -> "AsyncPermutationBuilder": ...
     def split_random(
         self,

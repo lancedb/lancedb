@@ -14,5 +14,6 @@
 pub mod builder;
 pub mod reader;
 pub mod shuffle;
+mod sidecar;
 pub mod split;
 pub mod util;
