@@ -7,7 +7,7 @@ import io
 import operator
 import urllib.request
 from collections.abc import Callable
-
+from http import HTTPStatus
 
 _READ_CHUNK_BYTES = 1024 * 1024
 _READ_TIMEOUT_SECONDS = 300
@@ -42,7 +42,7 @@ class BlobReader(io.RawIOBase):
                 uri, headers={"Range": f"bytes={offset}-{offset + length - 1}"}
             )
             with opener.open(request, timeout=_READ_TIMEOUT_SECONDS) as response:
-                if response.status != 206:
+                if response.status != HTTPStatus.PARTIAL_CONTENT:
                     raise OSError(
                         "blob range service did not return a partial response"
                     )
