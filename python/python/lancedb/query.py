@@ -2448,7 +2448,15 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
 
         vector_query = vector if vector is not None else query
-        if not isinstance(vector_query, (str, list, np.ndarray)):
+        # Accept the same containers as the vector search path, which
+        # normalizes them in `LanceQueryBuilder.create`.
+        if isinstance(vector_query, (list, tuple)):
+            vector_query = np.array(vector_query, dtype=np.float32)
+        elif isinstance(vector_query, np.ndarray):
+            vector_query = vector_query.astype(np.float32)
+        elif isinstance(vector_query, (pa.Array, pa.ChunkedArray)):
+            vector_query = np.array(vector_query.to_pylist(), dtype=np.float32)
+        elif not isinstance(vector_query, str):
             raise ValueError("Vector query must be either a string or a vector")
 
         text_query = text or query
