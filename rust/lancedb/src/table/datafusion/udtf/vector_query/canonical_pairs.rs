@@ -96,12 +96,12 @@ impl ExecutionPlan for CanonicalPairsExec {
                                 .as_any()
                                 .downcast_ref::<UInt64Array>()
                                 .expect("native pair ID");
-                            let keep = BooleanArray::from_iter_values(
+                            let keep = BooleanArray::from_iter(
                                 a.values().iter().zip(b.values()).map(|(&a, &b)| {
                                     let pair = (a, b);
                                     let keep = previous != Some(pair);
                                     previous = Some(pair);
-                                    keep
+                                    Some(keep)
                                 }),
                             );
                             Ok(Some((
