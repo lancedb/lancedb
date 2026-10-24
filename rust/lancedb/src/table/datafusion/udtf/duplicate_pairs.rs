@@ -35,7 +35,7 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 4;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 7;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
