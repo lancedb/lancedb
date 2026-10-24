@@ -35,7 +35,7 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 4;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 5;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
@@ -47,6 +47,24 @@ const SCORING_CONCURRENCY: usize = 4;
 const MAX_COORDINATE_BYTES: usize = 8;
 const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
+
+/// Every worker of a partition must use the same rows/count and a unique index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuplicatePairsSharding {
+    pub rows_per_shard: usize,
+    pub shard_index: usize,
+    pub shard_count: usize,
+}
+
+impl Default for DuplicatePairsSharding {
+    fn default() -> Self {
+        Self {
+            rows_per_shard: VECTOR_BATCH_ROWS,
+            shard_index: 0,
+            shard_count: 1,
+        }
+    }
+}
 
 /// Configuration belongs to one immutable source snapshot. Threshold uses
 /// Lance's float32 index distance, including symmetric reconstructed distances
@@ -461,6 +479,7 @@ pub struct DuplicatePairsExec {
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
     method: PairDiscoveryMethod,
+    sharding: DuplicatePairsSharding,
 }
 
 impl DuplicatePairsExec {
@@ -496,7 +515,25 @@ impl DuplicatePairsExec {
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
             method: PairDiscoveryMethod::default(),
+            sharding: DuplicatePairsSharding::default(),
         })
+    }
+    /// Assign a disjoint stripe of anchor blocks without materializing tile descriptors.
+    pub fn with_sharding(mut self, sharding: DuplicatePairsSharding) -> Result<Self> {
+        if sharding.rows_per_shard == 0
+            || sharding.shard_count == 0
+            || sharding.shard_index >= sharding.shard_count
+        {
+            return plan_err!(
+                "shard rows/count must be positive and shard index must be less than count"
+            );
+        }
+        self.sharding = sharding;
+        Ok(self)
+    }
+
+    pub fn sharding(&self) -> &DuplicatePairsSharding {
+        &self.sharding
     }
     /// Configure optional output fields before dispatching this plan.
     pub fn with_output(mut self, output: DuplicatePairsOutput) -> Result<Self> {
@@ -575,6 +612,7 @@ impl ExecutionPlan for DuplicatePairsExec {
             return plan_err!("duplicate-pair output partition out of bounds");
         }
         let method = self.method;
+        let sharding = self.sharding;
         let output = self.output.clone();
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
@@ -629,14 +667,16 @@ impl ExecutionPlan for DuplicatePairsExec {
                         config.distance_threshold,
                         lance::index::vector::dedup::DuplicatePairsOptions::default()
                             .with_memory_limit(CODE_STAGING_BYTES)
-                            .with_max_concurrency(SCORING_CONCURRENCY),
+                            .with_max_concurrency(SCORING_CONCURRENCY)
+                            .with_sharding(sharding.rows_per_shard, sharding.shard_index, sharding.shard_count),
                     )
                     .await?,
                         PairDiscoveryMethod::SimilaritySearch { nprobes, max_nprobes } => {
-                            lance::index::vector::similarity_dedup::find_similar_pairs_in_partition(
+                            lance::index::vector::similarity_dedup::find_similar_pairs_in_partition_with_sharding(
                                 dataset.clone(), &config.column, task.segment_id, task.partition_id,
                                 config.distance_threshold,
                                 lance::index::vector::similarity_dedup::SimilaritySearchOptions { nprobes, max_nprobes },
+                                lance::index::vector::similarity_dedup::SimilaritySearchSharding { rows: sharding.rows_per_shard, index: sharding.shard_index, count: sharding.shard_count },
                             ).await?
                         }
                     };

@@ -617,3 +617,61 @@ async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn similarity_worker_stripes_preserve_cross_block_candidates() -> anyhow::Result<()> {
+    let vectors = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+        (0..16).map(|i| Some(vec![Some((i % 4) as f32), Some(1.0)])),
+        2,
+    );
+    let batch =
+        RecordBatch::try_from_iter([("vector", Arc::new(vectors) as arrow_array::ArrayRef)])?;
+    let mut ds = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        "memory://",
+        None,
+    )
+    .await?;
+    ds.create_index(
+        &["vector"],
+        IndexType::Vector,
+        None,
+        &VectorIndexParams::ivf_flat(1, MetricType::L2),
+        false,
+    )
+    .await?;
+    let dataset = Arc::new(ds);
+    let config = DuplicatePairsConfig {
+        dataset_version: dataset.version().version,
+        column: "vector".into(),
+        distance_threshold: 0.0,
+    };
+    let tasks = plan_duplicate_pairs(dataset.clone(), &config).await?;
+    let ctx = SessionContext::new();
+    let method =
+        lancedb::table::datafusion::udtf::duplicate_pairs::PairDiscoveryMethod::SimilaritySearch {
+            nprobes: None,
+            max_nprobes: None,
+        };
+    let make = |worker, count| {
+        DuplicatePairsExec::try_new(dataset.clone(), config.clone(), tasks.clone())?
+            .with_method(method)?
+            .with_sharding(
+                lancedb::table::datafusion::udtf::duplicate_pairs::DuplicatePairsSharding {
+                    rows_per_shard: 3,
+                    shard_index: worker,
+                    shard_count: count,
+                },
+            )
+    };
+    let expected = datafusion_physical_plan::collect(Arc::new(make(0, 1)?), ctx.task_ctx()).await?;
+    let mut actual = Vec::new();
+    for worker in 0..3 {
+        actual.extend(
+            datafusion_physical_plan::collect(Arc::new(make(worker, 3)?), ctx.task_ctx()).await?,
+        );
+    }
+    assert_eq!(pairs(&actual), pairs(&expected));
+    assert_eq!(pairs(&actual).len(), 48);
+    Ok(())
+}
