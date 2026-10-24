@@ -25,6 +25,7 @@ use datafusion_physical_plan::{
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
+use lance_core::datatypes::{Projection, Schema as LanceSchema};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
@@ -170,12 +171,14 @@ pub struct BaseTableAdapter {
 }
 
 impl BaseTableAdapter {
+    /// Create an adapter whose schema matches the default scan output.
+    ///
+    /// Blob columns expose descriptors instead of their write schema. Constructing
+    /// the adapter does not read blob payloads.
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = table
-            .schema()
-            .await?
-            .as_ref()
-            .clone()
+        let write_schema = table.schema().await?;
+        let schema = Projection::full(Arc::new(LanceSchema::try_from(write_schema.as_ref())?))
+            .to_arrow_schema()
             .with_metadata(HashMap::default());
 
         Ok(Self {
