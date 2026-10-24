@@ -35,11 +35,12 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 3;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 6;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
 const VECTOR_BATCH_ROWS: usize = 8192;
+const DEFAULT_COMPARISON_BLOCK_ROWS: usize = 100_000;
 const VECTOR_BATCH_BYTES: usize = 16 * 1024 * 1024;
 const MIN_VECTOR_BATCH_ROWS: usize = 32;
 const ANCHOR_BLOCK_ROWS: usize = 32;
@@ -48,21 +49,21 @@ const MAX_COORDINATE_BYTES: usize = 8;
 const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
 
-/// Bounded block-pair execution and cyclic ownership of anchor blocks.
+/// Two-dimensional comparison blocks, separate from bounded I/O/scoring batches.
 /// Every worker of a partition must use the same rows/count and a unique index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DuplicatePairsSharding {
-    pub rows_per_shard: usize,
-    pub shard_index: usize,
-    pub shard_count: usize,
+pub struct DuplicatePairsBlocking {
+    pub rows_per_block: usize,
+    pub worker_index: usize,
+    pub worker_count: usize,
 }
 
-impl Default for DuplicatePairsSharding {
+impl Default for DuplicatePairsBlocking {
     fn default() -> Self {
         Self {
-            rows_per_shard: VECTOR_BATCH_ROWS,
-            shard_index: 0,
-            shard_count: 1,
+            rows_per_block: DEFAULT_COMPARISON_BLOCK_ROWS,
+            worker_index: 0,
+            worker_count: 1,
         }
     }
 }
@@ -451,7 +452,7 @@ pub struct DuplicatePairsExec {
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
-    sharding: DuplicatePairsSharding,
+    blocking: DuplicatePairsBlocking,
 }
 
 impl DuplicatePairsExec {
@@ -486,25 +487,25 @@ impl DuplicatePairsExec {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
-            sharding: DuplicatePairsSharding::default(),
+            blocking: DuplicatePairsBlocking::default(),
         })
     }
-    /// Assign a disjoint stripe of anchor blocks without materializing tile descriptors.
-    pub fn with_sharding(mut self, sharding: DuplicatePairsSharding) -> Result<Self> {
-        if sharding.rows_per_shard == 0
-            || sharding.shard_count == 0
-            || sharding.shard_index >= sharding.shard_count
+    /// Assign upper-triangular comparison blocks cyclically across workers.
+    pub fn with_blocking(mut self, blocking: DuplicatePairsBlocking) -> Result<Self> {
+        if blocking.rows_per_block == 0
+            || blocking.worker_count == 0
+            || blocking.worker_index >= blocking.worker_count
         {
             return plan_err!(
-                "shard rows/count must be positive and shard index must be less than count"
+                "block rows and worker count must be positive and worker index must be less than count"
             );
         }
-        self.sharding = sharding;
+        self.blocking = blocking;
         Ok(self)
     }
 
-    pub fn sharding(&self) -> &DuplicatePairsSharding {
-        &self.sharding
+    pub fn blocking(&self) -> &DuplicatePairsBlocking {
+        &self.blocking
     }
     /// Configure optional output fields before dispatching this plan.
     pub fn with_output(mut self, output: DuplicatePairsOutput) -> Result<Self> {
@@ -535,14 +536,14 @@ impl DisplayAs for DuplicatePairsExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, rows_per_shard={}, shard_index={}, shard_count={}",
+            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, rows_per_block={}, worker_index={}, worker_count={}",
             self.config.dataset_version,
             self.config.column,
             self.config.distance_threshold,
             self.tasks.len(),
-            self.sharding.rows_per_shard,
-            self.sharding.shard_index,
-            self.sharding.shard_count,
+            self.blocking.rows_per_block,
+            self.blocking.worker_index,
+            self.blocking.worker_count,
         )
     }
 }
@@ -581,7 +582,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
         let config = self.config.clone();
-        let sharding = self.sharding;
+        let blocking = self.blocking;
         let output_rows = MetricBuilder::new(&self.metrics).counter("output_rows", partition);
         let completed =
             MetricBuilder::new(&self.metrics).counter("completed_partitions", partition);
@@ -632,7 +633,7 @@ impl ExecutionPlan for DuplicatePairsExec {
                         lance::index::vector::dedup::DuplicatePairsOptions::default()
                             .with_memory_limit(CODE_STAGING_BYTES)
                             .with_max_concurrency(SCORING_CONCURRENCY)
-                            .with_sharding(sharding.rows_per_shard, sharding.shard_index, sharding.shard_count),
+                            .with_blocking(blocking.rows_per_block, blocking.worker_index, blocking.worker_count),
                     )
                     .await?;
                     let measured = stream::try_unfold(
