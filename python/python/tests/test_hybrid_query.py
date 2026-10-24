@@ -315,6 +315,41 @@ def test_hybrid_query_offset(sync_table: Table):
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
 
 
+@pytest.mark.parametrize(
+    "query_vector",
+    [
+        pytest.param((0.0, 0.4), id="tuple"),
+        pytest.param(pa.array([0.0, 0.4], type=pa.float32()), id="pa-array"),
+        pytest.param(
+            pa.chunked_array([[0.0], [0.4]], type=pa.float32()), id="pa-chunked-array"
+        ),
+    ],
+)
+def test_hybrid_query_accepts_every_vector_container(sync_table: Table, query_vector):
+    # Vector search and the async hybrid API both accept tuples and pyarrow
+    # arrays for the query vector (``VEC`` in ``lancedb/common.py``), so the
+    # sync hybrid builder must accept them too.
+    expected = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector(query_vector)
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    assert result["_rowid"].to_pylist() == expected["_rowid"].to_pylist()
+
+
 def test_hybrid_query_default_limit(sync_table: Table):
     # The vector and FTS legs match disjoint rows, so fusing their results
     # yields more rows than the default limit.
