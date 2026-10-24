@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+from unittest.mock import MagicMock
 import random
 
 import lancedb
@@ -545,6 +546,24 @@ def test_openai_reranker(tmp_path):
     table, schema = get_test_table(tmp_path)
     reranker = OpenaiReranker()
     _run_test_reranker(reranker, table, "single player experience", None, schema)
+
+
+def test_openai_reranker_does_not_send_temperature():
+    reranker = OpenaiReranker(api_key="test-key")
+    create = MagicMock()
+    create.return_value.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"documents": [{"content": "a", "relevance_score": 0.5}]}'
+            )
+        )
+    ]
+    reranker.__dict__["_client"] = MagicMock()
+    reranker.__dict__["_client"].chat.completions.create = create
+
+    reranker._rerank(pa.table({"text": ["a"]}), "query")
+
+    assert "temperature" not in create.call_args.kwargs
 
 
 @pytest.mark.skipif(
