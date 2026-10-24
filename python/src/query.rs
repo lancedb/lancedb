@@ -379,7 +379,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 refine_factor: None,
                 distance_type: None,
                 bypass_vector_index: None,
-                postfilter: None,
+                postfilter: (!query_request.prefilter).then_some(true),
                 norm: None,
                 order_by: query_request
                     .order_by
