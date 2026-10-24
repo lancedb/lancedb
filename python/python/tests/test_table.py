@@ -1751,6 +1751,28 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.cancel()
 
 
+@pytest.mark.parametrize(
+    "rq_kwargs", [{}, {"num_bits": None}, {"num_bits": 1}, {"num_bits": 4}]
+)
+@patch("lancedb.table.LanceTable.to_lance")
+def test_create_ivfrq_index_accelerator(mock_to_lance, mem_db: DBConnection, rq_kwargs):
+    from lancedb.index import IvfRq
+
+    table = mem_db.create_table("test", [{"vector": [1.0] * 8}])
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+    with patch.dict(sys.modules, {"torch": torch}):
+        table.create_index("vector", config=IvfRq(accelerator="cuda", **rq_kwargs))
+
+    kwargs = mock_to_lance.return_value.create_index.call_args.kwargs
+    assert kwargs["index_type"] == "IVF_RQ"
+    assert kwargs["accelerator"] == "cuda"
+    if rq_kwargs.get("num_bits") is None:
+        assert "num_bits" not in kwargs
+    else:
+        assert kwargs["num_bits"] == rq_kwargs["num_bits"]
+
+
 @pytest.mark.parametrize("method", ["create_index", "create_index_async"])
 @pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
 def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
