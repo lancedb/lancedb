@@ -11,6 +11,7 @@ on:
       - rust-toolchain.toml
       - deny.toml
       - rust/**
+      - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
       - .github/workflows/rust.yml
@@ -165,6 +166,11 @@ jobs:
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
         run: cargo run --profile ci --all-features --example simple --locked
+      - name: Run blob v2 docs example
+        # Python and TypeScript blob docs tests install preview packages.
+        # Those builds are not guaranteed to remain available for more than
+        # 6 months, so they stay a manual run. This example uses the workspace crate.
+        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
