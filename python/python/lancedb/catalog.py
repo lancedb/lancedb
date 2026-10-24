@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Remote catalogs manage databases and catalog storage integrations."""
+"""Remote catalogs manage databases."""
 
-import json
 from functools import cached_property
 from datetime import timedelta
 from typing import Any, AsyncIterator, Iterator, Optional, Union
@@ -14,8 +13,6 @@ from .authz import AsyncAuthorization, Authorization
 from .db import AsyncConnection, DBConnection
 from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
-from .listing import AsyncListing, Listing
-from .storage_integration import StorageIntegrationInfo
 
 
 class AsyncDatabaseNames(AsyncIterator[str]):
@@ -101,47 +98,6 @@ class AsyncCatalog:
         """The catalog's root namespace endpoint."""
         return self._inner.uri
 
-    async def create_storage_integration(
-        self,
-        name: str,
-        storage_prefix: str,
-        *,
-        aws_role_arn: str,
-        aws_region: Optional[str] = None,
-    ) -> StorageIntegrationInfo:
-        """Register catalog-scoped S3 configuration and return AWS setup instructions.
-
-        Names follow database naming rules, including slashes such as ``platform/raw``.
-        Registration does not verify access or attach a database to the location.
-        """
-        value = await self._inner.create_storage_integration(
-            name, storage_prefix, aws_role_arn, aws_region
-        )
-        return StorageIntegrationInfo(**json.loads(value))
-
-    async def describe_storage_integration(self, name: str) -> StorageIntegrationInfo:
-        """Return configuration, the stable external ID, and AWS policies."""
-        return StorageIntegrationInfo(
-            **json.loads(await self._inner.describe_storage_integration(name))
-        )
-
-    def list_storage_integrations(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
-    ) -> AsyncListing[str]:
-        """Lazily list names across the catalog, following continuation tokens."""
-        return AsyncListing(
-            self._inner.list_storage_integrations(
-                page_token=page_token, page_limit=page_limit
-            )
-        )
-
-    async def drop_storage_integration(self, name: str) -> None:
-        """Drop an integration with ownership permission.
-
-        Recreation generates a new external ID.
-        """
-        await self._inner.drop_storage_integration(name)
-
     async def create_database(
         self, name: str, *, exist_ok: bool = False
     ) -> AsyncConnection:
@@ -223,44 +179,6 @@ class Catalog:
     def uri(self) -> str:
         """The catalog's root namespace endpoint."""
         return self._inner.uri
-
-    def create_storage_integration(
-        self,
-        name: str,
-        storage_prefix: str,
-        *,
-        aws_role_arn: str,
-        aws_region: Optional[str] = None,
-    ) -> StorageIntegrationInfo:
-        """Register an S3 prefix and return complete AWS setup instructions.
-
-        The integration belongs to the catalog and has its own naming keyspace.
-        Names may include slashes, for example ``platform/raw``. Registration does
-        not verify AWS access or bind the integration to a database.
-        """
-        return LOOP.run(
-            self._inner.create_storage_integration(
-                name, storage_prefix, aws_role_arn=aws_role_arn, aws_region=aws_region
-            )
-        )
-
-    def describe_storage_integration(self, name: str) -> StorageIntegrationInfo:
-        """Return configuration and AWS setup policies for a catalog integration."""
-        return LOOP.run(self._inner.describe_storage_integration(name))
-
-    def list_storage_integrations(
-        self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
-    ) -> Listing[str]:
-        """Lazily list catalog integration names; page_limit bounds each request."""
-        return Listing(
-            self._inner.list_storage_integrations(
-                page_token=page_token, page_limit=page_limit
-            )
-        )
-
-    def drop_storage_integration(self, name: str) -> None:
-        """Drop an integration with ownership permission."""
-        LOOP.run(self._inner.drop_storage_integration(name))
 
     def create_database(self, name: str, *, exist_ok: bool = False) -> DBConnection:
         """Create a database, or open an existing one when ``exist_ok=True``."""

@@ -121,11 +121,7 @@ impl Privilege {
     pub fn valid_for_system(&self) -> bool {
         matches!(
             self,
-            Self::Operate
-                | Self::CreateDatabase
-                | Self::CreateStorageIntegration
-                | Self::Usage
-                | Self::Unknown(_)
+            Self::Operate | Self::CreateDatabase | Self::Usage | Self::Unknown(_)
         )
     }
 
@@ -146,6 +142,7 @@ impl Privilege {
                 | Self::CreateMaterializedView
                 | Self::CreateView
                 | Self::CreateSecret
+                | Self::CreateStorageIntegration
                 | Self::CreateFunction
                 | Self::Unknown(_)
         )

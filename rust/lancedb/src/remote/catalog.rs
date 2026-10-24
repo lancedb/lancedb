@@ -20,8 +20,6 @@ use crate::catalog::{
     ListDatabasesResponse,
 };
 use crate::database::Database;
-use crate::listing::{ListingOptions, ListingPage};
-use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use crate::utils::validate_database_name;
 use crate::{Error, Result};
 
@@ -181,108 +179,6 @@ impl RemoteCatalog {
 impl Catalog for RemoteCatalog {
     fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
         Ok(self.root.authz())
-    }
-
-    async fn create_storage_integration(
-        &self,
-        name: &str,
-        request: CreateStorageIntegrationRequest,
-    ) -> Result<StorageIntegrationInfo> {
-        validate_database_name(name)?;
-        let id = urlencoding::encode(name);
-        let (request_id, response) = self
-            .root
-            .client
-            .send(
-                self.root
-                    .client
-                    .post(&format!("/v1/storage_integration/{id}/create"))
-                    .json(&request),
-            )
-            .await?;
-        self.root
-            .client
-            .check_response(&request_id, response)
-            .await?
-            .json::<StorageIntegrationInfo>()
-            .await
-            .err_to_http(request_id)
-    }
-    async fn describe_storage_integration(&self, name: &str) -> Result<StorageIntegrationInfo> {
-        validate_database_name(name)?;
-        let id = urlencoding::encode(name);
-        let (request_id, response) = self
-            .root
-            .client
-            .send(
-                self.root
-                    .client
-                    .post(&format!("/v1/storage_integration/{id}/describe")),
-            )
-            .await?;
-        self.root
-            .client
-            .check_response(&request_id, response)
-            .await?
-            .json::<StorageIntegrationInfo>()
-            .await
-            .err_to_http(request_id)
-    }
-    async fn list_storage_integrations(
-        &self,
-        options: ListingOptions,
-    ) -> Result<ListingPage<String>> {
-        #[derive(serde::Deserialize)]
-        struct Response {
-            storage_integrations: Vec<Named>,
-            page_token: Option<String>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Named {
-            name: String,
-        }
-        let mut request = self.root.client.get("/v1/storage_integration/list");
-        if let Some(token) = options.page_token {
-            request = request.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            request = request.query(&[("limit", limit)]);
-        }
-        let (request_id, response) = self.root.client.send(request).await?;
-        let response = self
-            .root
-            .client
-            .check_response(&request_id, response)
-            .await?
-            .json::<Response>()
-            .await
-            .err_to_http(request_id)?;
-        Ok(ListingPage {
-            items: response
-                .storage_integrations
-                .into_iter()
-                .map(|value| value.name)
-                .collect(),
-            page_token: response.page_token,
-        })
-    }
-    async fn drop_storage_integration(&self, name: &str) -> Result<()> {
-        validate_database_name(name)?;
-        let id = urlencoding::encode(name);
-        let (request_id, response) = self
-            .root
-            .client
-            .send(
-                self.root
-                    .client
-                    .post(&format!("/v1/storage_integration/{id}/drop")),
-            )
-            .await?;
-        self.root
-            .client
-            .check_response(&request_id, response)
-            .await?;
-        Ok(())
     }
 
     fn uri(&self) -> &str {
@@ -462,80 +358,6 @@ mod tests {
             requests
         });
         (endpoint, task)
-    }
-
-    #[tokio::test]
-    async fn storage_integrations_use_catalog_scope_and_slash_names() {
-        use futures::TryStreamExt;
-        let info: serde_json::Value = serde_json::from_str(include_str!(
-            "../../tests/fixtures/storage_integration.json"
-        ))
-        .unwrap();
-        let (endpoint, task) = server(vec![
-            (200, info.clone()),
-            (200, info),
-            (
-                200,
-                json!({"storage_integrations":[{"name":"platform/raw"}],"page_token":"next"}),
-            ),
-            (200, json!({"storage_integrations":[{"name":"zeta"}]})),
-            (200, json!({"dropped":true})),
-        ])
-        .await;
-        let catalog = crate::catalog::CatalogConnection::new(Arc::new(
-            RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap(),
-        ));
-        let created = catalog
-            .create_storage_integration(
-                "platform/raw",
-                CreateStorageIntegrationRequest::s3(
-                    "s3://customer-bucket/raw/",
-                    "arn:aws:iam::123456789012:role/access",
-                ),
-            )
-            .await
-            .unwrap();
-        assert_eq!(created.name, "platform/raw");
-        assert_eq!(
-            catalog
-                .describe_storage_integration("platform/raw")
-                .await
-                .unwrap()
-                .aws_external_id,
-            created.aws_external_id
-        );
-        assert_eq!(
-            catalog
-                .list_storage_integrations(ListingOptions::default().page_limit(1))
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap(),
-            ["platform/raw", "zeta"]
-        );
-        catalog
-            .drop_storage_integration("platform/raw")
-            .await
-            .unwrap();
-        let requests = task.await.unwrap();
-        assert_eq!(
-            requests[0].line,
-            "POST /v1/storage_integration/platform%2Fraw/create HTTP/1.1"
-        );
-        assert!(
-            requests[2]
-                .line
-                .starts_with("GET /v1/storage_integration/list?")
-        );
-        for request in requests {
-            assert!(!request.headers.contains_key("x-lancedb-database"));
-            assert!(!request.headers.contains_key("x-lancedb-database-prefix"));
-        }
-        assert!(
-            catalog
-                .describe_storage_integration("platform//raw")
-                .await
-                .is_err()
-        );
     }
 
     #[derive(Debug)]

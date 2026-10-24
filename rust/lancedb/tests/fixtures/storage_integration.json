@@ -1,5 +1,5 @@
 {
-  "name": "platform/raw",
+  "name": "raw",
   "storage_provider": "S3",
   "storage_prefix": "s3://customer-bucket/raw/",
   "aws_role_arn": "arn:aws:iam::123456789012:role/access",
@@ -30,5 +30,7 @@
     ]
   },
   "permissions_policy": {},
-  "configuration_instructions": "Update IAM role arn:aws:iam::123456789012:role/access to trust arn:aws:iam::001122334455:role/lancedb-storage-access with external ID 55b54d68-4686-4d38-97da-9d77e54a643e and attach the S3 permissions policy for s3://customer-bucket/raw/."
+  "configuration_instructions": "Update IAM role arn:aws:iam::123456789012:role/access to trust arn:aws:iam::001122334455:role/lancedb-storage-access with external ID 55b54d68-4686-4d38-97da-9d77e54a643e and attach the S3 permissions policy for s3://customer-bucket/raw/.",
+  "database": "system",
+  "namespace_path": []
 }

@@ -8,6 +8,8 @@ from abc import abstractmethod
 import asyncio
 from datetime import timedelta
 from pathlib import Path
+from dataclasses import asdict
+import json
 import sys
 from typing import (
     TYPE_CHECKING,
@@ -58,6 +60,7 @@ from . import __version__
 from ._lancedb import connect as lancedb_connect  # type: ignore
 from .functions import FunctionVersion, UdfDefinition
 from .job import AsyncJob, Job, _typed_job
+from .storage_integration import SecretReference, StorageIntegrationInfo
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription, QueryParameters, to_parameter_batch
@@ -374,6 +377,42 @@ class DBConnection(EnforceOverrides):
         Iterable of str
         """
         pass
+
+    @abstractmethod
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        raise NotImplementedError
+
+    @abstractmethod
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        raise NotImplementedError
 
     @abstractmethod
     def create_table(
@@ -2100,6 +2139,62 @@ class LanceDBConnection(DBConnection):
         return dropped, Job(job)
 
     @override
+    def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.create_storage_integration(
+                name,
+                storage_prefix,
+                aws_role_arn=aws_role_arn,
+                aws_access_key_id_secret=aws_access_key_id_secret,
+                aws_secret_access_key_secret=aws_secret_access_key_secret,
+                aws_region=aws_region,
+                namespace_path=namespace_path,
+            )
+        )
+
+    @override
+    def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        return LOOP.run(
+            self._conn.describe_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> Listing[str]:
+        return Listing(
+            self._conn.list_storage_integrations(
+                namespace_path=namespace_path,
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    @override
+    def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        LOOP.run(
+            self._conn.drop_storage_integration(name, namespace_path=namespace_path)
+        )
+
+    @override
     def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None
     ) -> None:
@@ -3266,6 +3361,102 @@ class AsyncConnection(object):
             name, version, namespace_path
         )
         return dropped, AsyncJob(job)
+
+    async def create_storage_integration(
+        self,
+        name: str,
+        storage_prefix: str,
+        *,
+        aws_role_arn: Optional[str] = None,
+        aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
+        aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
+        aws_region: Optional[str] = None,
+        namespace_path: Optional[List[str]] = None,
+    ) -> StorageIntegrationInfo:
+        """Register database-owned S3 access using a role or two Secret references.
+
+        ``namespace_path`` follows Secret naming rules. A SecretReference can name
+        another database; a string names a root Secret in this database.
+        Registration returns setup instructions without verifying storage access.
+        """
+        role_mode = aws_role_arn is not None
+        key_mode = (
+            aws_access_key_id_secret is not None
+            and aws_secret_access_key_secret is not None
+        )
+        if role_mode == key_mode or (
+            role_mode
+            and (
+                aws_access_key_id_secret is not None
+                or aws_secret_access_key_secret is not None
+            )
+        ):
+            raise ValueError(
+                "Specify either aws_role_arn or both AWS credential Secret references"
+            )
+
+        def reference(value):
+            if value is None:
+                return None
+            if isinstance(value, str):
+                value = SecretReference(value)
+            if not isinstance(value, SecretReference):
+                raise TypeError(
+                    "Credential secrets must be names or SecretReference objects"
+                )
+            return asdict(value)
+
+        request = {
+            "storage_provider": "S3",
+            "storage_prefix": storage_prefix,
+            "aws_role_arn": aws_role_arn,
+            "aws_region": aws_region,
+            "aws_access_key_id_secret": reference(aws_access_key_id_secret),
+            "aws_secret_access_key_secret": reference(aws_secret_access_key_secret),
+        }
+        info = await self._inner.create_storage_integration(
+            validate_secret_name(name),
+            json.dumps(request),
+            list(validate_namespace_path(namespace_path)),
+        )
+        return StorageIntegrationInfo(**json.loads(info))
+
+    async def describe_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> StorageIntegrationInfo:
+        """Return configuration and Secret references without credential values."""
+        return StorageIntegrationInfo(
+            **json.loads(
+                await self._inner.describe_storage_integration(
+                    validate_secret_name(name),
+                    list(validate_namespace_path(namespace_path)),
+                )
+            )
+        )
+
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> AsyncListing[str]:
+        """Lazily list one namespace of this database's storage integrations."""
+        return AsyncListing(
+            self._inner.list_storage_integrations(
+                namespace_path=list(validate_namespace_path(namespace_path)),
+                page_token=page_token,
+                page_limit=page_limit,
+            )
+        )
+
+    async def drop_storage_integration(
+        self, name: str, *, namespace_path: Optional[List[str]] = None
+    ) -> None:
+        """Drop a storage integration with ownership permission."""
+        await self._inner.drop_storage_integration(
+            validate_secret_name(name), list(validate_namespace_path(namespace_path))
+        )
 
     async def create_secret(
         self, name: str, value: str, *, namespace_path: Optional[List[str]] = None

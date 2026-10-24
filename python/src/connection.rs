@@ -888,6 +888,72 @@ impl Connection {
         })
     }
 
+    #[pyo3(signature = (name, request, namespace_path=None))]
+    pub fn create_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        request: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        let request: lancedb::storage_integration::CreateStorageIntegrationRequest =
+            serde_json::from_str(&request)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        future_into_py(py, async move {
+            let info = inner
+                .create_storage_integration(name, request, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn describe_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            let info = inner
+                .describe_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()?;
+            serde_json::to_string(&info).map_err(|error| PyValueError::new_err(error.to_string()))
+        })
+    }
+    #[pyo3(signature = (*, namespace_path=None, page_token=None, page_limit=None))]
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: Option<Vec<String>>,
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> PyResult<crate::listing::NameListing> {
+        Ok(crate::listing::NameListing::new(
+            self.get_inner()?.list_storage_integrations(
+                &namespace_path.unwrap_or_default(),
+                crate::listing::options(page_token, page_limit),
+            ),
+        ))
+    }
+    #[pyo3(signature = (name, namespace_path=None))]
+    pub fn drop_storage_integration<'py>(
+        &self,
+        py: Python<'py>,
+        name: String,
+        namespace_path: Option<Vec<String>>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let inner = self.get_inner()?.clone();
+        future_into_py(py, async move {
+            inner
+                .drop_storage_integration(name, &namespace_path.unwrap_or_default())
+                .await
+                .infer_error()
+        })
+    }
+
     #[pyo3(signature = (name, value, namespace_path=None))]
     pub fn create_secret(
         self_: PyRef<'_, Self>,
