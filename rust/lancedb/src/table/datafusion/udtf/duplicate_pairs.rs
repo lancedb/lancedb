@@ -35,7 +35,7 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 2;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 4;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
@@ -56,6 +56,34 @@ pub struct DuplicatePairsConfig {
     pub dataset_version: u64,
     pub column: String,
     pub distance_threshold: f32,
+}
+
+/// Candidate discovery is independent of the representative policy.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum PairDiscoveryMethod {
+    #[default]
+    Pairwise,
+    SimilaritySearch {
+        nprobes: Option<usize>,
+        max_nprobes: Option<usize>,
+    },
+}
+
+impl PairDiscoveryMethod {
+    pub fn validate(&self) -> Result<()> {
+        if let Self::SimilaritySearch {
+            nprobes,
+            max_nprobes,
+        } = *self
+        {
+            lance::index::vector::similarity_dedup::SimilaritySearchOptions {
+                nprobes,
+                max_nprobes,
+            }
+            .validate()?;
+        }
+        Ok(())
+    }
 }
 
 /// One worker input, never a row of source vectors. The complete task identity
@@ -432,6 +460,7 @@ pub struct DuplicatePairsExec {
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
+    method: PairDiscoveryMethod,
 }
 
 impl DuplicatePairsExec {
@@ -466,6 +495,7 @@ impl DuplicatePairsExec {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
+            method: PairDiscoveryMethod::default(),
         })
     }
     /// Configure optional output fields before dispatching this plan.
@@ -478,6 +508,14 @@ impl DuplicatePairsExec {
         ));
         self.output = output;
         Ok(self)
+    }
+    pub fn with_method(mut self, method: PairDiscoveryMethod) -> Result<Self> {
+        method.validate()?;
+        self.method = method;
+        Ok(self)
+    }
+    pub fn method(&self) -> PairDiscoveryMethod {
+        self.method
     }
     pub fn output(&self) -> &DuplicatePairsOutput {
         &self.output
@@ -536,6 +574,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         if partition != 0 {
             return plan_err!("duplicate-pair output partition out of bounds");
         }
+        let method = self.method;
         let output = self.output.clone();
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
@@ -581,7 +620,8 @@ impl ExecutionPlan for DuplicatePairsExec {
                 let output_rows = output_rows.clone();
                 let completed = completed.clone();
                 async move {
-                    let reader = lance::index::vector::dedup::find_duplicate_pairs_in_partition_with_options(
+                    let reader = match method {
+                        PairDiscoveryMethod::Pairwise => lance::index::vector::dedup::find_duplicate_pairs_in_partition_with_options(
                         dataset.clone(),
                         &config.column,
                         task.segment_id,
@@ -591,7 +631,15 @@ impl ExecutionPlan for DuplicatePairsExec {
                             .with_memory_limit(CODE_STAGING_BYTES)
                             .with_max_concurrency(SCORING_CONCURRENCY),
                     )
-                    .await?;
+                    .await?,
+                        PairDiscoveryMethod::SimilaritySearch { nprobes, max_nprobes } => {
+                            lance::index::vector::similarity_dedup::find_similar_pairs_in_partition(
+                                dataset.clone(), &config.column, task.segment_id, task.partition_id,
+                                config.distance_threshold,
+                                lance::index::vector::similarity_dedup::SimilaritySearchOptions { nprobes, max_nprobes },
+                            ).await?
+                        }
+                    };
                     let measured = stream::try_unfold(
                         (reader, reservation),
                         move |(mut reader, reservation)| {

@@ -201,6 +201,8 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                 vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
             };
             let query_options = VectorQueryOptions {
+                method:
+                    lancedb::table::datafusion::udtf::duplicate_pairs::PairDiscoveryMethod::Pairwise,
                 column: "vector".into(),
                 distance_threshold: threshold,
                 selection: PartitionSelection::All,
@@ -466,6 +468,8 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
             vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
         };
         let options = VectorQueryOptions {
+            method:
+                lancedb::table::datafusion::udtf::duplicate_pairs::PairDiscoveryMethod::Pairwise,
             column: "vector".into(),
             distance_threshold: 1.0,
             selection: PartitionSelection::All,
@@ -475,6 +479,7 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
         let mapped = VectorQueryTable::try_new(
             Arc::new(ds.clone()),
             VectorQueryOptions {
+                method: lancedb::table::datafusion::udtf::duplicate_pairs::PairDiscoveryMethod::Pairwise,
                 dedup: false,
                 output: DuplicatePairsOutput {
                     scope: true,
@@ -546,5 +551,69 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
             }
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow::Result<()> {
+    use lancedb::table::datafusion::udtf::{
+        duplicate_pairs::{DuplicatePairsOutput, PairDiscoveryMethod},
+        vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+    };
+    let vectors = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+        [
+            Some(vec![Some(-0.01)]),
+            Some(vec![Some(2.0)]),
+            Some(vec![Some(0.01)]),
+            Some(vec![Some(2.0)]),
+        ],
+        1,
+    );
+    let batch =
+        RecordBatch::try_from_iter([("vector", Arc::new(vectors) as arrow_array::ArrayRef)])?;
+    let mut ds = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        "memory://",
+        Some(WriteParams {
+            max_rows_per_file: 2,
+            ..Default::default()
+        }),
+    )
+    .await?;
+    let params = VectorIndexParams::ivf_flat(1, MetricType::L2);
+    let mut segments = Vec::new();
+    for fragment in ds.fragments() {
+        segments.push(
+            ds.create_index_builder(&["vector"], IndexType::Vector, &params)
+                .name("vector_idx".into())
+                .fragments(vec![fragment.id as u32])
+                .execute_uncommitted()
+                .await?,
+        );
+    }
+    ds.commit_existing_index_segments("vector_idx", "vector", segments)
+        .await?;
+    let options = VectorQueryOptions {
+        column: "vector".into(),
+        distance_threshold: 0.001,
+        selection: PartitionSelection::All,
+        output: DuplicatePairsOutput::default(),
+        dedup: false,
+        method: PairDiscoveryMethod::SimilaritySearch {
+            nprobes: None,
+            max_nprobes: None,
+        },
+    };
+    let provider = VectorQueryTable::try_new(Arc::new(ds), options).await?;
+    let batches = SessionContext::new()
+        .read_table(Arc::new(provider))?
+        .collect()
+        .await?;
+    let actual = pairs(&batches);
+    assert_eq!(actual.len(), 2);
+    assert_eq!(
+        actual.iter().map(|(a, b, _)| (*a, *b)).collect::<Vec<_>>(),
+        vec![(0, 1 << 32), (1, (1 << 32) + 1)]
+    );
     Ok(())
 }

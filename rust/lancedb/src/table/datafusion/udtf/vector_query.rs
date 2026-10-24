@@ -35,9 +35,11 @@ use roaring::RoaringTreemap;
 
 use super::duplicate_pairs::{
     DuplicatePairTask, DuplicatePairsConfig, DuplicatePairsExec, DuplicatePairsOutput,
-    plan_duplicate_pairs,
+    PairDiscoveryMethod, plan_duplicate_pairs,
 };
 use crate::table::{NativeTableExt, datafusion::BaseTableAdapter};
+
+mod canonical_pairs;
 
 const REPRESENTATIVE_SORT_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 const MATERIALIZE_BATCH_ROWS: usize = 1024;
@@ -144,6 +146,7 @@ pub struct VectorQueryOptions {
     pub selection: PartitionSelection,
     pub output: DuplicatePairsOutput,
     pub dedup: bool,
+    pub method: PairDiscoveryMethod,
 }
 
 impl BaseTableAdapter {
@@ -188,6 +191,12 @@ pub struct VectorQueryTable {
 
 impl VectorQueryTable {
     pub async fn try_new(dataset: Arc<Dataset>, options: VectorQueryOptions) -> Result<Self> {
+        options.method.validate()?;
+        if matches!(options.method, PairDiscoveryMethod::SimilaritySearch { .. })
+            && !matches!(options.selection, PartitionSelection::All)
+        {
+            return plan_err!("similarity_search requires selection = all");
+        }
         if options.dedup
             && (!matches!(options.selection, PartitionSelection::All)
                 || options.output.id_column.is_some())
@@ -304,8 +313,17 @@ impl TableProvider for VectorQueryTable {
                     self.config.clone(),
                     self.tasks.clone(),
                 )?
+                .with_method(self.options.method)?
                 .with_output(output)?,
             )
+        };
+        let pairs = if matches!(
+            self.options.method,
+            PairDiscoveryMethod::SimilaritySearch { .. }
+        ) {
+            Arc::new(canonical_pairs::CanonicalPairsExec::new(pairs)) as Arc<dyn ExecutionPlan>
+        } else {
+            pairs
         };
         let plan: Arc<dyn ExecutionPlan> = if self.options.dedup {
             Arc::new(VectorDedupExec::new(
