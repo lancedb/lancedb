@@ -13,6 +13,8 @@ import pytest
 import lancedb
 from lancedb.authz import Object, Privilege
 from lancedb.db import AsyncConnection, DBConnection
+from lancedb.catalog import Catalog, AsyncCatalog
+from lancedb.storage_integration import SecretReference
 
 
 INFO = json.loads(
@@ -21,7 +23,7 @@ INFO = json.loads(
         / "rust/lancedb/tests/fixtures/storage_integration.json"
     ).read_text()
 )
-NAME = "platform/raw"
+NAME = "raw"
 ROLE = "arn:aws:iam::123456789012:role/access"
 
 
@@ -36,7 +38,9 @@ def remote_server():
         def respond(self):
             url = urllib.parse.urlsplit(self.path)
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            calls.append((self.command, url.path, json.loads(body) if body else {}))
+            assert self.headers.get("x-lancedb-database") == "system"
+            request = json.loads(body) if body else {}
+            calls.append((self.command, url.path, request))
             if url.path.endswith("/list"):
                 query = urllib.parse.parse_qs(url.query)
                 result = (
@@ -50,7 +54,16 @@ def remote_server():
             elif url.path.endswith("/drop"):
                 result = {"dropped": True}
             else:
-                result = INFO
+                result = dict(INFO)
+                if request.get("aws_access_key_id_secret"):
+                    result["aws_role_arn"] = None
+                    result["trust_policy"] = None
+                    result["aws_access_key_id_secret"] = request[
+                        "aws_access_key_id_secret"
+                    ]
+                    result["aws_secret_access_key_secret"] = request[
+                        "aws_secret_access_key_secret"
+                    ]
             payload = json.dumps(result).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -72,9 +85,11 @@ def remote_server():
         thread.join()
 
 
-def test_storage_integration_methods_belong_to_catalogs():
-    assert not hasattr(DBConnection, "create_storage_integration")
-    assert not hasattr(AsyncConnection, "create_storage_integration")
+def test_storage_integration_methods_belong_to_databases():
+    assert hasattr(DBConnection, "create_storage_integration")
+    assert hasattr(AsyncConnection, "create_storage_integration")
+    assert not hasattr(Catalog, "create_storage_integration")
+    assert not hasattr(AsyncCatalog, "create_storage_integration")
 
 
 def test_sync_storage_integration_lifecycle_and_aws_information():
@@ -84,6 +99,7 @@ def test_sync_storage_integration_lifecycle_and_aws_information():
             api_key="fake",
             client_config={"retry_config": {"retries": 0}},
         )
+        db = db.connect_database("system")
         info = db.create_storage_integration(
             NAME, INFO["storage_prefix"], aws_role_arn=ROLE
         )
@@ -99,15 +115,15 @@ def test_sync_storage_integration_lifecycle_and_aws_information():
         assert db.describe_storage_integration(NAME) == info
         listing = db.list_storage_integrations(page_limit=1)
         assert len(calls) == 2
-        assert list(listing) == ["platform/raw", "zeta"]
+        assert list(listing) == ["raw", "zeta"]
         assert db.drop_storage_integration(NAME) is None
-    assert calls[0][1] == "/v1/storage_integration/platform%2Fraw/create"
+    assert calls[0][1] == "/v1/storage_integration/raw/create"
     assert calls[0][2] == {
         "storage_provider": "S3",
         "storage_prefix": INFO["storage_prefix"],
         "aws_role_arn": ROLE,
     }
-    assert calls[-1][1] == "/v1/storage_integration/platform%2Fraw/drop"
+    assert calls[-1][1] == "/v1/storage_integration/raw/drop"
 
 
 @pytest.mark.asyncio
@@ -118,12 +134,13 @@ async def test_async_storage_integration_lifecycle():
             api_key="fake",
             client_config={"retry_config": {"retries": 0}},
         )
+        db = await db.connect_database("system")
         info = await db.create_storage_integration(
             NAME, INFO["storage_prefix"], aws_role_arn=ROLE
         )
         assert await db.describe_storage_integration(NAME) == info
         assert [name async for name in db.list_storage_integrations()] == [
-            "platform/raw",
+            "raw",
             "zeta",
         ]
         await db.drop_storage_integration(NAME)
@@ -132,6 +149,37 @@ async def test_async_storage_integration_lifecycle():
 
 
 def test_integration_authorization_object_and_creation_privilege():
-    value = Object.storage_integration(name=NAME)
-    assert str(value) == "storage_integration:platform/raw"
+    value = Object.storage_integration(database="system", name=NAME)
+    assert str(value) == "storage_integration:system:public$raw"
     assert Privilege.CREATE_STORAGE_INTEGRATION.value == "CREATE_STORAGE_INTEGRATION"
+
+
+def test_static_credentials_use_explicit_cross_database_secret_references():
+    with remote_server() as (host, calls):
+        db = lancedb.connect_catalog(host, api_key="fake").connect_database("system")
+        info = db.create_storage_integration(
+            "raw",
+            INFO["storage_prefix"],
+            aws_access_key_id_secret=SecretReference(
+                "access_key", database="shared", namespace_path=("credentials",)
+            ),
+            aws_secret_access_key_secret=SecretReference(
+                "secret_key", database="shared", namespace_path=("credentials",)
+            ),
+        )
+        assert info.aws_role_arn is None
+        assert info.aws_access_key_id_secret.database == "shared"
+        assert "aws_role_arn" not in calls[0][2]
+        assert calls[0][2]["aws_access_key_id_secret"] == {
+            "database": "shared",
+            "namespace_path": ["credentials"],
+            "name": "access_key",
+        }
+        with pytest.raises(ValueError):
+            db.create_storage_integration(
+                "bad",
+                INFO["storage_prefix"],
+                aws_role_arn=ROLE,
+                aws_access_key_id_secret="key",
+            )
+        assert len(calls) == 1

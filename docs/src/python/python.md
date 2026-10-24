@@ -157,10 +157,10 @@ registered functions, for example,
 namespace. These objects identify resources for ACL operations; a secret object
 contains the credential's name, not its value.
 
-Storage integration objects identify catalog-level storage configuration, for
-example `Object.storage_integration(name="platform/raw")`. The full name follows
-database naming rules, including slashes, and has its own keyspace. It has no
-database or namespace path; its wire name is `storage_integration:platform/raw`.
+Storage integration objects identify database-owned storage configuration, for
+example `Object.storage_integration(database="system", name="raw")`. Pass
+`namespace_path` for nested namespaces. Their keyspace is separate from Secrets,
+Functions, and relations; the wire name is `storage_integration:system:public$raw`.
 
 More object types may be added in the future.
 
@@ -205,17 +205,17 @@ for privilege in [Privilege.CREATE_SECRET, Privilege.CREATE_FUNCTION]:
 Both privileges also accept their string names in synchronous and asynchronous
 ACL methods.
 
-Storage integration creation requires `CREATE_STORAGE_INTEGRATION` on the System
-object. It is a catalog privilege and cannot be granted on a database or namespace:
+Storage integration creation requires `CREATE_STORAGE_INTEGRATION` on its containing
+namespace, together with database and namespace `USAGE`:
 
 ```python
 catalog.authz.add_acl(
-    object=Object.system(),
+    object=Object.namespace(database="system"),
     subject=Subject.role("developer"),
     privilege=Privilege.CREATE_STORAGE_INTEGRATION,
 )
 catalog.authz.add_acl(
-    object=Object.storage_integration(name="platform/raw"),
+    object=Object.storage_integration(database="system", name="raw"),
     subject=Subject.role("reader"),
     privilege=Privilege.USAGE,
 )
@@ -744,32 +744,45 @@ rows nearest to a query vector and can be created with the
 
 ::: lancedb.storage_integration.StorageIntegrationInfo
 
+::: lancedb.storage_integration.SecretReference
 
-Integrations belong to the catalog and use the same name rules as databases, including
-slash-bearing names such as `platform/raw`. Their keyspace is separate from database
-names. They remain registered when databases are dropped.
-
-Register an S3 prefix and give the returned setup instructions to your AWS administrator:
+Integrations belong to a database and follow the same namespace-path naming rules
+as Secrets, with their own keyspace. Use the shared `system` database for storage
+configuration needed before opening an external database.
 
 ```python
 catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
-integration = catalog.create_storage_integration(
-    "platform/raw", "s3://customer-bucket/raw/",
+db = catalog.connect_database("system")
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
     aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
 )
 print(integration.configuration_instructions)
-
-integration = catalog.describe_storage_integration("platform/raw")
-for name in catalog.list_storage_integrations():
+integration = db.describe_storage_integration("raw")
+for name in db.list_storage_integrations():
     print(name)
-catalog.drop_storage_integration("platform/raw")
+db.drop_storage_integration("raw")
 ```
 
-`configuration_instructions` is one sentence of display guidance whose wording
-may change. Use the structured identity, `trust_policy` and `permissions_policy`
-fields for programmatic access instead of parsing the guidance.
+Static credentials use two existing, single-value Secrets instead of a role:
 
-AsyncCatalog provides the same methods; await create, describe and drop, and use
-`async for` for listing. Registration returns a stable external ID and account-specific
-trust policy, plus an example prefix-scoped S3 read policy. AWS access remains unverified,
-and this version does not configure storage operations to use the integration.
+```python
+from lancedb.storage_integration import SecretReference
+
+integration = db.create_storage_integration(
+    "raw", "s3://customer-bucket/raw/",
+    aws_access_key_id_secret=SecretReference("s3-key-id", database="system"),
+    aws_secret_access_key_secret=SecretReference("s3-secret-key", database="system"),
+)
+```
+
+Pass `namespace_path` on the object APIs and Secret references to select a namespace.
+A string Secret reference selects the root namespace of the integration's database.
+Cross-database references require `USAGE` on the source database, namespace, and
+Secret. Role and static-credential modes are mutually exclusive. Credential values
+are never included in integration metadata.
+
+`configuration_instructions` is one sentence of display guidance whose wording may
+change. Use the structured identity and policy fields for programmatic access.
+Registration does not verify AWS access. `AsyncConnection` provides the same methods;
+await create, describe, and drop, and use `async for` for listing.
