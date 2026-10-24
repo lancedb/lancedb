@@ -16,12 +16,13 @@ use query::{FTSQuery, HybridQuery, Query, VectorQuery};
 use session::Session;
 use table::{
     AddColumnsResult, AddResult, AlterColumnsResult, DeleteResult, DropColumnsResult, FtsToken,
-    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, LsmWriteSpec, MergeResult,
-    PyBlobFile, RefreshColumnResult, RefreshMaterializedViewResult, Table,
+    FunctionErrorFragment, FunctionErrorRecord, FunctionErrors, MergeResult, PyBlobFile,
+    RTEWriteSpec, RefreshColumnResult, RefreshMaterializedViewResult, Table,
     UpdateFieldMetadataResult, UpdateResult,
 };
 
 pub mod arrow;
+pub mod authz;
 pub mod catalog;
 pub mod connection;
 pub mod error;
@@ -29,6 +30,7 @@ pub mod expr;
 pub mod header;
 pub mod index;
 pub mod job;
+mod listing;
 pub mod namespace;
 pub mod oauth;
 pub mod otel;
@@ -65,6 +67,14 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Connection>()?;
     m.add_class::<catalog::Catalog>()?;
     m.add_class::<catalog::DatabaseNames>()?;
+    m.add_class::<listing::NameListing>()?;
+    m.add_class::<listing::FunctionListing>()?;
+    m.add_class::<listing::JobListing>()?;
+
+    m.add_class::<authz::AuthorizationClient>()?;
+    m.add_class::<authz::AuthzSubject>()?;
+    m.add_class::<authz::AuthzObject>()?;
+    m.add_class::<authz::AuthzPrivilege>()?;
     m.add_function(wrap_pyfunction!(catalog::connect_catalog, m)?)?;
     m.add_class::<Session>()?;
     m.add_class::<Table>()?;
@@ -94,7 +104,7 @@ pub fn _lancedb(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<UpdateFieldMetadataResult>()?;
     m.add_class::<AddResult>()?;
     m.add_class::<MergeResult>()?;
-    m.add_class::<LsmWriteSpec>()?;
+    m.add_class::<RTEWriteSpec>()?;
     m.add_class::<DeleteResult>()?;
     m.add_class::<DropColumnsResult>()?;
     m.add_class::<UpdateResult>()?;

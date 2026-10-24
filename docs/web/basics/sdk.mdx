@@ -1,0 +1,117 @@
+---
+title: "SDKs"
+sidebarTitle: "SDKs"
+description: "Choose a LanceDB SDK and find the API reference for your language."
+icon: code-compare
+keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Python, TypeScript and Rust support both LanceDB OSS and LanceDB Enterprise.
+    Java provides a client for the Enterprise REST API.
+---
+
+Use a LanceDB SDK to create tables, add data, build indexes and run searches
+from your application. Python, TypeScript and Rust work with both the embedded
+OSS library and LanceDB Enterprise.
+
+The [quickstart](/quickstart) includes installation instructions and complete
+examples in all three languages. For connection settings, see
+[Connect to LanceDB](/basics/connect).
+
+## Official SDKs {#supported-sdks}
+
+| SDK | Use it with | API reference |
+| --- | --- | --- |
+| Python | Python applications, notebooks, pandas and PyArrow | [Python reference](https://lancedb.github.io/lancedb/python/python/) |
+| TypeScript | Node.js and TypeScript applications | [TypeScript reference](https://lancedb.github.io/lancedb/js/) |
+| Rust | Rust applications using the native library | [Rust reference](https://docs.rs/lancedb/latest/lancedb/index.html) |
+| Java | Applications using the Enterprise REST API | [Java reference](https://lancedb.github.io/lancedb/java/java/) |
+
+Guides show the available language examples together. Use the API reference for
+method signatures and options; SDKs do not expose every feature through the same
+methods. In Rust, enable the `remote` feature to connect to Enterprise.
+
+For SQL joins, aggregations and window functions, use
+[SQL](/basics/sql). Python provides a SQL client, and applications in other
+languages can use a Flight SQL client. TypeScript's table query API does not
+provide a SQL execution method.
+
+## REST API {#rest}
+
+LanceDB Enterprise also exposes an HTTP API for catalog and table operations.
+Use it when integrating a language or tool without a LanceDB SDK. The
+[REST API reference](/api-reference/rest) describes its endpoints and request
+formats. For SQL queries, connect through [Flight SQL](/basics/sql).
+
+## Community SDKs {#community-sdks}
+
+These clients are maintained by the community. Check each project's supported
+features, installation instructions and releases before choosing one.
+
+| Language | Project |
+| --- | --- |
+| Go | [lancedb-go](https://pkg.go.dev/github.com/lancedb/lancedb-go/pkg/lancedb) |
+| Ruby | [Lancelot](https://github.com/scientist-labs/lancelot) |
+| Swift | [LanceDbSwiftKit](https://github.com/RyanLisse/LanceDbSwiftKit) |
+| R | [lancedb](https://github.com/CathalByrneGit/lancedb) |
+| Flutter | [flutter_lancedb](https://github.com/Alexcn/flutter_lancedb) |
+
+## Python multiprocessing {#multiprocessing}
+
+<Warning>
+Use `spawn` when starting Python worker processes with `multiprocessing`.
+LanceDB uses threads internally, and forking a process with active threads can
+cause deadlocks. Create a connection inside each worker instead of sharing an
+open connection from the parent process.
+</Warning>
+
+For PyTorch worker setup and connection factories, see
+[PyTorch integration](/training/torch).
+
+## Moving to LanceDB Enterprise {#moving-to-enterprise}
+
+The core table workflow stays familiar: connect, create or open a table, write
+records, and query them. Enterprise runs those operations on remote compute and
+manages background maintenance.
+
+- **Configure the connection.** Replace the local path with your database URI,
+  and supply the endpoint, region and credentials provided by your administrator.
+  [Connect to Enterprise](/basics/connect#enterprise) shows these settings.
+- **Retrieve query results.** Python's remote tables do not support whole-table
+  `to_arrow()` or `to_pandas()` calls. Use a query and select the columns and
+  number of rows you need, for example `table.search().limit(10).to_arrow()`.
+- **Handle table listings and namespaces.** Remote table listings are paginated.
+  Use the namespace and pagination options described in
+  [Namespaces](/management/namespace).
+- **Use server-side jobs.** Index builds and feature refreshes can run as
+  [jobs](/basics/jobs). Each operation's guide explains how to submit work and
+  track completion.
+- **Let Enterprise manage maintenance.** Use
+  [background maintenance](/maintenance/background-jobs) rather than calling
+  the embedded table's `optimize()` method.
+
+For SQL connection details, see [SQL](/basics/sql). For the operating model and
+deployment options, see [LanceDB Enterprise](/enterprise).
+
+## Shared data across languages {#invariants}
+
+LanceDB uses Arrow schemas across its SDKs. A fixed-size vector column stores
+vectors of a consistent dimension; the [data types reference](/sql/data-types)
+describes the supported element types and other column types.
+
+Applications in different languages can work with the same tables. Connect to
+the same database and namespace, use the appropriate credentials, and account
+for [read consistency](/tables/consistency) when another process writes data.
+
+## Related guides {#next}
+
+<CardGroup cols={2}>
+  <Card title="SQL" icon="table-list" href="/basics/sql">
+    Query Enterprise tables with SQL from Python or a Flight SQL client.
+  </Card>
+  <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
+    Use the LanceDB plugin to help a coding agent work with your data.
+  </Card>
+</CardGroup>

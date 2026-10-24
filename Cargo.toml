@@ -13,20 +13,21 @@ categories = ["database-implementations"]
 rust-version = "1.94.0"
 
 [workspace.dependencies]
-lance = { "version" = "=14.0.0-beta.1", default-features = false, "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-core = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datagen = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-file = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-io = { "version" = "=14.0.0-beta.1", default-features = false, "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-index = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-linalg = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-namespace-impls = { "version" = "=14.0.0-beta.1", default-features = false, "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-table = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-testing = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-datafusion = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-encoding = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { "version" = "=14.0.0-beta.1", "tag" = "v14.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-core = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datagen = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-file = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-io = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-index = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-jsonb = { version = "=15.0.0-beta.1", tag = "v15.0.0-beta.1", git = "https://github.com/lance-format/lance.git" }
+lance-linalg = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-namespace-impls = { "version" = "=15.0.0-beta.1", default-features = false, "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-table = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-testing = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-datafusion = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-encoding = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { version = "=15.0.0-beta.1", path = "python/vendor/lance-arrow" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
@@ -72,12 +73,20 @@ oauth2 = { version = "5.0", default-features = false }
 regex = "1.10"
 semver = "1.0.25"
 serde = "1"
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3.5.0"
 tokio = { version = "1.23", features = ["rt-multi-thread", "sync"] }
-tonic = { version = "0.14", features = ["tls-native-roots", "tls-ring"] }
+tonic = { version = "0.14", features = ["tls-native-roots", "tls-aws-lc"] }
 uuid = { version = "1.7.0", features = ["v4", "v7"] }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+[patch."https://github.com/lance-format/lance.git"]
+# Carry the offset-safe validity fix until it is available in a Lance release.
+lance-arrow = { path = "python/vendor/lance-arrow" }
+
+[patch.crates-io]
+# Lance v14.0.0-beta.18 requires multipart write modes from this upstream revision.
+object_store = { git = "https://github.com/apache/arrow-rs-object-store.git", rev = "c10758c207c0103355f940f0c736fb8ecb157b04" }
 
 [profile.ci]
 debug = "line-tables-only"

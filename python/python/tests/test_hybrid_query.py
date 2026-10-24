@@ -355,6 +355,20 @@ def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
         )
 
 
+def test_hybrid_query_nprobes_remains_independent(sync_table: Table):
+    query = sync_table.search(query_type="hybrid").nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes is None
+    assert query._maximum_nprobes is None
+
+    query = query.minimum_nprobes(5).nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes == 5
+    assert query._maximum_nprobes is None
+
+
 def test_hybrid_query_distance_range(sync_table: Table):
     reranker = RRFReranker(return_score="all")
     result = (
@@ -522,3 +536,15 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
+    # Pins the full message: the space between "hybrid search." and "But" is
+    # load-bearing (see the _validate_query literal concatenation).
+    with pytest.raises(ValueError) as excinfo:
+        sync_table.search("dog", query_type="hybrid").vector([0.5, -0.5]).to_arrow()
+    assert str(excinfo.value) == (
+        "You can either provide a string query in search() method "
+        "or set `vector()` and `text()` explicitly for hybrid search. "
+        "But not both."
+    )

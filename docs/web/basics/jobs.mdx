@@ -1,0 +1,75 @@
+---
+title: "Jobs"
+sidebarTitle: "Job"
+description: "Track background work from submission to completion."
+icon: hourglass-half
+keywords: ["job", "background", "progress", "events", "cancel"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Job handles track operations in OSS and Enterprise. Enterprise also
+    supports listing server jobs, reopening them by ID and reading their events.
+---
+
+## Job handles {#convention}
+
+A job handle lets you track an operation, such as an index build or a computed
+column refresh. Use it to check progress, wait for completion and inspect
+failures.
+
+Methods such as Python's `create_index_async` and TypeScript's
+`createIndexAsync` return job handles. In OSS, the work runs in your application
+process; in Enterprise, it runs on server workers. A returned handle can
+represent an operation that has already finished, so check its status before
+waiting or requesting cancellation. See the operation's API reference for when
+the method returns.
+
+## Submit and wait for a job {#waiting}
+
+1. **Submit the operation.** Keep the returned job handle. For an Enterprise
+   job, also keep its ID if another process needs to look it up later.
+2. **Check progress.** Read the current status while the operation runs.
+3. **Wait for completion.** Check that the job succeeded before using its
+   result. If it failed or was cancelled, inspect the failure details and any
+   results it committed before stopping.
+
+In Python, `job.status()` reports the current state and `job.wait()` waits for
+completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
+The timeout does not cancel the server job.
+
+<span id="inspecting" />
+<span id="events" />
+
+## Inspect and cancel jobs {#managing}
+
+| Task | What to do |
+| --- | --- |
+| Inspect progress | Check status and refresh the handle to retrieve details. Enterprise job events can help explain ongoing work or failures. |
+| Reattach from another process | Open an existing server job with its ID, such as Python's `db.open_job(job_id)`. The server must still retain the job record. |
+| Diagnose a failure | Inspect failure details and relevant events. Enterprise SQL also provides `SHOW ERRORS`. |
+| Request cancellation | Call the job's cancellation method. Cancellation may take time, and work already committed is not rolled back. |
+
+Reopening a job retrieves the existing operation; it does not restart failed
+work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
+
+Event responses have [row limits](/basics/limits#jobs). An explicit limit can
+request more than the default, but it does not guarantee a complete event
+history.
+
+## OSS and Enterprise execution {#in-process}
+
+| | OSS | Enterprise |
+| --- | --- | --- |
+| Execution | In your application process | On server workers |
+| Job identity | No server ID | A server ID for looking up the job |
+| Event history | No server event history | Available through the jobs API |
+| Reattaching after a client restart | No server job to reopen | Reopen by ID while the record is retained |
+
+## Learn more {#next}
+
+- [Build and repair indexes](/indexing/reindexing): submit index work.
+- [Column refresh](/feature-engineering/refresh-column): populate derived values.
+- [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
+- [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
+- [SDKs](/basics/sdk): find the job API for your client.

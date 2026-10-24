@@ -1,0 +1,106 @@
+---
+title: "SQL reference"
+sidebarTitle: "Overview"
+description: "SQL statements, expressions and data types supported by LanceDB Enterprise."
+icon: table-list
+keywords: ["sql", "datafusion", "flight sql", "reference", "dialect"]
+---
+
+LanceDB Enterprise supports SQL through an Arrow Flight SQL endpoint. This
+reference covers statement syntax, data types and expressions. To set up a
+client and run your first query, see [SQL](/basics/sql).
+
+## The dialect {#dialect}
+
+LanceDB uses [Apache DataFusion](https://datafusion.apache.org) for SQL planning
+and execution. These pages describe LanceDB's supported statements and
+extensions. DataFusion's reference is useful for expression syntax, but does
+not establish that every DataFusion statement or feature is exposed by
+LanceDB.
+
+## Connecting {#connecting}
+
+Use Python's `execute_query` or a Flight SQL client after configuring the
+[Enterprise connection](/basics/sql#sql-is-remote). TypeScript applications
+use a Flight SQL client for SQL queries.
+
+```python
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+for batch in reader:
+    print(batch)
+```
+
+SQL results arrive as Arrow record batches. Iterating over the reader avoids
+collecting the entire result in application memory. See
+[Queries](/basics/query) for result handling.
+
+## Usage {#usage}
+
+The endpoint executes one statement per request and is meant for the queries
+and DDL/DML pages below. Reach for the SDKs instead for table-management
+operations that have no SQL form, such as a merge insert. See
+[What SQL cannot do](#cannot).
+
+## Reference {#reference}
+
+### DDL, by object {#ddl}
+
+| | |
+| --- | --- |
+| [Namespace](/sql/ddl/namespace) | `CREATE SCHEMA`, `DROP SCHEMA` |
+| [Table](/sql/ddl/table) | `CREATE`, `DESCRIBE`, `ALTER`, `CLONE`, `DROP TABLE` |
+| [View](/sql/ddl/view) | `CREATE VIEW`, `DROP VIEW` |
+| [Materialized view](/sql/ddl/materialized-view) | `CREATE MATERIALIZED VIEW`, `SHOW MATERIALIZED VIEWS` |
+| [Index](/sql/ddl/index) | `CREATE INDEX`, `DROP INDEX` |
+| [Job](/sql/ddl/job) | `SHOW JOBS`, `SHOW ERRORS`, `PAUSE`/`RESUME`/`CANCEL JOB` |
+
+{/*
+Draft for the Functions release. Add this row to the table above, after Index:
+| [Function](/sql/ddl/function) | `CREATE FUNCTION`, `SHOW FUNCTIONS`, `DROP FUNCTION` |
+*/}
+
+### DML {#dml}
+
+| | |
+| --- | --- |
+| [Insert](/sql/dml/insert) | `INSERT INTO`, including `INSERT ... SELECT` |
+| [Update](/sql/dml/update) | `UPDATE ... SET` |
+| [Delete](/sql/dml/delete) | `DELETE FROM` |
+| [Copy](/sql/dml/copy) | `COPY` (refused by recent deployment versions) |
+| [Refresh](/sql/dml/refresh) | filling computed columns and materialized views |
+
+### DQL {#dql}
+
+| | |
+| --- | --- |
+| [Data types](/sql/data-types) | how Lance columns appear to SQL, and pseudo-columns |
+| [Select](/sql/dql/select) | projection, filtering, ordering, set operations, CTEs |
+| [Subqueries](/sql/dql/subqueries) | scalar, `IN`, `EXISTS`, correlated, derived tables |
+| [Joins](/sql/dql/join) | inner, outer, cross, and namespace-qualified paths |
+| [Aggregation](/sql/dql/aggregation) | `GROUP BY`, `HAVING`, the aggregate set |
+| [Window functions](/sql/dql/window) | `OVER`, framing, ranking and offset functions |
+| [Sampling](/sql/dql/sampling) | `TABLESAMPLE`, by rows or by fragments |
+| [Full-Text Search](/sql/dql/fts) | the `fts()` table function, and its query forms |
+| [Explain](/sql/dql/explain) | `EXPLAIN`, `EXPLAIN ANALYZE`, `EXPLAIN VERBOSE` |
+
+### Expressions {#expressions}
+
+| | |
+| --- | --- |
+| [Operators](/sql/operators) | comparison, logical, arithmetic, literals, precedence |
+| [Functions](/sql/functions) | where to find each kind, and table functions |
+| [Scalar functions](/sql/scalar-functions) | the per-row catalogue, and what Lance accelerates |
+| [Prepared statements](/sql/prepared-statements) | preparing through a Flight SQL client |
+
+## SQL limitations and alternatives {#cannot}
+
+| | |
+| --- | --- |
+| Vector search | See [SQL vector search](/basics/sql#no-vector-sql) for supported query forms and server-version requirements. The [SDK query builder](/search/vector-search) also supports vector search. |
+| Merge insert | no SQL form: it needs a source relation and a per-match policy |
+| `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
+| `COPY` | refused by recent deployment versions (see [Copy](/sql/dml/copy)) |
+| `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
+| Run on a local database | no engine to plan the statement |
+
+See [Limits](/basics/limits#sql) for the bounds these pages enforce.

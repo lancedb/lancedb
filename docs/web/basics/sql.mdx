@@ -1,0 +1,159 @@
+---
+title: "SQL"
+sidebarTitle: "SQL"
+description: "Query LanceDB Enterprise with SQL from Python or an Arrow Flight SQL client."
+icon: table-list
+keywords: ["sql", "flight sql", "datafusion", "reference", "dialect"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL through Arrow Flight SQL. Use the SDK table APIs for embedded OSS tables. See [Connection settings](#sql-is-remote) to connect.
+---
+
+Use SQL in LanceDB Enterprise to filter records, join tables, calculate
+aggregates, and prepare datasets. SQL queries work with the same Lance tables
+you create and update through the SDKs, without exporting the data to another
+system.
+
+You can run SQL through the Python SDK or an Arrow Flight SQL client. This
+guide covers connection settings, a first query, and how SQL fits alongside
+the SDK table APIs.
+
+## Connect a SQL client {#flight-sql}
+
+Enterprise exposes an
+[Arrow Flight SQL](https://arrow.apache.org/docs/format/FlightSql.html)
+endpoint. A compatible client sends SQL statements to this endpoint and
+receives results as Arrow record batches.
+
+- **Python:** use `execute_query()` on an Enterprise connection, as shown below.
+- **TypeScript:** use a separate Flight SQL client. The LanceDB TypeScript SDK
+  does not expose a SQL execution method.
+- **Other languages and tools:** use a Flight SQL client or a tool with Flight
+  SQL integration. A LanceDB-specific SDK is not required to submit SQL.
+
+The [SQL reference](/sql#connecting) shows a query from Python. See
+[SDKs](/basics/sdk) for the LanceDB language clients.
+
+### Connection settings {#sql-is-remote}
+
+Get the following values from your Enterprise administrator:
+
+- Database URI, such as `db://your-database`.
+- API key and region.
+- API endpoint for `host_override`.
+- Flight SQL endpoint for `sql_host_override`, including its scheme and port.
+
+The Flight SQL endpoint must be enabled and reachable from your client. Pass
+it explicitly as `sql_host_override` in Python, as in the example below. The
+API and SQL endpoints may use different hosts or ports.
+
+See [Connect to Enterprise](/basics/connect#enterprise) for other connection options.
+
+SQL runs in Enterprise. Connections to a local directory or an object-storage
+bucket use the embedded OSS library and cannot execute SQL statements. Use
+SDK table operations to query those tables.
+
+## Run a query in Python {#sql-from-python}
+
+Install the SDK with `pip install lancedb`. Replace the connection placeholders
+with your Enterprise settings, including the region and both endpoint URLs.
+This example reads an existing table named `my_docs` with `id` and `text`
+columns. Change the query to match your table.
+
+```python
+import lancedb
+
+db = lancedb.connect(
+    "db://your-database",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-api-endpoint",
+    sql_host_override="https://your-sql-endpoint:443",
+)
+
+reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+table = reader.read_all()
+print(table.to_pylist())
+```
+
+In application code, load credentials from environment variables or a secrets
+manager. The [connection guide](/basics/connect#enterprise) shows that setup.
+
+`execute_query()` returns a blocking Arrow reader when results start arriving.
+The example uses `read_all()` to collect the small result in memory. For larger
+results, consume the reader in batches. To submit a query and check its status
+separately, use `execute_query_async()`. See [Queries](/basics/query) for query
+handles, streaming, and cancellation.
+
+## Choose SQL or SDK table operations {#choosing}
+
+Use **SQL** for joins, aggregations, window functions, and analytical queries
+written in SQL. Use **SDK table operations** to build applications around table
+management, ingestion, filtering, and search, including applications that run
+with the embedded OSS library.
+
+You can combine them. For example, create and populate a table with an SDK,
+then query it with SQL to prepare a training dataset. In Python, both workflows
+can use the same Enterprise connection.
+
+### Common SQL operations {#sdk-parity}
+
+Several tasks are available through both interfaces, but the methods and SQL
+statements do not have identical coverage. SDK support also differs by
+language. These SQL reference pages describe the supported statements:
+
+| Task | SQL reference |
+| --- | --- |
+| Create a table | [CREATE TABLE](/sql/ddl/table) |
+| Insert or change rows | [INSERT](/sql/dml/insert), [UPDATE](/sql/dml/update), [DELETE](/sql/dml/delete) |
+| Build an index | [CREATE INDEX](/sql/ddl/index) |
+| Join and aggregate data | [SELECT](/sql/dql/select) |
+| Save a query as a view | [CREATE VIEW](/sql/ddl/view) |
+
+[Computed columns](/feature-engineering/add-computed-column) store SQL
+expressions whose values are populated by a refresh. {/* Draft for the Functions release:
+They are separate from registered Python Functions. */}
+See the computed-column and
+[materialized-view](/management/materialized-view) guides for their SDK and SQL
+operations and Enterprise setup requirements.
+
+## Vector and full-text search {#no-vector-sql}
+
+SQL vector search support depends on the Enterprise server version and query
+form. Versions that support `ORDER BY distance(vector, query_vector) LIMIT k`
+over a table scan can plan indexed or flat vector search. Check that your
+server version supports this form, then use
+[`EXPLAIN`](/sql/dql/explain) to inspect the query plan.
+
+The [SDK vector search API](/search/vector-search) is also available in
+Enterprise and OSS. Use it when you prefer the SDK query builder or need to
+search embedded tables.
+
+For full-text search in SQL, use the [`fts()`](/sql/functions#fts) table
+function or the [`contains_tokens`](/sql/scalar-functions#contains-tokens)
+predicate.
+
+## SQL syntax and API references {#reference}
+
+The [SQL reference](/sql) documents statement syntax, supported expressions,
+and data types. For SDK methods and their arguments, use the
+[Python](https://lancedb.github.io/lancedb/python/python/),
+[TypeScript](https://lancedb.github.io/lancedb/js/), or
+[Rust](https://docs.rs/lancedb/latest/lancedb/index.html) API reference.
+
+<Card title="SQL Reference" icon="table-list" href="/sql">
+  Statement syntax, expressions, and data types for LanceDB SQL.
+</Card>
+
+## Next steps {#next}
+
+<CardGroup cols={2}>
+  <Card title="Queries" icon="magnifying-glass" href="/basics/query">
+    Read results, track long-running queries, and cancel work.
+  </Card>
+  <Card title="SDKs" icon="code-compare" href="/basics/sdk">
+    Compare language clients and find their API references.
+  </Card>
+</CardGroup>

@@ -244,11 +244,39 @@ impl BlobRangeRequest {
 
 /// Creates an Arrow field for a Lance blob v2 column.
 ///
-/// `Struct<data, uri>` with the `lance.blob.v2` marker. Same layout Lance
-/// expects on write.
+/// `Struct<data, uri, position, size>` with nullable children and the
+/// `lance.blob.v2` marker. Set both range fields to read a byte range from a
+/// URI, or leave both null for a whole file. Inline bytes are also supported.
 ///
-/// A blob column may be top-level or nested inside a struct or list. Nested
-/// blobs are addressed by a dotted path (e.g. `info.blob`) in the read APIs.
+/// # Migration
+///
+/// This helper previously returned only `data` and `uri`. Rust callers building
+/// a `StructArray` from this field must now supply four children: append typed
+/// null UInt64 arrays for `position` and `size` when no range is needed:
+///
+/// ```
+/// use std::sync::Arc;
+/// use arrow_array::{ArrayRef, LargeBinaryArray, StringArray, StructArray, UInt64Array};
+/// use arrow_schema::DataType;
+/// let field = lancedb::blob("image", true);
+/// let DataType::Struct(children) = field.data_type() else { unreachable!() };
+/// let image = StructArray::new(children.clone(), vec![
+///     Arc::new(LargeBinaryArray::from(vec![Some(b"image".as_slice())])) as ArrayRef,
+///     Arc::new(StringArray::from(vec![None::<&str>])),
+///     Arc::new(UInt64Array::new_null(1)),
+///     Arc::new(UInt64Array::new_null(1)),
+/// ], None);
+/// ```
+///
+/// Existing two-field tables remain writable: append and merge-insert fill
+/// missing range fields or drop all-null range fields to match the table.
+/// Non-null ranges cannot be written to a two-field table. Overwrite replaces
+/// the table schema with the input schema rather than normalizing its layout.
+///
+/// A blob column may be top-level or nested inside a struct or list. Blobs
+/// nested inside structs use dotted paths (e.g. `info.blob`) in the read APIs.
+/// Blobs inside lists can be written and queried as descriptors, but cannot
+/// currently be fetched by row id.
 ///
 /// ```
 /// use arrow_schema::{DataType, Field, Schema};
@@ -259,7 +287,51 @@ impl BlobRangeRequest {
 /// ]);
 /// ```
 pub fn blob(name: impl AsRef<str>, nullable: bool) -> Field {
-    lance::blob::blob_field(name.as_ref(), nullable)
+    blob_with_options(name, nullable, BlobOptions::default())
+}
+
+static BLOB_STORAGE_TYPE: std::sync::LazyLock<DataType> = std::sync::LazyLock::new(|| {
+    DataType::Struct(
+        vec![
+            Field::new("data", DataType::LargeBinary, true),
+            Field::new("uri", DataType::Utf8, true),
+            Field::new("position", DataType::UInt64, true),
+            Field::new("size", DataType::UInt64, true),
+        ]
+        .into(),
+    )
+});
+
+/// Options for creating a blob v2 column field with tier thresholds.
+///
+/// Re-exported from lance so the thresholds are built exactly the way
+/// [`lance::blob::blob_field_with_options`] builds them. Note that lance does
+/// not currently expose a pack file size threshold option, so only the inline
+/// and dedicated size thresholds are supported here.
+pub use lance::blob::BlobFieldOptions as BlobOptions;
+
+/// Creates an Arrow field for a Lance blob v2 column with tier thresholds.
+///
+/// Same as [`blob`], but forwards `options` to
+/// [`lance::blob::blob_field_with_options`], storing the inline and dedicated
+/// size thresholds as field metadata. With [`BlobOptions::default()`] this is
+/// identical to [`blob`].
+///
+/// ```
+/// use std::num::NonZeroUsize;
+///
+/// use lancedb::blob::BlobOptions;
+///
+/// let options = BlobOptions {
+///     inline_size_threshold: Some(8 * 1024),
+///     dedicated_size_threshold: NonZeroUsize::new(1 << 20),
+/// };
+/// let field = lancedb::blob::blob_with_options("payload", true, options);
+/// assert!(lancedb::blob::is_blob(&field));
+/// ```
+pub fn blob_with_options(name: impl AsRef<str>, nullable: bool, options: BlobOptions) -> Field {
+    lance::blob::blob_field_with_options(name.as_ref(), nullable, options)
+        .with_data_type(BLOB_STORAGE_TYPE.clone())
 }
 
 /// Returns true if `field` is a blob v2 column.
@@ -273,7 +345,7 @@ pub fn is_blob(field: &Field) -> bool {
 }
 
 /// Returns true if `field`, or any field nested under it, is a blob v2 column.
-fn field_tree_has_blob_v2(field: &Field) -> bool {
+pub(crate) fn field_tree_has_blob_v2(field: &Field) -> bool {
     if field.is_blob_v2() {
         return true;
     }
@@ -286,7 +358,7 @@ fn field_tree_has_blob_v2(field: &Field) -> bool {
     }
 }
 
-/// Collects the dotted paths of blob v2 columns under `field`, into `paths`.
+/// Collects the dotted paths of row-addressable blob v2 columns under `field`.
 fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
     let path = if prefix.is_empty() {
         field.name().clone()
@@ -297,17 +369,48 @@ fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
         paths.push(path);
         return;
     }
-    match field.data_type() {
-        DataType::Struct(children) => {
-            for child in children {
-                collect_blob_paths(child, &path, paths);
-            }
+    if let DataType::Struct(children) = field.data_type() {
+        for child in children {
+            collect_blob_paths(child, &path, paths);
         }
-        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
-            collect_blob_paths(child, &path, paths)
-        }
-        _ => {}
     }
+}
+
+fn is_list_blob_path(field: &Field, prefix: &str, column: &str, inside_list: bool) -> bool {
+    let path = if prefix.is_empty() {
+        field.name().clone()
+    } else {
+        format!("{prefix}.{}", field.name())
+    };
+    if field.is_blob_v2() {
+        return inside_list && column == path;
+    }
+    match field.data_type() {
+        DataType::Struct(children) => children
+            .iter()
+            .any(|child| is_list_blob_path(child, &path, column, inside_list)),
+        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
+            (column == path && field_tree_has_blob_v2(child))
+                || is_list_blob_path(child, &path, column, true)
+        }
+        _ => false,
+    }
+}
+
+/// Give list blob paths a useful error before they reach the row-based reader.
+pub(crate) fn reject_list_blob_column(schema: &Schema, column: &str) -> Result<()> {
+    if schema
+        .fields()
+        .iter()
+        .any(|field| is_list_blob_path(field, "", column, false))
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "column '{column}' contains a blob inside a list; blobs inside lists cannot be fetched by row id yet"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Returns true if `schema` declares any blob v2 column, including nested ones.
@@ -315,8 +418,9 @@ pub(crate) fn has_blob_columns(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| field_tree_has_blob_v2(f))
 }
 
-/// Blob v2 column paths in `schema`, declaration order preserved. Nested blobs
-/// are dotted paths (e.g. `info.blob`).
+/// Row-addressable blob v2 column paths in `schema`, in declaration order.
+/// Struct-nested blobs use dotted paths (e.g. `info.blob`); list-nested blobs
+/// are omitted because a row id cannot identify an individual list element.
 pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
     let mut paths = Vec::new();
     for field in schema.fields() {
@@ -351,6 +455,11 @@ pub(crate) fn ensure_blob_v2_column(
     schema: &lance_core::datatypes::Schema,
     column: &str,
 ) -> Result<()> {
+    // A top-level blob cannot have a list ancestor. Keep the common read path
+    // from converting the entire schema just to validate that condition.
+    if column.contains('.') || schema.field(column).is_none_or(|field| !field.is_blob_v2()) {
+        reject_list_blob_column(&Schema::from(schema), column)?;
+    }
     match schema.field(column) {
         Some(field) if field.is_blob_v2() => Ok(()),
         Some(field) if field.is_blob() => Err(Error::InvalidInput {
@@ -368,45 +477,115 @@ pub(crate) fn ensure_blob_v2_column(
     }
 }
 
-fn ensure_all_row_ids_resolved(column: &str, requested: usize, resolved: usize) -> Result<()> {
-    if requested == resolved {
+fn missing_blob_row_ids_error(column: &str, requested: usize, missing: &[u64]) -> Error {
+    let detail = if missing.is_empty() {
+        String::new()
+    } else {
+        format!("; first missing row ids: {missing:?}")
+    };
+    Error::InvalidInput {
+        message: format!(
+            "blob read for column '{column}' requested {requested} row ids but some \
+             do not exist in the table{detail}; pass row ids collected from this table"
+        ),
+    }
+}
+
+/// Diagnose only after a failed read. Stable row IDs use Lance's deletion-aware
+/// index; physical row IDs are fragment/offset pairs. Limit the error to three
+/// distinct IDs so a large failed batch stays readable.
+async fn find_missing_blob_row_ids(dataset: &Dataset, row_ids: &[u64]) -> Result<Vec<u64>> {
+    let mut missing = Vec::new();
+    if let Some(index) = lance::dataset::rowids::get_row_id_index(dataset).await? {
+        for (row_id, address) in row_ids.iter().zip(index.get_many(row_ids)?) {
+            if address.is_none() && !missing.contains(row_id) {
+                missing.push(*row_id);
+                if missing.len() == 3 {
+                    break;
+                }
+            }
+        }
+    } else {
+        let mut fragments = std::collections::HashMap::new();
+        for &row_id in row_ids {
+            let fragment_id = row_id >> 32;
+            let offset = row_id as u32;
+            if let std::collections::hash_map::Entry::Vacant(entry) = fragments.entry(fragment_id) {
+                let fragment = dataset.get_fragment(fragment_id as usize);
+                let state = if let Some(fragment) = fragment {
+                    Some((
+                        fragment.physical_rows().await?,
+                        fragment.get_deletion_vector().await?,
+                    ))
+                } else {
+                    None
+                };
+                entry.insert(state);
+            }
+            let is_missing = match fragments.get(&fragment_id) {
+                Some(Some((physical_rows, deletions))) => {
+                    offset as usize >= *physical_rows
+                        || deletions
+                            .as_ref()
+                            .is_some_and(|deletions| deletions.contains(offset))
+                }
+                Some(None) => true,
+                None => unreachable!(),
+            };
+            if is_missing && !missing.contains(&row_id) {
+                missing.push(row_id);
+                if missing.len() == 3 {
+                    break;
+                }
+            }
+        }
+    }
+    Ok(missing)
+}
+
+async fn ensure_all_row_ids_resolved(
+    dataset: &Dataset,
+    column: &str,
+    row_ids: &[u64],
+    resolved: usize,
+) -> Result<()> {
+    if row_ids.len() == resolved {
         return Ok(());
     }
-    if resolved < requested {
-        Err(Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but only {resolved} \
-                 exist in the table; pass row ids collected from this table"
-            ),
-        })
+    if resolved < row_ids.len() {
+        let missing = find_missing_blob_row_ids(dataset, row_ids)
+            .await
+            .unwrap_or_default();
+        Err(missing_blob_row_ids_error(column, row_ids.len(), &missing))
     } else {
         Err(Error::Runtime {
             message: format!(
-                "blob read for column '{column}' returned {resolved} results for {requested} row ids"
+                "blob read for column '{column}' returned {resolved} results for {} row ids",
+                row_ids.len()
             ),
         })
     }
 }
 
-/// Lance take reports a missing physical row address as NotSupported or InvalidInput.
-fn map_blob_take_error(column: &str, requested: usize, err: lance::Error) -> Error {
-    let missing_row_addr = match &err {
-        lance::Error::NotSupported { source, .. } => {
-            source.to_string().contains("must not target deleted rows")
-        }
-        lance::Error::InvalidInput { source, .. } => source
-            .to_string()
-            .contains("belongs to non-existent fragment"),
-        _ => false,
-    };
+/// Lance reports missing physical and stable row ids through several error paths
+/// without a shared typed error.
+async fn map_blob_take_error(
+    dataset: &Dataset,
+    column: &str,
+    row_ids: &[u64],
+    err: lance::Error,
+) -> Error {
+    let message = err.to_string();
+    let missing_row_id = message.contains("must not target deleted rows")
+        || message.contains("belongs to non-existent fragment")
+        || (message.contains("Invalid read params ") && message.contains("addressable rows"))
+        || message.contains("Could not resolve all requested row IDs");
 
-    if missing_row_addr {
-        Error::InvalidInput {
-            message: format!(
-                "blob read for column '{column}' requested {requested} row ids but some \
-                 do not exist in the table; pass row ids collected from this table"
-            ),
-        }
+    if missing_row_id {
+        let missing = find_missing_blob_row_ids(dataset, row_ids)
+            .await
+            .unwrap_or_default();
+        missing_blob_row_ids_error(column, row_ids.len(), &missing)
     } else {
         err.into()
     }
@@ -423,18 +602,25 @@ pub(crate) async fn take_blob_ranges_aligned(
         return Ok(LargeBinaryBuilder::new().finish());
     }
 
+    let row_ids = requests
+        .iter()
+        .map(|request| request.row_id)
+        .collect::<Vec<_>>();
     let lance_requests = requests
         .iter()
         .map(|request| LanceBlobRangeRequest::new(request.row_id, request.offset, request.length))
         .collect::<Vec<_>>();
-    let payloads = dataset
+    let payloads = match dataset
         .read_blob_ranges(column)?
         .with_row_ids(lance_requests)
         .preserve_order(true)
         .execute()
         .await
-        .map_err(|err| map_blob_take_error(column, requests.len(), err))?;
-    ensure_all_row_ids_resolved(column, requests.len(), payloads.len())?;
+    {
+        Ok(payloads) => payloads,
+        Err(err) => return Err(map_blob_take_error(dataset, column, &row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, &row_ids, payloads.len()).await?;
 
     let mut builder = LargeBinaryBuilder::new();
     for payload in payloads {
@@ -457,14 +643,17 @@ pub(crate) async fn take_blobs_aligned(
         return Ok(LargeBinaryBuilder::new().finish());
     }
 
-    let payloads = dataset
+    let payloads = match dataset
         .read_blobs(column)?
         .with_row_ids(row_ids.to_vec())
         .preserve_order(true)
         .execute()
         .await
-        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
-    ensure_all_row_ids_resolved(column, row_ids.len(), payloads.len())?;
+    {
+        Ok(payloads) => payloads,
+        Err(err) => return Err(map_blob_take_error(dataset, column, row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, row_ids, payloads.len()).await?;
 
     let mut builder = LargeBinaryBuilder::new();
     for payload in payloads {
@@ -487,11 +676,11 @@ pub(crate) async fn take_blob_files_aligned(
         return Ok(Vec::new());
     }
 
-    let handles = dataset
-        .take_blobs(row_ids, column)
-        .await
-        .map_err(|err| map_blob_take_error(column, row_ids.len(), err))?;
-    ensure_all_row_ids_resolved(column, row_ids.len(), handles.len())?;
+    let handles = match dataset.take_blobs(row_ids, column).await {
+        Ok(handles) => handles,
+        Err(err) => return Err(map_blob_take_error(dataset, column, row_ids, err).await),
+    };
+    ensure_all_row_ids_resolved(dataset, column, row_ids, handles.len()).await?;
     Ok(handles
         .into_iter()
         .map(|handle| handle.map(Into::into))
@@ -501,8 +690,13 @@ pub(crate) async fn take_blob_files_aligned(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroUsize;
+
     use arrow_schema::DataType;
-    use lance_arrow::ARROW_EXT_NAME_KEY;
+    use lance_arrow::{
+        ARROW_EXT_NAME_KEY, BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY,
+        BLOB_INLINE_SIZE_THRESHOLD_META_KEY,
+    };
 
     fn blob_schema() -> Schema {
         Schema::new(vec![
@@ -518,7 +712,53 @@ mod tests {
             field.metadata().get(ARROW_EXT_NAME_KEY).map(String::as_str),
             Some("lance.blob.v2")
         );
-        assert!(matches!(field.data_type(), DataType::Struct(_)));
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("expected struct")
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| (f.name().as_str(), f.data_type(), f.is_nullable()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("data", &DataType::LargeBinary, true),
+                ("uri", &DataType::Utf8, true),
+                ("position", &DataType::UInt64, true),
+                ("size", &DataType::UInt64, true),
+            ]
+        );
+    }
+
+    #[test]
+    fn blob_with_options_sets_threshold_metadata() {
+        let options = BlobOptions {
+            inline_size_threshold: Some(8 * 1024),
+            dedicated_size_threshold: NonZeroUsize::new(1 << 20),
+        };
+        let field = blob_with_options("payload", true, options);
+        assert!(is_blob(&field));
+        assert_eq!(
+            field
+                .metadata()
+                .get(BLOB_INLINE_SIZE_THRESHOLD_META_KEY)
+                .map(String::as_str),
+            Some("8192")
+        );
+        assert_eq!(
+            field
+                .metadata()
+                .get(BLOB_DEDICATED_SIZE_THRESHOLD_META_KEY)
+                .map(String::as_str),
+            Some("1048576")
+        );
+    }
+
+    #[test]
+    fn blob_with_default_options_matches_plain_blob() {
+        let field = blob_with_options("payload", true, BlobOptions::default());
+        let plain = blob("payload", true);
+        assert_eq!(field.metadata(), plain.metadata());
+        assert_eq!(field.data_type(), plain.data_type());
     }
 
     #[test]
@@ -617,6 +857,54 @@ mod tests {
         );
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, false), info]);
         assert_eq!(blob_column_names(&schema), vec!["info.blob"]);
+    }
+
+    #[test]
+    fn list_blob_paths_are_not_row_addressable() {
+        let schema = Schema::new(vec![
+            blob("image", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![blob("thumbnail", true)].into()),
+                true,
+            ),
+            Field::new("images", DataType::List(Arc::new(blob("item", true))), true),
+            Field::new(
+                "groups",
+                DataType::LargeList(Arc::new(Field::new(
+                    "group",
+                    DataType::Struct(vec![blob("photo", true)].into()),
+                    true,
+                ))),
+                true,
+            ),
+            Field::new(
+                "frames",
+                DataType::FixedSizeList(Arc::new(blob("frame", true)), 2),
+                true,
+            ),
+        ]);
+        assert!(has_blob_columns(&schema));
+        assert_eq!(blob_column_names(&schema), vec!["image", "info.thumbnail"]);
+
+        for column in [
+            "images",
+            "images.item",
+            "groups",
+            "groups.group.photo",
+            "frames",
+            "frames.frame",
+        ] {
+            let err = reject_list_blob_column(&schema, column).unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }));
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+        for column in ["image", "info.thumbnail", "info"] {
+            reject_list_blob_column(&schema, column).unwrap();
+        }
     }
 
     #[test]

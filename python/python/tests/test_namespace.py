@@ -6,17 +6,143 @@
 import tempfile
 import shutil
 import importlib
+import warnings
+import http.server
+import json
+import threading
+from urllib.parse import parse_qs, unquote, urlparse
 import pytest
 import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
-from lancedb.namespace import _MAX_QUERY_K
+from lancedb.listing import AsyncListing, Listing
+from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
+from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
 
 
 PUSHDOWN_DATA = pa.table(
     {"id": list(range(12)), "text": [f"row-{idx}" for idx in range(12)]}
 )
+
+
+class TestNamespaceCreateTableOptions:
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_storage_version(self, tmp_path, version, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path / "namespace")})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        assert (
+            table.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["legacy", "stable"])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_storage_version_async(self, tmp_path, version, empty):
+        root = str(tmp_path / "namespace")
+        db = lancedb.connect_namespace_async("dir", {"root": root})
+        data = None if empty else [{"id": 1}]
+        schema = pa.schema([("id", pa.int64())])
+        other_version = "stable" if version == "legacy" else "legacy"
+        options = {"new_table_data_storage_version": other_version}
+        control = lancedb.connect(tmp_path / "control").create_table(
+            "test",
+            data=data,
+            schema=schema,
+            storage_options={"new_table_data_storage_version": version},
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=schema,
+                storage_options=options,
+                data_storage_version=version,
+            )
+
+        reopened = lancedb.connect_namespace("dir", {"root": root}).open_table("test")
+        assert (
+            reopened.to_lance().data_storage_version
+            == control.to_lance().data_storage_version
+        )
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        assert options == {"new_table_data_storage_version": other_version}
+        assert any("data_storage_version" in str(w.message) for w in caught)
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    def test_deprecated_manifest_paths(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert table.uses_v2_manifest_paths() == enabled
+        assert table.to_arrow().to_pylist() == ([] if empty else data)
+        assert db.open_table("test").uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("empty", [False, True])
+    async def test_deprecated_manifest_paths_async(self, tmp_path, enabled, empty):
+        db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+        data = None if empty else [{"id": 1}]
+        options = {"new_table_enable_v2_manifest_paths": str(not enabled).lower()}
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", DeprecationWarning)
+            table = await db.create_table(
+                "test",
+                data=data,
+                schema=pa.schema([("id", pa.int64())]),
+                storage_options=options,
+                enable_v2_manifest_paths=enabled,
+            )
+
+        assert await table.uses_v2_manifest_paths() == enabled
+        assert (await table.to_arrow()).to_pylist() == ([] if empty else data)
+        reopened = await db.open_table("test")
+        assert await reopened.uses_v2_manifest_paths() == enabled
+        assert options == {
+            "new_table_enable_v2_manifest_paths": str(not enabled).lower()
+        }
+        assert any("enable_v2_manifest_paths" in str(w.message) for w in caught)
 
 
 def _ipc_file(table: pa.Table = PUSHDOWN_DATA) -> bytes:
@@ -72,6 +198,132 @@ def _namespace_lance_table(namespace_client: _NamespaceClient) -> LanceTable:
     return table
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["test_ns"]])
+async def test_namespace_table_names_defaults_and_limits(tmp_path, namespace_path):
+    db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
+    if namespace_path:
+        db.create_namespace(namespace_path)
+    names = [f"t{idx:03}" for idx in range(12)]
+    schema = pa.schema([pa.field("id", pa.int64())])
+    for name in names:
+        db.create_table(name, schema=schema, namespace_path=namespace_path)
+
+    assert list(db.table_names(namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=None, namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert list(db.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    assert (
+        list(
+            db.table_names(page_token=names[1], limit=2, namespace_path=namespace_path)
+        )
+        == names[2:4]
+    )
+
+    adb = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
+    assert list(await adb.table_names(namespace_path=namespace_path)) == names
+    assert (
+        list(await adb.table_names(limit=None, namespace_path=namespace_path)) == names
+    )
+    assert list(await adb.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert (
+        list(await adb.table_names(limit=2, namespace_path=namespace_path)) == names[:2]
+    )
+    assert (
+        list(
+            await adb.table_names(
+                page_token=names[1], limit=2, namespace_path=namespace_path
+            )
+        )
+        == names[2:4]
+    )
+
+
+@pytest.fixture
+def paginated_rest_namespace():
+    names = [f"t{idx:03}" for idx in reversed(range(12))]
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            url = urlparse(self.path)
+            query = parse_qs(url.query)
+            requests.append((unquote(url.path), query))
+            token = query.get("page_token", [None])[0]
+            if token not in {None, "opaque-next"}:
+                self.send_error(400, "Unknown page token")
+                return
+            start = 0 if token is None else 10
+            body = {"tables": names[start : start + 10]}
+            if start == 0:
+                body["page_token"] = "opaque-next"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(body).encode())
+
+        def log_message(self, *args):
+            pass
+
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield {"uri": f"http://127.0.0.1:{server.server_port}"}, requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_path", [[], ["n"]])
+async def test_rest_namespace_table_names_collects_pages(
+    paginated_rest_namespace, namespace_path
+):
+    properties, requests = paginated_rest_namespace
+    names = [f"t{idx:03}" for idx in range(12)]
+    db = lancedb.connect_namespace("rest", properties)
+    first = db.list_tables(namespace_path=namespace_path)
+    second = db.list_tables(namespace_path=namespace_path, page_token=first.page_token)
+    assert len(first.tables) == 10
+    assert first.page_token == "opaque-next"
+    assert sorted(first.tables + second.tables) == names
+    assert second.page_token is None
+
+    assert list(db.table_names(namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=None, namespace_path=namespace_path)) == names
+    assert list(db.table_names(limit=11, namespace_path=namespace_path)) == names[:11]
+    assert (
+        list(db.table_names(page_token="t005", limit=2, namespace_path=namespace_path))
+        == names[6:8]
+    )
+
+    adb = lancedb.connect_namespace_async("rest", properties)
+    assert list(await adb.table_names(namespace_path=namespace_path)) == names
+    assert (
+        list(await adb.table_names(limit=None, namespace_path=namespace_path)) == names
+    )
+    assert (
+        list(await adb.table_names(limit=11, namespace_path=namespace_path))
+        == names[:11]
+    )
+    assert (
+        list(
+            await adb.table_names(
+                page_token="t005", limit=2, namespace_path=namespace_path
+            )
+        )
+        == names[6:8]
+    )
+
+    request_count = len(requests)
+    assert list(db.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert list(await adb.table_names(limit=0, namespace_path=namespace_path)) == []
+    assert len(requests) == request_count
+    identifier = "$" if not namespace_path else "n"
+    assert all(path == f"/v1/namespace/{identifier}/table/list" for path, _ in requests)
+
+
 class TestNamespaceConnection:
     """Test namespace-based LanceDB connection using DirectoryNamespace."""
 
@@ -103,6 +355,18 @@ class TestNamespaceConnection:
 
         assert isinstance(db, lancedb.LanceNamespaceDBConnection)
         assert len(list(db.table_names())) == 0
+
+    def test_list_materialized_views(self):
+        db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
+        db.create_table("source", [{"id": 1}])
+        db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, Listing)
+        assert names.num_page_results() == 0
+        assert list(names) == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
 
     def test_sync_builtin_namespace_uses_rust_without_python_client(self, monkeypatch):
         """Built-in sync namespace connections should not construct or call the
@@ -605,6 +869,18 @@ class TestAsyncNamespaceConnection:
         table_names = await db.table_names()
         assert len(list(table_names)) == 0
 
+    async def test_list_materialized_views(self):
+        db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
+        await db.create_table("source", [{"id": 1}])
+        await db.create_materialized_view("view", "source", with_no_data=True)
+
+        names = db.list_materialized_views(page_limit=1)
+        assert isinstance(names, AsyncListing)
+        assert names.num_page_results() == 0
+        assert [name async for name in names] == ["view"]
+        assert names.num_page_results() == 0
+        assert names.page_token() is None
+
     async def test_async_builtin_namespace_uses_rust_without_python_client(
         self, monkeypatch
     ):
@@ -956,6 +1232,29 @@ class TestPushdownOperations:
         ]
         assert all(r.k <= 2**31 - 1 for r in namespace_client.requests)
 
+    def test_probe_fields_pass_through_independently(self):
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(
+                vector=[1.0, 2.0],
+                nprobes=20,
+                minimum_nprobes=3,
+                maximum_nprobes=10,
+            ),
+        )
+
+        assert request.nprobes == 20
+        assert request.minimum_nprobes == 3
+        assert request.maximum_nprobes == 10
+
+        request = _query_to_namespace_request(
+            ["geneva", "hist"],
+            Query(vector=[1.0, 2.0], nprobes=5, maximum_nprobes=0),
+        )
+        assert request.nprobes == 5
+        assert request.maximum_nprobes == 0
+        assert request.to_dict()["maximum_nprobes"] == 0
+
 
 @pytest.mark.asyncio
 class TestAsyncPushdownOperations:
@@ -1030,3 +1329,15 @@ def test_local_table_to_arrow_and_to_pandas_are_unchanged(tmp_path):
 
     assert table.to_arrow().column("id").to_pylist() == [1, 2]
     assert table.to_pandas()["id"].tolist() == [1, 2]
+
+
+@pytest.mark.parametrize("effort", [0.0, 0.5, 1.0])
+def test_namespace_request_rejects_search_effort(effort):
+    from lancedb.query import Query
+
+    with pytest.raises(
+        ValueError, match="namespace QueryTable does not support search_effort"
+    ):
+        _query_to_namespace_request(
+            ["test"], Query(vector=[1.0, 0.0], search_effort=effort)
+        )

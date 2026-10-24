@@ -411,9 +411,7 @@ impl ExecutionPlan for VectorDedupExec {
                 .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
             let mut scanner = dataset.scan();
             scanner
-                .with_row_addr_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(
-                    removed,
-                )))
+                .with_row_id_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(removed)))
                 .blob_handling(BlobHandling::AllBinary)
                 .batch_size(MATERIALIZE_BATCH_ROWS)
                 .strict_batch_size(true);

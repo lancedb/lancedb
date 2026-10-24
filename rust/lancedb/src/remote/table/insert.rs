@@ -1497,7 +1497,7 @@ mod tests {
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             use_index: true,
-            use_lsm: None,
+            use_rte: None,
         };
 
         let input: Arc<dyn ExecutionPlan> = Arc::new(ErroringExec::new());

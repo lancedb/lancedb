@@ -18,6 +18,7 @@ mod header;
 mod index;
 mod iterator;
 mod job;
+mod listing;
 pub mod merge;
 pub mod otel;
 pub mod permutation;
