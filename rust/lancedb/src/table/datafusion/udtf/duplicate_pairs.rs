@@ -572,11 +572,15 @@ impl DisplayAs for DuplicatePairsExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}",
+            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, method={:?}, rows_per_shard={}, shard_index={}, shard_count={}",
             self.config.dataset_version,
             self.config.column,
             self.config.distance_threshold,
-            self.tasks.len()
+            self.tasks.len(),
+            self.method,
+            self.sharding.rows_per_shard,
+            self.sharding.shard_index,
+            self.sharding.shard_count,
         )
     }
 }
