@@ -304,6 +304,14 @@ listing a storage directory.
 
 ## Functions and Jobs
 
+Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
+with `bytes` to materialize its contents before the Function runs. Reader
+inputs infer the Blob V2 type without an explicit input schema. Readers are
+scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
+`size`, and cursor-independent `read_range`.
+
+::: lancedb.BlobReader
+
 ::: lancedb.functions.FunctionArtifact
 
 ::: lancedb.functions.FunctionParameter
