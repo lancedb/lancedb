@@ -35,11 +35,12 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 2;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 6;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
 const VECTOR_BATCH_ROWS: usize = 8192;
+const DEFAULT_COMPARISON_BLOCK_ROWS: usize = 100_000;
 const VECTOR_BATCH_BYTES: usize = 16 * 1024 * 1024;
 const MIN_VECTOR_BATCH_ROWS: usize = 32;
 const ANCHOR_BLOCK_ROWS: usize = 32;
@@ -47,6 +48,25 @@ const SCORING_CONCURRENCY: usize = 4;
 const MAX_COORDINATE_BYTES: usize = 8;
 const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
+
+/// Two-dimensional comparison blocks, separate from bounded I/O/scoring batches.
+/// Every worker of a partition must use the same rows/count and a unique index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuplicatePairsBlocking {
+    pub rows_per_block: usize,
+    pub worker_index: usize,
+    pub worker_count: usize,
+}
+
+impl Default for DuplicatePairsBlocking {
+    fn default() -> Self {
+        Self {
+            rows_per_block: DEFAULT_COMPARISON_BLOCK_ROWS,
+            worker_index: 0,
+            worker_count: 1,
+        }
+    }
+}
 
 /// Configuration belongs to one immutable source snapshot. Threshold uses
 /// Lance's float32 index distance, including symmetric reconstructed distances
@@ -432,6 +452,7 @@ pub struct DuplicatePairsExec {
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
+    blocking: DuplicatePairsBlocking,
 }
 
 impl DuplicatePairsExec {
@@ -466,7 +487,25 @@ impl DuplicatePairsExec {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
+            blocking: DuplicatePairsBlocking::default(),
         })
+    }
+    /// Assign upper-triangular comparison blocks cyclically across workers.
+    pub fn with_blocking(mut self, blocking: DuplicatePairsBlocking) -> Result<Self> {
+        if blocking.rows_per_block == 0
+            || blocking.worker_count == 0
+            || blocking.worker_index >= blocking.worker_count
+        {
+            return plan_err!(
+                "block rows and worker count must be positive and worker index must be less than count"
+            );
+        }
+        self.blocking = blocking;
+        Ok(self)
+    }
+
+    pub fn blocking(&self) -> &DuplicatePairsBlocking {
+        &self.blocking
     }
     /// Configure optional output fields before dispatching this plan.
     pub fn with_output(mut self, output: DuplicatePairsOutput) -> Result<Self> {
@@ -497,11 +536,14 @@ impl DisplayAs for DuplicatePairsExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}",
+            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, rows_per_block={}, worker_index={}, worker_count={}",
             self.config.dataset_version,
             self.config.column,
             self.config.distance_threshold,
-            self.tasks.len()
+            self.tasks.len(),
+            self.blocking.rows_per_block,
+            self.blocking.worker_index,
+            self.blocking.worker_count,
         )
     }
 }
@@ -540,6 +582,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
         let config = self.config.clone();
+        let blocking = self.blocking;
         let output_rows = MetricBuilder::new(&self.metrics).counter("output_rows", partition);
         let completed =
             MetricBuilder::new(&self.metrics).counter("completed_partitions", partition);
@@ -589,7 +632,8 @@ impl ExecutionPlan for DuplicatePairsExec {
                         config.distance_threshold,
                         lance::index::vector::dedup::DuplicatePairsOptions::default()
                             .with_memory_limit(CODE_STAGING_BYTES)
-                            .with_max_concurrency(SCORING_CONCURRENCY),
+                            .with_max_concurrency(SCORING_CONCURRENCY)
+                            .with_blocking(blocking.rows_per_block, blocking.worker_index, blocking.worker_count),
                     )
                     .await?;
                     let measured = stream::try_unfold(
