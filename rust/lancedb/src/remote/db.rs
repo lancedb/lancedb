@@ -318,6 +318,13 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        if parsed.db_name.is_empty() && host_overrides.rest.is_none() {
+            return Err(Error::InvalidInput {
+                message:
+                    "A host override is required when connecting to the storage root with 'db://'"
+                        .to_string(),
+            });
+        }
         Self::try_new_with_identity(
             uri,
             api_key,
