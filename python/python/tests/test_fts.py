@@ -570,6 +570,52 @@ async def test_search_fts_phrase_query_async(async_table):
     assert len(phrase_results) > 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("columns", [None, ["text"]])
+async def test_phrase_query_to_query_object_async(tmp_path, columns):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases", pa.table({"text": ["puppy runs fast", "cat sleeps"]})
+    )
+    await table.create_index("text", config=FTS(with_position=True))
+
+    query = table.query().nearest_to_text('"puppy runs"', columns=columns)
+    phrase = query.to_query_object().full_text_query.query
+
+    expected = (
+        PhraseQuery("puppy runs", "text") if columns else PhraseQuery("puppy runs")
+    )
+    assert phrase == expected
+    results = await table.query().nearest_to_text(phrase).to_list()
+    assert [row["text"] for row in results] == ["puppy runs fast"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("column", [None, "text"])
+async def test_phrase_query_object_roundtrip_async(tmp_path, column):
+    db = await ldb.connect_async(tmp_path)
+    table = await db.create_table(
+        "phrases",
+        pa.table({"text": ["puppy runs fast", "puppy often runs", "cat sleeps"]}),
+    )
+    await table.create_index("text", config=FTS(with_position=True))
+    phrase = PhraseQuery(
+        "puppy runs", column, slop=1, document_granularity=DocumentGranularity.ROW
+    )
+    query = table.query().nearest_to_text(phrase)
+
+    assert query.to_query_object().full_text_query.query == phrase
+    serialized = json.loads(phrase.to_json())["phrase"]
+    assert serialized["slop"] == 1
+    assert serialized["document_granularity"] == "row"
+    assert serialized.get("column") == column
+    results = await query.to_list()
+    assert sorted(row["text"] for row in results) == [
+        "puppy often runs",
+        "puppy runs fast",
+    ]
+
+
 def test_search_fts_specify_column(table):
     table.create_fts_index("text")
     table.create_fts_index("text2")
