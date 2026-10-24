@@ -47,5 +47,22 @@ test("filtering examples", async () => {
       .limit(5)
       .toArray();
     // --8<-- [end:orderby_search]
+
+    const ftsTable = await db.createTable("myFts", [
+      { text: "Frodo was a happy puppy", category: "pet" },
+      { text: "A puppy training guide", category: "guide" },
+      { text: "There are several kittens playing", category: "pet" },
+    ]);
+    await ftsTable.createIndex("text", { config: lancedb.Index.fts() });
+
+    // --8<-- [start:fts_prefilter]
+    const ftsResults = await ftsTable
+      .search("puppy", "fts")
+      .where("category = 'pet'")
+      .limit(10)
+      .toArray();
+    // --8<-- [end:fts_prefilter]
+    expect(ftsResults).toHaveLength(1);
+    expect(ftsResults[0].category).toBe("pet");
   });
 });
