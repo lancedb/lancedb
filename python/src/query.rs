@@ -103,7 +103,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let slop = ob.getattr("slop")?.extract()?;
                 let document_granularity = ob
                     .getattr("document_granularity")?
@@ -114,9 +114,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                     })
                     .transpose()?;
 
-                let mut query = PhraseQuery::new(query)
-                    .with_column(Some(column))
-                    .with_slop(slop);
+                let mut query = PhraseQuery::new(query).with_column(column).with_slop(slop);
                 if let Some(document_granularity) = document_granularity {
                     query = query.with_document_granularity(document_granularity);
                 }
@@ -213,7 +211,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
                 let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
