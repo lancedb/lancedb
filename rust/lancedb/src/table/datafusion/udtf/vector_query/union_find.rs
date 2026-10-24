@@ -149,7 +149,7 @@ pub(super) async fn select_removed(
             None => return Ok(RoaringTreemap::new()),
         }
     };
-    let mut reservation = MemoryConsumer::new("DedupUnionFind").register(context.memory_pool());
+    let reservation = MemoryConsumer::new("DedupUnionFind").register(context.memory_pool());
     reservation.try_grow(CACHE_BYTES)?;
     let file = context
         .runtime_env()
