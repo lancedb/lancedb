@@ -3,7 +3,28 @@
 
 import pickle
 
+import pytest
+
+from lancedb.db import DBConnection
 from lancedb.remote.errors import HttpError, LanceDBClientError, RetryError
+from lancedb.table import Table
+
+
+@pytest.mark.parametrize(
+    "base, method",
+    [
+        (Table, "to_lance"),
+        (Table, "to_polars"),
+        (DBConnection, "drop_all_tables"),
+        (DBConnection, "drop_database"),
+    ],
+)
+def test_base_unsupported_methods_have_messages(base, method):
+    with pytest.raises(NotImplementedError) as exc_info:
+        getattr(base, method)(None)
+    message = str(exc_info.value)
+    assert method in message
+    assert "not supported" in message
 
 
 def test_pickle_lancedb_client_error():
