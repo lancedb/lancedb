@@ -582,7 +582,8 @@ async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow
     .await?;
     let params = VectorIndexParams::ivf_flat(1, MetricType::L2);
     let mut segments = Vec::new();
-    for fragment in ds.fragments().iter() {
+    let fragments = ds.fragments().clone();
+    for fragment in fragments.iter() {
         segments.push(
             ds.create_index_builder(&["vector"], IndexType::Vector, &params)
                 .name("vector_idx".into())
