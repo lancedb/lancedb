@@ -5772,6 +5772,7 @@ dependencies = [
  "prost",
  "rand 0.9.5",
  "random_word",
+ "redb",
  "regex",
  "reqwest 0.13.4",
  "roaring",

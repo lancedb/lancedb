@@ -17,6 +17,10 @@ use lance::{
 };
 use lance_index::{IndexType, vector::ivf::IvfBuildParams};
 use lance_linalg::distance::MetricType;
+use lancedb::table::datafusion::udtf::{
+    duplicate_pairs::DuplicatePairsOutput,
+    vector_query::{DedupPolicy, PartitionSelection, VectorQueryOptions, VectorQueryTable},
+};
 use lancedb::table::datafusion::{
     BaseTableAdapter,
     udtf::duplicate_pairs::{
@@ -209,6 +213,7 @@ async fn sql_pairs_match_native_snapshot_and_partition_tasks() -> anyhow::Result
                     id_column: Some("id".into()),
                 },
                 dedup: false,
+                policy: lancedb::table::datafusion::udtf::vector_query::DedupPolicy::default(),
             };
             let provider = VectorQueryTable::try_new(ds.clone(), query_options.clone()).await?;
             let extended = ctx.read_table(Arc::new(provider))?.collect().await?;
@@ -471,11 +476,13 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
             selection: PartitionSelection::All,
             output: DuplicatePairsOutput::default(),
             dedup: true,
+            policy: lancedb::table::datafusion::udtf::vector_query::DedupPolicy::default(),
         };
         let mapped = VectorQueryTable::try_new(
             Arc::new(ds.clone()),
             VectorQueryOptions {
                 dedup: false,
+                policy: lancedb::table::datafusion::udtf::vector_query::DedupPolicy::default(),
                 output: DuplicatePairsOutput {
                     scope: true,
                     id_column: Some("id".into()),
@@ -545,6 +552,80 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
                 assert_eq!(images.value(i), vec![ids.value(i) as u8; 4096]);
             }
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn union_find_policy_retains_one_row_per_transitive_component() -> anyhow::Result<()> {
+    let vectors = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+        [
+            Some(vec![Some(0.0), Some(1.0)]),
+            Some(vec![Some(0.1), Some(1.0)]),
+            Some(vec![Some(0.2), Some(1.0)]),
+            Some(vec![Some(10.0), Some(1.0)]),
+            None,
+        ],
+        2,
+    );
+    let batch = RecordBatch::try_from_iter([
+        (
+            "id",
+            Arc::new(Int64Array::from(vec![0, 1, 2, 3, 4])) as arrow_array::ArrayRef,
+        ),
+        ("vector", Arc::new(vectors) as arrow_array::ArrayRef),
+    ])?;
+    let directory = tempfile::tempdir()?;
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        directory.path().join("components.lance").to_str().unwrap(),
+        None,
+    )
+    .await?;
+    dataset
+        .create_index(
+            &["vector"],
+            IndexType::Vector,
+            None,
+            &VectorIndexParams::ivf_flat(1, MetricType::L2),
+            false,
+        )
+        .await?;
+    let dataset = Arc::new(dataset);
+    for (policy, expected) in [
+        (DedupPolicy::DirectRepresentative, vec![0, 2, 3, 4]),
+        (DedupPolicy::UnionFind, vec![0, 3, 4]),
+    ] {
+        let table = VectorQueryTable::try_new(
+            dataset.clone(),
+            VectorQueryOptions {
+                column: "vector".into(),
+                distance_threshold: 0.015,
+                selection: PartitionSelection::All,
+                output: DuplicatePairsOutput::default(),
+                dedup: true,
+                policy,
+            },
+        )
+        .await?;
+        let batches = SessionContext::new()
+            .read_table(Arc::new(table))?
+            .collect()
+            .await?;
+        let mut ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch["id"]
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        ids.sort_unstable();
+        assert_eq!(ids, expected);
     }
     Ok(())
 }
