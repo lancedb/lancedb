@@ -491,10 +491,18 @@ class LanceNamespaceDBConnection(DBConnection):
             Default is None (no pushdown, all operations run locally).
         namespace_client_impl : Optional[str]
             The namespace implementation name used to create this connection.
-            Stored for serialization purposes.
+            Required together with namespace_client_properties for serialization
+            and reopening tables in forked worker processes.
         namespace_client_properties : Optional[Dict[str, str]]
             The namespace properties used to create this connection.
-            Stored for serialization purposes.
+            Required together with namespace_client_impl for serialization and
+            reopening tables in forked worker processes.
+
+        Notes
+        -----
+        If either reconstruction parameter is omitted, the namespace client is
+        opaque. Serializing the connection raises ValueError, and reopening an
+        inherited table in a forked worker raises RuntimeError explicitly.
         """
         self._namespace_client = namespace_client
         self.read_consistency_interval = read_consistency_interval
@@ -548,6 +556,16 @@ class LanceNamespaceDBConnection(DBConnection):
     def serialize(self) -> str:
         import json
 
+        if (
+            self._namespace_client_impl is None
+            or self._namespace_client_properties is None
+        ):
+            raise ValueError(
+                "Cannot serialize a namespace connection constructed from an "
+                "opaque namespace client. Pass namespace_client_impl and "
+                "namespace_client_properties when constructing the connection."
+            )
+
         return json.dumps(
             {
                 "connection_type": "namespace",
@@ -559,7 +577,7 @@ class LanceNamespaceDBConnection(DBConnection):
                 "storage_options": self.storage_options or None,
                 "read_consistency_interval_seconds": (
                     self.read_consistency_interval.total_seconds()
-                    if self.read_consistency_interval
+                    if self.read_consistency_interval is not None
                     else None
                 ),
             }
@@ -640,6 +658,7 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -678,6 +697,8 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
             namespace_client=self._namespace_client,
             pushdown_operations=self._namespace_client_pushdown_operations,
             route_pushdown_to_rust=self._route_pushdown_to_rust,
@@ -1090,10 +1111,13 @@ class LanceNamespaceDBConnection(DBConnection):
             self,
             name,
             namespace_path=namespace_path,
+            storage_options=storage_options,
+            index_cache_size=index_cache_size,
             location=table_uri,
             namespace_client=namespace_client,
             managed_versioning=managed_versioning,
             pushdown_operations=self._namespace_client_pushdown_operations,
+            route_pushdown_to_rust=self._route_pushdown_to_rust,
             _async=async_table,
         )
 
