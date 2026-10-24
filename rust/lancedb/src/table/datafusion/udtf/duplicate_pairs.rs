@@ -35,7 +35,7 @@ use crate::table::NativeTableExt;
 // Admission estimates for Lance 13's bounded pairwise kernel. Keep these with
 // the minimum dependency when the kernel's buffering contract changes.
 /// Version of the native task descriptor and its execution semantics.
-pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 2;
+pub const DUPLICATE_PAIRS_OPERATOR_VERSION: u32 = 3;
 
 const CODE_STAGING_BYTES: usize = 16 * 1024 * 1024;
 const INDEX_READ_ROWS: usize = 8192;
@@ -47,6 +47,25 @@ const SCORING_CONCURRENCY: usize = 4;
 const MAX_COORDINATE_BYTES: usize = 8;
 const STAGED_ROW_OVERHEAD_BYTES: usize = 64;
 const PAIR_ROW_BYTES: usize = 20;
+
+/// Bounded block-pair execution and cyclic ownership of anchor blocks.
+/// Every worker of a partition must use the same rows/count and a unique index.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuplicatePairsSharding {
+    pub rows_per_shard: usize,
+    pub shard_index: usize,
+    pub shard_count: usize,
+}
+
+impl Default for DuplicatePairsSharding {
+    fn default() -> Self {
+        Self {
+            rows_per_shard: VECTOR_BATCH_ROWS,
+            shard_index: 0,
+            shard_count: 1,
+        }
+    }
+}
 
 /// Configuration belongs to one immutable source snapshot. Threshold uses
 /// Lance's float32 index distance, including symmetric reconstructed distances
@@ -432,6 +451,7 @@ pub struct DuplicatePairsExec {
     properties: Arc<PlanProperties>,
     metrics: ExecutionPlanMetricsSet,
     output: DuplicatePairsOutput,
+    sharding: DuplicatePairsSharding,
 }
 
 impl DuplicatePairsExec {
@@ -466,7 +486,25 @@ impl DuplicatePairsExec {
             properties,
             metrics: ExecutionPlanMetricsSet::new(),
             output: DuplicatePairsOutput::default(),
+            sharding: DuplicatePairsSharding::default(),
         })
+    }
+    /// Assign a disjoint stripe of anchor blocks without materializing tile descriptors.
+    pub fn with_sharding(mut self, sharding: DuplicatePairsSharding) -> Result<Self> {
+        if sharding.rows_per_shard == 0
+            || sharding.shard_count == 0
+            || sharding.shard_index >= sharding.shard_count
+        {
+            return plan_err!(
+                "shard rows/count must be positive and shard index must be less than count"
+            );
+        }
+        self.sharding = sharding;
+        Ok(self)
+    }
+
+    pub fn sharding(&self) -> &DuplicatePairsSharding {
+        &self.sharding
     }
     /// Configure optional output fields before dispatching this plan.
     pub fn with_output(mut self, output: DuplicatePairsOutput) -> Result<Self> {
@@ -497,11 +535,14 @@ impl DisplayAs for DuplicatePairsExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}",
+            "DuplicatePairsExec: source_version={}, column={}, threshold={}, tasks={}, rows_per_shard={}, shard_index={}, shard_count={}",
             self.config.dataset_version,
             self.config.column,
             self.config.distance_threshold,
-            self.tasks.len()
+            self.tasks.len(),
+            self.sharding.rows_per_shard,
+            self.sharding.shard_index,
+            self.sharding.shard_count,
         )
     }
 }
@@ -540,6 +581,7 @@ impl ExecutionPlan for DuplicatePairsExec {
         let tasks = self.tasks.clone();
         let dataset = self.dataset.clone();
         let config = self.config.clone();
+        let sharding = self.sharding;
         let output_rows = MetricBuilder::new(&self.metrics).counter("output_rows", partition);
         let completed =
             MetricBuilder::new(&self.metrics).counter("completed_partitions", partition);
@@ -589,7 +631,8 @@ impl ExecutionPlan for DuplicatePairsExec {
                         config.distance_threshold,
                         lance::index::vector::dedup::DuplicatePairsOptions::default()
                             .with_memory_limit(CODE_STAGING_BYTES)
-                            .with_max_concurrency(SCORING_CONCURRENCY),
+                            .with_max_concurrency(SCORING_CONCURRENCY)
+                            .with_sharding(sharding.rows_per_shard, sharding.shard_index, sharding.shard_count),
                     )
                     .await?;
                     let measured = stream::try_unfold(

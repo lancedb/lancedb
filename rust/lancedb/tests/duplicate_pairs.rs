@@ -20,7 +20,7 @@ use lance_linalg::distance::MetricType;
 use lancedb::table::datafusion::{
     BaseTableAdapter,
     udtf::duplicate_pairs::{
-        DuplicatePairsConfig, DuplicatePairsExec, DuplicatePairsResolver,
+        DuplicatePairsConfig, DuplicatePairsExec, DuplicatePairsResolver, DuplicatePairsSharding,
         DuplicatePairsTableFunction, duplicate_pair_task_batch, plan_duplicate_pairs,
     },
 };
@@ -545,6 +545,82 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
                 assert_eq!(images.value(i), vec![ids.value(i) as u8; 4096]);
             }
         }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_shards_preserve_cross_block_matches() -> anyhow::Result<()> {
+    let vectors = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
+        (0..40).map(|i| Some(vec![Some((i % 4) as f32), Some(1.0)])),
+        2,
+    );
+    let batch =
+        RecordBatch::try_from_iter([("vector", Arc::new(vectors) as arrow_array::ArrayRef)])?;
+    let dir = tempfile::tempdir()?;
+    let mut dataset = Dataset::write(
+        RecordBatchIterator::new(vec![Ok(batch.clone())], batch.schema()),
+        dir.path().join("shards.lance").to_str().unwrap(),
+        None,
+    )
+    .await?;
+    dataset
+        .create_index(
+            &["vector"],
+            IndexType::Vector,
+            None,
+            &VectorIndexParams::ivf_flat(1, MetricType::L2),
+            false,
+        )
+        .await?;
+    let dataset = Arc::new(dataset);
+    let config = DuplicatePairsConfig {
+        dataset_version: dataset.version().version,
+        column: "vector".into(),
+        distance_threshold: 0.0,
+    };
+    let tasks = plan_duplicate_pairs(dataset.clone(), &config).await?;
+    let context = SessionContext::new().task_ctx();
+    let local = DuplicatePairsExec::try_new(dataset.clone(), config.clone(), tasks.clone())?;
+    let expected =
+        pairs(&datafusion::physical_plan::collect(Arc::new(local), context.clone()).await?);
+    let mut actual = Vec::new();
+    for shard_index in 0..3 {
+        let shard = DuplicatePairsExec::try_new(dataset.clone(), config.clone(), tasks.clone())?
+            .with_sharding(DuplicatePairsSharding {
+                rows_per_shard: 7,
+                shard_index,
+                shard_count: 3,
+            })?;
+        actual.extend(pairs(
+            &datafusion::physical_plan::collect(Arc::new(shard), context.clone()).await?,
+        ));
+    }
+    actual.sort_unstable();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), 4 * 10 * 9 / 2);
+    for sharding in [
+        DuplicatePairsSharding {
+            rows_per_shard: 0,
+            shard_index: 0,
+            shard_count: 1,
+        },
+        DuplicatePairsSharding {
+            rows_per_shard: 32,
+            shard_index: 0,
+            shard_count: 0,
+        },
+        DuplicatePairsSharding {
+            rows_per_shard: 32,
+            shard_index: 2,
+            shard_count: 2,
+        },
+    ] {
+        assert!(
+            DuplicatePairsExec::try_new(dataset.clone(), config.clone(), tasks.clone())?
+                .with_sharding(sharding)
+                .is_err()
+        );
     }
     Ok(())
 }
