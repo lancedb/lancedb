@@ -1356,13 +1356,13 @@ class Table(ABC):
     @abstractmethod
     def name(self) -> str:
         """The name of this Table"""
-        raise NotImplementedError
+        raise NotImplementedError("name is not supported for this table type")
 
     @property
     @abstractmethod
     def version(self) -> int:
         """The version of this Table"""
-        raise NotImplementedError
+        raise NotImplementedError("version is not supported for this table type")
 
     @property
     @abstractmethod
@@ -1371,7 +1371,7 @@ class Table(ABC):
         of this Table
 
         """
-        raise NotImplementedError
+        raise NotImplementedError("schema is not supported for this table type")
 
     @property
     @abstractmethod
@@ -1400,7 +1400,7 @@ class Table(ABC):
             tags = table.tags.list()
 
         """
-        raise NotImplementedError
+        raise NotImplementedError("tags is not supported for this table type")
 
     @property
     def branches(self) -> "Branches":
@@ -1409,11 +1409,11 @@ class Table(ABC):
         Branches are isolated, writable lines of history forked from another
         branch (or version). Writes on a branch do not affect ``main``.
         """
-        raise NotImplementedError
+        raise NotImplementedError("branches is not supported for this table type")
 
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
-        raise NotImplementedError
+        raise NotImplementedError("current_branch is not supported for this table type")
 
     def __len__(self) -> int:
         """The number of rows in this Table"""
@@ -1436,7 +1436,7 @@ class Table(ABC):
         filter: str, optional
             A SQL where clause to filter the rows to count.
         """
-        raise NotImplementedError
+        raise NotImplementedError("count_rows is not supported for this table type")
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pandas.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -1471,19 +1471,25 @@ class Table(ABC):
         -------
         pa.Table
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_arrow is not supported for this table type")
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the table as a lance.LanceDataset.
+        """Return a local table as a lance.LanceDataset.
+
+        Remote tables cannot be opened as Lance datasets by the client. Use
+        ``table.search().to_arrow()`` to read them through the server.
 
         Returns
         -------
         lance.LanceDataset
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_lance is not supported for this table type")
 
     def to_polars(self, **kwargs) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
+
+        For remote tables, use ``table.search().to_polars()`` to convert query
+        results to a Polars DataFrame.
 
         Note
         ----
@@ -1495,7 +1501,7 @@ class Table(ABC):
         -------
         polars.LazyFrame
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_polars is not supported for this table type")
 
     # New unified API overload
     @overload
@@ -1600,7 +1606,7 @@ class Table(ABC):
         ...     "l2", vector_column_name="vector"
         ... )
         """
-        raise NotImplementedError
+        raise NotImplementedError("create_index is not supported for this table type")
 
     def create_index_async(
         self,
@@ -1618,7 +1624,9 @@ class Table(ABC):
         be complete when returned; callers must not assume the index exists
         until :meth:`Job.wait` returns.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_index_async is not supported for this table type"
+        )
 
     def drop_index(self, name: str) -> None:
         """
@@ -1638,7 +1646,7 @@ class Table(ABC):
         Use [list_indices][lancedb.table.Table.list_indices] to find the names of
         the indices.
         """
-        raise NotImplementedError
+        raise NotImplementedError("drop_index is not supported for this table type")
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -1655,14 +1663,14 @@ class Table(ABC):
         timeout: timedelta
             Timeout to wait for asynchronous indexing. The default is 5 minutes.
         """
-        raise NotImplementedError
+        raise NotImplementedError("wait_for_index is not supported for this table type")
 
     @abstractmethod
     def stats(self) -> TableStatistics:
         """
         Retrieve table and fragment statistics.
         """
-        raise NotImplementedError
+        raise NotImplementedError("stats is not supported for this table type")
 
     @abstractmethod
     def create_scalar_index(
@@ -1727,7 +1735,9 @@ class Table(ABC):
         ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
         ``my_col``.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_scalar_index is not supported for this table type"
+        )
 
     def create_fts_index(
         self,
@@ -1853,7 +1863,9 @@ class Table(ABC):
         ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
         directory under ``lance/language_models``.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_fts_index is not supported for this table type"
+        )
 
     @abstractmethod
     def add(
@@ -1927,7 +1939,7 @@ class Table(ABC):
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        raise NotImplementedError
+        raise NotImplementedError("add is not supported for this table type")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -2079,7 +2091,7 @@ class Table(ABC):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        raise NotImplementedError
+        raise NotImplementedError("search is not supported for this table type")
 
     @abstractmethod
     def take_offsets(
@@ -2365,7 +2377,7 @@ class Table(ABC):
            x      vector
         0  3  [5.0, 6.0]
         """
-        raise NotImplementedError
+        raise NotImplementedError("delete is not supported for this table type")
 
     @abstractmethod
     def update(
@@ -2432,7 +2444,7 @@ class Table(ABC):
         1  4    [5.0, 6.0]
         2  3  [10.0, 10.0]
         """
-        raise NotImplementedError
+        raise NotImplementedError("update is not supported for this table type")
 
     @abstractmethod
     def cleanup_old_versions(
