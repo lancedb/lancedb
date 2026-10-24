@@ -4,6 +4,8 @@
 //! Composable index-backed pair and dedup relations. Hosts bind a snapshot once
 //! during planning, distribute the pair child, and use their ordinary SQL sink.
 
+mod union_find;
+
 use std::sync::Arc;
 
 use arrow_array::{RecordBatch, UInt64Array};
@@ -135,6 +137,25 @@ pub enum PartitionSelection {
     },
 }
 
+/// How qualifying edges determine which original rows survive.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DedupPolicy {
+    /// Every removed row directly matches a retained representative.
+    #[default]
+    DirectRepresentative,
+    /// Keep the smallest snapshot row ID in each transitive component.
+    UnionFind,
+}
+
+impl DedupPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DirectRepresentative => "direct_representative",
+            Self::UnionFind => "union_find",
+        }
+    }
+}
+
 /// Query-only options. Snapshot binding is separate so multiple calls in one
 /// statement can share the same immutable dataset.
 #[derive(Debug, Clone)]
@@ -144,6 +165,7 @@ pub struct VectorQueryOptions {
     pub selection: PartitionSelection,
     pub output: DuplicatePairsOutput,
     pub dedup: bool,
+    pub policy: DedupPolicy,
 }
 
 impl BaseTableAdapter {
@@ -195,6 +217,9 @@ impl VectorQueryTable {
             return plan_err!(
                 "vector_dedup requires all partitions and returns original rows; sampling and id_column are pair-query options"
             );
+        }
+        if !options.dedup && options.policy != DedupPolicy::DirectRepresentative {
+            return plan_err!("policy is only supported by dedup relations");
         }
         let config = DuplicatePairsConfig {
             dataset_version: dataset.version().version,
@@ -312,6 +337,7 @@ impl TableProvider for VectorQueryTable {
                 self.dataset.clone(),
                 pairs,
                 self.schema.clone(),
+                self.options.policy,
             ))
         } else {
             pairs
@@ -345,13 +371,20 @@ pub struct VectorDedupExec {
     dataset: Arc<Dataset>,
     pairs: Arc<dyn ExecutionPlan>,
     properties: Arc<PlanProperties>,
+    policy: DedupPolicy,
 }
 
 impl VectorDedupExec {
-    fn new(dataset: Arc<Dataset>, pairs: Arc<dyn ExecutionPlan>, schema: SchemaRef) -> Self {
+    fn new(
+        dataset: Arc<Dataset>,
+        pairs: Arc<dyn ExecutionPlan>,
+        schema: SchemaRef,
+        policy: DedupPolicy,
+    ) -> Self {
         Self {
             dataset,
             pairs,
+            policy,
             properties: Arc::new(PlanProperties::new(
                 EquivalenceProperties::new(schema),
                 Partitioning::UnknownPartitioning(1),
@@ -366,8 +399,9 @@ impl DisplayAs for VectorDedupExec {
     fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "VectorDedupExec: source_version={}, policy=direct_representative",
-            self.dataset.version().version
+            "VectorDedupExec: source_version={}, policy={}",
+            self.dataset.version().version,
+            self.policy.as_str()
         )
     }
 }
@@ -393,6 +427,7 @@ impl ExecutionPlan for VectorDedupExec {
             self.dataset.clone(),
             children[0].clone(),
             self.schema(),
+            self.policy,
         )))
     }
     fn execute(
@@ -404,11 +439,18 @@ impl ExecutionPlan for VectorDedupExec {
             return plan_err!("invalid dedup output partition");
         }
         let dataset = self.dataset.clone();
-        let pairs = CoalescePartitionsExec::new(self.pairs.clone()).execute(0, context)?;
+        let pairs = CoalescePartitionsExec::new(self.pairs.clone()).execute(0, context.clone())?;
+        let policy = self.policy;
         let stream = stream::once(async move {
-            let (removed, _) = select_representatives(pairs, REPRESENTATIVE_SORT_MEMORY_BYTES)
-                .await
-                .map_err(|e| datafusion_common::DataFusionError::External(Box::new(e)))?;
+            let removed = match policy {
+                DedupPolicy::DirectRepresentative => {
+                    select_representatives(pairs, REPRESENTATIVE_SORT_MEMORY_BYTES)
+                        .await
+                        .map_err(|error| DataFusionError::External(Box::new(error)))?
+                        .0
+                }
+                DedupPolicy::UnionFind => union_find::select_removed(pairs, context).await?,
+            };
             let mut scanner = dataset.scan();
             scanner
                 .with_row_id_prefilter(RowAddrMask::from_block(RowAddrTreeMap::from_iter(removed)))
