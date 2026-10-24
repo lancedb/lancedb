@@ -819,7 +819,25 @@ class DBConnection(EnforceOverrides):
 
     @property
     def uri(self) -> str:
+        """The URI of this database."""
         return self._uri
+
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
+    def __len__(self) -> int:
+        """Return the number of tables in the root namespace across all pages."""
+        return sum(1 for _ in self._all_table_names())
+
+    def __contains__(self, name: str) -> bool:
+        """Return whether the root namespace contains the named table."""
+        return name in self._all_table_names()
 
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
@@ -1603,21 +1621,6 @@ class LanceDBConnection(DBConnection):
                 namespace_path=namespace_path, start_after=page_token, limit=limit
             )
         )
-
-    def _all_table_names(self) -> Generator[str, None, None]:
-        page_token = None
-        while True:
-            response = self.list_tables(page_token=page_token)
-            yield from response.tables
-            page_token = response.page_token
-            if not page_token:
-                return
-
-    def __len__(self) -> int:
-        return sum(1 for _ in self._all_table_names())
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._all_table_names()
 
     @override
     def create_table(
