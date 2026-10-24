@@ -142,6 +142,13 @@ pub(super) async fn select_removed(
     mut pairs: SendableRecordBatchStream,
     context: Arc<TaskContext>,
 ) -> Result<RoaringTreemap> {
+    let first = loop {
+        match pairs.try_next().await? {
+            Some(batch) if batch.num_rows() > 0 => break batch,
+            Some(_) => continue,
+            None => return Ok(RoaringTreemap::new()),
+        }
+    };
     let mut reservation = MemoryConsumer::new("DedupUnionFind").register(context.memory_pool());
     reservation.try_grow(CACHE_BYTES)?;
     let file = context
@@ -152,13 +159,15 @@ pub(super) async fn select_removed(
     let mut state = tokio::task::spawn_blocking(move || UnionFind::new(file, disk_manager))
         .await
         .map_err(external)??;
-    while let Some(batch) = pairs.try_next().await? {
+    let mut next = Some(first);
+    while let Some(batch) = next {
         state = tokio::task::spawn_blocking(move || {
             state.consume(&batch)?;
             Ok::<_, DataFusionError>(state)
         })
         .await
         .map_err(external)??;
+        next = pairs.try_next().await?;
     }
     tokio::task::spawn_blocking(move || state.removed())
         .await
@@ -204,5 +213,63 @@ mod tests {
             assert_eq!(removed.iter().collect::<Vec<_>>(), vec![2, 8, 9, 21]);
             assert_eq!(manager.used_disk_space(), 0);
         }
+    }
+
+    #[test]
+    fn disk_budget_failure_releases_temporary_state() {
+        let manager = Arc::new(
+            datafusion_execution::disk_manager::DiskManagerBuilder::default()
+                .with_max_temp_directory_size(1)
+                .build()
+                .unwrap(),
+        );
+        let file = manager.create_tmp_file("union-find budget test").unwrap();
+        let error = UnionFind::new(file, manager.clone()).err().unwrap();
+        assert!(matches!(error, DataFusionError::ResourcesExhausted(_)));
+        assert_eq!(manager.used_disk_space(), 0);
+    }
+
+    #[tokio::test]
+    async fn sparse_extreme_ids_and_stream_errors() {
+        let batch = RecordBatch::try_from_iter([
+            (
+                "row_id_a",
+                Arc::new(UInt64Array::from(vec![u64::MAX, 17, 0])) as arrow_array::ArrayRef,
+            ),
+            (
+                "row_id_b",
+                Arc::new(UInt64Array::from(vec![17, 0, 0])) as arrow_array::ArrayRef,
+            ),
+        ])
+        .unwrap();
+        let input = Box::pin(RecordBatchStreamAdapter::new(
+            batch.schema(),
+            stream::iter(vec![Ok(batch.clone())]),
+        ));
+        let context = SessionContext::new().task_ctx();
+        let manager = context.runtime_env().disk_manager.clone();
+        assert_eq!(
+            select_removed(input, context.clone())
+                .await
+                .unwrap()
+                .iter()
+                .collect::<Vec<_>>(),
+            vec![17, u64::MAX]
+        );
+        let input = Box::pin(RecordBatchStreamAdapter::new(
+            batch.schema(),
+            stream::iter(vec![
+                Ok(batch),
+                Err(DataFusionError::Execution("pair stream failed".into())),
+            ]),
+        ));
+        assert!(
+            select_removed(input, context)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("pair stream failed")
+        );
+        assert_eq!(manager.used_disk_space(), 0);
     }
 }
