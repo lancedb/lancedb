@@ -317,10 +317,11 @@ impl TableProvider for VectorQueryTable {
                 .with_output(output)?,
             )
         };
-        let pairs = if matches!(
-            self.options.method,
-            PairDiscoveryMethod::SimilaritySearch { .. }
-        ) {
+        let pairs = if !self.options.dedup
+            && matches!(
+                self.options.method,
+                PairDiscoveryMethod::SimilaritySearch { .. }
+            ) {
             Arc::new(canonical_pairs::CanonicalPairsExec::new(pairs)) as Arc<dyn ExecutionPlan>
         } else {
             pairs
