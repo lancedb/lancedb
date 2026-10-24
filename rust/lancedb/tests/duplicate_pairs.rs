@@ -17,6 +17,10 @@ use lance::{
 };
 use lance_index::{IndexType, vector::ivf::IvfBuildParams};
 use lance_linalg::distance::MetricType;
+use lancedb::table::datafusion::udtf::{
+    duplicate_pairs::{DuplicatePairsOutput, PairDiscoveryMethod},
+    vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
+};
 use lancedb::table::datafusion::{
     BaseTableAdapter,
     udtf::duplicate_pairs::{
@@ -556,10 +560,6 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
 
 #[tokio::test]
 async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow::Result<()> {
-    use lancedb::table::datafusion::udtf::{
-        duplicate_pairs::{DuplicatePairsOutput, PairDiscoveryMethod},
-        vector_query::{PartitionSelection, VectorQueryOptions, VectorQueryTable},
-    };
     let vectors = FixedSizeListArray::from_iter_primitive::<arrow_array::types::Float32Type, _, _>(
         [
             Some(vec![Some(-0.01)]),
@@ -582,7 +582,7 @@ async fn similarity_pairs_cross_segments_and_canonicalize_directions() -> anyhow
     .await?;
     let params = VectorIndexParams::ivf_flat(1, MetricType::L2);
     let mut segments = Vec::new();
-    for fragment in ds.fragments() {
+    for fragment in ds.fragments().iter() {
         segments.push(
             ds.create_index_builder(&["vector"], IndexType::Vector, &params)
                 .name("vector_idx".into())
