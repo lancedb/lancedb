@@ -360,10 +360,10 @@ where
     /// The job's type: `"query"` for SQL-backed handles, otherwise the cached
     /// server-reported kind of work. `None` for an in-process job.
     pub fn job_type(&self) -> Option<String> {
-        if let JobInner::Handle { handle, .. } = &self.inner {
-            if let Some(job_type) = handle.job_type() {
-                return Some(job_type.to_string());
-            }
+        if let JobInner::Handle { handle, .. } = &self.inner
+            && let Some(job_type) = handle.job_type()
+        {
+            return Some(job_type.to_string());
         }
         self.with_description(|description| description.job_type.clone())
     }
