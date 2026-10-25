@@ -17,7 +17,7 @@ use crate::index::Index;
 use crate::index::IndexStatistics;
 use crate::index::scalar::FtsQuery;
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
-use crate::job::Job;
+use crate::job::{Job, JobType};
 use crate::materialized_view::{
     MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult,
 };
@@ -271,6 +271,10 @@ enum TrackedJobResult {
 
 #[async_trait]
 impl<S: HttpSend> crate::job::JobHandle for FreshnessJob<S> {
+    fn r#type(&self) -> JobType {
+        crate::job::JobHandle::r#type(&self.inner)
+    }
+
     fn id(&self) -> Option<&str> {
         crate::job::JobHandle::id(&self.inner)
     }

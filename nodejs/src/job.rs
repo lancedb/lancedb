@@ -29,11 +29,17 @@ impl Job {
 
 #[napi]
 impl Job {
-    /// Identifies the operation on the server that is running it. Operations
-    /// that run in this process have no server id. The value is opaque.
+    /// The operation's opaque ID. Interpret registry and query IDs using type().
+    /// Local handles have no ID.
     #[napi(getter)]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
+    }
+
+    /// The handle's backend: registry, query, or local.
+    #[napi(js_name = "type")]
+    pub fn r#type(&self) -> String {
+        self.inner.r#type().as_str().to_string()
     }
 
     /// The operation's current lifecycle state: "running", "finished",

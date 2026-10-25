@@ -5,7 +5,6 @@ import contextlib
 import http.server
 import json
 import threading
-from uuid import UUID
 
 import lancedb
 import pytest
@@ -110,6 +109,7 @@ def test_remote_drop_async_returns_server_job():
         )
         job = db.drop_materialized_view_async("adults")
         assert job.id == "mv-drop-123"
+        assert job.type() is lancedb.JobType.REGISTRY
     assert requests == [("/v1/materialized_view/adults/drop", {})]
 
 
@@ -195,13 +195,13 @@ def test_create_and_refresh_jobs(tmp_path):
         "adults", "people", where="age >= 18", with_no_data=True
     )
     assert create_job.id is None
-    assert create_job.query_id is None
+    assert create_job.type() is lancedb.JobType.LOCAL
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
     refresh_job = view.refresh_async()
     assert refresh_job.id is None
-    assert refresh_job.query_id is None
+    assert refresh_job.type() is lancedb.JobType.LOCAL
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
@@ -342,13 +342,13 @@ async def test_async_create_and_refresh_jobs(tmp_path):
         "adults", "people", with_no_data=True
     )
     assert create_job.id is None
-    assert create_job.query_id is None
+    assert create_job.type() is lancedb.JobType.LOCAL
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
     refresh_job = await view.refresh_async()
     assert refresh_job.id is None
-    assert refresh_job.query_id is None
+    assert refresh_job.type() is lancedb.JobType.LOCAL
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1
@@ -575,8 +575,10 @@ def test_local_materialized_view_listing_pages_and_resume(tmp_path):
 
 
 class QueryBackedCreateJob:
-    id = None
-    query_id = UUID("0198f1b2-c3d4-7e5f-8123-456789abcdef")
+    id = "0198f1b2-c3d4-7e5f-8123-456789abcdef"
+
+    def type(self):
+        return "query"
 
     async def wait(self):
         return None
@@ -607,8 +609,9 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
     db = RemoteDBConnection.__new__(RemoteDBConnection)
     db._conn = AsyncConnection(native)
     job = db.create_materialized_view_async("adults", "people", **options)
-    assert job.id is None
-    assert job.query_id == QueryBackedCreateJob.query_id
+    assert job.id == QueryBackedCreateJob.id
+    assert job.type() is lancedb.JobType.QUERY
+    assert not hasattr(job, "query_id")
     assert job.wait() is None
     assert job.status() == "finished"
     assert native.calls == [
@@ -636,8 +639,9 @@ async def test_async_remote_create_keeps_interval_unspecified():
     job = await db.create_materialized_view_async(
         "adults", "people", auto_refresh_enabled=True
     )
-    assert job.id is None
-    assert job.query_id == QueryBackedCreateJob.query_id
+    assert job.id == QueryBackedCreateJob.id
+    assert job.type() is lancedb.JobType.QUERY
+    assert not hasattr(job, "query_id")
     assert await job.wait() is None
     assert await job.status() == "finished"
     assert native.calls[0][2]["auto_refresh_enabled"] is True

@@ -16,7 +16,6 @@ use pyo3::{
     types::{PyAnyMethods, PyDict, PyDictMethods},
 };
 use serde::Serialize;
-use uuid::Uuid;
 
 use crate::error::PythonErrorExt;
 
@@ -82,9 +81,9 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
-    #[getter]
-    pub fn query_id(&self) -> Option<Uuid> {
-        self.inner.query_id()
+    #[pyo3(name = "type")]
+    pub fn r#type(&self) -> &'static str {
+        self.inner.r#type().as_str()
     }
 
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

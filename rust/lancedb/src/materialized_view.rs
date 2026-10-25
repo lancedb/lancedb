@@ -1716,8 +1716,8 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready. Remote creation submits SQL and exposes
-    /// [`Job::query_id`] instead of a registry job ID.
+    /// settles when the view is ready. Remote creation submits SQL; the handle's
+    /// type is [`crate::job::JobType::Query`] and its ID identifies that query.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self

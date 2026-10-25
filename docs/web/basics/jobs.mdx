@@ -77,11 +77,21 @@ Remote materialized-view CREATE and REFRESH use the SQL query backend. Python's
 handles with `status()`, `wait()` and `cancel()`. Synchronous creation and refresh
 wait on the same SQL execution before returning.
 
-These handles have `id = None` and expose a connection-scoped `query_id` instead.
-They have no registry record or event history and cannot be reopened through
-`open_job()` or reattached after a client restart. The query ID can be inspected
-with `describe_query()` on the submitting connection; it is not a durable resume
-token. Cancellation follows the SQL server's capabilities and can be unsupported.
+Use `job.type()` to interpret the single `job.id` field:
+
+| `job.type()` | `job.id` | Inspection |
+| --- | --- | --- |
+| `JobType.REGISTRY` | Registry job ID string | The jobs API, including `open_job()` and event history |
+| `JobType.QUERY` | Connection-scoped query UUID string | `describe_query(job.id)` on the submitting connection |
+| `JobType.LOCAL` | `None` | The in-process handle |
+
+Python exports `JobType` from `lancedb`. This backend enum is separate from
+`job.job_type`, the registry's kind of work, such as indexing or compaction.
+
+SQL-backed handles do not expose registry records or event history and cannot
+be reopened through `open_job()` or reattached after a client restart. Their IDs
+are not durable resume tokens. Cancellation follows the SQL server's
+capabilities and can be unsupported.
 
 The server decides whether SQL executes on its serving fleet or starts SQL job
 workers. That placement does not change the handle's query-backed identity.

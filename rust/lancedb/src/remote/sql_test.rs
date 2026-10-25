@@ -22,6 +22,7 @@ use tonic::{Request, Response, Status, Streaming};
 use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::database::Database;
+use crate::job::JobType;
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
@@ -921,10 +922,9 @@ async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
             })
             .await
             .unwrap();
-        assert!(job.id().is_none());
-        let query_id = job
-            .query_id()
-            .expect("SQL-backed job must expose its query");
+        assert_eq!(job.r#type(), JobType::Query);
+        let query_id =
+            Uuid::parse_str(job.id().expect("SQL-backed job must expose its ID")).unwrap();
         job.wait().await.unwrap();
         job.wait().await.unwrap();
         assert_eq!(job.status().await.unwrap(), "finished");
