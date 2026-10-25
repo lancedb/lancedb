@@ -1552,7 +1552,10 @@ impl Table {
     }
 
     #[pyo3(signature = (descriptor))]
-    pub fn open_blob_file(self_: PyRef<'_, Self>, descriptor: &str) -> PyResult<Bound<'_, PyAny>> {
+    pub fn open_blob_file<'py>(
+        self_: PyRef<'py, Self>,
+        descriptor: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
         let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
             .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
         let inner = self_.inner_ref()?.clone();
