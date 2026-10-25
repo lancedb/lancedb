@@ -132,15 +132,15 @@ impl TestSqlService {
         if !self.adaptive {
             return Response::new(rows);
         }
-        let poll_info = self.defer.then(|| PollInfo {
-            info: Some(
-                FlightInfo::new()
-                    .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(query))),
-            ),
-            flight_descriptor: Some(FlightDescriptor::new_cmd(format!("poll:1:{query}"))),
-            progress: Some(0.25),
-            expiration_time: None,
-        });
+        let poll_info =
+            self.defer.then(|| PollInfo {
+                info: Some(FlightInfo::new().with_endpoint(
+                    FlightEndpoint::new().with_ticket(Ticket::new(query.to_string())),
+                )),
+                flight_descriptor: Some(FlightDescriptor::new_cmd(format!("poll:1:{query}"))),
+                progress: Some(0.25),
+                expiration_time: None,
+            });
         let first = FlightData {
             app_metadata: if self.invalid_decision {
                 b"invalid protobuf".to_vec().into()
