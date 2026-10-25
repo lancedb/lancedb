@@ -2696,3 +2696,124 @@ def test_create_table_with_python_blob_dict_and_object():
         b"from-dict",
         b"from-blob",
     ]
+
+
+def _openable_descriptors(table, *, by_address):
+    hits = (
+        table.search()
+        .with_row_id(True)
+        .with_row_address(True)
+        .limit(100)
+        .to_arrow(blob_mode="descriptions")
+    )
+    descriptors = {}
+    for row in hits.to_pylist():
+        descriptor = row["image"]
+        if descriptor is not None and descriptor.get("kind") is not None:
+            descriptor = dict(descriptor)
+            descriptor["source"] = {
+                "uri": table.to_lance().uri,
+                "version": table.version,
+                "branch": None,
+                "column": "image",
+                "row_reference": row["_rowaddr" if by_address else "_rowid"],
+                "row_is_address": by_address,
+            }
+        else:
+            descriptor = None
+        descriptors[row["id"]] = descriptor
+    return descriptors
+
+
+@pytest.mark.parametrize("by_address", [False, True])
+def test_open_blob_files_preserve_snapshot_order_nulls_and_empty_values(
+    tmp_path, by_address
+):
+    db = lancedb.connect(str(tmp_path))
+    schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
+    table = db.create_table("videos", schema=schema)
+    table.add(
+        [
+            {"id": 1, "image": b"alpha"},
+            {"id": 2, "image": None},
+            {"id": 3, "image": b"beta"},
+            {"id": 4, "image": b""},
+        ]
+    )
+    descriptors = _openable_descriptors(table, by_address=by_address)
+    table.add([{"id": 1, "image": b"replacement"}], mode="overwrite")
+    latest_version = table.version
+    values = pa.array(
+        [descriptors[3], descriptors[2], descriptors[1], descriptors[3], descriptors[4]]
+    )
+    files = table.open_blob_files(
+        pa.chunked_array([values.slice(0, 2), values.slice(2)])
+    )
+    assert iter(files) is files
+    actual = []
+    for file in files:
+        if file is None:
+            actual.append(None)
+        else:
+            with file:
+                actual.append(file.read())
+            assert file.closed
+    assert actual == [b"beta", None, b"alpha", b"beta", b""]
+    with table.open_blob_file(descriptors[1]) as file:
+        file.seek(2)
+        assert file.read_range(0, 2) == b"al"
+        assert file.tell() == 2
+        assert file.read(2) == b"ph"
+    assert table.version == latest_version
+    assert table.open_blob_file(pa.scalar(None, type=values.type)) is None
+    other = db.create_table("other", schema=schema)
+    with pytest.raises(ValueError, match="different table"):
+        other.open_blob_file(descriptors[1])
+    raw = {key: value for key, value in descriptors[1].items() if key != "source"}
+    with pytest.raises(ValueError, match="source"):
+        table.open_blob_file(raw)
+    with pytest.raises(TypeError, match="descriptor"):
+        table.open_blob_file("not a descriptor")
+
+
+def test_open_blob_files_does_not_open_ahead(monkeypatch):
+    table = _blob_table("lazy_descriptor_iteration", [{"id": 1, "image": b"x"}])
+    opened = []
+
+    def open_file(descriptor):
+        opened.append(descriptor)
+        return descriptor
+
+    monkeypatch.setattr(table, "open_blob_file", open_file)
+    files = table.open_blob_files(iter([1, None, 2]))
+    assert opened == []
+    assert next(files) == 1
+    assert opened == [1]
+    assert list(files) == [None, 2]
+    assert opened == [1, None, 2]
+
+
+@pytest.mark.asyncio
+async def test_open_blob_files_async_iterates_snapshot_handles(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    table = db.create_table(
+        "videos",
+        schema=pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")]),
+    )
+    table.add([{"id": 1, "image": b"alpha"}, {"id": 2, "image": None}])
+    descriptors = _openable_descriptors(table, by_address=True)
+    async_db = await lancedb.connect_async(str(tmp_path))
+    videos = await async_db.open_table("videos")
+    file = await videos.open_blob_file(pa.scalar(descriptors[1]))
+    with file:
+        assert file.read(2) == b"al"
+    actual = []
+    async for file in videos.open_blob_files(
+        [descriptors[2], descriptors[1], descriptors[1]]
+    ):
+        if file is None:
+            actual.append(None)
+        else:
+            with file:
+                actual.append(await file.aread())
+    assert actual == [None, b"alpha", b"alpha"]

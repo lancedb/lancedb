@@ -2927,6 +2927,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         self.fetch_blob_files_impl(column, row_ids).await
     }
 
+    async fn open_blob_file(&self, descriptor: &crate::blob::BlobDescriptor) -> Result<BlobFile> {
+        self.open_blob_file_impl(descriptor).await
+    }
+
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
         if let AnyQuery::Query(request) = query
             && let Some(offsets) = &request.take_offsets

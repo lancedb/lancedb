@@ -3,7 +3,7 @@
 
 //! LanceDB Table APIs
 
-use crate::blob::BlobFile;
+use crate::blob::{BlobDescriptor, BlobFile};
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
@@ -796,6 +796,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "fetch_blob_files is not supported on this table type".into(),
         })
     }
+    /// Open a descriptor at its pinned source version. See [`Table::open_blob_file`].
+    async fn open_blob_file(&self, _descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        Err(Error::NotSupported {
+            message: "open_blob_file is not supported on this table type".into(),
+        })
+    }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -1375,6 +1381,15 @@ impl Table {
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
         self.inner.fetch_blob_files(column.as_ref(), row_ids).await
+    }
+
+    /// Open a seekable file from a SQL `blob_descriptor` result.
+    ///
+    /// The descriptor carries its table version, branch, column and row identity.
+    /// Opening does not materialize the payload or change this table's checkout.
+    /// Remote reads use the table's authenticated HTTP byte-range endpoint.
+    pub async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        self.inner.open_blob_file(descriptor).await
     }
 
     /// Insert new records into this Table
@@ -3762,6 +3777,11 @@ impl BaseTable for NativeTable {
     ) -> Result<Vec<Option<BlobFile>>> {
         let dataset = self.dataset.get().await?;
         crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
+    }
+
+    async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::open_native_blob_file(&dataset, descriptor).await
     }
 
     /// Delete rows from the table

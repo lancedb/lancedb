@@ -15,9 +15,11 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncIterator,
     Callable,
     Dict,
     Iterable,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -33,6 +35,7 @@ from lancedb.scannable import _hf_batches, _register_optional_converters, to_sca
 from . import __version__
 from ._blob import (
     BlobFile,
+    _normalize_blob_descriptor,
     _normalize_blob_row_ids,
     _wrap_blob_files,
     strip_auto_row_ids,
@@ -2290,6 +2293,37 @@ class Table(ABC):
         """
 
     @abstractmethod
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        """Open a seekable file from a SQL ``blob_descriptor`` result.
+
+        Accepts the descriptor dictionary or an Arrow struct scalar. Its source
+        pins the table version, branch, column and row identity, so opening does
+        not change this table's checkout. Null descriptors return ``None``.
+        Payload bytes load only when the returned handle is read. An external
+        blob with an unspecified size may require a metadata request on opening.
+
+        ```python
+        rows = db.execute_query(
+            "SELECT blob_descriptor(video) AS video FROM videos"
+        ).read_all()
+        with videos.open_blob_file(rows["video"][0]) as video:
+            header = video.read(4096)
+        ```
+        """
+
+    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+        """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
+
+        Accepts an Arrow array/chunked array or any iterable. Opens each handle
+        as iteration advances, preserving input order and nulls as ``None``.
+        Close each non-null handle after use, normally with a ``with`` block.
+        """
+        for descriptor in descriptors:
+            yield self.open_blob_file(descriptor)
+
+    @abstractmethod
     def _execute_query(
         self,
         query: Query,
@@ -3238,6 +3272,11 @@ class LanceTable(Table):
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
 
     @property
     def tags(self) -> Tags:
@@ -7450,6 +7489,29 @@ class AsyncTable:
             column, _normalize_blob_row_ids(row_ids, column)
         )
         return _wrap_blob_files(handles)
+
+    async def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        """Open a snapshot-bound descriptor as a seekable file.
+
+        See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
+        """
+        descriptor = _normalize_blob_descriptor(descriptor)
+        if descriptor is None:
+            return None
+        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+
+    async def open_blob_files(
+        self, descriptors: Iterable
+    ) -> AsyncIterator[Optional[BlobFile]]:
+        """Asynchronously iterate over files in descriptor order, preserving nulls.
+
+        Use ``async for file in table.open_blob_files(descriptors)``. Each
+        non-null file must be closed after use.
+        """
+        for descriptor in descriptors:
+            yield await self.open_blob_file(descriptor)
 
     @property
     def tags(self) -> AsyncTags:
