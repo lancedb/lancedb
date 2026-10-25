@@ -22,6 +22,7 @@ use tonic::{Request, Response, Status, Streaming};
 use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::database::Database;
+use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::RemoteCatalogOptions;
 use crate::remote::client::HeaderProvider;
 use crate::remote::client::test_utils::client_with_handler;
@@ -75,6 +76,7 @@ struct TestSqlService {
     defer: bool,
     invalid_decision: bool,
     query_count: Arc<AtomicUsize>,
+    statements: Arc<std::sync::Mutex<Vec<String>>>,
     do_get_count: Arc<AtomicUsize>,
     cancel_count: Arc<AtomicUsize>,
     cancel_denied_count: Arc<AtomicUsize>,
@@ -207,6 +209,7 @@ impl Default for TestSqlService {
             defer: false,
             invalid_decision: false,
             query_count: Arc::new(AtomicUsize::new(0)),
+            statements: Arc::new(std::sync::Mutex::new(Vec::new())),
             do_get_count: Arc::new(AtomicUsize::new(0)),
             cancel_count: Arc::new(AtomicUsize::new(0)),
             cancel_denied_count: Arc::new(AtomicUsize::new(0)),
@@ -269,6 +272,7 @@ impl FlightService for TestSqlService {
             .and_then(|any| any.unpack::<CommandStatementQuery>().ok().flatten());
         let (query, stage) = if let Some(command) = command {
             self.query_count.fetch_add(1, Ordering::SeqCst);
+            self.statements.lock().unwrap().push(command.query.clone());
             (command.query, 0_u8)
         } else {
             let continuation = std::str::from_utf8(request.get_ref().cmd.as_ref())
@@ -289,6 +293,9 @@ impl FlightService for TestSqlService {
                 .ok_or_else(|| Status::invalid_argument("invalid continuation"))?;
             (query.to_string(), stage)
         };
+        if query == "SELECT rejected" {
+            return Err(Status::invalid_argument("invalid statement"));
+        }
         if (query == "SELECT slow" || query == "SELECT cancelling") && stage > 0 {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
@@ -364,7 +371,11 @@ impl FlightService for TestSqlService {
             .ok()
             .and_then(|envelope| Any::decode(envelope.value).ok())
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
-        if initial.is_some() {
+        if let Some(command) = &initial {
+            self.statements.lock().unwrap().push(command.query.clone());
+            if command.query == "SELECT rejected" {
+                return Err(Status::invalid_argument("invalid statement"));
+            }
             self.capture_headers(request.metadata());
             assert_eq!(
                 request.metadata().get(PROTOCOL_HEADER).unwrap(),
@@ -376,7 +387,8 @@ impl FlightService for TestSqlService {
             .map(|command| command.query.as_bytes())
             .unwrap_or(request.get_ref().ticket.as_ref());
         let ticket = query;
-        let gate_refresh = ticket == b"REFRESH MATERIALIZED VIEW \"cancel_view\"";
+        let gate_refresh = ticket == b"REFRESH MATERIALIZED VIEW \"cancel_view\""
+            || ticket == b"SELECT job cancel denied";
         let empty = ticket == b"SELECT empty";
         let slow = ticket == b"SELECT slow get";
         let large = ticket == b"SELECT large message";
@@ -458,7 +470,9 @@ impl FlightService for TestSqlService {
         {
             return Err(Status::not_found("query cancellation completed"));
         }
-        let status = if query == "SELECT cancel unspecified" {
+        let status = if query == "SELECT job cancel denied" {
+            CancelStatus::NotCancellable
+        } else if query == "SELECT cancel unspecified" {
             CancelStatus::Unspecified
         } else if query == "SELECT cancelling" {
             if self
@@ -881,6 +895,132 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 }
 
 #[tokio::test]
+async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let count = service.query_count.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("CREATE must use SQL, not REST: {}", request.url().path());
+        })
+        .with_sql_client(sql_client.clone());
+        for (enabled, interval, expected) in [
+            (None, None, ""),
+            (Some(true), None, " WITH (auto_refresh_enabled = true)"),
+            (
+                Some(false),
+                Some(0.5),
+                " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
+            ),
+        ] {
+            let job = db
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: "adults".into(),
+                    namespace_path: vec!["team".into(), "reports".into()],
+                    query: "SELECT * FROM people".into(),
+                    with_no_data: false,
+                    auto_refresh_enabled: enabled,
+                    auto_refresh_interval_seconds: interval,
+                })
+                .await
+                .unwrap();
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+            let query_id =
+                Uuid::parse_str(job.id().expect("SQL-backed job must expose its ID")).unwrap();
+            job.wait().await.unwrap();
+            job.wait().await.unwrap();
+            assert_eq!(job.status().await.unwrap(), "finished");
+            assert!(job.events(Default::default()).await.is_err());
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+            assert_eq!(
+                sql_client.describe(query_id).await.unwrap().status,
+                QueryStatus::Finished
+            );
+            assert_eq!(
+                statements.lock().unwrap().last().unwrap(),
+                &format!("CREATE MATERIALIZED VIEW \"adults\"{expected} AS SELECT * FROM people")
+            );
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(statements.lock().unwrap().len(), 3);
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team$reports")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn query_backed_jobs_propagate_submission_and_execution_failures() {
+    let (client, shutdown) = start_sql_service(
+        TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        },
+        ClientConfig::default(),
+    )
+    .await;
+    let rejected = client
+        .submit_as_job("SELECT rejected".into(), vec![], || async { Ok(()) })
+        .await;
+    assert!(rejected.is_err());
+    let finished = Arc::new(AtomicBool::new(false));
+    let callback_finished = finished.clone();
+    let job = client
+        .submit_as_job("SELECT fail".into(), vec![], move || async move {
+            callback_finished.store(true, Ordering::SeqCst);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(job.wait().await, Err(Error::JobFailed { .. })));
+    assert!(matches!(job.wait().await, Err(Error::JobFailed { .. })));
+    assert_eq!(job.status().await.unwrap(), "failed");
+    assert!(!finished.load(Ordering::SeqCst));
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
+async fn rejected_job_cancellation_does_not_abort_sql_completion() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
+    let do_get_count = service.do_get_count.clone();
+    let release = service.gate_refresh_release.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let job = client
+        .submit_as_job("SELECT job cancel denied".into(), vec![], || async {
+            Ok(())
+        })
+        .await
+        .unwrap();
+    wait_for(&do_get_count, 1, "job did not begin reading its SQL result").await;
+    assert!(matches!(
+        job.cancel().await,
+        Err(Error::NotSupported { .. })
+    ));
+    assert_eq!(job.status().await.unwrap(), "running");
+    release.notify_one();
+    job.wait().await.unwrap();
+    assert_eq!(job.status().await.unwrap(), "finished");
+    job.cancel().await.unwrap();
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn remote_refresh_twice_keeps_latest_selector() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -969,7 +1109,11 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
         let (socket, _) = listener.accept().await?;
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
-    let service = TestSqlService::default();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
     let cancel_count = service.cancel_count.clone();
     let do_get_count = service.do_get_count.clone();
     let gate_refresh_release = service.gate_refresh_release.clone();

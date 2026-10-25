@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::future::{Future, pending};
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -12,6 +12,7 @@ use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
+#[cfg(test)]
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
@@ -22,7 +23,7 @@ use futures::TryStreamExt;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use prost::Message;
 use serde::{Serialize, de::DeserializeOwned};
-use tokio::sync::{Mutex, Notify, OnceCell, mpsc, watch};
+use tokio::sync::{Mutex, Notify, OnceCell, mpsc};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use uuid::Uuid;
 
@@ -226,6 +227,7 @@ impl SqlClient {
         .await
     }
 
+    #[cfg(test)]
     pub(super) async fn submit(
         &self,
         query: &str,
@@ -254,40 +256,36 @@ impl SqlClient {
         .await
     }
 
-    pub(super) fn submit_as_job<T, F, Fut>(
+    pub(super) async fn submit_as_job<T, F, Fut>(
         &self,
         statement: String,
         namespace: Vec<String>,
         finish: F,
-    ) -> Job<T>
+    ) -> Result<Job<T>>
     where
         T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<T>> + Send + 'static,
     {
-        let client = self.clone();
-        let (query_tx, query_rx) = watch::channel(None::<Arc<Query>>);
+        let query = Arc::new(
+            self.execute(ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: namespace,
+                parameters: None,
+            })
+            .await?,
+        );
+        let query_id = query.id();
+        let execution = query.clone();
         let task = tokio::spawn(async move {
-            let query = Arc::new(client.submit(&statement, &namespace).await?);
-            query_tx.send_replace(Some(query.clone()));
-            let mut reader = query.reader().await?;
+            let mut reader = execution.reader().await?;
             while reader.try_next().await?.is_some() {}
             finish().await
         });
-        Job::spawned_with_cancellation(task, move || {
-            let mut query_rx = query_rx.clone();
-            async move {
-                loop {
-                    let query = query_rx.borrow().clone();
-                    if let Some(query) = query {
-                        return query.cancel().await;
-                    }
-                    if query_rx.changed().await.is_err() {
-                        pending::<()>().await;
-                    }
-                }
-            }
-        })
+        Ok(Job::from_query_task(query_id, task, move || {
+            let query = query.clone();
+            async move { query.cancel().await }
+        }))
     }
 
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
@@ -315,6 +313,7 @@ impl SqlClientInner {
         )
     }
 
+    #[cfg(test)]
     async fn poll(
         &self,
         descriptor: FlightDescriptor,

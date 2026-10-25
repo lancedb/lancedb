@@ -1134,7 +1134,7 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(
