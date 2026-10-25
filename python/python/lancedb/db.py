@@ -674,10 +674,10 @@ class DBConnection(EnforceOverrides):
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
-        The job may already be complete for a local database. On LanceDB
-        Cloud and Enterprise, its ``id`` is the server job identifier from
-        the ``202 Accepted`` create response. Wait for the job before opening
-        or querying the view.
+        The job may already be complete for a local database. Remote creation
+        submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
+        a connection-scoped ``query_id`` and no registry ``id`` or event history.
+        Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -2869,7 +2869,9 @@ class AsyncConnection(object):
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
-        Wait for the returned job before opening or querying the view.
+        Wait for the returned job before opening or querying the view. Remote
+        creation uses SQL; ``query_id`` identifies that query on this connection,
+        while ``id`` is ``None`` because no registry job is exposed.
         """
         source, native_options = await self._materialized_view_source(
             source, select, where, limit

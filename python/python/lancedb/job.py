@@ -1,12 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""Handles to operations a server may run asynchronously."""
+"""Handles to asynchronous registry jobs, SQL queries, and local operations."""
 
 import asyncio
 import json
 from datetime import timedelta
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
+from uuid import UUID
 
 import pyarrow as pa
 
@@ -47,11 +48,23 @@ class AsyncJob(Generic[T]):
         """Identifies the operation on the server that is running it.
 
         Returned for correlating with server logs or the jobs API. Operations
-        that run in this process have no server id and return `None`. The value
+        that run in this process or through SQL return `None`; SQL operations
+        expose :attr:`query_id` instead. The value
         is opaque: parsing it or storing it to resume the job later is not
         supported.
         """
         return self._inner.id if self._inner is not None else None
+
+    @property
+    def query_id(self) -> Optional[UUID]:
+        """The SQL query's connection-scoped ID, or ``None`` for other jobs.
+
+        Use ``describe_query`` on the submitting connection to inspect it.
+        This is not a registry job ID or a durable resume token. Query-backed
+        jobs have no registry record or events; cancellation follows the SQL
+        server's capabilities.
+        """
+        return self._inner.query_id if self._inner is not None else None
 
     async def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
@@ -95,7 +108,8 @@ class AsyncJob(Generic[T]):
         job its full record, then cache it for the properties below.
 
         The properties are all `None` until this runs, because submitting an
-        operation returns only a job id. `status` fetches the whole record too;
+        operation does not fetch its full registry record. Query-backed jobs
+        expose only lifecycle state through this method. `status` fetches the whole record too;
         `wait` records only the terminal state it establishes.
         """
         if self._inner is None:
@@ -116,7 +130,7 @@ class AsyncJob(Generic[T]):
     def job_type(self) -> Optional[str]:
         """The job's type, as the server names it.
 
-        `None` for an in-process job, which has no server-side record.
+        `None` for in-process and query-backed jobs, which have no registry record.
         """
         return self._field("job_type")
 
@@ -247,6 +261,11 @@ class Job(Generic[T]):
         See :attr:`AsyncJob.id`.
         """
         return self._inner.id if self._inner is not None else None
+
+    @property
+    def query_id(self) -> Optional[UUID]:
+        """The SQL query's connection-scoped ID. See :attr:`AsyncJob.query_id`."""
+        return self._inner.query_id if self._inner is not None else None
 
     def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
