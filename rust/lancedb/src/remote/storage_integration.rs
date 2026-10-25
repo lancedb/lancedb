@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use arrow_array::{Array, BooleanArray, Int64Array, RecordBatch, StringArray};
+use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
 use serde_json::Value;
 
 use crate::storage_integration::{
