@@ -1221,6 +1221,11 @@ class RemoteTable(Table):
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
 
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
+
     def head(self, n=5) -> pa.Table:
         """
         Return the first `n` rows of the table.
