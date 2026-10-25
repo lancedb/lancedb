@@ -1729,7 +1729,11 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
         )
         registration = db.create_function_async(normalize_score)
         assert registration.id == "job-register"
+        assert registration.job_type is None
+        assert registration.status() == "finished"
+        assert registration.job_type == "create_function"
         created = registration.wait()
+        assert registration.job_type == "create_function"
         reopened = db.get_function("normalize_score", version=created.version)
 
     assert created == reopened
