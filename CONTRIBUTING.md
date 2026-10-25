@@ -106,11 +106,14 @@ at the same path when the published site is assembled.
 Four things to know before editing:
 
 **Code examples are not written into the pages.** They live in real tests under
-`docs/web-tests/{py,ts,rs}`, are extracted into `docs/web/snippets/`, and are
-imported by the pages. Edit the test, then regenerate from the repository root:
+`docs/web-tests/{py,ts,rs}` and `rust/lancedb/tests`, are extracted into
+`docs/web/snippets/`, and are imported by the pages. Edit the test, then
+regenerate from the repository root:
 
 ```bash
-uv run docs/web-tests/mdx_snippets_gen.py -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs -o docs/web/snippets
+uv run docs/web-tests/mdx_snippets_gen.py \
+  -s docs/web-tests/py -s docs/web-tests/ts -s docs/web-tests/rs \
+  -s rust/lancedb/tests -o docs/web/snippets
 ```
 
 Review the diff before committing: a few modules currently regenerate with
