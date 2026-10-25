@@ -18,29 +18,6 @@ use uuid::Uuid;
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
 
-/// The execution backend represented by a [`Job`] handle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum JobType {
-    /// A job tracked by the server's job registry.
-    Registry,
-    /// A SQL query tracked by the submitting connection.
-    Query,
-    /// An operation tracked in the client process, including completed handles.
-    Local,
-}
-
-impl JobType {
-    /// The backend's stable identifier used by language bindings.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Registry => "registry",
-            Self::Query => "query",
-            Self::Local => "local",
-        }
-    }
-}
-
 /// Which of a job's events [`Job::events`] returns.
 ///
 /// The handle already knows which job to ask about, so this narrows the
@@ -83,8 +60,8 @@ pub(crate) trait JobHandle: Send + Sync {
     fn id(&self) -> Option<&str> {
         None
     }
-    fn r#type(&self) -> JobType {
-        JobType::Local
+    fn job_type(&self) -> Option<&str> {
+        None
     }
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
@@ -194,14 +171,15 @@ struct JobCache {
 /// the endpoint's successful terminal result; unit-result operations use the
 /// default `Job<()>`.
 ///
-/// The detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
+/// Registry detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
 /// handle last observed. Submitting an operation returns only a job id, so
 /// populating them eagerly would cost an extra round trip on every call:
 ///
 /// - [`Job::refresh`] and [`Job::status`] fetch the whole record.
 /// - [`Job::wait`] records the terminal state it establishes, but not the rest
 ///   of the record; call [`Job::refresh`] for that.
-/// - Everything is `None` until one of those runs.
+/// - Registry details are `None` until one of those runs. Query-backed handles
+///   report [`Job::job_type`] as `"query"` immediately.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -217,8 +195,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cache = self.cache_read();
         let mut out = f.debug_struct("Job");
-        out.field("type", &self.r#type())
-            .field("id", &self.id())
+        out.field("id", &self.id())
             .field("done", &matches!(self.inner, JobInner::Completed(_)));
         if let Some(state) = &cache.state {
             out.field("state", state);
@@ -323,7 +300,7 @@ impl<T> Job<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// The operation's opaque identity, interpreted according to [`Job::r#type`].
+    /// The operation's opaque identity, interpreted according to [`Job::job_type`].
     /// Registry handles expose a registry job ID; query handles expose the
     /// connection-scoped SQL query UUID as a string. Local handles return None.
     /// A query ID cannot be used with registry APIs or to resume after restart.
@@ -331,16 +308,6 @@ where
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
             JobInner::Completed(_) => None,
-        }
-    }
-
-    /// The execution backend that determines how to interpret [`Job::id`].
-    /// This differs from [`Job::job_type`], which is registry-specific metadata
-    /// describing the kind of work, such as indexing or compaction.
-    pub fn r#type(&self) -> JobType {
-        match &self.inner {
-            JobInner::Handle { handle, .. } => handle.r#type(),
-            JobInner::Completed(_) => JobType::Local,
         }
     }
 
@@ -410,8 +377,14 @@ where
         self.cache_read().description.clone()
     }
 
-    /// The job's type, as the server names it. `None` for an in-process job.
+    /// The job's type: `"query"` for SQL-backed handles, otherwise the cached
+    /// server-reported kind of work. `None` for an in-process job.
     pub fn job_type(&self) -> Option<String> {
+        if let JobInner::Handle { handle, .. } = &self.inner {
+            if let Some(job_type) = handle.job_type() {
+                return Some(job_type.to_string());
+            }
+        }
         self.with_description(|description| description.job_type.clone())
     }
 
@@ -641,12 +614,8 @@ impl JobHandle for SpawnedJob {
         self.id.as_deref()
     }
 
-    fn r#type(&self) -> JobType {
-        if self.id.is_some() {
-            JobType::Query
-        } else {
-            JobType::Local
-        }
+    fn job_type(&self) -> Option<&str> {
+        self.id.as_ref().map(|_| "query")
     }
 
     async fn status(&self) -> Result<String> {
@@ -709,7 +678,7 @@ mod tests {
     async fn mapped_spawned_job_reuses_outcome() {
         let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
 
-        assert_eq!(job.r#type(), JobType::Local);
+        assert_eq!(job.job_type(), None);
         assert_eq!(job.id(), None);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.wait().await.unwrap(), 42);
@@ -723,14 +692,14 @@ mod tests {
             Ok(())
         })
         .map(|value| value + 1);
-        assert_eq!(job.r#type(), JobType::Query);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
         assert_eq!(job.id(), Some(query_id.to_string().as_str()));
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.wait().await.unwrap(), 42);
-        assert_eq!(job.r#type(), JobType::Query);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
         assert_eq!(job.id(), Some(query_id.to_string().as_str()));
         let completed = Job::new_done();
-        assert_eq!(completed.r#type(), JobType::Local);
+        assert_eq!(completed.job_type(), None);
         assert_eq!(completed.id(), None);
     }
 

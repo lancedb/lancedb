@@ -108,7 +108,7 @@ export {
 
 export { JobFailureInfo, JobInfo, Session } from "./native.js";
 
-export { Job, JobEventsOptions, JobType } from "./job";
+export { Job, JobEventsOptions } from "./job";
 
 export {
   AutoQuery,

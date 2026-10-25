@@ -13,7 +13,7 @@ use serde::Deserialize;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
-use crate::job::{JobEventsRequest, JobHandle, JobType, TerminalResult};
+use crate::job::{JobEventsRequest, JobHandle, TerminalResult};
 use crate::remote::client::{HttpSend, RequestResultExt, RestfulLanceDbClient};
 
 /// Delay before the second job-state poll; doubles up to [`MAX_POLL_INTERVAL`].
@@ -202,10 +202,6 @@ impl<S: HttpSend> RemoteJob<S> {
 
 #[async_trait]
 impl<S: HttpSend> JobHandle for RemoteJob<S> {
-    fn r#type(&self) -> JobType {
-        JobType::Registry
-    }
-
     fn id(&self) -> Option<&str> {
         Some(&self.job_id)
     }
@@ -299,10 +295,6 @@ mod tests {
 
     #[async_trait]
     impl JobHandle for FixtureRemoteJob {
-        fn r#type(&self) -> JobType {
-            JobType::Registry
-        }
-
         async fn status(&self) -> Result<String> {
             Ok("finished".to_string())
         }
