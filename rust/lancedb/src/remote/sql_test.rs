@@ -371,7 +371,11 @@ impl FlightService for TestSqlService {
             .ok()
             .and_then(|envelope| Any::decode(envelope.value).ok())
             .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
-        if initial.is_some() {
+        if let Some(command) = &initial {
+            self.statements.lock().unwrap().push(command.query.clone());
+            if command.query == "SELECT rejected" {
+                return Err(Status::invalid_argument("invalid statement"));
+            }
             self.capture_headers(request.metadata());
             assert_eq!(
                 request.metadata().get(PROTOCOL_HEADER).unwrap(),
@@ -892,67 +896,81 @@ async fn catalog_connections_use_explicit_sql_endpoint_and_database_scope() {
 
 #[tokio::test]
 async fn remote_create_uses_sql_and_preserves_options_and_namespace() {
-    let service = TestSqlService::default();
-    let statements = service.statements.clone();
-    let headers = service.headers.clone();
-    let count = service.query_count.clone();
-    let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
-    let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
-        panic!("CREATE must use SQL, not REST: {}", request.url().path());
-    })
-    .with_sql_client(sql_client.clone());
-    for (enabled, interval, expected) in [
-        (None, None, ""),
-        (Some(true), None, " WITH (auto_refresh_enabled = true)"),
-        (
-            Some(false),
-            Some(0.5),
-            " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
-        ),
-    ] {
-        let job = db
-            .create_materialized_view_async(CreateMaterializedViewRequest {
-                name: "adults".into(),
-                namespace_path: vec!["team".into(), "reports".into()],
-                query: "SELECT * FROM people".into(),
-                with_no_data: false,
-                auto_refresh_enabled: enabled,
-                auto_refresh_interval_seconds: interval,
-            })
-            .await
-            .unwrap();
-        assert_eq!(job.job_type().as_deref(), Some("query"));
-        let query_id =
-            Uuid::parse_str(job.id().expect("SQL-backed job must expose its ID")).unwrap();
-        job.wait().await.unwrap();
-        job.wait().await.unwrap();
-        assert_eq!(job.status().await.unwrap(), "finished");
-        assert!(job.events(Default::default()).await.is_err());
-        assert_eq!(job.job_type().as_deref(), Some("query"));
-        assert_eq!(
-            sql_client.describe(query_id).await.unwrap().status,
-            QueryStatus::Finished
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let count = service.query_count.clone();
+        let (sql_client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("CREATE must use SQL, not REST: {}", request.url().path());
+        })
+        .with_sql_client(sql_client.clone());
+        for (enabled, interval, expected) in [
+            (None, None, ""),
+            (Some(true), None, " WITH (auto_refresh_enabled = true)"),
+            (
+                Some(false),
+                Some(0.5),
+                " WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 0.5)",
+            ),
+        ] {
+            let job = db
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: "adults".into(),
+                    namespace_path: vec!["team".into(), "reports".into()],
+                    query: "SELECT * FROM people".into(),
+                    with_no_data: false,
+                    auto_refresh_enabled: enabled,
+                    auto_refresh_interval_seconds: interval,
+                })
+                .await
+                .unwrap();
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+            let query_id =
+                Uuid::parse_str(job.id().expect("SQL-backed job must expose its ID")).unwrap();
+            job.wait().await.unwrap();
+            job.wait().await.unwrap();
+            assert_eq!(job.status().await.unwrap(), "finished");
+            assert!(job.events(Default::default()).await.is_err());
+            assert_eq!(job.job_type().as_deref(), Some("query"));
+            assert_eq!(
+                sql_client.describe(query_id).await.unwrap().status,
+                QueryStatus::Finished
+            );
+            assert_eq!(
+                statements.lock().unwrap().last().unwrap(),
+                &format!("CREATE MATERIALIZED VIEW \"adults\"{expected} AS SELECT * FROM people")
+            );
+        }
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(statements.lock().unwrap().len(), 3);
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team$reports")
         );
-        assert_eq!(
-            statements.lock().unwrap().last().unwrap(),
-            &format!("CREATE MATERIALIZED VIEW \"adults\"{expected} AS SELECT * FROM people")
-        );
+        shutdown.send(()).unwrap();
     }
-    assert_eq!(count.load(Ordering::SeqCst), 3);
-    assert!(
-        headers
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|header| header.namespace_path == "team$reports")
-    );
-    shutdown.send(()).unwrap();
 }
 
 #[tokio::test]
 async fn query_backed_jobs_propagate_submission_and_execution_failures() {
-    let (client, shutdown) =
-        start_sql_service(TestSqlService::default(), ClientConfig::default()).await;
+    let (client, shutdown) = start_sql_service(
+        TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        },
+        ClientConfig::default(),
+    )
+    .await;
     let rejected = client
         .submit_as_job("SELECT rejected".into(), vec![], || async { Ok(()) })
         .await;
@@ -975,7 +993,11 @@ async fn query_backed_jobs_propagate_submission_and_execution_failures() {
 
 #[tokio::test]
 async fn rejected_job_cancellation_does_not_abort_sql_completion() {
-    let service = TestSqlService::default();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
     let do_get_count = service.do_get_count.clone();
     let release = service.gate_refresh_release.clone();
     let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
@@ -1087,7 +1109,11 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
         let (socket, _) = listener.accept().await?;
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
-    let service = TestSqlService::default();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
     let cancel_count = service.cancel_count.clone();
     let do_get_count = service.do_get_count.clone();
     let gate_refresh_release = service.gate_refresh_release.clone();
