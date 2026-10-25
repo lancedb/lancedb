@@ -12,6 +12,7 @@ use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
+#[cfg(test)]
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
@@ -226,6 +227,7 @@ impl SqlClient {
         .await
     }
 
+    #[cfg(test)]
     pub(super) async fn submit(
         &self,
         query: &str,
@@ -311,6 +313,7 @@ impl SqlClientInner {
         )
     }
 
+    #[cfg(test)]
     async fn poll(
         &self,
         descriptor: FlightDescriptor,
