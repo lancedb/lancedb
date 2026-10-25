@@ -1959,3 +1959,151 @@ async fn malformed_adaptive_decision_never_resubmits_the_statement() {
         assert_eq!(polls.load(Ordering::SeqCst), 0);
     }
 }
+
+#[tokio::test]
+async fn remote_drop_materialized_view_uses_a_query_job() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db
+            .drop_materialized_view_async("daily_sales", &["team".into(), "reports".into()])
+            .await
+            .unwrap();
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        let id = Uuid::parse_str(job.id().unwrap()).unwrap();
+        job.wait().await.unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(
+            client.describe(id).await.unwrap().status,
+            QueryStatus::Finished
+        );
+        assert_eq!(
+            *statements.lock().unwrap(),
+            ["DROP MATERIALIZED VIEW \"daily_sales\""]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team$reports")
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_mv_listing_uses_scoped_sql_keyset_pagination() {
+    for defer in [false, true] {
+        let result = RecordBatch::try_from_iter(vec![(
+            "name",
+            Arc::new(StringArray::from(vec!["a", "b'c", "z"])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client);
+        let namespace = vec!["team".to_owned(), "reports".to_owned()];
+        let first = db
+            .list_materialized_views(
+                &namespace,
+                crate::listing::ListingOptions::default().page_limit(2),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.items, ["a", "b'c"]);
+        let token = first.page_token.unwrap();
+        db.list_materialized_views(
+            &namespace,
+            crate::listing::ListingOptions::default()
+                .page_limit(2)
+                .page_token(&token),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            *statements.lock().unwrap(),
+            [
+                "SHOW MATERIALIZED VIEWS LIMIT 3",
+                "SHOW MATERIALIZED VIEWS WHERE name > 'b''c' LIMIT 3"
+            ]
+        );
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "team$reports")
+        );
+        for (path, token) in [(vec![], token), (namespace, "invalid".into())] {
+            assert!(matches!(
+                db.list_materialized_views(
+                    &path,
+                    crate::listing::ListingOptions::default().page_token(token)
+                )
+                .await,
+                Err(Error::InvalidInput { .. })
+            ));
+        }
+        assert_eq!(statements.lock().unwrap().len(), 2);
+        shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn remote_describe_materialized_view_preserves_the_sql_definition() {
+    for defer in [false, true] {
+        let definition = "SELECT s.x, d.label FROM source s JOIN dim d ON s.id = d.id";
+        let result = RecordBatch::try_from_iter(vec![(
+            "query",
+            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let table = RemoteTable::new_with_sql_client(
+            client_with_handler(|request| -> http::Response<String> {
+                panic!("unexpected REST request: {}", request.url().path());
+            }),
+            "daily_sales".into(),
+            vec!["analytics".into()],
+            "analytics$daily_sales".into(),
+            Default::default(),
+            Some(client),
+        );
+        let info = table.materialized_view_info().await.unwrap();
+        assert_eq!(info.definition_sql, definition);
+        assert!(info.parsed_definition.is_none());
+        assert_eq!(
+            *statements.lock().unwrap(),
+            ["DESCRIBE MATERIALIZED VIEW \"daily_sales\""]
+        );
+        shutdown.send(()).unwrap();
+    }
+}

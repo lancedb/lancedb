@@ -18,9 +18,7 @@ use crate::index::IndexStatistics;
 use crate::index::scalar::FtsQuery;
 use crate::index::waiter::{MAX_WAIT, wait_for_index};
 use crate::job::Job;
-use crate::materialized_view::{
-    MaterializedViewDefinition, MaterializedViewInfo, RefreshMaterializedViewResult,
-};
+use crate::materialized_view::{MaterializedViewInfo, RefreshMaterializedViewResult};
 use crate::query::wal_fusion::PkFusionMemory; // WAL-PK-FUSION: delete.
 use crate::query::{QueryFilter, QueryRequest, Select, VectorQueryRequest};
 use crate::remote::job::RemoteJob;
@@ -2201,24 +2199,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self.identifier
     }
     async fn materialized_view_info(&self) -> Result<MaterializedViewInfo> {
-        #[derive(Deserialize)]
-        struct DescribeMaterializedViewResponse {
-            query: String,
-        }
-
-        let request = self.client.post(&format!(
-            "/v1/materialized_view/{}/describe",
-            self.identifier
-        ));
-        let (request_id, response) = self.send(request, true).await?;
-        let response = self.check_table_response(&request_id, response).await?;
-        let response: DescribeMaterializedViewResponse =
-            response.json().await.err_to_http(request_id)?;
-        let parsed_definition = MaterializedViewDefinition::from_sql(&response.query).ok();
-        Ok(MaterializedViewInfo {
-            definition_sql: response.query,
-            parsed_definition,
-        })
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote table client".into(),
+            })?
+            .describe_materialized_view(&self.name, &self.namespace)
+            .await
     }
 
     async fn refresh_materialized_view_async(
@@ -14364,26 +14351,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_materialized_view_describe_and_refresh_requires_sql() {
-        const QUERY: &str =
-            "SELECT s.x, d.label FROM analytics.source s JOIN analytics.dim d ON s.id = d.id";
-        let table = Table::new_with_handler("my_table", |request| match request.url().path() {
-            "/v1/materialized_view/my_table/describe" => http::Response::builder()
-                .status(200)
-                .body(
-                    json!({
-                        "name": "my_table",
-                        "query": QUERY
-                    })
-                    .to_string(),
-                )
-                .unwrap(),
-            path => panic!("unexpected request: {path}"),
+    async fn test_materialized_view_requires_sql() {
+        let table = Table::new_with_handler("my_table", |request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path())
         });
-        let view = crate::MaterializedView::from_table(table).await.unwrap();
-        assert_eq!(view.definition_sql(), QUERY);
-        assert!(view.definition().is_err());
-        let error = view.refresh().execute().await.unwrap_err();
+        let error = table
+            .base_table()
+            .materialized_view_info()
+            .await
+            .unwrap_err();
         assert!(error.to_string().contains("SQL is unavailable"));
     }
 
