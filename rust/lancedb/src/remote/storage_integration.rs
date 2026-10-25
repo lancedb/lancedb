@@ -139,3 +139,45 @@ pub(super) fn decode_names(batches: &[RecordBatch]) -> Result<Vec<String>> {
     names.sort();
     Ok(names)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn sql_quotes_values_and_keeps_secret_root_namespace_explicit() {
+        let role = CreateStorageIntegrationRequest::s3("s3://bucket/it's/", "role'value");
+        let sql = create_sql("raw", &[], &role).unwrap();
+        assert!(sql.contains("STORAGE_PREFIX = 's3://bucket/it''s/'"));
+        assert!(sql.contains("STORAGE_AWS_ROLE_ARN = 'role''value'"));
+        let reference = SecretReference::new("key").with_database("platform/raw");
+        let static_config = CreateStorageIntegrationRequest::s3_with_secrets(
+            "s3://bucket/raw/",
+            reference.clone(),
+            reference,
+        );
+        let sql = create_sql("raw", &["nested".into()], &static_config).unwrap();
+        assert!(
+            sql.contains("STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"public\".\"key\"")
+        );
+        assert!(create_sql("a/b", &[], &role).is_err());
+    }
+
+    #[test]
+    fn sql_metadata_rejects_missing_rows_and_invalid_json() {
+        assert!(decode_info(&[]).is_err());
+        let batch = RecordBatch::try_from_iter([(
+            "namespace_path",
+            Arc::new(StringArray::from(vec!["invalid json"])) as arrow_array::ArrayRef,
+        )])
+        .unwrap();
+        assert!(
+            decode_info(&[batch])
+                .unwrap_err()
+                .to_string()
+                .contains("namespace_path")
+        );
+    }
+}
