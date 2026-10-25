@@ -4,6 +4,13 @@
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import { JobFailureInfo, Job as NativeJob } from "./native";
 
+/** The backend that determines how to interpret a Job's ID. */
+export enum JobType {
+  Registry = "registry",
+  Query = "query",
+  Local = "local",
+}
+
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
   /** Maximum event rows to return, up to the server maximum of 10,000. */
@@ -38,11 +45,18 @@ export class Job {
   /**
    * Identifies the operation on the server that is running it.
    *
-   * Operations that run in this process have no server id. The value is
-   * opaque: parsing it or storing it to resume the job later is not supported.
+   * Registry handles expose a registry job ID; query handles expose a
+   * connection-scoped SQL query UUID string. Local handles have no ID.
+   * Use type() to interpret the ID. Query IDs are not registry IDs or durable
+   * resume tokens.
    */
   get id(): string | null {
     return this.inner.id ?? null;
+  }
+
+  /** Return the handle's backend, separately from registry jobType metadata. */
+  type(): JobType {
+    return this.inner.type() as JobType;
   }
 
   /** The last observed lifecycle state, without contacting the backend. */

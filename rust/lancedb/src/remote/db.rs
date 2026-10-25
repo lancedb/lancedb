@@ -2030,6 +2030,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(job.id(), Some("j1-mv-drop"));
+        assert_eq!(job.r#type(), crate::job::JobType::Registry);
     }
 
     #[tokio::test]

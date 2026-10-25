@@ -18,6 +18,29 @@ use uuid::Uuid;
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
 
+/// The execution backend represented by a [`Job`] handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum JobType {
+    /// A job tracked by the server's job registry.
+    Registry,
+    /// A SQL query tracked by the submitting connection.
+    Query,
+    /// An operation tracked in the client process, including completed handles.
+    Local,
+}
+
+impl JobType {
+    /// The backend's stable identifier used by language bindings.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Registry => "registry",
+            Self::Query => "query",
+            Self::Local => "local",
+        }
+    }
+}
+
 /// Which of a job's events [`Job::events`] returns.
 ///
 /// The handle already knows which job to ask about, so this narrows the
@@ -56,12 +79,12 @@ fn job_detail_not_supported<T>(what: &str) -> Result<T> {
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
 pub(crate) trait JobHandle: Send + Sync {
-    /// Server-assigned id, when the backend has one.
+    /// Backend-specific id, when the operation has one.
     fn id(&self) -> Option<&str> {
         None
     }
-    fn query_id(&self) -> Option<Uuid> {
-        None
+    fn r#type(&self) -> JobType {
+        JobType::Local
     }
     async fn status(&self) -> Result<String>;
     async fn wait(&self) -> Result<TerminalResult>;
@@ -174,7 +197,8 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let cache = self.cache_read();
         let mut out = f.debug_struct("Job");
-        out.field("id", &self.id())
+        out.field("type", &self.r#type())
+            .field("id", &self.id())
             .field("done", &matches!(self.inner, JobInner::Completed(_)));
         if let Some(state) = &cache.state {
             out.field("state", state);
@@ -279,13 +303,10 @@ impl<T> Job<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Identifies the operation on the server that is running it.
-    ///
-    /// Returned for correlating with server logs or the jobs API. Operations
-    /// that run in this process or through SQL have no registry job id and
-    /// return `None`. See [`Job::query_id`] for SQL operations. The
-    /// value is opaque: parsing it or storing it to resume the job later is
-    /// not supported.
+    /// The operation's opaque identity, interpreted according to [`Job::r#type`].
+    /// Registry handles expose a registry job ID; query handles expose the
+    /// connection-scoped SQL query UUID as a string. Local handles return None.
+    /// A query ID cannot be used with registry APIs or to resume after restart.
     pub fn id(&self) -> Option<&str> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
@@ -293,14 +314,13 @@ where
         }
     }
 
-    /// The underlying SQL query's connection-scoped identity, when this
-    /// operation runs through SQL. This is not a registry job ID and cannot
-    /// be used with registry job lookup, history, pause, or resume APIs.
-    /// Query identity is not a durable resume mechanism.
-    pub fn query_id(&self) -> Option<Uuid> {
+    /// The execution backend that determines how to interpret [`Job::id`].
+    /// This differs from [`Job::job_type`], which is registry-specific metadata
+    /// describing the kind of work, such as indexing or compaction.
+    pub fn r#type(&self) -> JobType {
         match &self.inner {
-            JobInner::Handle { handle, .. } => handle.query_id(),
-            JobInner::Completed(_) => None,
+            JobInner::Handle { handle, .. } => handle.r#type(),
+            JobInner::Completed(_) => JobType::Local,
         }
     }
 
@@ -537,7 +557,7 @@ struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
     cancellation: Option<Cancellation>,
-    query_id: Option<Uuid>,
+    id: Option<String>,
 }
 
 type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -560,7 +580,7 @@ impl SpawnedJob {
         T: Serialize + Send + 'static,
     {
         let mut handle = Self::new_inner(task, Some(cancellation));
-        handle.query_id = Some(query_id);
+        handle.id = Some(query_id.to_string());
         handle
     }
 
@@ -590,15 +610,23 @@ impl SpawnedJob {
             outcome,
             abort,
             cancellation,
-            query_id: None,
+            id: None,
         }
     }
 }
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
-    fn query_id(&self) -> Option<Uuid> {
-        self.query_id
+    fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn r#type(&self) -> JobType {
+        if self.id.is_some() {
+            JobType::Query
+        } else {
+            JobType::Local
+        }
     }
 
     async fn status(&self) -> Result<String> {
@@ -653,9 +681,29 @@ mod tests {
     async fn mapped_spawned_job_reuses_outcome() {
         let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
 
+        assert_eq!(job.r#type(), JobType::Local);
+        assert_eq!(job.id(), None);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn mapped_query_job_preserves_identity_and_type() {
+        let query_id = Uuid::new_v4();
+        let job = Job::from_query_task(query_id, tokio::spawn(async { Ok(41_u64) }), || async {
+            Ok(())
+        })
+        .map(|value| value + 1);
+        assert_eq!(job.r#type(), JobType::Query);
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.r#type(), JobType::Query);
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        let completed = Job::new_done();
+        assert_eq!(completed.r#type(), JobType::Local);
+        assert_eq!(completed.id(), None);
     }
 
     #[tokio::test]

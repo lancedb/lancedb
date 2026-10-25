@@ -3,7 +3,7 @@
 
 import * as tmp from "tmp";
 
-import { Connection, connect } from "../lancedb";
+import { Connection, JobType, connect } from "../lancedb";
 import {
   DEFINITION_META_KEY,
   definitionFromMetadata,
@@ -129,6 +129,7 @@ describe("materialized views", () => {
 
     const job = await db.dropMaterializedViewAsync("adults");
     expect(job.id).toBeNull();
+    expect(job.type()).toBe(JobType.Local);
     await job.wait();
     expect(await collect(db.listMaterializedViews())).toEqual([]);
   });

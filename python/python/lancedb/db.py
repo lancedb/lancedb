@@ -665,7 +665,8 @@ class DBConnection(EnforceOverrides):
 
         The job may already be complete for a local database. Remote creation
         submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
-        a connection-scoped ``query_id`` and no registry ``id`` or event history.
+        ``type() == JobType.QUERY`` and ``id`` identifies the connection-scoped
+        query. Registry event history is unavailable.
         Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
@@ -1240,7 +1241,7 @@ class DBConnection(EnforceOverrides):
         """
         raise NotImplementedError("SQL is not supported for this connection type")
 
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
@@ -2824,8 +2825,8 @@ class AsyncConnection(object):
         """Submit materialized-view creation and return its job.
 
         Wait for the returned job before opening or querying the view. Remote
-        creation uses SQL; ``query_id`` identifies that query on this connection,
-        while ``id`` is ``None`` because no registry job is exposed.
+        creation uses SQL; ``type()`` returns ``JobType.QUERY`` and ``id``
+        identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
             source, select, where, limit
@@ -3365,8 +3366,14 @@ class AsyncConnection(object):
             )
         )
 
-    async def describe_query(self, query_id: UUID) -> QueryDescription:
-        """Describe a submitted SQL query by its connection-scoped id."""
+    async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
+        """Describe a submitted SQL query by its UUID or string ID.
+
+        For a handle with ``type() == JobType.QUERY``, pass its ``id`` on the
+        connection that submitted it. Registry job IDs are not query IDs.
+        """
+        if isinstance(query_id, str):
+            query_id = UUID(query_id)
         return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:

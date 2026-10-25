@@ -6,8 +6,8 @@
 import asyncio
 import json
 from datetime import timedelta
+from enum import Enum
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
-from uuid import UUID
 
 import pyarrow as pa
 
@@ -21,10 +21,25 @@ T = TypeVar("T")
 __all__ = [
     "AsyncJob",
     "Job",
+    "JobType",
     "JobDescription",
     "JobFailureInfo",
     "JobInfo",
 ]
+
+
+class JobType(str, Enum):
+    """The execution backend that determines how to interpret a job handle's ID.
+
+    This is separate from ``job_type``, the registry's kind of work.
+    """
+
+    REGISTRY = "registry"
+    """A registry job with an ID usable with the jobs API."""
+    QUERY = "query"
+    """A SQL query with a connection-scoped ID."""
+    LOCAL = "local"
+    """An in-process or already-completed operation without a server ID."""
 
 
 class AsyncJob(Generic[T]):
@@ -45,26 +60,23 @@ class AsyncJob(Generic[T]):
 
     @property
     def id(self) -> Optional[str]:
-        """Identifies the operation on the server that is running it.
+        """The operation's opaque ID, interpreted according to :meth:`type`.
 
-        Returned for correlating with server logs or the jobs API. Operations
-        that run in this process or through SQL return `None`; SQL operations
-        expose :attr:`query_id` instead. The value
-        is opaque: parsing it or storing it to resume the job later is not
-        supported.
+        Registry jobs expose a registry job ID; SQL-backed jobs expose a
+        connection-scoped query ID as a string. Local operations return ``None``.
+        Query IDs cannot be used with registry job APIs or to resume after a
+        client restart.
         """
         return self._inner.id if self._inner is not None else None
 
-    @property
-    def query_id(self) -> Optional[UUID]:
-        """The SQL query's connection-scoped ID, or ``None`` for other jobs.
+    def type(self) -> JobType:
+        """Return the handle's backend: registry job, SQL query, or local task.
 
-        Use ``describe_query`` on the submitting connection to inspect it.
-        This is not a registry job ID or a durable resume token. Query-backed
-        jobs have no registry record or events; cancellation follows the SQL
-        server's capabilities.
+        This differs from :attr:`job_type`, which describes the kind of work
+        recorded in the registry. Query-backed handles support status, waiting
+        and SQL cancellation, with no exposed registry record or event history.
         """
-        return self._inner.query_id if self._inner is not None else None
+        return JobType(self._inner.type()) if self._inner is not None else JobType.LOCAL
 
     async def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
@@ -263,10 +275,9 @@ class Job(Generic[T]):
         """
         return self._inner.id if self._inner is not None else None
 
-    @property
-    def query_id(self) -> Optional[UUID]:
-        """The SQL query's connection-scoped ID. See :attr:`AsyncJob.query_id`."""
-        return self._inner.query_id if self._inner is not None else None
+    def type(self) -> JobType:
+        """Return the handle's execution backend. See :meth:`AsyncJob.type`."""
+        return self._inner.type() if self._inner is not None else JobType.LOCAL
 
     def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
