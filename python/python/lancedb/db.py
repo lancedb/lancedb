@@ -714,9 +714,8 @@ class DBConnection(EnforceOverrides):
     ) -> None:
         """Drop a materialized view.
 
-        The view may become unavailable before physical cleanup finishes. Use
-        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
-        job.
+        Remote drops wait for the SQL command to remove the catalog binding.
+        Physical cleanup continues in the background.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -725,11 +724,11 @@ class DBConnection(EnforceOverrides):
     def drop_materialized_view_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job[None]:
-        """Start dropping a materialized view and return its cleanup job.
+        """Start dropping a materialized view and return its job.
 
-        The job may already be complete for a local database. On LanceDB Cloud
-        and Enterprise, its ``id`` is the server job identifier from the
-        ``202 Accepted`` drop response.
+        The job may already be complete for a local database. Remote jobs have
+        type ``query`` and use the SQL query ID as ``id``. Waiting confirms
+        catalog removal; physical cleanup continues in the background.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -2925,9 +2924,8 @@ class AsyncConnection(object):
     ) -> None:
         """Drop a materialized view.
 
-        The view may become unavailable before physical cleanup finishes. Use
-        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
-        job.
+        Remote drops wait for the SQL command to remove the catalog binding.
+        Physical cleanup continues in the background.
         """
         if namespace_path is None:
             namespace_path = []
@@ -2939,10 +2937,11 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[None]:
-        """Start dropping a materialized view and return its cleanup job.
+        """Start dropping a materialized view and return its job.
 
-        Await :meth:`AsyncJob.wait` before assuming physical cleanup has
-        finished.
+        For remote connections, the job has type ``query`` and its ID identifies
+        the SQL query. Await :meth:`AsyncJob.wait` for catalog removal; physical
+        cleanup continues in the background.
         """
         if namespace_path is None:
             namespace_path = []

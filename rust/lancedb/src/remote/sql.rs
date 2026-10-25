@@ -35,6 +35,7 @@ use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 
+pub(super) mod materialized_view;
 mod stream;
 
 use stream::{StreamingQuery, StreamingQueryHandle, Submission};

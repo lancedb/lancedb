@@ -47,6 +47,7 @@ use super::client::{
     Sender,
 };
 use super::sql::SqlClient;
+use super::sql::materialized_view::quote_identifier;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
@@ -929,36 +930,26 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         name: &str,
         namespace_path: &[String],
     ) -> Result<Job> {
-        let identifier = build_table_identifier(name, namespace_path)?;
-        let request = self
-            .client
-            .post(&format!("/v1/materialized_view/{identifier}/drop"));
-        let (request_id, response) = self.client.send(request).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let job = match status {
-            StatusCode::OK => Job::new_done(),
-            StatusCode::ACCEPTED => {
-                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-                    source: "materialized-view drop response did not contain a valid job_id".into(),
-                    request_id,
-                    status_code: Some(status),
-                })?;
-                Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id)))
-            }
-            _ => {
-                return Err(Error::Http {
-                    source: "materialized-view drop must return 200 OK or 202 Accepted".into(),
-                    request_id,
-                    status_code: Some(status),
-                });
-            }
-        };
-        self.table_cache
-            .remove(&build_cache_key(name, namespace_path))
-            .await;
-        Ok(job)
+        validate_table_name(name)?;
+        validate_namespace(namespace_path)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?;
+        let cache = self.table_cache.clone();
+        let key = build_cache_key(name, namespace_path);
+        client
+            .submit_as_job(
+                format!("DROP MATERIALIZED VIEW {}", quote_identifier(name)),
+                namespace_path.to_vec(),
+                move || async move {
+                    cache.remove(&key).await;
+                    Ok(())
+                },
+            )
+            .await
     }
 
     async fn list_materialized_views(
@@ -966,23 +957,13 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        let namespace_id = build_namespace_identifier(namespace_path)?;
-        let path = format!("/v1/namespace/{namespace_id}/materialized_view/list");
-        let mut req = self.client.get(&path);
-        if let Some(token) = options.page_token {
-            req = req.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteListViewsResponse = response.json().await.err_to_http(request_id)?;
-        let items = response.views;
-        Ok(ListingPage {
-            items,
-            page_token: response.page_token,
-        })
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .list_materialized_views(namespace_path, options)
+            .await
     }
 
     async fn create_function_async(
@@ -2032,27 +2013,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_drop_materialized_view_uses_item_route_and_job() {
-        let db = super::RemoteDatabase::new_mock(|request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(
-                request.url().path(),
-                "/v1/materialized_view/analytics$adults/drop"
-            );
-            assert!(request.body().is_none());
-            http::Response::builder()
-                .status(202)
-                .body(serde_json::json!({"job_id": "j1-mv-drop"}).to_string())
-                .unwrap()
-        });
-        let job = db
-            .drop_materialized_view_async("adults", &["analytics".into()])
-            .await
-            .unwrap();
-        assert_eq!(job.id(), Some("j1-mv-drop"));
-    }
-
-    #[tokio::test]
     async fn test_drop_function_async_returns_job() {
         let db = super::RemoteDatabase::new_mock(|request| {
             assert_eq!(request.method(), "POST");
@@ -2101,100 +2061,6 @@ mod tests {
                 .unwrap();
             assert!(error.to_string().contains("valid job_id"));
         }
-    }
-
-    #[tokio::test]
-    async fn test_drop_materialized_view_completed_inline() {
-        let db = super::RemoteDatabase::new_mock(|request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/materialized_view/adults/drop");
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        let job = db
-            .drop_materialized_view_async("adults", &[])
-            .await
-            .unwrap();
-        assert_eq!(job.id(), None);
-        assert_eq!(job.status().await.unwrap(), "finished");
-        job.wait().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_drop_materialized_view_rejects_incomplete_acceptance() {
-        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
-            let db = super::RemoteDatabase::new_mock(move |_| {
-                http::Response::builder().status(202).body(body).unwrap()
-            });
-            let error = db
-                .drop_materialized_view_async("adults", &[])
-                .await
-                .err()
-                .unwrap();
-            assert!(error.to_string().contains("valid job_id"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_drop_materialized_view_rejects_unexpected_success_status() {
-        let db = super::RemoteDatabase::new_mock(|_| {
-            http::Response::builder().status(204).body("").unwrap()
-        });
-        let error = db
-            .drop_materialized_view_async("adults", &[])
-            .await
-            .err()
-            .unwrap();
-        assert!(error.to_string().contains("200 OK or 202 Accepted"));
-    }
-
-    #[tokio::test]
-    async fn test_list_materialized_views_follows_empty_pages() {
-        let page = Arc::new(AtomicUsize::new(0));
-        let db = super::RemoteDatabase::new_mock({
-            let page = page.clone();
-            move |request| {
-                assert_eq!(request.method(), "GET");
-                assert_eq!(
-                    request.url().path(),
-                    "/v1/namespace/analytics/materialized_view/list"
-                );
-                match page.fetch_add(1, Ordering::SeqCst) {
-                    0 => {
-                        assert!(request.url().query().is_none());
-                        http::Response::builder()
-                            .status(200)
-                            .body(
-                                serde_json::json!({"views": [], "page_token": "next"}).to_string(),
-                            )
-                            .unwrap()
-                    }
-                    1 => {
-                        assert_eq!(request.url().query(), Some("page_token=next"));
-                        http::Response::builder()
-                            .status(200)
-                            .body(serde_json::json!({"views": ["adults"]}).to_string())
-                            .unwrap()
-                    }
-                    _ => panic!("listing requested too many pages"),
-                }
-            }
-        });
-        assert_eq!(
-            Listing::new(Default::default(), {
-                let db = Arc::new(db);
-                move |options| {
-                    let db = db.clone();
-                    async move {
-                        db.list_materialized_views(&["analytics".into()], options)
-                            .await
-                    }
-                }
-            })
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap(),
-            ["adults"]
-        );
     }
 
     #[tokio::test]
@@ -3758,7 +3624,7 @@ mod tests {
             assert!(items.try_next().await.unwrap().is_none());
             assert!(items.try_next().await.unwrap().is_none());
         }
-        for resource in ["secret", "view", "function", "materialized_view", "jobs"] {
+        for resource in ["secret", "view", "function", "jobs"] {
             let count = Arc::new(AtomicUsize::new(0));
             let conn = Connection::new_with_handler({
                 let count = count.clone();
@@ -3773,11 +3639,7 @@ mod tests {
                                 .unwrap();
                         assert_eq!(body, serde_json::json!({"page_token": token, "limit": 2}));
                     } else {
-                        let ns = if resource == "materialized_view" {
-                            "$"
-                        } else {
-                            "team"
-                        };
+                        let ns = "team";
                         assert_eq!(
                             request.url().path(),
                             format!("/v1/namespace/{ns}/{resource}/list")
@@ -3817,7 +3679,6 @@ mod tests {
                 "secret" => check(conn.list_secrets(&namespace, options), count).await,
                 "view" => check(conn.list_views(&namespace, options), count).await,
                 "function" => check(conn.list_functions(&namespace, options), count).await,
-                "materialized_view" => check(conn.list_materialized_views(options), count).await,
                 _ => check(conn.list_jobs(options), count).await,
             }
         }

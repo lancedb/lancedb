@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-import contextlib
-import http.server
-import json
-import threading
 
 import lancedb
 import pytest
@@ -27,89 +23,6 @@ def make_db(tmp_path):
         ],
     )
     return db
-
-
-@contextlib.contextmanager
-def mock_remote_materialized_views():
-    requests = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_GET(self):
-            requests.append(self.path)
-            encoded = json.dumps({"views": ["daily_sales"]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            yield f"http://localhost:{server.server_address[1]}", requests
-        finally:
-            server.shutdown()
-            thread.join()
-
-
-@contextlib.contextmanager
-def mock_remote_materialized_view_drop():
-    requests = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length) or b"{}")
-            requests.append((self.path, body))
-            assert self.path.endswith("/drop")
-            job_id = "mv-drop-123"
-            encoded = json.dumps({"job_id": job_id}).encode()
-            self.send_response(202)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            yield f"http://localhost:{server.server_address[1]}", requests
-        finally:
-            server.shutdown()
-            thread.join()
-
-
-def test_remote_list_uses_namespace_route():
-    with mock_remote_materialized_views() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert list(db.list_materialized_views()) == ["daily_sales"]
-    assert requests == ["/v1/namespace/$/materialized_view/list"]
-
-
-def test_remote_drop_async_returns_server_job():
-    with mock_remote_materialized_view_drop() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        job = db.drop_materialized_view_async("adults")
-        assert job.id == "mv-drop-123"
-    assert requests == [("/v1/materialized_view/adults/drop", {})]
 
 
 def test_sync_remote_create_uses_public_async_connection():
@@ -510,7 +423,6 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
 
 
 def test_stored_queries_and_legacy_layouts_are_read():
-    import json
 
     import pyarrow as pa
 
