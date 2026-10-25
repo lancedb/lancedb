@@ -65,13 +65,17 @@ refresh(options?): Promise<RefreshMaterializedViewResult>
 
 Recompute the view from its source.
 
-Every refresh rebuilds the complete view. For local views,
-`sourceVersion` refreshes to that source version instead of the latest;
-remote SQL refreshes do not support source-version pinning.
+`full: true` forces a remote rebuild; otherwise the server chooses the
+refresh mode. Local views always rebuild, and `sourceVersion` selects a
+source version instead of the latest. Remote SQL refreshes do not support
+source-version pinning. Their results leave `mode`, `rowsWritten`, and
+`sourceVersion` absent because the SQL job adapter does not expose these metrics.
 
 #### Parameters
 
 * **options?**
+
+* **options.full?**: `boolean`
 
 * **options.sourceVersion?**: `number`
 

@@ -92,20 +92,33 @@ describe("materialized views", () => {
     );
   });
 
-  it("fully refreshes after an append", async () => {
-    const view = await db.createMaterializedView("copy", "people", {
-      withNoData: true,
-    });
-    await view.refresh();
+  it.each([false, true])(
+    "fully refreshes after an append (full=%s)",
+    async (full) => {
+      const view = await db.createMaterializedView("copy", "people", {
+        withNoData: true,
+      });
+      await view.refresh();
 
-    const people = await db.openTable("people");
-    await people.add([{ name: "alan", age: 41 }]);
-    const result = await view.refresh();
-    expect(result.mode).toBe("rebuild");
-    expect(Number(result.rowsWritten)).toBe(4);
-    expect(await view.table().countRows()).toBe(4);
+      const people = await db.openTable("people");
+      await people.add([{ name: "alan", age: 41 }]);
+      const result = await view.refresh({ full });
+      expect(result.mode).toBe("rebuild");
+      expect(Number(result.rowsWritten)).toBe(4);
+      expect(await view.table().countRows()).toBe(4);
 
-    expect((await view.refresh()).mode).toBe("rebuild");
+      expect((await view.refresh()).mode).toBe("rebuild");
+    },
+  );
+
+  it("forwards a forced refresh and preserves absent remote metrics", async () => {
+    const view = await db.createMaterializedView("copy", "people");
+    const remoteResult = { version: 42 };
+    const refresh = jest
+      .spyOn(view.table(), "refreshMaterializedView")
+      .mockResolvedValue(remoteResult);
+    expect(await view.refresh({ full: true })).toEqual(remoteResult);
+    expect(refresh).toHaveBeenCalledWith(undefined, true);
   });
 
   it("lists views and rejects non-views", async () => {

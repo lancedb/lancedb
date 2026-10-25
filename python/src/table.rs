@@ -562,9 +562,9 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 #[pyclass(get_all, from_py_object)]
 #[derive(Clone, Debug)]
 pub struct RefreshMaterializedViewResult {
-    pub mode: String,
-    pub rows_written: u64,
-    pub source_version: u64,
+    pub mode: Option<String>,
+    pub rows_written: Option<u64>,
+    pub source_version: Option<u64>,
     pub version: u64,
 }
 
@@ -584,18 +584,23 @@ impl RefreshMaterializedViewResult {
     pub fn __repr__(&self) -> String {
         format!(
             "RefreshMaterializedViewResult(mode={}, rows_written={}, source_version={}, version={})",
-            self.mode, self.rows_written, self.source_version, self.version
+            self.mode.as_deref().unwrap_or("None"),
+            self.rows_written
+                .map_or_else(|| "None".into(), |value| value.to_string()),
+            self.source_version
+                .map_or_else(|| "None".into(), |value| value.to_string()),
+            self.version
         )
     }
 }
 
 impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
     fn from(result: lancedb::RefreshMaterializedViewResult) -> Self {
-        let mode = match result.mode {
+        let mode = result.mode.map(|mode| match mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-        };
+        });
         Self {
-            mode: mode.to_string(),
+            mode: mode.map(str::to_string),
             rows_written: result.rows_written,
             source_version: result.source_version,
             version: result.version,
@@ -1920,17 +1925,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None))]
+    #[pyo3(signature = (source_version=None, *, full=false))]
     pub fn refresh_materialized_view(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
+        full: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh();
+            let mut builder = view.refresh().full(full);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }
@@ -1939,17 +1945,18 @@ impl Table {
         })
     }
 
-    #[pyo3(signature = (source_version=None))]
+    #[pyo3(signature = (source_version=None, *, full=false))]
     pub fn refresh_materialized_view_async(
         self_: PyRef<'_, Self>,
         source_version: Option<u64>,
+        full: bool,
     ) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner_ref()?.clone();
         future_into_py(self_.py(), async move {
             let view = lancedb::MaterializedView::from_table(inner)
                 .await
                 .infer_error()?;
-            let mut builder = view.refresh();
+            let mut builder = view.refresh().full(full);
             if let Some(version) = source_version {
                 builder = builder.source_version(version);
             }

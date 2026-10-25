@@ -1836,14 +1836,17 @@ impl MaterializedView {
 
     /// Recompute the view from its source.
     ///
-    /// Every refresh rebuilds the view from the selected source version.
+    /// Local refreshes rebuild the view from the selected source version.
+    /// Remote refreshes let the server select a mode unless
+    /// [`RefreshMaterializedViewBuilder::full`] requests a rebuild. Their
+    /// result leaves unavailable refresh metrics as `None`.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
     /// # use lancedb::materialized_view::MaterializedView;
     /// # async fn refresh(view: &MaterializedView) -> Result<(), Box<dyn std::error::Error>> {
     /// let result = view.refresh().execute().await?;
-    /// println!("{:?}: {} rows", result.mode, result.rows_written);
+    /// println!("{:?}: {:?} rows", result.mode, result.rows_written);
     /// # Ok(())
     /// # }
     /// ```
@@ -1851,6 +1854,7 @@ impl MaterializedView {
         RefreshMaterializedViewBuilder {
             view: self.clone(),
             source_version: None,
+            full: false,
         }
     }
 }
@@ -1859,9 +1863,26 @@ impl MaterializedView {
 pub struct RefreshMaterializedViewBuilder {
     view: MaterializedView,
     source_version: Option<u64>,
+    full: bool,
 }
 
 impl RefreshMaterializedViewBuilder {
+    /// Force a complete rebuild instead of letting the remote server choose
+    /// the refresh mode. Defaults to `false`. Local views always rebuild.
+    ///
+    /// ```no_run
+    /// # #![recursion_limit = "256"]
+    /// # use lancedb::materialized_view::MaterializedView;
+    /// # async fn refresh(view: &MaterializedView) -> lancedb::Result<()> {
+    /// view.refresh().full(true).execute().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn full(mut self, full: bool) -> Self {
+        self.full = full;
+        self
+    }
+
     /// Refresh a local view to this source table version instead of the latest.
     /// Remote SQL refreshes do not support source-version pinning.
     pub fn source_version(mut self, version: u64) -> Self {
@@ -1876,7 +1897,7 @@ impl RefreshMaterializedViewBuilder {
                 .view
                 .table
                 .base_table()
-                .refresh_materialized_view_async(self.source_version)
+                .refresh_materialized_view_async(self.source_version, self.full)
                 .await;
         }
         Ok(Job::spawned(tokio::spawn(async move {
@@ -2089,19 +2110,23 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        let refreshed = view.refresh().execute().await.unwrap();
-        assert_eq!(refreshed.mode, RefreshMode::Rebuild);
-        assert_eq!(refreshed.rows_written, 3);
+        let refreshed = view.refresh().full(true).execute().await.unwrap();
+        assert_eq!(refreshed.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(refreshed.rows_written, Some(3));
+        assert_eq!(
+            refreshed.source_version,
+            Some(source.version().await.unwrap())
+        );
         assert_eq!(view.table().count_rows(None).await.unwrap(), 3);
 
         let unchanged = view.refresh().execute().await.unwrap();
-        assert_eq!(unchanged.mode, RefreshMode::Rebuild);
-        assert_eq!(unchanged.rows_written, 3);
+        assert_eq!(unchanged.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(unchanged.rows_written, Some(3));
 
         source.delete("true").await.unwrap();
         let emptied = view.refresh().execute().await.unwrap();
-        assert_eq!(emptied.mode, RefreshMode::Rebuild);
-        assert_eq!(emptied.rows_written, 0);
+        assert_eq!(emptied.mode, Some(RefreshMode::Rebuild));
+        assert_eq!(emptied.rows_written, Some(0));
         assert_eq!(view.table().count_rows(None).await.unwrap(), 0);
     }
 
@@ -2253,10 +2278,13 @@ mod tests {
 
         // Refresh, chained, is the writer.
         source.add(row()).execute().await.unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
         assert_eq!(
             downstream.refresh().execute().await.unwrap().rows_written,
-            3
+            Some(3)
         );
         assert_eq!(
             downstream
@@ -2291,7 +2319,10 @@ mod tests {
             .await
             .unwrap();
         source.drop_columns(&["y"]).await.unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 3);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(3)
+        );
     }
 
     #[tokio::test]
@@ -2330,7 +2361,10 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        assert_eq!(view.refresh().execute().await.unwrap().rows_written, 4);
+        assert_eq!(
+            view.refresh().execute().await.unwrap().rows_written,
+            Some(4)
+        );
         view.table().optimize(OptimizeAction::All).await.unwrap();
         assert_eq!(
             view.table().count_rows(Some("x > 2".into())).await.unwrap(),

@@ -2224,6 +2224,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn refresh_materialized_view_async(
         &self,
         source_version: Option<u64>,
+        full: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
         self.check_mutable().await?;
         if source_version.is_some() {
@@ -2236,8 +2237,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
         let statement = format!(
-            "REFRESH MATERIALIZED VIEW {}",
-            quote_sql_identifier(&self.name)
+            "REFRESH MATERIALIZED VIEW {}{}",
+            quote_sql_identifier(&self.name),
+            if full { " WITH (full = true)" } else { "" },
         );
         let namespace = self.namespace.clone();
         let client = self.client.clone();
@@ -2259,15 +2261,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 );
                 table.checkout_latest().await?;
                 let version = table.version().await?;
-                let rows_written =
-                    u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
-                        message: "materialized-view row count exceeds u64".to_string(),
-                    })?;
                 freshness_request.observe_version(&freshness, version);
                 Ok(RefreshMaterializedViewResult {
-                    mode: crate::materialized_view::RefreshMode::Rebuild,
-                    rows_written,
-                    source_version: 0,
+                    // The SQL job adapter does not expose refresh metrics. Table
+                    // metadata cannot tell us what this refresh actually did.
+                    mode: None,
+                    rows_written: None,
+                    source_version: None,
                     version,
                 })
             })

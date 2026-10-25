@@ -583,6 +583,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn refresh_materialized_view_async(
         &self,
         _source_version: Option<u64>,
+        _full: bool,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
             message: "remote materialized-view refresh is not supported on this table type".into(),

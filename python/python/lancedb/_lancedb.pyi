@@ -526,10 +526,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -918,9 +918,9 @@ class FunctionErrors:
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
-    mode: str
-    rows_written: int
-    source_version: int
+    mode: Optional[str]
+    rows_written: Optional[int]
+    source_version: Optional[int]
     version: int
 
 class AlterColumnsResult:
