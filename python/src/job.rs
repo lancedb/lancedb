@@ -81,9 +81,9 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
-    #[pyo3(name = "type")]
-    pub fn r#type(&self) -> &'static str {
-        self.inner.r#type().as_str()
+    #[getter]
+    pub fn job_type(&self) -> Option<String> {
+        self.inner.job_type()
     }
 
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {

@@ -4,13 +4,6 @@
 import { Table as ArrowTable, tableFromIPC } from "apache-arrow";
 import { JobFailureInfo, Job as NativeJob } from "./native";
 
-/** The backend that determines how to interpret a Job's ID. */
-export enum JobType {
-  Registry = "registry",
-  Query = "query",
-  Local = "local",
-}
-
 /** Which of a job's events {@link Job.events} returns. */
 export interface JobEventsOptions {
   /** Maximum event rows to return, up to the server maximum of 10,000. */
@@ -31,7 +24,8 @@ export interface JobEventsOptions {
  * - {@link Job.refresh} and {@link Job.status} fetch the whole record.
  * - {@link Job.wait} records the terminal state it establishes, but not the
  *   rest of the record.
- * - Everything is null until one of those runs.
+ * - Registry details are null until one of those runs. Query handles report
+ *   jobType "query" immediately.
  *
  * @hideconstructor
  */
@@ -47,16 +41,11 @@ export class Job {
    *
    * Registry handles expose a registry job ID; query handles expose a
    * connection-scoped SQL query UUID string. Local handles have no ID.
-   * Use type() to interpret the ID. Query IDs are not registry IDs or durable
-   * resume tokens.
+   * Query handles report jobType "query". Their IDs are not registry IDs or
+   * durable resume tokens.
    */
   get id(): string | null {
     return this.inner.id ?? null;
-  }
-
-  /** Return the handle's backend, separately from registry jobType metadata. */
-  type(): JobType {
-    return this.inner.type() as JobType;
   }
 
   /** The last observed lifecycle state, without contacting the backend. */
@@ -65,8 +54,8 @@ export class Job {
   }
 
   /**
-   * The job's type, as the server names it. Null for an in-process job, which
-   * has no server-side record.
+   * "query" immediately for SQL-backed handles; otherwise the cached
+   * server-reported job type. Null for in-process handles.
    */
   get jobType(): string | null {
     return this.inner.jobType ?? null;

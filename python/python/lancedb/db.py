@@ -665,7 +665,7 @@ class DBConnection(EnforceOverrides):
 
         The job may already be complete for a local database. Remote creation
         submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
-        ``type() == JobType.QUERY`` and ``id`` identifies the connection-scoped
+        ``job_type == "query"`` and ``id`` identifies the connection-scoped
         query. Registry event history is unavailable.
         Wait for the job before opening or querying the view.
         """
@@ -2825,7 +2825,7 @@ class AsyncConnection(object):
         """Submit materialized-view creation and return its job.
 
         Wait for the returned job before opening or querying the view. Remote
-        creation uses SQL; ``type()`` returns ``JobType.QUERY`` and ``id``
+        creation uses SQL; ``job_type`` is ``"query"`` and ``id``
         identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
@@ -3369,7 +3369,7 @@ class AsyncConnection(object):
     async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its UUID or string ID.
 
-        For a handle with ``type() == JobType.QUERY``, pass its ``id`` on the
+        For a handle with ``job_type == "query"``, pass its ``id`` on the
         connection that submitted it. Registry job IDs are not query IDs.
         """
         if isinstance(query_id, str):

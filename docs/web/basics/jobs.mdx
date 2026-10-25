@@ -77,16 +77,11 @@ Remote materialized-view CREATE and REFRESH use the SQL query backend. Python's
 handles with `status()`, `wait()` and `cancel()`. Synchronous creation and refresh
 wait on the same SQL execution before returning.
 
-Use `job.type()` to interpret the single `job.id` field:
-
-| `job.type()` | `job.id` | Inspection |
-| --- | --- | --- |
-| `JobType.REGISTRY` | Registry job ID string | The jobs API, including `open_job()` and event history |
-| `JobType.QUERY` | Connection-scoped query UUID string | `describe_query(job.id)` on the submitting connection |
-| `JobType.LOCAL` | `None` | The in-process handle |
-
-Python exports `JobType` from `lancedb`. This backend enum is separate from
-`job.job_type`, the registry's kind of work, such as indexing or compaction.
+The existing `job.job_type` identifies query-backed handles as `"query"` from
+submission, and `job.id` contains the connection-scoped SQL query UUID string.
+Use `describe_query(job.id)` on the submitting connection to inspect the query.
+Registry handles retain their server-reported job types (available after
+`status()` or `refresh()`) and registry IDs. Local handles have no ID or job type.
 
 SQL-backed handles do not expose registry records or event history and cannot
 be reopened through `open_job()` or reattached after a client restart. Their IDs

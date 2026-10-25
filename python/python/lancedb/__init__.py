@@ -25,7 +25,7 @@ from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
 from ._blob_reader import BlobReader as BlobReader
-from .job import AsyncJob, Job, JobType
+from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
 from .sql import QueryDescription
@@ -607,7 +607,6 @@ __all__ = [
     "vector",
     "DBConnection",
     "Job",
-    "JobType",
     "QueryDescription",
     "SqlQuery",
     "LanceDBConnection",

@@ -367,8 +367,6 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ::: lancedb.job.Job
 
-::: lancedb.job.JobType
-
 ::: lancedb.job.AsyncJob
 
 ::: lancedb.job.JobInfo

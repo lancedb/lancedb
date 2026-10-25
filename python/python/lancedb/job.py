@@ -6,7 +6,6 @@
 import asyncio
 import json
 from datetime import timedelta
-from enum import Enum
 from typing import Any, Callable, Generic, Optional, TypeVar, cast
 
 import pyarrow as pa
@@ -21,25 +20,10 @@ T = TypeVar("T")
 __all__ = [
     "AsyncJob",
     "Job",
-    "JobType",
     "JobDescription",
     "JobFailureInfo",
     "JobInfo",
 ]
-
-
-class JobType(str, Enum):
-    """The execution backend that determines how to interpret a job handle's ID.
-
-    This is separate from ``job_type``, the registry's kind of work.
-    """
-
-    REGISTRY = "registry"
-    """A registry job with an ID usable with the jobs API."""
-    QUERY = "query"
-    """A SQL query with a connection-scoped ID."""
-    LOCAL = "local"
-    """An in-process or already-completed operation without a server ID."""
 
 
 class AsyncJob(Generic[T]):
@@ -60,7 +44,7 @@ class AsyncJob(Generic[T]):
 
     @property
     def id(self) -> Optional[str]:
-        """The operation's opaque ID, interpreted according to :meth:`type`.
+        """The operation's opaque ID, interpreted according to :attr:`job_type`.
 
         Registry jobs expose a registry job ID; SQL-backed jobs expose a
         connection-scoped query ID as a string. Local operations return ``None``.
@@ -68,15 +52,6 @@ class AsyncJob(Generic[T]):
         client restart.
         """
         return self._inner.id if self._inner is not None else None
-
-    def type(self) -> JobType:
-        """Return the handle's backend: registry job, SQL query, or local task.
-
-        This differs from :attr:`job_type`, which describes the kind of work
-        recorded in the registry. Query-backed handles support status, waiting
-        and SQL cancellation, with no exposed registry record or event history.
-        """
-        return JobType(self._inner.type()) if self._inner is not None else JobType.LOCAL
 
     async def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
@@ -119,7 +94,7 @@ class AsyncJob(Generic[T]):
         """Ask the backend for this job's current state, and for a server-side
         job its full record, then cache it for the properties below.
 
-        The properties are all `None` until this runs, because submitting an
+        Registry details are `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
         expose only lifecycle state through this method. For registry jobs,
         `status` fetches the whole record too; `wait` records only the terminal
@@ -141,11 +116,13 @@ class AsyncJob(Generic[T]):
 
     @property
     def job_type(self) -> Optional[str]:
-        """The job's type, as the server names it.
+        """The job's kind of work, without contacting the backend.
 
-        `None` for in-process and query-backed jobs, which have no registry record.
+        SQL-backed handles report ``"query"`` immediately. Registry handles
+        report the server's job type after :meth:`refresh` or :meth:`status`.
+        In-process handles return ``None``.
         """
-        return self._field("job_type")
+        return self._inner.job_type if self._inner is not None else None
 
     @property
     def creation_ms(self) -> Optional[int]:
@@ -275,10 +252,6 @@ class Job(Generic[T]):
         """
         return self._inner.id if self._inner is not None else None
 
-    def type(self) -> JobType:
-        """Return the handle's execution backend. See :meth:`AsyncJob.type`."""
-        return self._inner.type() if self._inner is not None else JobType.LOCAL
-
     def status(self) -> str:
         """The operation's current lifecycle state: "running", "finished",
         "failed", or "cancelled".
@@ -325,7 +298,7 @@ class Job(Generic[T]):
     @property
     def job_type(self) -> Optional[str]:
         """The job's type. See :attr:`AsyncJob.job_type`."""
-        return self._field("job_type")
+        return self._inner.job_type if self._inner is not None else None
 
     @property
     def creation_ms(self) -> Optional[int]:

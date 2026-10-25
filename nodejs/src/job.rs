@@ -29,17 +29,11 @@ impl Job {
 
 #[napi]
 impl Job {
-    /// The operation's opaque ID. Interpret registry and query IDs using type().
+    /// The operation's opaque ID. Interpret registry and query IDs using job_type().
     /// Local handles have no ID.
     #[napi(getter)]
     pub fn id(&self) -> Option<String> {
         self.inner.id().map(str::to_string)
-    }
-
-    /// The handle's backend: registry, query, or local.
-    #[napi(js_name = "type")]
-    pub fn r#type(&self) -> String {
-        self.inner.r#type().as_str().to_string()
     }
 
     /// The operation's current lifecycle state: "running", "finished",
