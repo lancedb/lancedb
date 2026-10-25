@@ -27,7 +27,7 @@ lance-table = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = 
 lance-testing = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 lance-datafusion = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
 lance-encoding = { "version" = "=15.0.0-beta.1", "tag" = "v15.0.0-beta.1", "git" = "https://github.com/lance-format/lance.git" }
-lance-arrow = { version = "=15.0.0-beta.1", path = "python/vendor/lance-arrow" }
+lance-arrow = { version = "=15.0.0-beta.1", tag = "v15.0.0-beta.1", git = "https://github.com/lance-format/lance.git" }
 lancedb = { path = "rust/lancedb", default-features = false }
 ahash = "0.8"
 # Note that this one does not include pyarrow
