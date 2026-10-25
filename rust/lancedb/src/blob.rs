@@ -20,7 +20,7 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
-use lance_io::object_store::ObjectStore;
+use lance_io::object_store::{ObjectStore, uri_to_url};
 use object_store::path::Path;
 use serde::{Deserialize, Serialize};
 
@@ -83,12 +83,11 @@ pub(crate) async fn open_native_blob_file(
 ) -> Result<BlobFile> {
     descriptor.validate()?;
     let source = &descriptor.source;
-    if dataset
+    let expected_uri = dataset
         .branch_location()
         .find_branch(source.branch.as_deref())?
-        .uri
-        != source.uri
-    {
+        .uri;
+    if uri_to_url(&expected_uri)? != uri_to_url(&source.uri)? {
         return Err(Error::InvalidInput {
             message: "blob descriptor belongs to a different table".into(),
         });
@@ -101,7 +100,7 @@ pub(crate) async fn open_native_blob_file(
             ))
             .await?,
     );
-    if dataset.uri() != source.uri {
+    if uri_to_url(dataset.uri())? != uri_to_url(&source.uri)? {
         return Err(Error::InvalidInput {
             message: "blob descriptor belongs to a different table".into(),
         });
