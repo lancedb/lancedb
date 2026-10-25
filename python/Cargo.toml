@@ -22,8 +22,8 @@ bytes.workspace = true
 lancedb.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
-# The workspace path dependency includes the patched crate in Maturin sources.
-lance-arrow.workspace = true
+# A direct path keeps the patched crate in Maturin source distributions.
+lance-arrow = { version = "=15.0.0-beta.1", path = "vendor/lance-arrow" }
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
 lance-io.workspace = true
