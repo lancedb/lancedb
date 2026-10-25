@@ -5700,7 +5700,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5798,7 +5798,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "arc-swap",
  "arrow",
