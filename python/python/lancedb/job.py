@@ -109,8 +109,9 @@ class AsyncJob(Generic[T]):
 
         The properties are all `None` until this runs, because submitting an
         operation does not fetch its full registry record. Query-backed jobs
-        expose only lifecycle state through this method. `status` fetches the whole record too;
-        `wait` records only the terminal state it establishes.
+        expose only lifecycle state through this method. For registry jobs,
+        `status` fetches the whole record too; `wait` records only the terminal
+        state it establishes.
         """
         if self._inner is None:
             return
