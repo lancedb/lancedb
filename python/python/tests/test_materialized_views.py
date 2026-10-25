@@ -423,7 +423,6 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
 
 
 def test_stored_queries_and_legacy_layouts_are_read():
-
     import pyarrow as pa
 
     from lancedb.materialized_view import _definition_from_schema
