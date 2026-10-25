@@ -529,11 +529,63 @@ instead of being materialized with the rest of the row.
 
 `lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
 pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
-still work. Queries return descriptors. Call
+still work. Native table queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
+
+Remote SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+return an openable reference instead, then use
+[`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
+[`open_blob_files`][lancedb.table.Table.open_blob_files]:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+This example uses a remote SQL connection that produces source-bearing
+descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
+`blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
+`branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
+the source table and commit and reads the captured version without changing
+the table handle's checkout. Raw native storage descriptors omit `source`;
+use `fetch_blob_files(column, row_ids)` for those query results.
+
+The singular API accepts a dictionary or Arrow struct scalar. The iterable
+accepts Arrow arrays/chunked arrays or another iterable, opens handles as
+iteration advances, and preserves order, duplicates, and nulls as `None`.
+Close each non-null handle after use. Async tables provide
+`await table.open_blob_file(...)` and
+`async for file in table.open_blob_files(...)`.
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+For an async table, the iterable is consumed with `async for`:
+
+```python
+async for video in async_videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            payload = await video.aread()
+```
+
+Payload bytes load on reads. Opening an external blob with unspecified size
+can issue a metadata-only HEAD request. Remote reads use authenticated range
+requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted
 from `blob_columns()` because row ids do not identify individual list elements,

@@ -2319,6 +2319,13 @@ class Table(ABC):
         Accepts an Arrow array/chunked array or any iterable. Opens each handle
         as iteration advances, preserving input order and nulls as ``None``.
         Close each non-null handle after use, normally with a ``with`` block.
+
+        ```python
+        for video in videos.open_blob_files(rows["video"]):
+            if video is not None:
+                with video:
+                    header = video.read(4096)
+        ```
         """
         for descriptor in descriptors:
             yield self.open_blob_file(descriptor)
@@ -7509,6 +7516,13 @@ class AsyncTable:
 
         Use ``async for file in table.open_blob_files(descriptors)``. Each
         non-null file must be closed after use.
+
+        ```python
+        async for video in videos.open_blob_files(rows["video"]):
+            if video is not None:
+                with video:
+                    payload = await video.aread()
+        ```
         """
         for descriptor in descriptors:
             yield await self.open_blob_file(descriptor)

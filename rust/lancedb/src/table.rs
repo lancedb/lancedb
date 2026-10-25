@@ -1388,6 +1388,17 @@ impl Table {
     /// The descriptor carries its table version, branch, column and row identity.
     /// Opening does not materialize the payload or change this table's checkout.
     /// Remote reads use the table's authenticated HTTP byte-range endpoint.
+    ///
+    /// ```
+    /// use lancedb::{Table, blob::BlobDescriptor};
+    ///
+    /// # async fn read_header(videos: &Table, descriptor: &BlobDescriptor) -> lancedb::Result<()> {
+    /// let video = videos.open_blob_file(descriptor).await?;
+    /// let header = video.read_range(0..video.size().min(4096)).await?;
+    /// video.close().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
         self.inner.open_blob_file(descriptor).await
     }

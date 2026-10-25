@@ -105,8 +105,10 @@ See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to
 ### Opening SQL blob descriptors
 
 A SQL `blob_descriptor(video)` result keeps the Blob V2 storage metadata and a
-`source` struct containing its table URI, version, branch, column and row identity.
-Open that reference on the source table to read incrementally:
+`source` struct containing its table URI, version, commit timestamp, branch,
+column and row identity. This example uses a remote SQL connection whose SQL
+service produces those source-bearing descriptors. Open the reference on the
+source table to read incrementally:
 
 ```python
 rows = db.execute_query("""
@@ -131,3 +133,20 @@ preserving order, duplicates and nulls (`None`). It accepts Arrow arrays/chunked
 arrays or another iterable and opens each handle as iteration advances. Close each
 non-null handle after use. Async tables offer `await videos.open_blob_file(...)`
 and `async for video in videos.open_blob_files(...)`.
+
+```python
+for video in videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            header = video.read(4096)
+```
+
+To extract a frame while retaining each row's timestamp, iterate over the
+handles and rows together:
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
