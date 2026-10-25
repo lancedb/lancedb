@@ -177,7 +177,9 @@ wildcards = "deny"
 # `[workspace.dependencies]` table: any crate used by more than one member must
 # go through `workspace = true`, and entries nothing uses are an error. This
 # keeps versions from drifting between the core crate and the bindings.
-workspace-dependencies = { duplicates = "deny", unused = "deny" }
+# Python bundles a patched path crate while the Rust SDK uses the overridable
+# upstream source. Check shared external declarations, not these path bindings.
+workspace-dependencies = { duplicates = "deny", unused = "deny", include-path-dependencies = false }
 # Internal workspace crates reference each other via `path = "..."`, which
 # cargo-deny sees as a wildcard version. That's fine for private workspace
 # members (not published to crates.io), so allow it specifically for paths.

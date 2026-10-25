@@ -87,7 +87,7 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                 core_manifest = workdir / "rust/lancedb/Cargo.toml"
                 core_manifest.parent.mkdir(parents=True)
                 core_manifest.write_text(
-                    '[dependencies]\nlance-arrow-upstream = { package = "lance-arrow", '
+                    "[dependencies]\nlance-arrow = { "
                     'version = "=1.0.0", git = "https://github.com/lance-format/lance.git", '
                     'tag = "v1.0.0" }\narrow.workspace = true\n'
                 )
@@ -120,8 +120,7 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                     + UNTOUCHED_DEPENDENCIES,
                 )
                 core = tomllib.loads(core_manifest.read_text())["dependencies"]
-                dependency = core["lance-arrow-upstream"]
-                self.assertEqual(dependency["package"], "lance-arrow")
+                dependency = core["lance-arrow"]
                 if version == "local":
                     self.assertEqual(
                         dependency["path"], "../../../lance/rust/lance-arrow"

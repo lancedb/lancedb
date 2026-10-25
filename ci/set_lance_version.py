@@ -154,14 +154,12 @@ def update_cargo_toml(line_updater):
     if core_manifest.exists():
         lines = core_manifest.read_text().splitlines(keepends=True)
         for index, line in enumerate(lines):
-            if line.startswith("lance-arrow-upstream ="):
-                dependency = line.replace("lance-arrow-upstream", "lance-arrow", 1)
-                updated = tomllib.loads(line_updater(dependency))["lance-arrow"]
+            if line.startswith("lance-arrow ="):
+                updated = tomllib.loads(line_updater(line))["lance-arrow"]
                 config = {"version": updated} if isinstance(updated, str) else updated
                 if "path" in config:
                     config["path"] = "../../" + config["path"]
-                config = {"package": "lance-arrow", **config}
-                lines[index] = dict_to_toml_line("lance-arrow-upstream", config)
+                lines[index] = dict_to_toml_line("lance-arrow", config)
         core_manifest.write_text("".join(lines))
 
 

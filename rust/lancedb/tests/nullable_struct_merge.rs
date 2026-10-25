@@ -6,7 +6,7 @@ use std::sync::Arc;
 use arrow_array::{Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StructArray};
 use arrow_buffer::NullBuffer;
 use arrow_schema::{DataType, Field, Schema};
-use lance_arrow_upstream::RecordBatchExt;
+use lance_arrow::RecordBatchExt;
 
 #[test]
 fn merge_nullable_struct_with_sliced_boolean_child() {

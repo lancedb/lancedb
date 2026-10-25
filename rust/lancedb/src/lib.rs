@@ -173,8 +173,6 @@
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]
 
-extern crate lance_arrow_upstream as lance_arrow;
-
 pub mod arrow;
 pub mod authz;
 pub mod blob;
