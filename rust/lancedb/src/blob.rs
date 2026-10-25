@@ -91,12 +91,14 @@ pub(crate) async fn open_native_blob_file(
             message: "blob descriptor belongs to a different table".into(),
         });
     }
-    let dataset = dataset
-        .checkout_version(lance::dataset::refs::Ref::Version(
-            source.branch.clone(),
-            Some(source.version),
-        ))
-        .await?;
+    let dataset = Arc::new(
+        dataset
+            .checkout_version(lance::dataset::refs::Ref::Version(
+                source.branch.clone(),
+                Some(source.version),
+            ))
+            .await?,
+    );
     if dataset.uri() != source.uri {
         return Err(Error::InvalidInput {
             message: "blob descriptor belongs to a different table".into(),
