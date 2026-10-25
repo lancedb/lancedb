@@ -13,6 +13,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
+use uuid::Uuid;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
@@ -57,6 +58,9 @@ fn job_detail_not_supported<T>(what: &str) -> Result<T> {
 pub(crate) trait JobHandle: Send + Sync {
     /// Server-assigned id, when the backend has one.
     fn id(&self) -> Option<&str> {
+        None
+    }
+    fn query_id(&self) -> Option<Uuid> {
         None
     }
     async fn status(&self) -> Result<String>;
@@ -253,13 +257,18 @@ where
         Self::new_typed(Box::new(SpawnedJob::new(task)))
     }
 
-    pub(crate) fn spawned_with_cancellation<F, Fut>(task: JoinHandle<Result<T>>, cancel: F) -> Self
+    pub(crate) fn from_query_task<F, Fut>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancel: F,
+    ) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
         Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+            query_id,
             task,
             cancellation,
         )))
@@ -273,12 +282,24 @@ where
     /// Identifies the operation on the server that is running it.
     ///
     /// Returned for correlating with server logs or the jobs API. Operations
-    /// that run in this process have no server id and return `None`. The
+    /// that run in this process or through SQL have no registry job id and
+    /// return `None`. See [`Job::query_id`] for SQL operations. The
     /// value is opaque: parsing it or storing it to resume the job later is
     /// not supported.
     pub fn id(&self) -> Option<&str> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
+            JobInner::Completed(_) => None,
+        }
+    }
+
+    /// The underlying SQL query's connection-scoped identity, when this
+    /// operation runs through SQL. This is not a registry job ID and cannot
+    /// be used with registry job lookup, history, pause, or resume APIs.
+    /// Query identity is not a durable resume mechanism.
+    pub fn query_id(&self) -> Option<Uuid> {
+        match &self.inner {
+            JobInner::Handle { handle, .. } => handle.query_id(),
             JobInner::Completed(_) => None,
         }
     }
@@ -516,6 +537,7 @@ struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
     cancellation: Option<Cancellation>,
+    query_id: Option<Uuid>,
 }
 
 type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -529,11 +551,17 @@ impl SpawnedJob {
         Self::new_inner(task, None)
     }
 
-    fn new_with_cancellation<T>(task: JoinHandle<Result<T>>, cancellation: Cancellation) -> Self
+    fn new_with_cancellation<T>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancellation: Cancellation,
+    ) -> Self
     where
         T: Serialize + Send + 'static,
     {
-        Self::new_inner(task, Some(cancellation))
+        let mut handle = Self::new_inner(task, Some(cancellation));
+        handle.query_id = Some(query_id);
+        handle
     }
 
     fn new_inner<T>(task: JoinHandle<Result<T>>, cancellation: Option<Cancellation>) -> Self
@@ -562,12 +590,17 @@ impl SpawnedJob {
             outcome,
             abort,
             cancellation,
+            query_id: None,
         }
     }
 }
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
+    fn query_id(&self) -> Option<Uuid> {
+        self.query_id
+    }
+
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",

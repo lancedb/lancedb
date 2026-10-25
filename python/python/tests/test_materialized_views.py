@@ -192,11 +192,13 @@ def test_create_and_refresh_jobs(tmp_path):
         "adults", "people", where="age >= 18", with_no_data=True
     )
     assert create_job.id is None
+    assert create_job.query_id is None
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
     refresh_job = view.refresh_async()
     assert refresh_job.id is None
+    assert refresh_job.query_id is None
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
@@ -337,11 +339,13 @@ async def test_async_create_and_refresh_jobs(tmp_path):
         "adults", "people", with_no_data=True
     )
     assert create_job.id is None
+    assert create_job.query_id is None
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
     refresh_job = await view.refresh_async()
     assert refresh_job.id is None
+    assert refresh_job.query_id is None
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1

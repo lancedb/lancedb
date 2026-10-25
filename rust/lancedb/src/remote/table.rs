@@ -2218,8 +2218,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
         let job_sql_client = sql_client.clone();
-        Ok(
-            sql_client.submit_as_job(statement, namespace.clone(), move || async move {
+        sql_client
+            .submit_as_job(statement, namespace.clone(), move || async move {
                 let table = Self::new_with_sql_client(
                     client,
                     name,
@@ -2241,8 +2241,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     source_version: 0,
                     version,
                 })
-            }),
-        )
+            })
+            .await
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
