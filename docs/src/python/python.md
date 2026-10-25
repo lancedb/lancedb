@@ -221,10 +221,19 @@ The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
 reader as soon as its initial result stream is available. `execute_query_async`
-returns a query handle immediately; use it to inspect progress, open a reader,
+returns a query handle once submission is accepted; use it to inspect progress, open a reader,
 or cancel the query. The SQL client is initialized by the first query and
 retained for the lifetime of the remote connection. Query ids are random,
-connection-scoped references rather than encoded SQL or durable resume tokens:
+connection-scoped references rather than encoded SQL or durable resume tokens.
+
+Both APIs start with one Flight call. The server can stream results on that
+call or return a polling continuation that the SDK follows automatically.
+This behavior is the same with and without parameters. Open the reader directly;
+a directly streamed query needs its reader to make progress. Dropping an unread
+handle or its reader stops direct streaming. Deferred execution continues until
+explicitly cancelled.
+
+For example:
 
 ```python
 import lancedb
