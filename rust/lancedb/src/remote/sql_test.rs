@@ -384,7 +384,7 @@ impl FlightService for TestSqlService {
         if query == "SELECT cancel missing" {
             return Err(Status::not_found("query was not found"));
         }
-        if query == "SELECT cancel denied" || query == "SELECT job cancel denied" {
+        if query == "SELECT cancel denied" {
             if self.cancel_denied_count.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Err(Status::permission_denied("cancellation is not allowed"));
             }
@@ -395,7 +395,9 @@ impl FlightService for TestSqlService {
         {
             return Err(Status::not_found("query cancellation completed"));
         }
-        let status = if query == "SELECT cancel unspecified" {
+        let status = if query == "SELECT job cancel denied" {
+            CancelStatus::NotCancellable
+        } else if query == "SELECT cancel unspecified" {
             CancelStatus::Unspecified
         } else if query == "SELECT cancelling" {
             if self
