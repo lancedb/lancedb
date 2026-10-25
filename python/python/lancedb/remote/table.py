@@ -7,6 +7,7 @@ import logging
 from functools import cached_property
 import os
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -82,6 +83,10 @@ from ..table import (
 )
 from ..types import BaseTokenizerType
 from ..util import infer_vector_column_name
+
+if TYPE_CHECKING:
+    import lance
+    import polars as pl
 
 
 class RemoteTable(Table):
@@ -244,12 +249,32 @@ class RemoteTable(Table):
     def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported for remote tables."""
         validate_blob_mode(blob_mode)
-        raise NotImplementedError("to_arrow() is not supported for remote tables.")
+        raise NotImplementedError(
+            "to_arrow() is not supported for remote tables. "
+            "Use table.search().to_arrow() instead."
+        )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not supported for remote tables."""
         validate_blob_mode(blob_mode)
-        raise NotImplementedError("to_pandas() is not supported for remote tables.")
+        raise NotImplementedError(
+            "to_pandas() is not supported for remote tables. "
+            "Use table.search().to_pandas() instead."
+        )
+
+    def to_lance(self, **kwargs) -> "lance.LanceDataset":
+        """Direct Lance dataset access is not supported for remote tables.
+
+        Use ``table.search().to_arrow()`` to read query results through the server.
+        """
+        return LOOP.run(self._table.to_lance(**kwargs))
+
+    def to_polars(self, **kwargs) -> "pl.LazyFrame":
+        """Use ``table.search().to_polars()`` to read remote query results."""
+        raise NotImplementedError(
+            "to_polars() is not supported for remote tables. "
+            "Use table.search().to_polars() instead."
+        )
 
     def checkout(self, version: Union[int, str]):
         result = LOOP.run(self._table.checkout(version))
@@ -280,8 +305,12 @@ class RemoteTable(Table):
         """Tokenize a query using the tokenizer configured on an FTS index.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata, so the same tokenizer
-        model files must exist locally.
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -1152,11 +1181,21 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.uri())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def uses_v2_manifest_paths(self) -> bool:
         return LOOP.run(self._table.uses_v2_manifest_paths())
@@ -1183,6 +1222,11 @@ class RemoteTable(Table):
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
 
     def head(self, n=5) -> pa.Table:
         """

@@ -3,7 +3,7 @@
 
 //! LanceDB Table APIs
 
-use crate::blob::BlobFile;
+use crate::blob::{BlobDescriptor, BlobFile};
 use arrow_array::{LargeBinaryArray, RecordBatch, RecordBatchReader};
 use arrow_schema::{Schema, SchemaRef};
 use async_trait::async_trait;
@@ -798,6 +798,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
             message: "fetch_blob_files is not supported on this table type".into(),
         })
     }
+    /// Open a descriptor at its pinned source version. See [`Table::open_blob_file`].
+    async fn open_blob_file(&self, _descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        Err(Error::NotSupported {
+            message: "open_blob_file is not supported on this table type".into(),
+        })
+    }
     /// Gets the table tag manager.
     async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
     /// Optimize the dataset.
@@ -1377,6 +1383,26 @@ impl Table {
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
         self.inner.fetch_blob_files(column.as_ref(), row_ids).await
+    }
+
+    /// Open a seekable file from a SQL `blob_descriptor` result.
+    ///
+    /// The descriptor carries its table version, branch, column and row identity.
+    /// Opening does not materialize the payload or change this table's checkout.
+    /// Remote reads use the table's authenticated HTTP byte-range endpoint.
+    ///
+    /// ```
+    /// use lancedb::{Table, blob::BlobDescriptor};
+    ///
+    /// # async fn read_header(videos: &Table, descriptor: &BlobDescriptor) -> lancedb::Result<()> {
+    /// let video = videos.open_blob_file(descriptor).await?;
+    /// let header = video.read_range(0..video.size().min(4096)).await?;
+    /// video.close().await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        self.inner.open_blob_file(descriptor).await
     }
 
     /// Insert new records into this Table
@@ -2266,7 +2292,11 @@ impl Table {
     ///
     /// Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
     /// the client process from index metadata. For remote tables, this means the
-    /// same tokenizer model files must also exist locally.
+    /// same tokenizer model files must also exist locally, and must match the
+    /// files the server uses: the client cannot detect a mismatch, so it may
+    /// return tokens the server's index never produces. If the model files are
+    /// missing, this returns an error naming the tokenizer and
+    /// `LANCE_LANGUAGE_MODEL_HOME`.
     pub async fn tokenize(&self, query: &str, index_name: &str) -> Result<Vec<FtsToken>> {
         let indices = self.inner.list_indices().await?;
         let matches = indices
@@ -2300,7 +2330,8 @@ impl Table {
     /// The column must have exactly one FTS index. Model-backed tokenizers such
     /// as `jieba/*` and `lindera/*` are rebuilt in the client process from
     /// index metadata. For remote tables, this means the same tokenizer model
-    /// files must also exist locally.
+    /// files must also exist locally, and must match the files the server uses
+    /// (see [`Self::tokenize`]).
     pub async fn tokenize_with_column(&self, query: &str, column: &str) -> Result<Vec<FtsToken>> {
         let schema = self.inner.schema().await?;
         let (column, _) = resolve_arrow_field_path(schema.as_ref(), column)?;
@@ -2356,13 +2387,30 @@ impl Table {
                 ),
             }
         })?;
+        let model_backed_tokenizer = serde_json::from_str::<serde_json::Value>(details)
+            .ok()
+            .and_then(|details| {
+                let tokenizer = details.get("base_tokenizer")?.as_str()?.to_string();
+                (tokenizer.starts_with("jieba/") || tokenizer.starts_with("lindera/"))
+                    .then_some(tokenizer)
+            });
         tokenize(query, &params).map_err(|err| match err {
-            Error::InvalidInput { message } => Error::InvalidInput {
-                message: format!(
+            Error::InvalidInput { message } => {
+                let mut message = format!(
                     "{} for full text search index '{}' for {}",
                     message, index.name, selector_description
-                ),
-            },
+                );
+                if let Some(tokenizer) = model_backed_tokenizer {
+                    message.push_str(&format!(
+                        ". tokenize() runs on the client: the '{}' tokenizer is rebuilt \
+                         in this process from the index metadata, so its model files must \
+                         be available under LANCE_LANGUAGE_MODEL_HOME and, for remote \
+                         tables, match the files the server uses",
+                        tokenizer
+                    ));
+                }
+                Error::InvalidInput { message }
+            }
             err => err,
         })
     }
@@ -3742,6 +3790,11 @@ impl BaseTable for NativeTable {
     ) -> Result<Vec<Option<BlobFile>>> {
         let dataset = self.dataset.get().await?;
         crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
+    }
+
+    async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
+        let dataset = self.dataset.get().await?;
+        crate::blob::open_native_blob_file(&dataset, descriptor).await
     }
 
     /// Delete rows from the table

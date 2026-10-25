@@ -59,6 +59,124 @@ def _blob_v2_table(db: DBConnection, name: str):
     return table
 
 
+@pytest.mark.parametrize(
+    "threshold",
+    [
+        "inline_size_threshold",
+        "dedicated_size_threshold",
+        "pack_file_size_threshold",
+    ],
+)
+@pytest.mark.parametrize(
+    "value,error",
+    [
+        (-1, ValueError),
+        (True, TypeError),
+        (False, TypeError),
+        (1.5, TypeError),
+        ("8192", TypeError),
+        (ctypes.c_size_t(-1).value + 1, OverflowError),
+    ],
+)
+def test_blob_thresholds_reject_invalid_values(threshold, value, error):
+    # Also runs in CI with pylance actually uninstalled.
+    with pytest.raises(error, match=f"{threshold} must"):
+        lancedb.blob("blob", **{threshold: value})
+
+
+@pytest.mark.parametrize(
+    "threshold", ["dedicated_size_threshold", "pack_file_size_threshold"]
+)
+def test_blob_thresholds_reject_zero_for_positive_thresholds(threshold):
+    with pytest.raises(ValueError, match=f"{threshold} must be positive"):
+        lancedb.blob("blob", **{threshold: 0})
+
+
+def test_blob_thresholds_accept_integer_boundaries():
+    maximum = ctypes.c_size_t(-1).value
+    field = lancedb.blob(
+        "blob",
+        nullable=False,
+        inline_size_threshold=0,
+        dedicated_size_threshold=maximum,
+        pack_file_size_threshold=maximum,
+    )
+    assert not field.nullable
+    assert field.metadata == {
+        b"lance-encoding:blob-inline-size-threshold": b"0",
+        b"lance-encoding:blob-dedicated-size-threshold": str(maximum).encode(),
+        b"lance-encoding:blob-pack-file-size-threshold": str(maximum).encode(),
+    }
+
+
+def test_blob_thresholds_control_writes_after_reopen(tmp_path):
+    # Keep this in test_table.py: CI runs it without pylance or pandas installed.
+    field = lancedb.blob(
+        "blob",
+        inline_size_threshold=4,
+        dedicated_size_threshold=12,
+        pack_file_size_threshold=8,
+    )
+    metadata = {
+        b"lance-encoding:blob-inline-size-threshold": b"4",
+        b"lance-encoding:blob-dedicated-size-threshold": b"12",
+        b"lance-encoding:blob-pack-file-size-threshold": b"8",
+    }
+    assert field.metadata == metadata
+    schema = pa.schema([pa.field("id", pa.int64()), field])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("blobs", schema=schema)
+    # Every payload fits in the default inline tier; custom thresholds must
+    # instead send the larger values to packed and dedicated storage.
+    rows = [
+        {"id": 0, "blob": b"a" * 2},
+        {"id": 1, "blob": b"b" * 8},
+        {"id": 2, "blob": b"c" * 16},
+        {"id": 3, "blob": b"d" * 8},
+    ]
+
+    def check_writes(table, expected):
+        assert table.schema.field("blob").metadata.items() >= metadata.items()
+        hits = table.search().with_row_id(True).limit(10).to_arrow()
+        actual = {row["id"]: row for row in hits.to_pylist()}
+        assert actual.keys() == {row["id"] for row in expected}
+        for row in expected:
+            size = len(row["blob"])
+            descriptor = actual[row["id"]]["blob"]
+            assert descriptor["size"] == size
+            assert descriptor["kind"] == (2 if size > 12 else 1 if size > 4 else 0)
+        row_ids = [actual[row["id"]]["_rowid"] for row in expected]
+        assert table.fetch_blobs("blob", row_ids).to_pylist() == [
+            row["blob"] for row in expected
+        ]
+        # Two packed values reach the configured sidecar limit independently.
+        packed = [
+            actual[row["id"]]["blob"] for row in expected if len(row["blob"]) == 8
+        ]
+        assert len({desc["blob_id"] for desc in packed}) == len(packed)
+
+    table.add(rows)
+    check_writes(table, rows)
+    table = lancedb.connect(tmp_path).open_table("blobs")
+    check_writes(table, rows)
+    updates = [
+        {"id": 0, "blob": b"e" * 16},
+        {"id": 1, "blob": b"f" * 2},
+        {"id": 2, "blob": b"g" * 8},
+        {"id": 3, "blob": b"h" * 8},
+        {"id": 4, "blob": b"i" * 16},
+    ]
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(updates)
+    )
+    assert result.num_updated_rows == 4
+    assert result.num_inserted_rows == 1
+    check_writes(lancedb.connect(tmp_path).open_table("blobs"), updates)
+
+
 async def _blob_v2_table_async(db: AsyncConnection, name: str):
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
     table = await db.create_table(name, schema=schema)
@@ -1633,6 +1751,25 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.cancel()
 
 
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
+def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("invalid_timeout", [{"id": 1}])
+    with pytest.raises(TypeError):
+        getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    assert table.list_indices() == []
+
+
+@pytest.mark.parametrize("method", ["create_index", "create_index_async"])
+@pytest.mark.parametrize("wait_timeout", [None, timedelta(seconds=1)])
+def test_create_index_valid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
+    table = mem_db.create_table("valid_timeout", [{"id": 1}])
+    result = getattr(table, method)("id", config=BTree(), wait_timeout=wait_timeout)
+    if result is not None:
+        result.wait()
+    assert len(table.list_indices()) == 1
+
+
 @patch("lancedb.table.AsyncTable.create_index")
 def test_create_index_method(mock_create_index, mem_db: DBConnection):
     table = mem_db.create_table(
@@ -2703,6 +2840,57 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
 
     assert result.rows_updated == 1
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("entries", [[("o'brien", 4), ("nil", None)], [], None])
+async def test_update_map_arrow_scalar(tmp_path, async_api, entries):
+    map_type = pa.map_(pa.string(), pa.int64())
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "attrs": pa.array([[("original", 1)], entries], type=map_type),
+        }
+    )
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("maps", data)
+        source = await table.query().where("id = 2").to_arrow()
+        result = await table.update({"attrs": source["attrs"][0]}, where="id = 1")
+        actual = await table.query().to_arrow()
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("maps", data)
+        source = table.search().where("id = 2").to_arrow()
+        result = table.update(values={"attrs": source["attrs"][0]}, where="id = 1")
+        actual = table.to_arrow()
+    assert result.rows_updated == 1
+    assert actual.schema.field("attrs").type == map_type
+    assert actual.sort_by("id")["attrs"].to_pylist() == [entries, entries]
+
+
+@pytest.mark.parametrize(
+    "map_type, entries",
+    [
+        (pa.map_(pa.int64(), pa.string()), []),
+        (
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+            [("outer", [("inner", 3)]), ("null", None)],
+        ),
+    ],
+)
+def test_update_typed_map_arrow_scalar(mem_db: DBConnection, map_type, entries):
+    table = mem_db.create_table(
+        "maps",
+        pa.table({"id": [1, 2], "attrs": pa.array([None, entries], type=map_type)}),
+    )
+    scalar = table.search().where("id = 2").to_arrow()["attrs"][0]
+    result = table.update(values={"attrs": scalar}, where="id = 1")
+    actual = table.to_arrow().sort_by("id")["attrs"]
+    assert result.rows_updated == 1
+    assert actual.type == map_type
+    assert actual.to_pylist() == [entries, entries]
 
 
 @pytest.mark.parametrize("use_arrow_scalar", [False, True])
@@ -4507,6 +4695,58 @@ async def test_alter_columns_rejects_invalid_async(
     assert await table.schema() == initial_schema
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("asynchronous", [False, True])
+@pytest.mark.parametrize("list_type", [pa.list_, pa.large_list])
+@pytest.mark.parametrize(
+    "value_type, values, inferred_type",
+    [
+        (pa.float64(), [1.25, 2.5], pa.float32()),
+        (pa.int32(), [0, 255], pa.uint8()),
+        (pa.int32(), [-1, 256], pa.float32()),
+    ],
+)
+async def test_inferred_vector_field_metadata(
+    tmp_db: DBConnection,
+    tmp_db_async: AsyncConnection,
+    asynchronous,
+    list_type,
+    value_type,
+    values,
+    inferred_type,
+):
+    metadata = {
+        "lancedb:description": "Embedding values",
+        "lancedb:tag:model": "test-model",
+    }
+    schema = pa.schema(
+        [
+            pa.field(
+                "vector", list_type(value_type), nullable=False, metadata=metadata
+            ),
+            pa.field("text", pa.string(), metadata={"description": "Source text"}),
+        ],
+        metadata={"description": "Source dataset"},
+    )
+    rows = [{"vector": values, "text": "first"}, {"vector": values, "text": "second"}]
+    data = pa.Table.from_pylist(rows, schema=schema)
+    if asynchronous:
+        await tmp_db_async.create_table("vector_metadata", data=data)
+        table = await tmp_db_async.open_table("vector_metadata")
+        actual_schema = await table.schema()
+        actual_data = await table.to_arrow()
+    else:
+        tmp_db.create_table("vector_metadata", data=data)
+        table = tmp_db.open_table("vector_metadata")
+        actual_schema = table.schema
+        actual_data = table.to_arrow()
+    expected_schema = schema.set(
+        0, schema.field("vector").with_type(pa.list_(inferred_type, 2))
+    )
+    assert actual_schema.equals(expected_schema, check_metadata=True)
+    assert actual_data.to_pylist() == rows
+
+
 def test_update_field_metadata(mem_db: DBConnection):
     data = pa.table({"id": [0, 1], "category": ["a", "b"]})
     table = mem_db.create_table("my_table", data=data)
@@ -4849,6 +5089,57 @@ def test_optimize_warns_on_zero_cleanup_sync(mem_db: DBConnection):
     assert all("concurrent" in str(w.message) for w in seen)
 
 
+def test_optimize_retains_tagged_versions(tmp_db: DBConnection):
+    # A tagged version older than the cleanup cutoff must be retained, not make
+    # optimize() fail part-way (after compaction, before the index step).
+    table = tmp_db.create_table(
+        "test", data=pa.table({"id": list(range(100)), "text": ["a"] * 100})
+    )
+    table.create_index("id", config=BTree())
+    table.tags.create("release-1", table.version)
+    tagged_version = table.version
+    for i in range(3):
+        table.add(pa.table({"id": [1000 + i], "text": ["new"]}))
+    assert table.stats()["fragment_stats"]["num_fragments"] == 4
+    assert table.index_stats("id_idx").num_unindexed_rows == 3
+    sleep(1.1)
+
+    table.optimize(cleanup_older_than=timedelta(seconds=1))
+
+    # The index step ran after the prune step
+    assert table.index_stats("id_idx").num_unindexed_rows == 0
+    # It stays optimizable
+    table.optimize(cleanup_older_than=timedelta(seconds=1))
+    assert table.stats()["fragment_stats"]["num_fragments"] == 1
+
+    # Untagged old versions were pruned, the tagged one was retained
+    versions = [v["version"] for v in table.list_versions()]
+    assert tagged_version in versions
+    for added in range(tagged_version + 1, tagged_version + 4):
+        assert added not in versions
+    assert len(table) == 103
+
+    table.checkout("release-1")
+    assert len(table) == 100
+    assert table.to_arrow().num_rows == 100
+
+
+@pytest.mark.asyncio
+async def test_optimize_retains_tagged_versions_async(tmp_db_async: AsyncConnection):
+    table = await tmp_db_async.create_table("test", data=[{"x": [1]}])
+    await table.tags.create("keep", await table.version())
+    await table.add(data=[{"x": [2]}])
+    await table.add(data=[{"x": [3]}])
+    sleep(1.1)
+
+    stats = await table.optimize(cleanup_older_than=timedelta(seconds=1))
+    assert stats.prune.old_versions_removed >= 1
+
+    await table.checkout("keep")
+    assert await table.count_rows() == 1
+    assert await table.query().to_arrow() == pa.table({"x": [[1]]})
+
+
 def test_replace_field_metadata(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("my_table", data=[{"x": 0}])
@@ -4902,6 +5193,81 @@ def test_stats(mem_db: DBConnection):
     assert stats_with_index["num_rows"] == 1
     assert stats_with_index["num_deleted_rows"] == 1
     assert stats_with_index["fragment_stats"]["num_fragments"] == 1
+
+
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+def test_create_table_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            mem_db.create_table("test", data=data)
+        return
+
+    table = mem_db.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert table.schema == schema
+    assert table.to_arrow().to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("empty", [False, True])
+@pytest.mark.parametrize("with_schema", [False, True])
+async def test_create_table_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, empty, with_schema
+):
+    schema = pa.schema([pa.field("id", pa.int64())])
+    batches = [] if empty else [pa.RecordBatch.from_pydict({"id": [1]}, schema)]
+    data = iterable_type(batches)
+    if empty and not with_schema:
+        with pytest.raises(ValueError, match="empty iterable without a schema"):
+            await mem_db_async.create_table("test", data=data)
+        return
+
+    table = await mem_db_async.create_table(
+        "test", data=data, schema=schema if with_schema else None
+    )
+    assert await table.schema() == schema
+    assert (await table.to_arrow()).to_pylist() == ([] if empty else [{"id": 1}])
+
+
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+def test_add_empty_recordbatch_iterable(
+    mem_db: DBConnection, iterable_type, on_bad_vectors
+):
+    table = mem_db.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        # The default scannable path still requires an input schema. This
+        # fix does not change its validation policy for schema-less input.
+        with pytest.raises(ValueError, match="empty iterator"):
+            table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        # Sanitization has the existing table schema available.
+        table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert table.to_arrow().to_pylist() == [{"id": 1}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iterable_type", [iter, tuple])
+@pytest.mark.parametrize("on_bad_vectors", ["error", "drop", "fill", "null"])
+async def test_add_empty_recordbatch_iterable_async(
+    mem_db_async: AsyncConnection, iterable_type, on_bad_vectors
+):
+    table = await mem_db_async.create_table("test", [{"id": 1}])
+    if on_bad_vectors == "error":
+        with pytest.raises(ValueError, match="empty iterator"):
+            await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    else:
+        await table.add(iterable_type([]), on_bad_vectors=on_bad_vectors)
+    assert (await table.to_arrow()).to_pylist() == [{"id": 1}]
 
 
 def test_create_table_empty_list_with_schema(mem_db: DBConnection):

@@ -69,11 +69,15 @@ class EmbeddingFunctionRegistry:
         def decorator(cls):
             if not issubclass(cls, EmbeddingFunction):
                 raise TypeError("Must be a subclass of EmbeddingFunction")
-            if cls.__name__ in self._functions:
-                raise KeyError(f"{cls.__name__} was already registered")
             key = alias or cls.__name__
+            if key in self._functions and (
+                not alias or self._functions[key] is not cls
+            ):
+                raise KeyError(f"{key} was already registered")
             self._functions[key] = cls
-            cls.__embedding_function_registry_alias__ = alias
+            # Store the name the class is registered under, so the table
+            # metadata written for it can be looked up again when reading.
+            cls.__embedding_function_registry_alias__ = key
             return cls
 
         return decorator

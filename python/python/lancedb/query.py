@@ -1561,9 +1561,10 @@ class LanceQueryBuilder(ABC):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -1619,8 +1620,8 @@ class LanceQueryBuilder(ABC):
               GlobalLimitExec: elapsed=..., skip=0, fetch=10,
               metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
                 FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
-                  SortExec: elapsed=..., TopK(fetch=10), expr=[...],
-                  preserve_partitioning=[...],
+                  SortExec: elapsed=..., TopK(fetch=1), expr=[...],
+                  preserve_partitioning=[...], filter=[...],
                   metrics=[output_rows=..., elapsed_compute=...,
                   output_bytes=..., row_replacements=...]
                     KNNVectorDistance: elapsed=..., metric=l2,
@@ -1633,6 +1634,7 @@ class LanceQueryBuilder(ABC):
                       metrics=[output_rows=..., elapsed_compute=..., output_bytes=...,
                       fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
                       bytes_read=..., iops=..., requests=..., task_wait_time=...]
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -2575,10 +2577,6 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         with_row_ids: bool,
         offset: Optional[int] = None,
     ) -> pa.Table:
-        if norm == "rank":
-            vector_results = LanceHybridQueryBuilder._rank(vector_results, "_distance")
-            fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
-
         # If both result sets are empty (e.g. after hard filtering),
         # return early to avoid errors in reranking or score restoration.
         if vector_results.num_rows == 0 and fts_results.num_rows == 0:
@@ -2605,15 +2603,23 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         original_score_row_ids = None
         # normalize the scores to be between 0 and 1, 0 being most relevant
         # We check whether the results (vector and FTS) are empty, because when
-        # they are, they often are missing the _rowid column, which causes an error
+        # they are, they often are missing the _rowid column, which causes an error.
+        # The original values are captured before any rank conversion so that
+        # they can be restored after reranking.
         if vector_results.num_rows > 0:
             distance_i = vector_results.column_names.index("_distance")
             original_distances = vector_results.column(distance_i)
             original_distance_row_ids = vector_results.column("_rowid")
+            if norm == "rank":
+                vector_results = LanceHybridQueryBuilder._rank(
+                    vector_results, "_distance"
+                )
             vector_results = vector_results.set_column(
                 distance_i,
                 vector_results.field(distance_i),
-                LanceHybridQueryBuilder._normalize_scores(original_distances),
+                LanceHybridQueryBuilder._normalize_scores(
+                    vector_results.column(distance_i)
+                ),
             )
 
         # In fts higher scores represent relevance. Not inverting them here as
@@ -2622,10 +2628,12 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             score_i = fts_results.column_names.index("_score")
             original_scores = fts_results.column(score_i)
             original_score_row_ids = fts_results.column("_rowid")
+            if norm == "rank":
+                fts_results = LanceHybridQueryBuilder._rank(fts_results, "_score")
             fts_results = fts_results.set_column(
                 score_i,
                 fts_results.field(score_i),
-                LanceHybridQueryBuilder._normalize_scores(original_scores),
+                LanceHybridQueryBuilder._normalize_scores(fts_results.column(score_i)),
             )
 
         results = reranker.rerank_hybrid(fts_query, vector_results, fts_results)
@@ -2953,9 +2961,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -3595,9 +3604,10 @@ class AsyncQueryBase(object):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
         <BLANKLINE>
 
         Parameters
@@ -4515,9 +4525,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   FilterExec: _distance@2 IS NOT NULL
-                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                    SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
-                        LanceRead: uri=..., projection=[vector], ...
+                        LanceRead: uri=..., projection=[vector], num_fragments=..., ...
             ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
@@ -4871,9 +4881,10 @@ class BaseQueryBuilder(object):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
         <BLANKLINE>
 
         Parameters

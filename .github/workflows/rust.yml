@@ -245,12 +245,6 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-          # windows-11-arm is a standard runner, so it is free on public repos.
-          # Running natively lets the aarch64 tests actually execute -- this
-          # job used to cross-compile them and then skip the test step, paying
-          # full codegen and link cost for a compile check.
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -278,6 +272,43 @@ jobs:
           # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
           # dependency graph a second time.
           cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
+
+  # Run the aarch64 Windows tests only on main so PRs wait for a single
+  # Windows platform. windows-11-arm is a standard runner, so it is free on
+  # public repos. Running natively lets the aarch64 tests actually execute --
+  # this job used to cross-compile them and then skip the test step, paying
+  # full codegen and link cost for a compile check.
+  windows-arm:
+    # Keep the historical name so the check shows up as before on main.
+    name: windows (aarch64-pc-windows-msvc, windows-11-arm)
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        working-directory: rust/lancedb
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set target
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Protoc v21.12
+        run: choco install --no-progress protoc
+      - name: Build
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --profile ci --features aws,remote --tests --locked --target aarch64-pc-windows-msvc
+      - name: Run tests
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target aarch64-pc-windows-msvc
 
   msrv:
     # Check the minimum supported Rust version

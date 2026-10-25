@@ -70,6 +70,8 @@ class OllamaEmbeddings(TextEmbeddingFunction):
             The texts to embed
         """
         # TODO retry, rate limit, token limit
+        if isinstance(texts, np.ndarray):
+            texts = texts.tolist()
         embeddings = self._compute_embedding(texts)
         return list(embeddings)
 

@@ -24,7 +24,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::{BlobFile, BlobRangeRequest};
+use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::connection::LanceFileVersion;
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
@@ -1266,7 +1266,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1297,7 +1299,9 @@ impl Table {
         train: Option<bool>,
     ) -> PyResult<Bound<'a, PyAny>> {
         let index = extract_index_params(&index)?;
-        let timeout = wait_timeout.map(|t| t.extract::<std::time::Duration>().unwrap());
+        let timeout = wait_timeout
+            .map(|t| t.extract::<std::time::Duration>())
+            .transpose()?;
         let mut op = self_
             .inner_ref()?
             .create_index_with_timeout(&[column], index, timeout);
@@ -1560,8 +1564,8 @@ impl Table {
         })
     }
 
-    pub fn query(&self) -> Query {
-        Query::new(self.inner_ref().unwrap().query())
+    pub fn query(&self) -> PyResult<Query> {
+        Ok(Query::new(self.inner_ref()?.query()))
     }
 
     #[getter]
@@ -1676,6 +1680,23 @@ impl Table {
                     })
                 })
                 .collect::<Vec<_>>())
+        })
+    }
+
+    #[pyo3(signature = (descriptor))]
+    pub fn open_blob_file<'py>(
+        self_: PyRef<'py, Self>,
+        descriptor: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
+            .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let file = inner.open_blob_file(&descriptor).await.infer_error()?;
+            Ok(PyBlobFile {
+                inner: Arc::new(file),
+                closed: AtomicBool::new(false),
+            })
         })
     }
 

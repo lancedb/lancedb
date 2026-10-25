@@ -64,7 +64,7 @@ class VoyageAIReranker(Reranker):
                 pass it as `api_key` argument to the VoyageAIReranker."
             )
         return voyageai.Client(
-            api_key=os.environ.get("VOYAGE_API_KEY") or self.api_key,
+            api_key=self.api_key or os.environ.get("VOYAGE_API_KEY"),
         )
 
     def _rerank(self, result_set: pa.Table, query: str):

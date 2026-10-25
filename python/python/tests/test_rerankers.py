@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import os
+from unittest.mock import MagicMock
 import random
 
 import lancedb
@@ -547,6 +548,24 @@ def test_openai_reranker(tmp_path):
     _run_test_reranker(reranker, table, "single player experience", None, schema)
 
 
+def test_openai_reranker_does_not_send_temperature():
+    reranker = OpenaiReranker(api_key="test-key")
+    create = MagicMock()
+    create.return_value.choices = [
+        MagicMock(
+            message=MagicMock(
+                content='{"documents": [{"content": "a", "relevance_score": 0.5}]}'
+            )
+        )
+    ]
+    reranker.__dict__["_client"] = MagicMock()
+    reranker.__dict__["_client"].chat.completions.create = create
+
+    reranker._rerank(pa.table({"text": ["a"]}), "query")
+
+    assert "temperature" not in create.call_args.kwargs
+
+
 @pytest.mark.skipif(
     os.environ.get("JINA_API_KEY") is None, reason="JINA_API_KEY not set"
 )
@@ -783,6 +802,46 @@ def test_empty_hybrid_result_reranker():
     assert len(result) == 0
     assert "_relevance_score" in result.column_names
     assert "_rowid" in result.column_names
+
+
+@pytest.mark.parametrize("norm", ["score", "rank"])
+def test_hybrid_return_all_restores_original_scores(norm):
+    from lancedb.query import LanceHybridQueryBuilder
+
+    vector_results = pa.table(
+        {
+            "text": ["a", "b", "c"],
+            "_rowid": pa.array([0, 1, 2], type=pa.uint64()),
+            "_distance": pa.array([0.5, 2.5, 10.0], type=pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "text": ["b", "a"],
+            "_rowid": pa.array([1, 0], type=pa.uint64()),
+            "_score": pa.array([3.25, 1.75], type=pa.float32()),
+        }
+    )
+
+    result = LanceHybridQueryBuilder._combine_hybrid_results(
+        fts_results=fts_results,
+        vector_results=vector_results,
+        norm=norm,
+        fts_query="query",
+        reranker=RRFReranker(return_score="all"),
+        limit=10,
+        with_row_ids=True,
+    )
+
+    # The raw distances and scores are returned, not the normalized values
+    # or ranks used for reranking.
+    rows = {row["_rowid"]: row for row in result.to_pylist()}
+    assert rows[0]["_distance"] == 0.5
+    assert rows[1]["_distance"] == 2.5
+    assert rows[2]["_distance"] == 10.0
+    assert rows[0]["_score"] == 1.75
+    assert rows[1]["_score"] == 3.25
+    assert rows[2]["_score"] is None
 
 
 @pytest.mark.parametrize("return_score", ["relevance", "all"])

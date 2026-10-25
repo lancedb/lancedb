@@ -110,7 +110,17 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
+    # crypto-bigint < 0.7.6: timing side-channels in constant-time ops,
+    # incl. subtraction, zero counting, division and Montgomery multiplication.
+    # Reached only through aws-sdk-s3 sigv4a -> aws-sigv4 (p256/ecdsa); signed
+    # requests carry the SigV4a credential-derived key. The patched 0.7.6 was
+    # published 2026-10-23, but no published aws-sigv4 release uses it yet
+    # (latest 1.6.3 pins crypto-bigint ^0.5), so clearing requires smithy-rs to
+    # ship an updated aws-sigv4.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0387
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via aws-sigv4 (sigv4a); no fixed upstream aws-sigv4 release yet" },
 ]
+
 
 # ---------------------------------------------------------------------------
 # Licenses: only allow licenses we've reviewed as compatible with Apache-2.0.
