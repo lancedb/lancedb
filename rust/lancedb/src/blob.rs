@@ -50,6 +50,8 @@ pub struct BlobDescriptorSource {
     pub uri: String,
     /// Exact table version read by the query.
     pub version: u64,
+    /// Commit timestamp in microseconds, distinguishing recreated tables.
+    pub committed_at_micros: u64,
     /// Source branch; `None` identifies main.
     pub branch: Option<String>,
     /// Blob column path in the source table.
@@ -102,6 +104,11 @@ pub(crate) async fn open_native_blob_file(
     if dataset.uri() != source.uri {
         return Err(Error::InvalidInput {
             message: "blob descriptor belongs to a different table".into(),
+        });
+    }
+    if dataset.manifest().timestamp_nanos / 1_000 != u128::from(source.committed_at_micros) {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor source snapshot has been replaced".into(),
         });
     }
     ensure_blob_v2_column(dataset.schema(), &source.column)?;

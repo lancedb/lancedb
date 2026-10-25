@@ -2714,6 +2714,9 @@ def _openable_descriptors(table, *, by_address):
             descriptor["source"] = {
                 "uri": table.to_lance().uri,
                 "version": table.version,
+                "committed_at_micros": round(
+                    table.to_lance().get_version()["timestamp"].timestamp() * 1_000_000
+                ),
                 "branch": None,
                 "column": "image",
                 "row_reference": row["_rowaddr" if by_address else "_rowid"],
@@ -2769,6 +2772,10 @@ def test_open_blob_files_preserve_snapshot_order_nulls_and_empty_values(
     other = db.create_table("other", schema=schema)
     with pytest.raises(ValueError, match="different table"):
         other.open_blob_file(descriptors[1])
+    stale = dict(descriptors[1], source=dict(descriptors[1]["source"]))
+    stale["source"]["committed_at_micros"] += 1
+    with pytest.raises(ValueError, match="snapshot has been replaced"):
+        table.open_blob_file(stale)
     raw = {key: value for key, value in descriptors[1].items() if key != "source"}
     with pytest.raises(ValueError, match="source"):
         table.open_blob_file(raw)

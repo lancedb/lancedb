@@ -88,6 +88,7 @@ struct TableBlobRangeRequester<S: HttpSend> {
     version: Option<u64>,
     branch: Option<String>,
     source_uri: Option<String>,
+    source_commit_micros: Option<u64>,
     row_is_address: bool,
     freshness: Arc<std::sync::Mutex<FreshnessState>>,
     parent_freshness: Arc<std::sync::Mutex<FreshnessState>>,
@@ -130,6 +131,9 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
                 .query(&[("source_uri", source_uri)])
                 .query(&[("row_is_address", self.row_is_address)]);
         }
+        if let Some(timestamp) = self.source_commit_micros {
+            request = request.query(&[("source_commit_micros", timestamp)]);
+        }
         let (request_id, response) = self.client.send_with_retry(request, None, true).await?;
         // Preserve 416 size-probe responses so the caller can detect empty blobs.
         if response.status() == StatusCode::RANGE_NOT_SATISFIABLE
@@ -143,8 +147,10 @@ impl<S: HttpSend> BlobRangeRequester for TableBlobRangeRequester<S> {
         }
         let response = self.client.check_response(&request_id, response).await?;
         freshness_request.observe_headers(&self.freshness, response.headers());
-        self.parent_freshness_request
-            .observe_headers(&self.parent_freshness, response.headers());
+        if self.source_uri.is_none() {
+            self.parent_freshness_request
+                .observe_headers(&self.parent_freshness, response.headers());
+        }
         Ok(BlobRangeResponse {
             request_id,
             response,
@@ -649,8 +655,14 @@ impl<S: HttpSend> RemoteTable<S> {
         descriptor.validate()?;
         self.ensure_blob_files_supported()?;
         let source = &descriptor.source;
-        let mut snapshot = self.snapshot_read_state().await;
-        snapshot.version = Some(source.version);
+        let snapshot = ReadSnapshot {
+            version: Some(source.version),
+            freshness_state: FreshnessState {
+                pinned: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
         let requester = self.blob_range_requester_with_source(
             &source.column,
             source.row_reference,
@@ -866,6 +878,7 @@ impl<S: HttpSend> RemoteTable<S> {
             version: read_snapshot.version,
             branch: source.map_or_else(|| self.branch.clone(), |source| source.branch.clone()),
             source_uri: source.map(|source| source.uri.clone()),
+            source_commit_micros: source.map(|source| source.committed_at_micros),
             row_is_address: source.is_some_and(|source| source.row_is_address),
             freshness: Arc::new(std::sync::Mutex::new(read_snapshot.freshness_state)),
             parent_freshness: self.freshness.clone(),
@@ -1095,6 +1108,13 @@ mod tests {
             let table = RemoteTable::new_mock(
                 "videos".to_string(),
                 move |request| {
+                    for name in [
+                        "x-lancedb-min-version",
+                        "x-lancedb-min-read-version",
+                        "x-lancedb-min-timestamp",
+                    ] {
+                        assert!(request.headers().get(name).is_none());
+                    }
                     assert_eq!(
                         request.url().path(),
                         "/v1/table/videos/blob/video/12884901889/bytes"
@@ -1105,6 +1125,7 @@ mod tests {
                         .into_owned()
                         .collect::<HashMap<_, _>>();
                     assert_eq!(parameters["version"], "7");
+                    assert_eq!(parameters["source_commit_micros"], "1234");
                     assert_eq!(parameters["branch"], "dev");
                     assert_eq!(parameters["row_is_address"], "true");
                     assert_eq!(
@@ -1125,6 +1146,11 @@ mod tests {
                 },
                 Some(Version::new(0, 5, 0)),
             );
+            {
+                let mut freshness = table.freshness.lock().unwrap();
+                freshness.min_version = Some(99);
+                freshness.min_read_version = Some(2);
+            }
             let descriptor = BlobDescriptor {
                 kind,
                 position: 0,
@@ -1134,6 +1160,7 @@ mod tests {
                 source: BlobDescriptorSource {
                     uri: "s3://bucket/videos.lance/tree/dev".into(),
                     version: 7,
+                    committed_at_micros: 1234,
                     branch: Some("dev".into()),
                     column: "video".into(),
                     row_reference: 12884901889,
@@ -1151,6 +1178,7 @@ mod tests {
             file.seek(4).await.unwrap();
             assert_eq!(file.read_up_to(5).await.unwrap().as_ref(), &PAYLOAD[4..9]);
             assert_eq!(file.tell().await.unwrap(), 9);
+            assert_eq!(table.freshness.lock().unwrap().min_read_version, Some(2));
             assert_eq!(file.read_range(0..3).await.unwrap().as_ref(), &PAYLOAD[..3]);
             assert_eq!(file.tell().await.unwrap(), 9);
             assert_eq!(
