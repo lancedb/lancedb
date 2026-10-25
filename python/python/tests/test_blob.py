@@ -2701,8 +2701,8 @@ def test_create_table_with_python_blob_dict_and_object():
 def _openable_descriptors(table, *, by_address):
     hits = (
         table.search()
+        .select(["id", "image", "_rowaddr"])
         .with_row_id(True)
-        .with_row_address(True)
         .limit(100)
         .to_arrow(blob_mode="descriptions")
     )
