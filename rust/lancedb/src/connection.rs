@@ -372,12 +372,10 @@ impl ExecuteQueryAsyncBuilder {
     /// Do not follow a named placeholder directly with `$`: `$a$` starts a
     /// dollar-quoted string.
     ///
-    /// A parameterized statement runs on the call that returns its rows rather
-    /// than detached from it: cancelling the query, or dropping its handle
-    /// before reading it, stops the statement on the server. Its status follows
-    /// that stream too -- it reports `Running` until the reader has received
-    /// every row -- so open the reader directly rather than waiting for
-    /// `Finished`.
+    /// With or without parameters, the server may stream rows on the initial
+    /// call or return a polling continuation. The reader follows either path
+    /// transparently. Open it directly instead of waiting for `Finished`:
+    /// directly streamed queries need their reader to make progress.
     ///
     /// # Example
     ///

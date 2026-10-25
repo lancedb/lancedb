@@ -34,9 +34,9 @@ use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
 
-mod exchange;
+mod stream;
 
-use exchange::{ExchangeQuery, ExchangeQueryHandle};
+use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
 const DEFAULT_SQL_PORT: u16 = 10025;
 const DEFAULT_SQL_TLS_PORT: u16 = 10026;
@@ -191,20 +191,39 @@ impl SqlClient {
     }
 
     pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
-        match request.parameters {
-            Some(parameters) => {
-                self.submit_with_parameters(
-                    &request.query,
-                    parameters,
-                    &request.default_namespace_path,
-                )
-                .await
+        let timeout = self.inner.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query submission", async {
+            validate_namespace_path(&request.default_namespace_path)?;
+            let query_id = Uuid::now_v7();
+            let submission = StreamingQuery::open(
+                self.inner.clone(),
+                &request.query,
+                request.parameters,
+                &request.default_namespace_path,
+            )
+            .await?;
+            match submission {
+                Submission::Stream(response) => {
+                    let query =
+                        Arc::new(StreamingQuery::new(query_id, self.inner.clone(), response));
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Streamed(query.clone()));
+                    Ok(Query::new(Arc::new(StreamingQueryHandle::new(query))))
+                }
+                Submission::Deferred(poll_info) => {
+                    let query = Arc::new(RemoteQuery::new(
+                        query_id,
+                        self.inner.clone(),
+                        request.default_namespace_path,
+                        poll_info,
+                    )?);
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Polled(query.clone()));
+                    Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+                }
             }
-            None => {
-                self.submit(&request.query, &request.default_namespace_path)
-                    .await
-            }
-        }
+        })
+        .await
     }
 
     pub(super) async fn submit(
@@ -269,35 +288,6 @@ impl SqlClient {
                 }
             }
         })
-    }
-
-    /// Values cannot ride on a poll, so a statement that has them is sent on
-    /// its own exchange instead.
-    pub(super) async fn submit_with_parameters(
-        &self,
-        query: &str,
-        parameters: RecordBatch,
-        default_namespace_path: &[String],
-    ) -> Result<Query> {
-        let timeout = self.inner.overall_timeout()?;
-        with_overall_timeout(timeout, "SQL query submission", async {
-            validate_namespace_path(default_namespace_path)?;
-            let query_id = Uuid::now_v7();
-            let query = Arc::new(
-                ExchangeQuery::open(
-                    query_id,
-                    self.inner.clone(),
-                    query,
-                    parameters,
-                    default_namespace_path,
-                )
-                .await?,
-            );
-            self.queries
-                .insert(query_id, RegisteredQuery::Exchanged(query.clone()));
-            Ok(Query::new(Arc::new(ExchangeQueryHandle::new(query))))
-        })
-        .await
     }
 
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
@@ -586,14 +576,14 @@ impl SqlClientInner {
 #[derive(Clone)]
 enum RegisteredQuery {
     Polled(Arc<RemoteQuery>),
-    Exchanged(Arc<ExchangeQuery>),
+    Streamed(Arc<StreamingQuery>),
 }
 
 impl RegisteredQuery {
     fn touch(&self) {
         match self {
             Self::Polled(query) => query.touch(),
-            Self::Exchanged(query) => query.touch(),
+            Self::Streamed(query) => query.touch(),
         }
     }
 
@@ -602,14 +592,14 @@ impl RegisteredQuery {
     fn registry_expired(&self) -> bool {
         match self {
             Self::Polled(query) => query.registry_expired(Arc::strong_count(query) == 1),
-            Self::Exchanged(query) => query.registry_expired(Arc::strong_count(query) == 1),
+            Self::Streamed(query) => query.registry_expired(Arc::strong_count(query) == 1),
         }
     }
 
     async fn describe(&self) -> Result<QueryDescription> {
         match self {
             Self::Polled(query) => query.describe().await,
-            Self::Exchanged(query) => query.describe(),
+            Self::Streamed(query) => query.describe(),
         }
     }
 }

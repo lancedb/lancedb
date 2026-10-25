@@ -1253,12 +1253,13 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. A
-        parameterized query runs on the call that returns its rows:
-        cancelling it, or dropping its handle before reading, stops it on the
-        server. Its status follows that stream as well: ``describe()``
-        reports ``running`` until the reader has received every row, so open
-        ``reader()`` directly rather than waiting for ``finished``.
+        Parameters are supported in queries, not in DDL or DML. With or
+        without parameters, the server chooses whether to stream rows on the
+        initial call or return a polling continuation. The reader follows
+        either path transparently. Dropping an unread handle or its reader
+        stops a directly streamed query; deferred execution requires explicit
+        cancellation. Open ``reader()`` directly: a streamed query needs its
+        reader to make progress and reports ``running`` until the stream ends.
 
         Local connections do not support SQL.
         """

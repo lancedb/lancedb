@@ -19,6 +19,7 @@ use futures::{StreamExt, TryStreamExt};
 use tonic::metadata::MetadataMap;
 use tonic::{Request, Response, Status, Streaming};
 
+use super::stream::{PROTOCOL_HEADER, PROTOCOL_VERSION, QueryResponse};
 use super::*;
 use crate::database::Database;
 use crate::remote::RemoteCatalogOptions;
@@ -70,6 +71,9 @@ type ReceivedExchanges = Arc<std::sync::Mutex<Vec<(String, Option<RecordBatch>)>
 
 #[derive(Clone)]
 struct TestSqlService {
+    adaptive: bool,
+    defer: bool,
+    invalid_decision: bool,
     query_count: Arc<AtomicUsize>,
     do_get_count: Arc<AtomicUsize>,
     cancel_count: Arc<AtomicUsize>,
@@ -120,6 +124,51 @@ impl TestSqlService {
                 .unwrap_or_default(),
         });
     }
+    fn adaptive_response(
+        &self,
+        query: &str,
+        rows: BoxStream<'static, std::result::Result<FlightData, Status>>,
+    ) -> Response<BoxStream<'static, std::result::Result<FlightData, Status>>> {
+        if !self.adaptive {
+            return Response::new(rows);
+        }
+        let poll_info = self.defer.then(|| PollInfo {
+            info: Some(
+                FlightInfo::new()
+                    .with_endpoint(FlightEndpoint::new().with_ticket(Ticket::new(query))),
+            ),
+            flight_descriptor: Some(FlightDescriptor::new_cmd(format!("poll:1:{query}"))),
+            progress: Some(0.25),
+            expiration_time: None,
+        });
+        let first = FlightData {
+            app_metadata: if self.invalid_decision {
+                b"invalid protobuf".to_vec().into()
+            } else {
+                Any {
+                    type_url: "type.googleapis.com/lancedb.sql.QueryResponse".to_string(),
+                    value: QueryResponse { poll_info }.encode_to_vec().into(),
+                }
+                .encode_to_vec()
+                .into()
+            },
+            ..Default::default()
+        };
+        let rest = if self.defer {
+            futures::stream::empty().boxed()
+        } else {
+            rows
+        };
+        let mut response = Response::new(
+            futures::stream::once(async { Ok(first) })
+                .chain(rest)
+                .boxed(),
+        );
+        response
+            .metadata_mut()
+            .insert(PROTOCOL_HEADER, PROTOCOL_VERSION.parse().unwrap());
+        response
+    }
 }
 
 impl Default for TestSqlService {
@@ -154,6 +203,9 @@ impl Default for TestSqlService {
         let dictionary_result =
             RecordBatch::try_new(dictionary_schema, vec![Arc::new(dictionary)]).unwrap();
         Self {
+            adaptive: false,
+            defer: false,
+            invalid_decision: false,
             query_count: Arc::new(AtomicUsize::new(0)),
             do_get_count: Arc::new(AtomicUsize::new(0)),
             cancel_count: Arc::new(AtomicUsize::new(0)),
@@ -308,7 +360,22 @@ impl FlightService for TestSqlService {
         request: Request<Ticket>,
     ) -> std::result::Result<Response<<Self as FlightService>::DoGetStream>, Status> {
         self.do_get_count.fetch_add(1, Ordering::SeqCst);
-        let ticket = request.get_ref().ticket.as_ref();
+        let initial = Any::decode(request.get_ref().ticket.clone())
+            .ok()
+            .and_then(|envelope| Any::decode(envelope.value).ok())
+            .and_then(|command| command.unpack::<CommandStatementQuery>().ok().flatten());
+        if initial.is_some() {
+            self.capture_headers(request.metadata());
+            assert_eq!(
+                request.metadata().get(PROTOCOL_HEADER).unwrap(),
+                PROTOCOL_VERSION
+            );
+        }
+        let query = initial
+            .as_ref()
+            .map(|command| command.query.as_bytes())
+            .unwrap_or(request.get_ref().ticket.as_ref());
+        let ticket = query;
         let gate_refresh = ticket == b"REFRESH MATERIALIZED VIEW \"cancel_view\"";
         let empty = ticket == b"SELECT empty";
         let slow = ticket == b"SELECT slow get";
@@ -337,7 +404,11 @@ impl FlightService for TestSqlService {
             encoder = encoder.with_max_flight_data_size(8 * 1024 * 1024);
         }
         let stream = encoder.build(input).map_err(Status::from);
-        Ok(Response::new(Box::pin(stream)))
+        if let Some(initial) = initial {
+            Ok(self.adaptive_response(&initial.query, stream.boxed()))
+        } else {
+            Ok(Response::new(stream.boxed()))
+        }
     }
 
     async fn do_put(
@@ -486,7 +557,7 @@ impl FlightService for TestSqlService {
                 let _dropped = &dropped;
                 message
             });
-        Ok(Response::new(Box::pin(stream)))
+        Ok(self.adaptive_response(&query, stream.boxed()))
     }
 }
 
@@ -1608,4 +1679,139 @@ fn validates_metadata_with_header_map() {
     assert_eq!(headers.get("x-custom-header").unwrap(), "value");
     assert!(insert_header(&mut headers, "bad header", "value").is_err());
     assert!(insert_header(&mut headers, "valid-header", "bad\nvalue").is_err());
+}
+
+#[tokio::test]
+async fn adaptive_streams_start_on_one_rpc_for_both_inputs() {
+    for parameters in [None, Some(parameter_row())] {
+        let service = TestSqlService {
+            adaptive: true,
+            ..Default::default()
+        };
+        let polls = service.query_count.clone();
+        let gets = service.do_get_count.clone();
+        let exchanges = service.exchanges.clone();
+        let expected = parameters.clone().unwrap_or_else(|| service.result.clone());
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let with_parameters = parameters.is_some();
+        let query = client
+            .execute(ExecuteQueryRequest {
+                parameters,
+                ..ExecuteQueryRequest::new("SELECT echo")
+            })
+            .await
+            .unwrap();
+        assert_eq!(query.describe().await.unwrap().status, QueryStatus::Running);
+        assert_eq!(collect_result(&query).await.unwrap(), vec![expected]);
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Finished
+        );
+        assert!(query.reader().await.is_err());
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+        assert_eq!(gets.load(Ordering::SeqCst), usize::from(!with_parameters));
+        assert_eq!(
+            exchanges.lock().unwrap().len(),
+            usize::from(with_parameters)
+        );
+    }
+}
+
+#[tokio::test]
+async fn adaptive_handoffs_share_polling_and_survive_handle_drop() {
+    for parameters in [None, Some(parameter_row())] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        };
+        let polls = service.query_count.clone();
+        let gets = service.do_get_count.clone();
+        let exchanges = service.exchanges.clone();
+        let expected = service.result.clone();
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let with_parameters = parameters.is_some();
+        let query = client
+            .execute(ExecuteQueryRequest {
+                parameters,
+                ..ExecuteQueryRequest::new("SELECT adaptive")
+            })
+            .await
+            .unwrap();
+        let id = query.id();
+        assert_eq!(collect_result(&query).await.unwrap(), vec![expected]);
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Finished
+        );
+        assert!(query.reader().await.is_err());
+        drop(query);
+        assert_eq!(
+            client.describe(id).await.unwrap().status,
+            QueryStatus::Finished
+        );
+        assert_eq!(
+            polls.load(Ordering::SeqCst),
+            0,
+            "the original SQL must not be resubmitted through polling"
+        );
+        assert_eq!(
+            gets.load(Ordering::SeqCst),
+            1 + usize::from(!with_parameters)
+        );
+        assert_eq!(
+            exchanges.lock().unwrap().len(),
+            usize::from(with_parameters)
+        );
+    }
+}
+
+#[tokio::test]
+async fn adaptive_handoffs_use_server_cancellation_for_both_inputs() {
+    for parameters in [None, Some(parameter_row())] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer: true,
+            ..Default::default()
+        };
+        let cancels = service.cancel_count.clone();
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let query = client
+            .execute(ExecuteQueryRequest {
+                parameters,
+                ..ExecuteQueryRequest::new("SELECT cancel")
+            })
+            .await
+            .unwrap();
+        query.cancel().await.unwrap();
+        assert_eq!(cancels.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            query.describe().await.unwrap().status,
+            QueryStatus::Cancelled
+        );
+        assert!(query.reader().await.is_err());
+    }
+}
+
+#[tokio::test]
+async fn malformed_adaptive_decision_never_resubmits_the_statement() {
+    for parameters in [None, Some(parameter_row())] {
+        let service = TestSqlService {
+            adaptive: true,
+            invalid_decision: true,
+            ..Default::default()
+        };
+        let polls = service.query_count.clone();
+        let (client, _shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        assert!(
+            client
+                .execute(ExecuteQueryRequest {
+                    parameters,
+                    ..ExecuteQueryRequest::new("SELECT invalid")
+                })
+                .await
+                .is_err()
+        );
+        assert_eq!(polls.load(Ordering::SeqCst), 0);
+    }
 }
