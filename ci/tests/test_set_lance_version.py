@@ -121,6 +121,8 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                 )
                 core = tomllib.loads(core_manifest.read_text())["dependencies"]
                 dependency = core["lance-arrow"]
+                if isinstance(dependency, str):
+                    dependency = {"version": dependency}
                 if version == "local":
                     self.assertEqual(
                         dependency["path"], "../../../lance/rust/lance-arrow"
