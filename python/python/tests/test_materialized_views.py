@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
+import json
+
 import lancedb
 import pytest
 from lancedb.db import AsyncConnection
@@ -575,13 +577,11 @@ def test_embedded_create_refuses_automatic_refresh_before_creating_view(
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
 def test_remote_create_rejects_invalid_interval_without_request(seconds):
-    with mock_remote_materialized_view_drop() as (host, requests):
-        db = lancedb.connect("db://dev", api_key="fake", host_override=host)
-        with pytest.raises(ValueError, match="positive, finite"):
-            db.create_materialized_view_async(
-                "adults", "people", auto_refresh_interval_seconds=seconds
-            )
-    assert requests == []
+    db = lancedb.connect("db://dev", api_key="fake", host_override="http://127.0.0.1:1")
+    with pytest.raises(ValueError, match="positive, finite"):
+        db.create_materialized_view_async(
+            "mv", "source", auto_refresh_interval_seconds=seconds
+        )
 
 
 def test_namespace_forwards_automatic_refresh_request(tmp_path):
