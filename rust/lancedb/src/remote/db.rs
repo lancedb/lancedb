@@ -49,9 +49,11 @@ use super::client::{
 };
 use super::sql::SqlClient;
 use super::sql::materialized_view::quote_identifier;
+use super::storage_integration as integration_sql;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
+use futures::TryStreamExt;
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -1110,93 +1112,74 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: CreateStorageIntegrationRequest,
         namespace_path: &[String],
     ) -> Result<StorageIntegrationInfo> {
-        let id = build_secret_identifier(name, namespace_path)?;
-        let (request_id, response) = self
-            .client
-            .send(
-                self.client
-                    .post(&format!("/v1/storage_integration/{id}/create"))
-                    .json(&request),
-            )
+        let sql = integration_sql::create_sql(name, namespace_path, &request)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: sql,
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
             .await?;
-        self.client
-            .check_response(&request_id, response)
-            .await?
-            .json::<StorageIntegrationInfo>()
-            .await
-            .err_to_http(request_id)
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
     }
+
     async fn describe_storage_integration(
         &self,
         name: &str,
         namespace_path: &[String],
     ) -> Result<StorageIntegrationInfo> {
-        let id = build_secret_identifier(name, namespace_path)?;
-        let (request_id, response) = self
-            .client
-            .send(
-                self.client
-                    .post(&format!("/v1/storage_integration/{id}/describe")),
-            )
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
             .await?;
-        self.client
-            .check_response(&request_id, response)
-            .await?
-            .json::<StorageIntegrationInfo>()
-            .await
-            .err_to_http(request_id)
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
     }
+
     async fn list_storage_integrations(
         &self,
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        #[derive(serde::Deserialize)]
-        struct Response {
-            storage_integrations: Vec<Named>,
-            page_token: Option<String>,
-        }
-        #[derive(serde::Deserialize)]
-        struct Named {
-            name: String,
-        }
-        let namespace = build_namespace_identifier(namespace_path)?;
-        let mut request = self.client.get(&format!(
-            "/v1/namespace/{namespace}/storage_integration/list"
-        ));
+        validate_namespace(namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: "SHOW STORAGE INTEGRATIONS".into(),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let mut names =
+            integration_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
         if let Some(token) = options.page_token {
-            request = request.query(&[("page_token", token)]);
+            names.retain(|name| name > &token);
         }
-        if let Some(limit) = options.page_limit {
-            request = request.query(&[("limit", limit)]);
+        let mut page_token = None;
+        if let Some(limit) = options.page_limit
+            && names.len() > limit as usize
+        {
+            names.truncate(limit as usize);
+            page_token = names.last().cloned();
         }
-        let (request_id, response) = self.client.send(request).await?;
-        let response = self
-            .client
-            .check_response(&request_id, response)
-            .await?
-            .json::<Response>()
-            .await
-            .err_to_http(request_id)?;
         Ok(ListingPage {
-            items: response
-                .storage_integrations
-                .into_iter()
-                .map(|value| value.name)
-                .collect(),
-            page_token: response.page_token,
+            items: names,
+            page_token,
         })
     }
+
     async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let id = build_secret_identifier(name, namespace_path)?;
-        let (request_id, response) = self
-            .client
-            .send(
-                self.client
-                    .post(&format!("/v1/storage_integration/{id}/drop")),
-            )
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DROP STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
             .await?;
-        self.client.check_response(&request_id, response).await?;
+        result.reader().await?.try_collect::<Vec<_>>().await?;
         Ok(())
     }
 
@@ -4479,65 +4462,6 @@ mod tests {
                     .unwrap();
             }
         }
-    }
-
-    #[tokio::test]
-    async fn storage_integrations_use_database_object_paths_and_secret_metadata() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/storage_integration/platform$raw/create"
-            );
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert!(body.get("aws_role_arn").is_none());
-            assert_eq!(body["aws_access_key_id_secret"]["database"], "system");
-            http::Response::builder()
-                .status(200)
-                .body(include_str!(
-                    "../../tests/fixtures/storage_integration.json"
-                ))
-                .unwrap()
-        });
-        let request = crate::storage_integration::CreateStorageIntegrationRequest::s3_with_secrets(
-            "s3://customer-bucket/raw/",
-            crate::storage_integration::SecretReference::new("key_id").with_database("system"),
-            crate::storage_integration::SecretReference::new("key_secret").with_database("system"),
-        );
-        let info = conn
-            .create_storage_integration("raw", request, &["platform".into()])
-            .await
-            .unwrap();
-        assert_eq!(info.database, "system");
-    }
-
-    #[tokio::test]
-    async fn storage_integration_listing_walks_namespace_pages() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/namespace/platform/storage_integration/list"
-            );
-            let next = request
-                .url()
-                .query_pairs()
-                .any(|(key, value)| key == "page_token" && value == "p2");
-            http::Response::builder()
-                .status(200)
-                .body(if next {
-                    r#"{"storage_integrations":[{"name":"second"}]}"#
-                } else {
-                    r#"{"storage_integrations":[{"name":"first"}],"page_token":"p2"}"#
-                })
-                .unwrap()
-        });
-        assert_eq!(
-            conn.list_storage_integrations(&["platform".into()], Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap(),
-            ["first", "second"]
-        );
     }
 
     #[tokio::test]

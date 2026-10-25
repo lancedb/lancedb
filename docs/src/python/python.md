@@ -169,9 +169,9 @@ namespace. These objects identify resources for ACL operations; a secret object
 contains the credential's name, not its value.
 
 Storage integration objects identify database-owned storage configuration, for
-example `Object.storage_integration(database="system", name="raw")`. Pass
+example `Object.storage_integration(database="default", name="raw")`. Pass
 `namespace_path` for nested namespaces. Their keyspace is separate from Secrets,
-Functions, and relations; the wire name is `storage_integration:system:public$raw`.
+Functions, and relations; the wire name is `storage_integration:default:public$raw`.
 
 More object types may be added in the future.
 
@@ -221,12 +221,12 @@ namespace, together with database and namespace `USAGE`:
 
 ```python
 catalog.authz.add_acl(
-    object=Object.namespace(database="system"),
+    object=Object.namespace(database="default"),
     subject=Subject.role("developer"),
     privilege=Privilege.CREATE_STORAGE_INTEGRATION,
 )
 catalog.authz.add_acl(
-    object=Object.storage_integration(database="system", name="raw"),
+    object=Object.storage_integration(database="default", name="raw"),
     subject=Subject.role("reader"),
     privilege=Privilege.USAGE,
 )
@@ -891,12 +891,14 @@ rows nearest to a query vector and can be created with the
 ::: lancedb.storage_integration.SecretReference
 
 Integrations belong to a database and follow the same namespace-path naming rules
-as Secrets, with their own keyspace. Use the shared `system` database for storage
-configuration needed before opening an external database.
+as Secrets, with their own keyspace. Use a regular database under the cluster root for storage configuration needed
+before opening an external database. `default` is a convention; no database with
+that name is required or created automatically. The system database is read-only.
+Client methods execute SQL through the existing SQL transport.
 
 ```python
 catalog = lancedb.connect_catalog("https://my-server.example", api_key="secret")
-db = catalog.connect_database("system")
+db = catalog.connect_database("default")
 integration = db.create_storage_integration(
     "raw", "s3://customer-bucket/raw/",
     aws_role_arn="arn:aws:iam::123456789012:role/lancedb-access",
@@ -915,8 +917,8 @@ from lancedb.storage_integration import SecretReference
 
 integration = db.create_storage_integration(
     "raw", "s3://customer-bucket/raw/",
-    aws_access_key_id_secret=SecretReference("s3-key-id", database="system"),
-    aws_secret_access_key_secret=SecretReference("s3-secret-key", database="system"),
+    aws_access_key_id_secret=SecretReference("s3-key-id", database="default"),
+    aws_secret_access_key_secret=SecretReference("s3-secret-key", database="default"),
 )
 ```
 
