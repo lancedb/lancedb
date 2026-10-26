@@ -329,6 +329,8 @@ code that used the former remote-only argument order.
 
 ::: lancedb.table.Table
 
+::: lancedb.table.CompactionOptions
+
 ::: lancedb.table.FragmentStatistics
 
 ::: lancedb.table.FragmentSummaryStats

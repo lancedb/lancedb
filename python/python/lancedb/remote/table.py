@@ -67,6 +67,7 @@ from ..table import (
     AsyncTable,
     BlobMode,
     Branches,
+    CompactionOptions,
     IndexStatistics,
     Query,
     Table,
@@ -1071,6 +1072,7 @@ class RemoteTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """optimize() is not supported for remote tables."""
         return LOOP.run(
