@@ -908,7 +908,8 @@ class DBConnection(EnforceOverrides):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         Local connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -968,7 +969,7 @@ class DBConnection(EnforceOverrides):
         The requested version must exist in the currently named object. Returns
         True when the name was removed and False when it was absent. The
         object's content is deleted with it, which may finish after this
-        returns; use :meth:`drop_function_async` to wait for that. Local
+        returns; physical cleanup continues in the background. Local
         connections raise NotImplementedError.
         """
         raise NotImplementedError(
@@ -982,10 +983,11 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background. When
         the server deletes inline, or when nothing was bound, the returned job
         is already finished and has no id. Local connections raise
         NotImplementedError.
@@ -3109,7 +3111,8 @@ class AsyncConnection(object):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         ``secrets`` is a sequence of
         [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
         the environment variable its value arrives in. ``namespace_path`` is
@@ -3179,11 +3182,11 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
-        finish.
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path

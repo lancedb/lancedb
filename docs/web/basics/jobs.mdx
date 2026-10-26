@@ -79,6 +79,12 @@ and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL
 execution before returning. A completed DROP means the catalog binding has been
 removed; physical cleanup continues in the background.
 
+Remote function registration also returns a SQL query job. The SQL operation
+submits the durable image build and waits for catalog publication before returning
+the immutable FunctionVersion. `drop_function_async()` returns the catalog-removal
+boolean together with a query job; waiting on that handle confirms removal while
+physical cleanup continues separately.
+
 The existing `job.job_type` identifies query-backed handles as `"query"` from
 submission, and `job.id` contains the connection-scoped SQL query UUID string.
 Use `describe_query(job.id)` on the submitting connection to inspect the query.
