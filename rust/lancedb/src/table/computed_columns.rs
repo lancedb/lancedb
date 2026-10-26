@@ -491,24 +491,6 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
     ensure_computed_inputs_acyclic(schema, &bindings)
 }
 
-/// Refuse `operation` outright on a table with a Function binding. For
-/// operations that cannot say which columns they touch; the others use
-/// [`ensure_not_function_bound`].
-pub(crate) fn ensure_no_function_bindings_for_mutation(
-    schema: &ArrowSchema,
-    operation: &str,
-) -> Result<()> {
-    ensure_supported_function_metadata(schema)?;
-    if !function_bindings(schema)?.is_empty() {
-        return Err(Error::NotSupported {
-            message: format!(
-                "{operation} is not supported on a table with registered Function bindings"
-            ),
-        });
-    }
-    Ok(())
-}
-
 /// Refuse `operation` only when a path in `touched` names a column a Function
 /// binding depends on: an input's root, an output, or the assignment column.
 /// A binding stores those columns' exact Arrow fields, so editing one strands it.
@@ -2403,6 +2385,111 @@ impl<S: lance_datafusion::utils::StreamingWriteSource> lance_datafusion::utils::
             Ok(batch)
         });
         Box::pin(datafusion_physical_plan::stream::RecordBatchStreamAdapter::new(schema, stream))
+    }
+}
+
+/// Test fixtures for a table carrying a Function binding, shared by the
+/// write-path tests. No local path declares a binding, so these stamp one
+/// the way the server does.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use arrow_array::record_batch;
+
+    use super::{
+        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL, FUNCTION_BINDINGS_META_KEY,
+        ensure_supported_function_metadata, function_bindings_metadata,
+        function_computed_column_metadata,
+    };
+    use crate::Table;
+    use crate::connect;
+    use crate::function::FunctionBinding;
+
+    /// A table carrying the fixture binding: `title` and `body` are its
+    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
+    /// nobody's. Stamped the way the server does it, since no local path
+    /// declares a binding.
+    pub async fn bound_table() -> Table {
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        bound_table_from(batch).await
+    }
+
+    /// [`bound_table`] over a caller's batch, which must carry `title`, `body`,
+    /// `search_text` and `search_token_count`.
+    pub async fn bound_table_from(batch: arrow_array::RecordBatch) -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn.create_table("bound", batch).execute().await.unwrap();
+        stamp_bindings(&table, &[text_features_binding("")]).await;
+        table
+    }
+
+    /// The fixture binding, its id and output names suffixed so a table can
+    /// carry more than one.
+    pub fn text_features_binding(suffix: &str) -> FunctionBinding {
+        let raw = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        );
+        if suffix.is_empty() {
+            return FunctionBinding::from_json(raw).unwrap();
+        }
+        FunctionBinding::from_json(
+            &raw.replace("fb_01K3TEXT", &format!("fb_01K3TEXT{suffix}"))
+                .replace("search_text", &format!("search_text{suffix}"))
+                .replace("search_token_count", &format!("search_token_count{suffix}")),
+        )
+        .unwrap()
+    }
+
+    /// Stamp bindings the way the server does it, since no local path
+    /// declares one: the envelope on the schema, a declaration marker on
+    /// every output field.
+    pub async fn stamp_bindings(table: &Table, bindings: &[FunctionBinding]) {
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                Some(function_bindings_metadata(bindings).unwrap()),
+            )])
+            .await
+            .unwrap();
+        let inputs = ["title".to_string(), "body".to_string()];
+        let outputs = bindings
+            .iter()
+            .flat_map(|binding| {
+                let assignment = binding.assignment().map(|assignment| {
+                    (
+                        assignment.output_name.clone(),
+                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
+                    )
+                });
+                binding
+                    .outputs()
+                    .iter()
+                    .map(|output| (output.output_name.clone(), output.output_ordinal))
+                    .chain(assignment)
+                    .map(|(name, ordinal)| {
+                        (
+                            dataset.schema().field(&name).unwrap().id as u32,
+                            function_computed_column_metadata(
+                                binding.binding_id(),
+                                ordinal,
+                                &inputs,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        dataset.replace_field_metadata(outputs).await.unwrap();
+        native.dataset.update(dataset);
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
     }
 }
 

@@ -238,6 +238,21 @@ impl MergeInsertBuilder {
             canonicalize_merge_filter(self.when_not_matched_by_source_delete_filt.take())?;
         Ok(())
     }
+
+    /// The existing columns a matched row takes from `source`: every source
+    /// column but the join keys, which a match leaves equal. An insert-only
+    /// merge rewrites none; its new rows get Function outputs from the next
+    /// refresh, as appended rows do.
+    pub(crate) fn function_guarded_columns(&self, source: &Fields) -> Vec<String> {
+        if !self.when_matched_update_all {
+            return Vec::new();
+        }
+        source
+            .iter()
+            .filter(|field| !self.on.iter().any(|key| key == field.name()))
+            .map(|field| field.name().clone())
+            .collect()
+    }
 }
 
 fn canonicalize_merge_filter(filter: Option<MergeFilter>) -> Result<Option<MergeFilter>> {
@@ -326,9 +341,10 @@ pub(crate) async fn execute_merge_insert(
 ) -> Result<MergeResult> {
     params.canonicalize_filters()?;
     let schema = table.schema().await?;
-    super::computed_columns::ensure_no_function_bindings_for_mutation(
+    super::computed_columns::ensure_not_function_bound(
         schema.as_ref(),
         "merge_insert",
+        params.function_guarded_columns(new_data.schema().fields()),
     )?;
     // Normalize blob layouts and JSON extension metadata just as on append.
     // Keep arrow.json text labelled until Lance encodes it as JSONB.
@@ -888,6 +904,87 @@ mod tests {
         assert_eq!(result.num_updated_rows, 1);
         assert_eq!(result.num_deleted_rows, (ROW_COUNT - 1) as u64);
         assert_eq!(table.count_rows(None).await.unwrap(), 1);
+    }
+
+    fn reader(batch: RecordBatch) -> Box<dyn RecordBatchReader + Send> {
+        let schema = batch.schema();
+        Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema))
+    }
+
+    /// Inserting rows through a merge is an append: the new rows' Function
+    /// outputs come from the next refresh, so a binding does not refuse it.
+    #[tokio::test]
+    async fn merge_insert_only_is_allowed_on_a_function_table() {
+        let table = crate::table::computed_columns::test_support::bound_table_from(
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("note", Utf8, ["n"]),
+                ("title", Utf8, ["a"]),
+                ("body", Utf8, ["b"]),
+                ("search_text", Utf8, ["a b"]),
+                ("search_token_count", Int64, [2])
+            )
+            .unwrap(),
+        )
+        .await;
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_not_matched_insert_all();
+        let result = merge
+            .execute(reader(
+                arrow_array::record_batch!(
+                    ("id", Int32, [2]),
+                    ("note", Utf8, ["m"]),
+                    ("title", Utf8, ["c"]),
+                    ("body", Utf8, ["d"])
+                )
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.num_inserted_rows, 1);
+        assert_eq!(table.count_rows(None).await.unwrap(), 2);
+    }
+
+    /// A matched row takes every non-key source column, so the merge is
+    /// refused only when one of those is a binding's input or output.
+    #[tokio::test]
+    async fn merge_update_on_a_function_table_refuses_only_bound_columns() {
+        let table = crate::table::computed_columns::test_support::bound_table_from(
+            arrow_array::record_batch!(
+                ("id", Int32, [1]),
+                ("note", Utf8, ["n"]),
+                ("title", Utf8, ["a"]),
+                ("body", Utf8, ["b"]),
+                ("search_text", Utf8, ["a b"]),
+                ("search_token_count", Int64, [2])
+            )
+            .unwrap(),
+        )
+        .await;
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(None);
+        let result = merge
+            .execute(reader(
+                arrow_array::record_batch!(("id", Int32, [1]), ("note", Utf8, ["m"])).unwrap(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(result.num_updated_rows, 1);
+
+        let mut merge = table.merge_insert(&["id"]);
+        merge.when_matched_update_all(None);
+        let err = merge
+            .execute(reader(
+                arrow_array::record_batch!(("id", Int32, [1]), ("title", Utf8, ["z"])).unwrap(),
+            ))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, crate::Error::InvalidInput { message }
+                if message.contains("merge_insert of 'title'")
+                    && message.contains("a Function binding reads or writes it")),
+            "{err:?}"
+        );
     }
 }
 
