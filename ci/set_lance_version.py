@@ -1,7 +1,7 @@
 import argparse
+import json
 import re
 import sys
-import json
 import tomllib
 from pathlib import Path
 
@@ -15,9 +15,11 @@ def run_command(command: str) -> str:
     """
     import subprocess
 
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    result = subprocess.run(
+        command, shell=True, capture_output=True, text=True, check=False
+    )
     if result.returncode != 0:
-        raise Exception(f"Command failed with error: {result.stderr.strip()}")
+        raise RuntimeError(f"Command failed with error: {result.stderr.strip()}")
     return result.stdout.strip()
 
 
@@ -129,7 +131,34 @@ def update_cargo_toml(line_updater):
             # Multi-line entries start with { but don't end with }
             if line.strip().endswith("}") or line.strip().endswith('"'):
                 # Single-line entry - process immediately
-                new_lines.append(line_updater(line))
+                updated = tomllib.loads(line_updater(line))
+                original = tomllib.loads(line)
+                name = next(iter(original))
+                dependency = original[name]
+                if isinstance(dependency, dict) and dependency.get(
+                    "path", ""
+                ).startswith("python/vendor/"):
+                    new_dependency = updated[name]
+                    version = (
+                        new_dependency.get("version")
+                        if isinstance(new_dependency, dict)
+                        else new_dependency
+                    )
+                    if version and "version" in dependency:
+                        dependency["version"] = version
+                        vendor_manifest = Path(dependency["path"]) / "Cargo.toml"
+                        contents = vendor_manifest.read_text()
+                        contents = re.sub(
+                            r'^version = "[^"]+"',
+                            f'version = "{version.lstrip("=")}"',
+                            contents,
+                            count=1,
+                            flags=re.MULTILINE,
+                        )
+                        vendor_manifest.write_text(contents)
+                    new_lines.append(dict_to_toml_line(name, dependency))
+                else:
+                    new_lines.append(line_updater(line))
             elif "{" in line and not line.strip().endswith("}"):
                 # Multi-line entry - start accumulating
                 lance_line = line
@@ -297,8 +326,7 @@ else:
     # Parse the version number.
     version = args.version
     # Ignore initial v if present.
-    if version.startswith("v"):
-        version = version[1:]
+    version = version.removeprefix("v")
 
     if "beta" in version:
         set_preview_version(version)

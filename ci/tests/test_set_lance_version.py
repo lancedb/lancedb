@@ -8,7 +8,6 @@ import tomllib
 import unittest
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "ci" / "set_lance_version.py"
 LANCE_GIT_URL = "https://github.com/lance-format/lance.git"
@@ -83,7 +82,19 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
         for version, (updated_dependencies, expected_commands) in cases.items():
             with self.subTest(version=version), tempfile.TemporaryDirectory() as tmp:
                 workdir = Path(tmp)
-                (workdir / "Cargo.toml").write_text(CARGO_TOML)
+                vendor_dependency = 'lance-arrow = { "version" = "=1.0.0", "path" = "python/vendor/lance-arrow" }\n'
+                vendor_patch = (
+                    '[patch."https://github.com/lance-format/lance.git"]\n'
+                    'lance-arrow = { "path" = "python/vendor/lance-arrow" }\n'
+                )
+                vendor_manifest = workdir / "python/vendor/lance-arrow/Cargo.toml"
+                vendor_manifest.parent.mkdir(parents=True)
+                vendor_manifest.write_text(
+                    '[package]\nname = "lance-arrow"\nversion = "1.0.0"\n'
+                )
+                (workdir / "Cargo.toml").write_text(
+                    CARGO_TOML + vendor_dependency + vendor_patch
+                )
                 core_manifest = workdir / "rust/lancedb/Cargo.toml"
                 core_manifest.parent.mkdir(parents=True)
                 core_manifest.write_text(
@@ -106,6 +117,7 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                 result = subprocess.run(
                     [sys.executable, str(SCRIPT), version],
                     cwd=workdir,
+                    check=False,
                     env=env,
                     capture_output=True,
                     text=True,
@@ -117,7 +129,17 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                     (workdir / "Cargo.toml").read_text(),
                     "[workspace.dependencies]\n"
                     + updated_dependencies
-                    + UNTOUCHED_DEPENDENCIES,
+                    + UNTOUCHED_DEPENDENCIES
+                    + vendor_dependency.replace(
+                        "=1.0.0",
+                        "="
+                        + {
+                            "stable": "9.9.9",
+                            "preview": "10.0.0-beta.3",
+                            "local": "1.0.0",
+                        }.get(version, version.removeprefix("v")),
+                    )
+                    + vendor_patch,
                 )
                 core = tomllib.loads(core_manifest.read_text())["dependencies"]
                 dependency = core["lance-arrow"]
@@ -139,6 +161,13 @@ lance_datafusion = {{ "version" = "=8.2.0-beta.4", "features" = ["substrait"], "
                     else:
                         self.assertNotIn("git", dependency)
                 self.assertEqual(core["arrow"], {"workspace": True})
+                expected_vendor_version = (
+                    "1.0.0" if version == "local" else expected_version
+                )
+                self.assertEqual(
+                    tomllib.loads(vendor_manifest.read_text())["package"]["version"],
+                    expected_vendor_version,
+                )
                 commands = command_log.read_text().splitlines()
                 for command in expected_commands:
                     self.assertTrue(
