@@ -59,6 +59,124 @@ def _blob_v2_table(db: DBConnection, name: str):
     return table
 
 
+@pytest.mark.parametrize(
+    "threshold",
+    [
+        "inline_size_threshold",
+        "dedicated_size_threshold",
+        "pack_file_size_threshold",
+    ],
+)
+@pytest.mark.parametrize(
+    "value,error",
+    [
+        (-1, ValueError),
+        (True, TypeError),
+        (False, TypeError),
+        (1.5, TypeError),
+        ("8192", TypeError),
+        (ctypes.c_size_t(-1).value + 1, OverflowError),
+    ],
+)
+def test_blob_thresholds_reject_invalid_values(threshold, value, error):
+    # Also runs in CI with pylance actually uninstalled.
+    with pytest.raises(error, match=f"{threshold} must"):
+        lancedb.blob("blob", **{threshold: value})
+
+
+@pytest.mark.parametrize(
+    "threshold", ["dedicated_size_threshold", "pack_file_size_threshold"]
+)
+def test_blob_thresholds_reject_zero_for_positive_thresholds(threshold):
+    with pytest.raises(ValueError, match=f"{threshold} must be positive"):
+        lancedb.blob("blob", **{threshold: 0})
+
+
+def test_blob_thresholds_accept_integer_boundaries():
+    maximum = ctypes.c_size_t(-1).value
+    field = lancedb.blob(
+        "blob",
+        nullable=False,
+        inline_size_threshold=0,
+        dedicated_size_threshold=maximum,
+        pack_file_size_threshold=maximum,
+    )
+    assert not field.nullable
+    assert field.metadata == {
+        b"lance-encoding:blob-inline-size-threshold": b"0",
+        b"lance-encoding:blob-dedicated-size-threshold": str(maximum).encode(),
+        b"lance-encoding:blob-pack-file-size-threshold": str(maximum).encode(),
+    }
+
+
+def test_blob_thresholds_control_writes_after_reopen(tmp_path):
+    # Keep this in test_table.py: CI runs it without pylance or pandas installed.
+    field = lancedb.blob(
+        "blob",
+        inline_size_threshold=4,
+        dedicated_size_threshold=12,
+        pack_file_size_threshold=8,
+    )
+    metadata = {
+        b"lance-encoding:blob-inline-size-threshold": b"4",
+        b"lance-encoding:blob-dedicated-size-threshold": b"12",
+        b"lance-encoding:blob-pack-file-size-threshold": b"8",
+    }
+    assert field.metadata == metadata
+    schema = pa.schema([pa.field("id", pa.int64()), field])
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("blobs", schema=schema)
+    # Every payload fits in the default inline tier; custom thresholds must
+    # instead send the larger values to packed and dedicated storage.
+    rows = [
+        {"id": 0, "blob": b"a" * 2},
+        {"id": 1, "blob": b"b" * 8},
+        {"id": 2, "blob": b"c" * 16},
+        {"id": 3, "blob": b"d" * 8},
+    ]
+
+    def check_writes(table, expected):
+        assert table.schema.field("blob").metadata.items() >= metadata.items()
+        hits = table.search().with_row_id(True).limit(10).to_arrow()
+        actual = {row["id"]: row for row in hits.to_pylist()}
+        assert actual.keys() == {row["id"] for row in expected}
+        for row in expected:
+            size = len(row["blob"])
+            descriptor = actual[row["id"]]["blob"]
+            assert descriptor["size"] == size
+            assert descriptor["kind"] == (2 if size > 12 else 1 if size > 4 else 0)
+        row_ids = [actual[row["id"]]["_rowid"] for row in expected]
+        assert table.fetch_blobs("blob", row_ids).to_pylist() == [
+            row["blob"] for row in expected
+        ]
+        # Two packed values reach the configured sidecar limit independently.
+        packed = [
+            actual[row["id"]]["blob"] for row in expected if len(row["blob"]) == 8
+        ]
+        assert len({desc["blob_id"] for desc in packed}) == len(packed)
+
+    table.add(rows)
+    check_writes(table, rows)
+    table = lancedb.connect(tmp_path).open_table("blobs")
+    check_writes(table, rows)
+    updates = [
+        {"id": 0, "blob": b"e" * 16},
+        {"id": 1, "blob": b"f" * 2},
+        {"id": 2, "blob": b"g" * 8},
+        {"id": 3, "blob": b"h" * 8},
+        {"id": 4, "blob": b"i" * 16},
+    ]
+    result = (
+        table.merge_insert("id")
+        .when_matched_update_all()
+        .when_not_matched_insert_all()
+        .execute(updates)
+    )
+    assert result.num_updated_rows == 4
+    assert result.num_inserted_rows == 1
+    check_writes(lancedb.connect(tmp_path).open_table("blobs"), updates)
+
+
 async def _blob_v2_table_async(db: AsyncConnection, name: str):
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("blob")])
     table = await db.create_table(name, schema=schema)
@@ -2074,6 +2192,71 @@ def test_add_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
 
 
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize("input_type", ["pandas", "rows", "arrow"])
+@pytest.mark.parametrize("on_bad_vectors", [None, "error", "drop", "fill", "null"])
+def test_write_vectors_with_null_elements(
+    mem_db: DBConnection, operation, input_type, on_bad_vectors
+):
+    schema = pa.schema({"vector": pa.list_(pa.float32(), 2), "id": pa.int64()})
+    vectors = [[3.0, 4.0], [np.nan, 1.0], [np.nan, np.nan]]
+    if input_type == "pandas":
+        pd = pytest.importorskip("pandas")
+
+        data = pd.DataFrame(
+            {
+                "vector": [np.array(v, dtype=np.float32) for v in vectors],
+                "id": [0, 1, 2],
+            }
+        )
+    else:
+        # Pandas turns the NaNs above into null child elements. Explicit nulls
+        # in other input formats must follow the same bad-vector policy.
+        data = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [None, 1.0], "id": 1},
+            {"vector": [None, None], "id": 2},
+        ]
+        if input_type == "arrow":
+            data = pa.Table.from_pylist(data, schema=schema)
+
+    options = {} if on_bad_vectors is None else {"on_bad_vectors": on_bad_vectors}
+    if on_bad_vectors == "fill":
+        options["fill_value"] = 42.0
+
+    table = None
+    if operation != "create":
+        table = mem_db.create_table("test", schema=schema)
+
+    def write():
+        if operation == "create":
+            return mem_db.create_table("test", data=data, schema=schema, **options)
+        table.add(data, mode=operation, **options)
+        return table
+
+    if on_bad_vectors in (None, "error"):
+        # Create/overwrite can wrap errors from lazy Arrow readers in RuntimeError.
+        expected_error = (
+            ValueError if operation == "append" else (ValueError, RuntimeError)
+        )
+        with pytest.raises(expected_error, match="NaN|null"):
+            write()
+        if table is not None:
+            assert table.count_rows() == 0
+        return
+
+    table = write()
+    if on_bad_vectors == "drop":
+        expected = [{"vector": [3.0, 4.0], "id": 0}]
+    else:
+        expected = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [42.0, 1.0] if on_bad_vectors == "fill" else None, "id": 1},
+            {"vector": [42.0, 42.0] if on_bad_vectors == "fill" else None, "id": 2},
+        ]
+    assert table.to_arrow().to_pylist() == expected
+
+
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
     class Schema(LanceModel):
         text: str
@@ -2744,6 +2927,57 @@ def test_update_with_arrow_scalar(mem_db: DBConnection):
 
     assert result.rows_updated == 1
     assert table.to_arrow()["vector"].to_pylist() == [[1.0, 2.0, 3.0, 4.0]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("async_api", [False, True])
+@pytest.mark.parametrize("entries", [[("o'brien", 4), ("nil", None)], [], None])
+async def test_update_map_arrow_scalar(tmp_path, async_api, entries):
+    map_type = pa.map_(pa.string(), pa.int64())
+    data = pa.table(
+        {
+            "id": [1, 2],
+            "attrs": pa.array([[("original", 1)], entries], type=map_type),
+        }
+    )
+    if async_api:
+        db = await lancedb.connect_async(tmp_path)
+        table = await db.create_table("maps", data)
+        source = await table.query().where("id = 2").to_arrow()
+        result = await table.update({"attrs": source["attrs"][0]}, where="id = 1")
+        actual = await table.query().to_arrow()
+    else:
+        db = lancedb.connect(tmp_path)
+        table = db.create_table("maps", data)
+        source = table.search().where("id = 2").to_arrow()
+        result = table.update(values={"attrs": source["attrs"][0]}, where="id = 1")
+        actual = table.to_arrow()
+    assert result.rows_updated == 1
+    assert actual.schema.field("attrs").type == map_type
+    assert actual.sort_by("id")["attrs"].to_pylist() == [entries, entries]
+
+
+@pytest.mark.parametrize(
+    "map_type, entries",
+    [
+        (pa.map_(pa.int64(), pa.string()), []),
+        (
+            pa.map_(pa.string(), pa.map_(pa.string(), pa.int64())),
+            [("outer", [("inner", 3)]), ("null", None)],
+        ),
+    ],
+)
+def test_update_typed_map_arrow_scalar(mem_db: DBConnection, map_type, entries):
+    table = mem_db.create_table(
+        "maps",
+        pa.table({"id": [1, 2], "attrs": pa.array([None, entries], type=map_type)}),
+    )
+    scalar = table.search().where("id = 2").to_arrow()["attrs"][0]
+    result = table.update(values={"attrs": scalar}, where="id = 1")
+    actual = table.to_arrow().sort_by("id")["attrs"]
+    assert result.rows_updated == 1
+    assert actual.type == map_type
+    assert actual.to_pylist() == [entries, entries]
 
 
 @pytest.mark.parametrize("use_arrow_scalar", [False, True])

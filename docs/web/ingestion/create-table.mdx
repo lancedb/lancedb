@@ -148,9 +148,11 @@ non-nullable column, or provide actual nulls for it, ingestion fails; nullable c
 omitted or written with null values. Without an explicit schema, Python infers list-like vector
 values as fixed-size `float32` vector fields from the observed dimension.
 
-For Python ingest, malformed vector values fail by default. If you expect occasional wrong-length,
-null, or NaN vectors, choose an `on_bad_vectors` policy: `"drop"` removes those rows, `"fill"` writes
-`fill_value`, and `"null"` writes nulls.
+For Python ingestion, malformed vectors fail by default (`on_bad_vectors="error"`). This includes
+vectors with incorrect sizes, NaNs, or null components, including pandas NaNs converted to Arrow
+nulls. Use `"drop"` to remove affected rows, or `"null"` to replace affected vectors with nulls.
+Use `"fill"` to replace NaN or null components with `fill_value` while preserving valid components.
+This also pads short vectors with `fill_value` and truncates long vectors to the expected dimension.
 
 ### From an Arrow Table {#from-an-arrow-table}
 You can also create LanceDB tables directly from Arrow tables.

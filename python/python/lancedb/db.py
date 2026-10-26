@@ -428,10 +428,13 @@ class DBConnection(EnforceOverrides):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -548,7 +551,9 @@ class DBConnection(EnforceOverrides):
         LanceTable(name='table4', ...)
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_table is not supported for this connection type"
+        )
 
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
@@ -603,7 +608,9 @@ class DBConnection(EnforceOverrides):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "open_table is not supported for this connection type"
+        )
 
     def create_materialized_view(
         self,
@@ -670,10 +677,11 @@ class DBConnection(EnforceOverrides):
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
-        The job may already be complete for a local database. On LanceDB
-        Cloud and Enterprise, its ``id`` is the server job identifier from
-        the ``202 Accepted`` create response. Wait for the job before opening
-        or querying the view.
+        The job may already be complete for a local database. Remote creation
+        submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
+        ``job_type == "query"`` and ``id`` identifies the connection-scoped
+        query. Registry event history is unavailable.
+        Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -743,13 +751,17 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table is not supported for this connection type"
+        )
 
     def drop_table_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job:
         """Start dropping a table and return its cleanup job."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table_async is not supported for this connection type"
+        )
 
     def rename_table(
         self,
@@ -777,18 +789,25 @@ class DBConnection(EnforceOverrides):
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "rename_table is not supported for this connection type"
+        )
 
     def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_database is not supported for this connection type"
+        )
 
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """
         Drop all tables from the database
+
+        Remote connections do not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
 
         Parameters
         ----------
@@ -798,7 +817,9 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_all_tables is not supported for this connection type"
+        )
 
     @property
     def uri(self) -> str:
@@ -1236,18 +1257,19 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. A
-        parameterized query runs on the call that returns its rows:
-        cancelling it, or dropping its handle before reading, stops it on the
-        server. Its status follows that stream as well: ``describe()``
-        reports ``running`` until the reader has received every row, so open
-        ``reader()`` directly rather than waiting for ``finished``.
+        Parameters are supported in queries, not in DDL or DML. With or
+        without parameters, the server chooses whether to stream rows on the
+        initial call or return a polling continuation. The reader follows
+        either path transparently. Dropping an unread handle or its reader
+        stops a directly streamed query; deferred execution requires explicit
+        cancellation. Open ``reader()`` directly: a streamed query needs its
+        reader to make progress and reports ``running`` until the stream ends.
 
         Local connections do not support SQL.
         """
         raise NotImplementedError("SQL is not supported for this connection type")
 
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
@@ -2531,10 +2553,13 @@ class AsyncConnection(object):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -2851,7 +2876,9 @@ class AsyncConnection(object):
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
-        Wait for the returned job before opening or querying the view.
+        Wait for the returned job before opening or querying the view. Remote
+        creation uses SQL; ``job_type`` is ``"query"`` and ``id``
+        identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
             source, select, where, limit
@@ -3391,8 +3418,14 @@ class AsyncConnection(object):
             )
         )
 
-    async def describe_query(self, query_id: UUID) -> QueryDescription:
-        """Describe a submitted SQL query by its connection-scoped id."""
+    async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
+        """Describe a submitted SQL query by its UUID or string ID.
+
+        For a handle with ``job_type == "query"``, pass its ``id`` on the
+        connection that submitted it. Registry job IDs are not query IDs.
+        """
+        if isinstance(query_id, str):
+            query_id = UUID(query_id)
         return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
