@@ -182,6 +182,8 @@ pub enum BlobSchema {
     /// Expose write inputs (`data`, `uri`, `position`, `size`) for SQL INSERT.
     /// Scans may read scalar columns and scalar siblings of nested blobs, but
     /// accessing a blob (including a descriptor subfield) fails during planning.
+    /// Computed scalar and window queries beside nested blobs can also require
+    /// [`Self::Read`]; see [`BaseTableAdapter::with_blob_schema`].
     Write,
 }
 
@@ -232,13 +234,18 @@ impl BaseTableAdapter {
     ///
     /// [`BlobSchema::Write`] enables INSERT with blob write structs, NULLs, and
     /// omitted nullable blobs. Scans requiring blobs fail with
-    /// "Blob v2 scans require BlobSchema::Read" before execution. Scalar-only
-    /// scans, `COUNT(*)`, scalar filters, and nested scalar siblings such as
-    /// `extra.note` remain supported. A whole struct containing a blob cannot
+    /// "Blob v2 scans require BlobSchema::Read" before execution. Direct scalar
+    /// projections, `COUNT(*)`, scalar filters, and simple nested scalar projections
+    /// such as `SELECT extra.note FROM docs` remain supported. Computed scalar
+    /// expressions and window queries beside nested blobs can also fail with this
+    /// error when intervening physical operators prevent the scalar projection
+    /// from reaching the scan. For example, `SELECT extra.note || 'x' FROM docs`
+    /// can require [`BlobSchema::Read`]. A whole struct containing a blob cannot
     /// be scanned in write mode. No blob payloads are fetched to emulate reads.
     ///
-    /// Register a separate read adapter for blob descriptor queries. A self-insert
-    /// whose SELECT accesses blobs also fails before writing any rows.
+    /// Register a separate read adapter for blob descriptor queries and scalar
+    /// queries rejected in write mode. A self-insert whose SELECT accesses blobs
+    /// also fails before writing any rows.
     /// Other adapter builders preserve the selected mode.
     ///
     /// ```
