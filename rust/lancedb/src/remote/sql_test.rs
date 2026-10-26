@@ -2348,3 +2348,66 @@ async fn view_drop_uses_a_repeatable_query_job() {
     );
     shutdown.send(()).unwrap();
 }
+
+#[tokio::test]
+async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    let mut second: serde_json::Value = serde_json::from_str(VERSION).unwrap();
+    second["version"] = serde_json::json!("2");
+    let second = second.to_string();
+    let result = RecordBatch::try_from_iter(vec![(
+        "definition",
+        Arc::new(StringArray::from(vec![VERSION, second.as_str()])) as ArrayRef,
+    )])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        result,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+    let first = db
+        .list_functions(
+            &["team".into()],
+            crate::listing::ListingOptions::default().page_limit(1),
+        )
+        .await
+        .unwrap();
+    assert_eq!(first.items.len(), 1);
+    let token = first.page_token.unwrap();
+    let second = db
+        .list_functions(
+            &["team".into()],
+            crate::listing::ListingOptions::default()
+                .page_limit(1)
+                .page_token(token.clone()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(second.items.len(), 1);
+    assert_eq!(second.items[0].version(), "2");
+    assert!(second.page_token.is_none());
+    assert!(
+        db.list_functions(
+            &["other".into()],
+            crate::listing::ListingOptions::default()
+                .page_limit(1)
+                .page_token(token)
+        )
+        .await
+        .is_err()
+    );
+    let seen = statements.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    assert!(seen[0].contains("limit = 2"));
+    assert!(seen[1].contains("after_version = '1'"));
+    shutdown.send(()).unwrap();
+}
