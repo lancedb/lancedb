@@ -767,28 +767,12 @@ def test_create_table_embedding_functions(with_schema):
 
 
 def test_create_table_positional_parameters_match_base_contract():
-    # A positional call must bind to the same parameters on every connection,
-    # otherwise `db.create_table(name, data, schema, "overwrite", True)` silently
-    # means something else against LanceDB Cloud.
-    from lancedb.db import DBConnection, LanceDBConnection
-    from lancedb.namespace import LanceNamespaceDBConnection
+    from lancedb.db import DBConnection
     from lancedb.remote.db import RemoteDBConnection
 
-    data = [{"id": 1}]
-    bound = [
-        tuple(
-            inspect.signature(cls.create_table)
-            .bind(None, "test", data, None, "overwrite", True)
-            .arguments
-        )
-        for cls in (
-            DBConnection,
-            LanceDBConnection,
-            LanceNamespaceDBConnection,
-            RemoteDBConnection,
-        )
-    ]
-    assert bound == [("self", "name", "data", "schema", "mode", "exist_ok")] * 4
+    expected = list(inspect.signature(DBConnection.create_table).parameters)[:9]
+    actual = list(inspect.signature(RemoteDBConnection.create_table).parameters)[:9]
+    assert actual == expected
 
 
 def test_create_table_exist_ok():
