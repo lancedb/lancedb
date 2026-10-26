@@ -15,9 +15,11 @@ from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
+    AsyncIterator,
     Callable,
     Dict,
     Iterable,
+    Iterator,
     List,
     Literal,
     Optional,
@@ -28,11 +30,12 @@ from typing import (
 )
 from urllib.parse import urlparse
 
-from lancedb.scannable import _register_optional_converters, to_scannable
+from lancedb.scannable import _hf_batches, _register_optional_converters, to_scannable
 
 from . import __version__
 from ._blob import (
     BlobFile,
+    _normalize_blob_descriptor,
     _normalize_blob_row_ids,
     _wrap_blob_files,
     strip_auto_row_ids,
@@ -117,6 +120,33 @@ def _should_push_down_query_table(
     namespace_client: Optional[Any], pushdown_operations: set
 ) -> bool:
     return namespace_client is not None and "QueryTable" in pushdown_operations
+
+
+_CUDA_UNAVAILABLE_MESSAGE = (
+    "CUDA acceleration is unavailable in this Python environment. Install a "
+    "CUDA-enabled PyTorch build and verify that the CUDA device is accessible, or "
+    "omit `accelerator` (or set `accelerator=None`) to create the index on CPU."
+)
+
+
+def _validate_index_accelerator(accelerator: Any) -> None:
+    if not isinstance(accelerator, str) or accelerator.split(":", 1)[0] != "cuda":
+        return
+
+    try:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+    except (ImportError, RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
+
+    if not cuda_available:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE)
+
+    try:
+        torch.cuda.init()
+    except (RuntimeError, AssertionError) as err:
+        raise RuntimeError(_CUDA_UNAVAILABLE_MESSAGE) from err
 
 
 def _polars_predicate_pushdown_barrier(frame: Any) -> Any:
@@ -373,7 +403,7 @@ def _into_pyarrow_reader(
     if _check_for_hugging_face(data):
         if isinstance(data, datasets.Dataset):
             schema = data.features.arrow_schema
-            return pa.RecordBatchReader.from_batches(schema, data.data.to_batches())
+            return pa.RecordBatchReader.from_batches(schema, _hf_batches(data))
         elif isinstance(data, datasets.dataset_dict.DatasetDict):
             schema = _schema_from_hf(data, None)
             if "split" not in schema.names:
@@ -442,7 +472,7 @@ def _into_pyarrow_reader(
     ):
         return data.collect().to_arrow().to_reader()
     elif isinstance(data, Iterable):
-        return _iterator_to_reader(data)
+        return _iterator_to_reader(data, schema)
     else:
         raise TypeError(
             f"Unknown data type {type(data)}. "
@@ -452,10 +482,19 @@ def _into_pyarrow_reader(
         )
 
 
-def _iterator_to_reader(data: Iterable) -> pa.RecordBatchReader:
+def _iterator_to_reader(
+    data: Iterable, schema: Optional[pa.Schema] = None
+) -> pa.RecordBatchReader:
     # Each batch is treated as it's own reader, mainly so we can
     # re-use the _into_pyarrow_reader logic.
-    first = _into_pyarrow_reader(next(data))
+    data = iter(data)
+    try:
+        first_batch = next(data)
+    except StopIteration:
+        if schema is None:
+            raise ValueError("Cannot create table from empty iterable without a schema")
+        return pa.RecordBatchReader.from_batches(schema, [])
+    first = _into_pyarrow_reader(first_batch)
     schema = first.schema
 
     def gen():
@@ -1168,7 +1207,7 @@ def _to_batches_with_split(data):
     with an extra `split` column
     """
     for key, dataset in data.items():
-        for batch in dataset.data.to_batches():
+        for batch in _hf_batches(dataset):
             table = pa.Table.from_batches([batch])
             if "split" not in table.column_names:
                 table = table.append_column(
@@ -1320,13 +1359,13 @@ class Table(ABC):
     @abstractmethod
     def name(self) -> str:
         """The name of this Table"""
-        raise NotImplementedError
+        raise NotImplementedError("name is not supported for this table type")
 
     @property
     @abstractmethod
     def version(self) -> int:
         """The version of this Table"""
-        raise NotImplementedError
+        raise NotImplementedError("version is not supported for this table type")
 
     @property
     @abstractmethod
@@ -1335,7 +1374,7 @@ class Table(ABC):
         of this Table
 
         """
-        raise NotImplementedError
+        raise NotImplementedError("schema is not supported for this table type")
 
     @property
     @abstractmethod
@@ -1364,7 +1403,7 @@ class Table(ABC):
             tags = table.tags.list()
 
         """
-        raise NotImplementedError
+        raise NotImplementedError("tags is not supported for this table type")
 
     @property
     def branches(self) -> "Branches":
@@ -1373,11 +1412,11 @@ class Table(ABC):
         Branches are isolated, writable lines of history forked from another
         branch (or version). Writes on a branch do not affect ``main``.
         """
-        raise NotImplementedError
+        raise NotImplementedError("branches is not supported for this table type")
 
     def current_branch(self) -> Optional[str]:
         """The branch this table handle is scoped to, or ``None`` for ``main``."""
-        raise NotImplementedError
+        raise NotImplementedError("current_branch is not supported for this table type")
 
     def __len__(self) -> int:
         """The number of rows in this Table"""
@@ -1400,7 +1439,7 @@ class Table(ABC):
         filter: str, optional
             A SQL where clause to filter the rows to count.
         """
-        raise NotImplementedError
+        raise NotImplementedError("count_rows is not supported for this table type")
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs) -> "pandas.DataFrame":
         """Return the table as a pandas DataFrame.
@@ -1435,19 +1474,25 @@ class Table(ABC):
         -------
         pa.Table
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_arrow is not supported for this table type")
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the table as a lance.LanceDataset.
+        """Return a local table as a lance.LanceDataset.
+
+        Remote tables cannot be opened as Lance datasets by the client. Use
+        ``table.search().to_arrow()`` to read them through the server.
 
         Returns
         -------
         lance.LanceDataset
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_lance is not supported for this table type")
 
     def to_polars(self, **kwargs) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
+
+        For remote tables, use ``table.search().to_polars()`` to convert query
+        results to a Polars DataFrame.
 
         Note
         ----
@@ -1459,7 +1504,7 @@ class Table(ABC):
         -------
         polars.LazyFrame
         """
-        raise NotImplementedError
+        raise NotImplementedError("to_polars is not supported for this table type")
 
     # New unified API overload
     @overload
@@ -1564,7 +1609,7 @@ class Table(ABC):
         ...     "l2", vector_column_name="vector"
         ... )
         """
-        raise NotImplementedError
+        raise NotImplementedError("create_index is not supported for this table type")
 
     def create_index_async(
         self,
@@ -1582,7 +1627,9 @@ class Table(ABC):
         be complete when returned; callers must not assume the index exists
         until :meth:`Job.wait` returns.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_index_async is not supported for this table type"
+        )
 
     def drop_index(self, name: str) -> None:
         """
@@ -1602,7 +1649,7 @@ class Table(ABC):
         Use [list_indices][lancedb.table.Table.list_indices] to find the names of
         the indices.
         """
-        raise NotImplementedError
+        raise NotImplementedError("drop_index is not supported for this table type")
 
     def wait_for_index(
         self, index_names: Iterable[str], timeout: timedelta = timedelta(seconds=300)
@@ -1619,14 +1666,14 @@ class Table(ABC):
         timeout: timedelta
             Timeout to wait for asynchronous indexing. The default is 5 minutes.
         """
-        raise NotImplementedError
+        raise NotImplementedError("wait_for_index is not supported for this table type")
 
     @abstractmethod
     def stats(self) -> TableStatistics:
         """
         Retrieve table and fragment statistics.
         """
-        raise NotImplementedError
+        raise NotImplementedError("stats is not supported for this table type")
 
     @abstractmethod
     def create_scalar_index(
@@ -1691,7 +1738,9 @@ class Table(ABC):
         ``my_col = 0 OR not_indexed = 1`` will not be able to use any scalar index on
         ``my_col``.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_scalar_index is not supported for this table type"
+        )
 
     def create_fts_index(
         self,
@@ -1817,7 +1866,9 @@ class Table(ABC):
         ``LANCE_LANGUAGE_MODEL_HOME`` to override the default platform data
         directory under ``lance/language_models``.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_fts_index is not supported for this table type"
+        )
 
     @abstractmethod
     def add(
@@ -1891,7 +1942,7 @@ class Table(ABC):
         AddResult
             An object containing the new version number of the table after adding data.
         """
-        raise NotImplementedError
+        raise NotImplementedError("add is not supported for this table type")
 
     def merge_insert(self, on: Union[str, Iterable[str]]) -> LanceMergeInsertBuilder:
         """
@@ -2043,7 +2094,7 @@ class Table(ABC):
             - and also the "_distance" column which is the distance between the query
             vector and the returned vector.
         """
-        raise NotImplementedError
+        raise NotImplementedError("search is not supported for this table type")
 
     @abstractmethod
     def take_offsets(
@@ -2067,11 +2118,14 @@ class Table(ABC):
         ----------
         offsets: list[int]
             The offsets to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
+        LanceTakeQueryBuilder
+            A query builder that can be executed to get the rows at the given
+            offsets.
         """
 
     def __getitems__(self, offsets: list[int]) -> pa.RecordBatch:
@@ -2152,11 +2206,13 @@ class Table(ABC):
         ----------
         row_ids: list[int]
             The row ids to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        AsyncTakeQuery
-            A query object that can be executed to get the rows.
+        LanceTakeQueryBuilder
+            A query builder that can be executed to get the rows.
         """
 
     @abstractmethod
@@ -2235,6 +2291,44 @@ class Table(ABC):
         One missing or deleted row ID rejects the entire batch; no partial
         handles are returned.
         """
+
+    @abstractmethod
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        """Open a seekable file from a SQL ``blob_descriptor`` result.
+
+        Accepts the descriptor dictionary or an Arrow struct scalar. Its source
+        pins the table version, branch, column and row identity, so opening does
+        not change this table's checkout. Null descriptors return ``None``.
+        Payload bytes load only when the returned handle is read. An external
+        blob with an unspecified size may require a metadata request on opening.
+
+        ```python
+        rows = db.execute_query(
+            "SELECT blob_descriptor(video) AS video FROM videos"
+        ).read_all()
+        with videos.open_blob_file(rows["video"][0]) as video:
+            header = video.read(4096)
+        ```
+        """
+
+    def open_blob_files(self, descriptors: Iterable) -> Iterator[Optional[BlobFile]]:
+        """Iterate over lazy files from descriptor dictionaries or Arrow scalars.
+
+        Accepts an Arrow array/chunked array or any iterable. Opens each handle
+        as iteration advances, preserving input order and nulls as ``None``.
+        Close each non-null handle after use, normally with a ``with`` block.
+
+        ```python
+        for video in videos.open_blob_files(rows["video"]):
+            if video is not None:
+                with video:
+                    header = video.read(4096)
+        ```
+        """
+        for descriptor in descriptors:
+            yield self.open_blob_file(descriptor)
 
     @abstractmethod
     def _execute_query(
@@ -2324,7 +2418,7 @@ class Table(ABC):
            x      vector
         0  3  [5.0, 6.0]
         """
-        raise NotImplementedError
+        raise NotImplementedError("delete is not supported for this table type")
 
     @abstractmethod
     def update(
@@ -2391,7 +2485,7 @@ class Table(ABC):
         1  4    [5.0, 6.0]
         2  3  [10.0, 10.0]
         """
-        raise NotImplementedError
+        raise NotImplementedError("update is not supported for this table type")
 
     @abstractmethod
     def cleanup_old_versions(
@@ -2531,7 +2625,11 @@ class Table(ABC):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
 
     @abstractmethod
@@ -2561,6 +2659,8 @@ class Table(ABC):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ):
         """
         Add new columns with defined values.
@@ -2604,6 +2704,15 @@ class Table(ABC):
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
+
+        auto_refresh_enabled: bool, optional
+            Enable automatic refresh for each declared computed output. Defaults
+            to True. Local tables store this option; scheduling requires a server.
+        auto_refresh_interval_seconds: int, optional
+            Positive minimum interval after a successful refresh, in seconds.
+            When omitted, the server determines when to refresh. Applies to every
+            computed output in this call.
+            Scheduling options require computed or Function columns.
 
         Returns
         -------
@@ -3131,11 +3240,21 @@ class LanceTable(Table):
         """Get the current version of the table"""
         return LOOP.run(self._table.version())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def blob_columns(self) -> list[str]:
         return LOOP.run(self._table.blob_columns())
@@ -3160,6 +3279,11 @@ class LanceTable(Table):
         row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
 
     @property
     def tags(self) -> Tags:
@@ -3589,7 +3713,9 @@ class LanceTable(Table):
 
             # Handle accelerator through pylance
             if accelerator is not None:
-                self.to_lance().create_index(
+                dataset = self.to_lance()
+                _validate_index_accelerator(accelerator)
+                dataset.create_index(
                     column=column,
                     index_type=index_type,
                     metric=metric,
@@ -3614,6 +3740,8 @@ class LanceTable(Table):
                 acc = getattr(config, "accelerator", None)
                 if acc is not None:
                     # Dispatch to pylance for GPU acceleration
+                    dataset = self.to_lance()
+                    _validate_index_accelerator(acc)
                     index_type_map = {
                         "IvfFlat": "IVF_FLAT",
                         "IvfSq": "IVF_SQ",
@@ -3625,7 +3753,7 @@ class LanceTable(Table):
                     cfg_type = type(config).__name__
                     lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
 
-                    self.to_lance().create_index(
+                    dataset.create_index(
                         column=column,
                         index_type=lance_index_type,
                         metric=getattr(config, "distance_type", "l2"),
@@ -4771,7 +4899,11 @@ class LanceTable(Table):
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -4803,8 +4935,17 @@ class LanceTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms,
+                computed=computed,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
 
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """Fill a computed column's unfilled rows and recompute those whose
@@ -5265,6 +5406,11 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
     else:
         values_has_nan = pc.is_nan(values)
     values_indices = pc.list_parent_indices(arr)
+    if arr.null_count:
+        # Match flatten(), which excludes child spans under null parent lists.
+        values_indices = pc.filter(
+            values_indices, pc.take(pc.is_valid(arr), values_indices)
+        )
     has_nan_indices = pc.unique(pc.filter(values_indices, values_has_nan))
     indices = pa.array(range(len(arr)), type=pa.uint32())
     return pc.is_in(indices, has_nan_indices)
@@ -5315,6 +5461,12 @@ def _infer_target_schema(
             # Use the most common length of the list as the dimensions
             dim = _modal_list_size(peeked.column(i))
 
+            if dim is None:
+                # Every list entry is null (e.g. embeddings not computed yet),
+                # so the dimension is unknowable. Leave the column as a
+                # variable-length list instead of guessing a fixed size.
+                continue
+
             # Determine target type based on value type
             if pa.types.is_floating(field.type.value_type):
                 target_type = pa.list_(pa.float32(), dim)
@@ -5347,6 +5499,7 @@ def _infer_target_schema(
                 field.name,  # preserve original field name
                 target_type,
                 nullable=field.nullable,
+                metadata=field.metadata,
             )
 
             schema = schema.set(i, new_field)
@@ -5354,9 +5507,14 @@ def _infer_target_schema(
     return schema, reader
 
 
-def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> int:
-    # Use the most common length of the list as the dimensions
-    return pc.mode(pc.list_value_length(arr))[0].as_py()["mode"]
+def _modal_list_size(arr: Union[pa.ListArray, pa.ChunkedArray]) -> Optional[int]:
+    # Use the most common length of the list as the dimensions. pyarrow's
+    # `mode` skips nulls, so an all-null column yields an empty result; return
+    # None in that case so the caller can keep a variable-length list.
+    modes = pc.mode(pc.list_value_length(arr))
+    if len(modes) == 0:
+        return None
+    return modes[0].as_py()["mode"]
 
 
 def _infer_vector_dim(arr: Union[pa.Array, pa.ChunkedArray]) -> Optional[int]:
@@ -5564,12 +5722,12 @@ class AsyncTable:
         via [`set_unenforced_primary_key`]; bucket sharding additionally
         requires it to be the single column being bucketed.
 
-        By default the RTE maintains every index on the table, resolved
-        here — a snapshot, so an index created afterwards needs the spec unset
-        and set again. This fails if one cannot be maintained; name the set
-        with ``with_maintained_indexes`` to install anyway. That pins an exact
-        set (a still-building index is rejected, not omitted); ``[]`` maintains
-        none.
+        By default the RTE maintains every index on the table, re-read as the
+        table changes, so an index created later is maintained too; one of a
+        kind the RTE cannot mirror is skipped. Name the set with
+        ``with_maintained_indexes`` to pin it instead: each name must already
+        exist and be maintainable (a still-building index is rejected, not
+        omitted); ``[]`` maintains none.
 
         Parameters
         ----------
@@ -6193,8 +6351,12 @@ class AsyncTable:
         if mode == "overwrite":
             # For overwrite, apply the same preprocessing as create_table
             # so vector columns are inferred as FixedSizeList.
-            data, _ = sanitize_create_table(
-                data, None, on_bad_vectors=on_bad_vectors, fill_value=fill_value
+            data, _ = await asyncio.to_thread(
+                sanitize_create_table,
+                data,
+                None,
+                on_bad_vectors=on_bad_vectors,
+                fill_value=fill_value,
             )
             if blob_v2_column_paths(schema):
                 # Plain bytes cannot be inferred as blob v2. Keep matching blob
@@ -6204,7 +6366,8 @@ class AsyncTable:
         elif on_bad_vectors != "error" or (
             schema.metadata is not None and b"embedding_functions" in schema.metadata
         ):
-            data = _sanitize_data(
+            data = await asyncio.to_thread(
+                _sanitize_data,
                 data,
                 schema,
                 metadata=schema.metadata,
@@ -6213,7 +6376,10 @@ class AsyncTable:
                 allow_subschema=True,
             )
         _register_optional_converters()
-        data = to_scannable(data)
+        # Converting an iterator peeks at its first item.  A synchronous query in
+        # that iterator schedules work on LOOP, so peeking on LOOP's own thread
+        # would deadlock waiting for itself.
+        data = await asyncio.to_thread(to_scannable, data)
         progress, owns = _normalize_progress(progress)
         try:
             return await self._inner.add(
@@ -6852,6 +7018,8 @@ class AsyncTable:
         | None = None,
         *,
         computed: dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
         """
         Add new columns with defined values.
@@ -6891,12 +7059,46 @@ class AsyncTable:
             On LanceDB Cloud and Enterprise the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
+        auto_refresh_enabled: bool, optional
+            Enable automatic refresh for each computed output declared by this
+            call. Defaults to True. Local tables store the setting; automatic
+            scheduling requires Cloud or Enterprise.
+        auto_refresh_interval_seconds: int, optional
+            Positive minimum seconds after a successful refresh before another
+            automatic refresh is eligible. When omitted, the server determines when
+            to refresh. Unchanged inputs do
+            not force recomputation. Applies to every declared computed output.
+            These options cannot be used with one-time transforms or ordinary
+            all-null columns.
+
+        Examples
+        --------
+        >>> await table.add_columns(  # doctest: +SKIP
+        ...     computed={"total": "price * quantity"},
+        ...     auto_refresh_enabled=True,
+        ...     auto_refresh_interval_seconds=300,
+        ... )
+
         Returns
         -------
         AddColumnsResult
             version: the new version number of the table after adding columns.
 
         """
+        if auto_refresh_enabled is not None and type(auto_refresh_enabled) is not bool:
+            raise ValueError("auto_refresh_enabled must be a boolean")
+        if auto_refresh_interval_seconds is not None and (
+            type(auto_refresh_interval_seconds) is not int
+            or not 0 < auto_refresh_interval_seconds <= (2**64 - 1) // 1000
+        ):
+            raise ValueError(
+                "auto_refresh_interval_seconds must be a positive integer "
+                "no greater than u64::MAX / 1000"
+            )
+        options_supplied = (
+            auto_refresh_enabled is not None
+            or auto_refresh_interval_seconds is not None
+        )
         function_application = None
         function_output_name = None
         if isinstance(transforms, FunctionApplication):
@@ -6920,7 +7122,10 @@ class AsyncTable:
                 )
             function_application._ensure_declarable()
             return await self._inner.add_function_columns(
-                function_application.to_canonical_json(), function_output_name
+                function_application.to_canonical_json(),
+                function_output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
             )
 
         if isinstance(transforms, pa.Field):
@@ -6934,7 +7139,15 @@ class AsyncTable:
                 raise ValueError(
                     "add_columns cannot take both transforms and computed columns"
                 )
-            return await self._inner.add_computed_columns(list(computed.items()))
+            return await self._inner.add_computed_columns(
+                list(computed.items()),
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        if options_supplied:
+            raise ValueError(
+                "automatic refresh options require computed or Function columns"
+            )
         if transforms is None:
             raise ValueError("add_columns requires transforms or computed columns")
         if isinstance(transforms, pa.Schema):
@@ -7185,7 +7398,9 @@ class AsyncTable:
         """
         await self._inner.restore(version)
 
-    def take_offsets(self, offsets: list[int]) -> AsyncTakeQuery:
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> AsyncTakeQuery:
         """
         Take a list of offsets from the table.
 
@@ -7203,15 +7418,23 @@ class AsyncTable:
         ----------
         offsets: list[int]
             The offsets to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
-        pa.RecordBatch
-            A record batch containing the rows at the given offsets.
+        AsyncTakeQuery
+            A query object that can be executed to get the rows at the given
+            offsets.
         """
-        return AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        query = AsyncTakeQuery(self._inner.take_offsets(offsets), self)
+        if with_row_id:
+            query.with_row_id()
+        return query
 
-    def take_row_ids(self, row_ids: list[int]) -> AsyncTakeQuery:
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> AsyncTakeQuery:
         """
         Take a list of row ids from the table.
 
@@ -7232,13 +7455,18 @@ class AsyncTable:
         ----------
         row_ids: list[int]
             The row ids to take.
+        with_row_id: bool, default False
+            If True, include the "_rowid" column in the results.
 
         Returns
         -------
         AsyncTakeQuery
             A query object that can be executed to get the rows.
         """
-        return AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+        query = AsyncTakeQuery(self._inner.take_row_ids(row_ids), self)
+        if with_row_id:
+            query.with_row_id()
+        return query
 
     async def blob_columns(self) -> list[str]:
         return await self._inner.blob_columns()
@@ -7268,6 +7496,36 @@ class AsyncTable:
             column, _normalize_blob_row_ids(row_ids, column)
         )
         return _wrap_blob_files(handles)
+
+    async def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        """Open a snapshot-bound descriptor as a seekable file.
+
+        See [Table.open_blob_file][lancedb.table.Table.open_blob_file].
+        """
+        descriptor = _normalize_blob_descriptor(descriptor)
+        if descriptor is None:
+            return None
+        return BlobFile(await self._inner.open_blob_file(json.dumps(descriptor)))
+
+    async def open_blob_files(
+        self, descriptors: Iterable
+    ) -> AsyncIterator[Optional[BlobFile]]:
+        """Asynchronously iterate over files in descriptor order, preserving nulls.
+
+        Use ``async for file in table.open_blob_files(descriptors)``. Each
+        non-null file must be closed after use.
+
+        ```python
+        async for video in videos.open_blob_files(rows["video"]):
+            if video is not None:
+                with video:
+                    payload = await video.aread()
+        ```
+        """
+        for descriptor in descriptors:
+            yield await self.open_blob_file(descriptor)
 
     @property
     def tags(self) -> AsyncTags:
@@ -7387,7 +7645,11 @@ class AsyncTable:
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
         rebuilt in the client process from index metadata. For remote tables,
-        this means the same tokenizer model files must also exist locally.
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return await self._inner.tokenize(query, column=column, index_name=index_name)
 

@@ -833,6 +833,28 @@ def test_with_row_id(table: lancedb.table.Table):
     assert rs["_rowid"].to_pylist() == [0, 1]
 
 
+def test_filter_preserves_deeply_nested_struct_fields(tmp_db):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2217.
+    data = [
+        {
+            "item": "test",
+            "sub_obj": {
+                "second_sub_obj": [
+                    {
+                        "third_sub_obj": {"int_val": 1},
+                        "str_val": "test",
+                    }
+                ]
+            },
+        }
+    ]
+    table = tmp_db.create_table("deeply_nested_struct", data=data)
+
+    result = table.search().where("item = 'test'").limit(1).to_arrow()
+
+    assert result.to_pylist() == data
+
+
 def test_blob_v2_query_omits_auto_row_id(tmp_db):
     table = _create_blob_v2_query_table(tmp_db, "test_blob_v2_omits_auto_rowid")
 
@@ -2300,6 +2322,33 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+
+def test_take_queries_with_row_id(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    # The column is opt-in and must stay out of the default projection.
+    assert "_rowid" not in table.take_row_ids([5, 2, 17]).to_arrow().column_names
+
+
+@pytest.mark.asyncio
+async def test_take_queries_with_row_id_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    default = await table.take_row_ids([5, 2, 17]).to_arrow()
+    assert "_rowid" not in default.column_names
 
 
 def test_take_queries_to_batches(tmp_path):

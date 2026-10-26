@@ -27,13 +27,13 @@ also start cache-warming jobs through the admin API.
 
 ## Write-ahead log maintenance {#wal}
 
-For a table with a [write-ahead log](/sql/ddl/table#properties) enabled, two jobs keep the
+For a table with the [realtime engine](/tables/realtime-engine) enabled, two jobs keep the
 log from growing without bound:
 
 | Job type | What it does |
 | --- | --- |
-| `sstable_compaction` | Folds a table shard's SSTables into the base table by primary key. Distinct from `compact`, which merges base-table fragments. The two are unrelated. |
-| `wal_index_catchup` | Extends a base-table index over the rows `sstable_compaction` just folded in, and records how far the index has caught up. Nothing else advances that record. |
+| `memwal_compaction` | Folds a table shard's SSTables into the base table by primary key. Distinct from `compact`, which merges base-table fragments. The two are unrelated. |
+| `memwal_catchup_<type>` | Extends a base-table index over the rows `memwal_compaction` just folded in, and records how far the index has caught up. Nothing else advances that record. The suffix names the index type, for example `memwal_catchup_btree`, `memwal_catchup_fts`, or `memwal_catchup_ivfpq`. |
 
 ## Index maintenance {#index}
 

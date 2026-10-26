@@ -280,7 +280,13 @@ pub async fn create_plan(
 
         let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
         let is_binary = matches!(element_type, DataType::UInt8);
-        let top_k = query.base.limit.unwrap_or(DEFAULT_TOP_K) + query.base.offset.unwrap_or(0);
+        let top_k = query
+            .base
+            .limit
+            .unwrap_or(DEFAULT_TOP_K)
+            .saturating_add(query.base.offset.unwrap_or(0))
+            // Lance allocates candidates from k; no search can return more rows than the table.
+            .min(ds_ref.count_rows(None).await?.max(1));
 
         if is_binary {
             let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
@@ -317,9 +323,18 @@ pub async fn create_plan(
     // For a batch query, `nearest` already applies k to each query vector.
     // Adding Scanner's global limit would truncate the combined result to k rows.
     if !is_batch_query {
+        let offset = query
+            .base
+            .offset
+            .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX));
         scanner.limit(
-            query.base.limit.map(|limit| limit as i64),
-            query.base.offset.map(|offset| offset as i64),
+            // Lance's FTS planner adds limit + offset as i64.
+            query.base.limit.map(|limit| {
+                i64::try_from(limit)
+                    .unwrap_or(i64::MAX)
+                    .min(i64::MAX - offset.unwrap_or(0))
+            }),
+            offset,
         )?;
     }
 
@@ -671,6 +686,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 });
             }
 
+            let k = match q.limit {
+                Some(limit) => limit as i32,
+                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
+                None => i32::MAX,
+            };
+
             let filter = q.filter.as_ref().map(filter_to_sql).transpose()?;
 
             let columns = match &q.select {
@@ -723,7 +744,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             Ok(NsQueryTableRequest {
                 id: None, // Will be set by caller
                 vector,
-                k: q.limit.unwrap_or(10) as i32,
+                k,
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
@@ -1071,6 +1092,54 @@ mod tests {
         assert!(ns_request.vector_column.is_none());
 
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest::default());
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_with_explicit_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_vector_without_limit() {
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let any_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![query_vector as ArrayRef],
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_fts_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                "hello world".to_string(),
+            )),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
     }
 
     #[tokio::test]

@@ -38,9 +38,11 @@ class EmbeddingFunction(BaseModel, ABC):
     3. ndims() which returns the number of dimensions of the vector column
     """
 
-    max_retries: int = (
-        7  # Setting 0 disables retires. Maybe this should not be enabled by default,
-    )
+    # Maximum number of retries for transient errors (rate limits, 5xx responses,
+    # connection errors, ...), with exponential backoff capped at 60 seconds between
+    # attempts. Permanent errors (HTTP 4xx other than 408/409/429) are never retried.
+    # Setting 0 disables retries.
+    max_retries: int = 7
     _ndims: int = PrivateAttr()
     _original_args: dict = PrivateAttr()
 
@@ -239,7 +241,9 @@ class EmbeddingFunction(BaseModel, ABC):
         Creates a pydantic Field that can automatically annotate
         the source column for this embedding function
         """
-        return Field(json_schema_extra={"source_column_for": self}, **kwargs)
+        json_schema_extra = dict(kwargs.pop("json_schema_extra", None) or {})
+        json_schema_extra["source_column_for"] = self
+        return Field(json_schema_extra=json_schema_extra, **kwargs)
 
     def VectorField(self, **kwargs):
         """
@@ -250,7 +254,9 @@ class EmbeddingFunction(BaseModel, ABC):
         static type checkers. LanceDB will infer the fixed vector dimension from
         this embedding function.
         """
-        return Field(json_schema_extra={"vector_column_for": self}, **kwargs)
+        json_schema_extra = dict(kwargs.pop("json_schema_extra", None) or {})
+        json_schema_extra["vector_column_for"] = self
+        return Field(json_schema_extra=json_schema_extra, **kwargs)
 
     def __eq__(self, __value: object) -> bool:
         if not hasattr(__value, "__dict__"):

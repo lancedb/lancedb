@@ -13,6 +13,7 @@ use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEn
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::computed_columns;
 use super::{BaseTable, NativeTable};
@@ -128,6 +129,7 @@ pub(crate) async fn execute_add_columns(
 pub(crate) async fn execute_declare(
     table: &NativeTable,
     columns: &[(String, String)],
+    options: computed_columns::ComputedColumnOptions,
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
@@ -157,6 +159,10 @@ pub(crate) async fn execute_declare(
         });
     }
     let transform = computed_columns::declare(table.schema().await?, columns)?;
+    let NewColumnTransform::AllNulls(schema) = transform else {
+        unreachable!("declarations are all-null")
+    };
+    let transform = NewColumnTransform::AllNulls(Arc::new(options.apply_to_schema(&schema)?));
     commit_add_columns(table, transform, None).await
 }
 
