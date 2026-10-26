@@ -1854,9 +1854,9 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "lance-namespace-urllib3-client" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c0/e7/d5d46594678ee479c0eda830c47b2f5c46133bd100e84e9aa6e01306eca7/lance_namespace-0.13.0.tar.gz", hash = "sha256:24554a0997bdb39595c6e4cb3ac6722069f6cd3bd1a74e7acbba7bfaf774a40d", size = 11636, upload-time = "2026-09-14T02:47:03.871523Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/e7/d5d46594678ee479c0eda830c47b2f5c46133bd100e84e9aa6e01306eca7/lance_namespace-0.13.0.tar.gz", hash = "sha256:24554a0997bdb39595c6e4cb3ac6722069f6cd3bd1a74e7acbba7bfaf774a40d", size = 11636, upload-time = "2026-09-14T02:47:03.871Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e7/47/cfa33cca1ba7c749fd2918cfc5c8ded788f378cc6424d23e4fead5a14125/lance_namespace-0.13.0-py3-none-any.whl", hash = "sha256:438c7b17aef421c21c138196e715f2510d62f07e865372047f87c1e75e618c7a", size = 13507, upload-time = "2026-09-14T02:47:01.765655Z" },
+    { url = "https://files.pythonhosted.org/packages/e7/47/cfa33cca1ba7c749fd2918cfc5c8ded788f378cc6424d23e4fead5a14125/lance_namespace-0.13.0-py3-none-any.whl", hash = "sha256:438c7b17aef421c21c138196e715f2510d62f07e865372047f87c1e75e618c7a", size = 13507, upload-time = "2026-09-14T02:47:01.765Z" },
 ]
 
 [[package]]
@@ -1869,9 +1869,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/69/25/9aaa4a5e8999693fb0f227c2c0c4b97bd8f0539066408cdff0b89d41b2d5/lance_namespace_urllib3_client-0.13.0.tar.gz", hash = "sha256:1e8a79c6e4e6277033597fd76aa0e2f33d909ca1436c935936e9e569221f43ef", size = 238348, upload-time = "2026-09-14T02:47:04.521878Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/69/25/9aaa4a5e8999693fb0f227c2c0c4b97bd8f0539066408cdff0b89d41b2d5/lance_namespace_urllib3_client-0.13.0.tar.gz", hash = "sha256:1e8a79c6e4e6277033597fd76aa0e2f33d909ca1436c935936e9e569221f43ef", size = 238348, upload-time = "2026-09-14T02:47:04.521Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/4c/7b8f0712a7fe1b8655b711342bc4989696635a79e7027ee56ba3cae23e99/lance_namespace_urllib3_client-0.13.0-py3-none-any.whl", hash = "sha256:fb361eb4f6c7f2d1f9e92809609657b73e38241393e9c4516e12d6b6ee643a0a", size = 406848, upload-time = "2026-09-14T02:47:02.715954Z" },
+    { url = "https://files.pythonhosted.org/packages/60/4c/7b8f0712a7fe1b8655b711342bc4989696635a79e7027ee56ba3cae23e99/lance_namespace_urllib3_client-0.13.0-py3-none-any.whl", hash = "sha256:fb361eb4f6c7f2d1f9e92809609657b73e38241393e9c4516e12d6b6ee643a0a", size = 406848, upload-time = "2026-09-14T02:47:02.715Z" },
 ]
 
 [[package]]
@@ -2007,7 +2007,7 @@ requires-dist = [
     { name = "pyarrow-stubs", marker = "extra == 'tests'", specifier = ">=16.0" },
     { name = "pydantic", specifier = ">=2.7.4,<3" },
     { name = "pylance", marker = "extra == 'pylance'", specifier = ">=5.0.0b5" },
-    { name = "pylance", marker = "extra == 'tests'", specifier = "==14.0.0b12" },
+    { name = "pylance", marker = "extra == 'tests'", specifier = "==14.0.0rc2" },
     { name = "pyright", marker = "extra == 'dev'", specifier = ">=1.1.350" },
     { name = "pytest", marker = "extra == 'tests'", specifier = ">=7.0" },
     { name = "pytest-asyncio", marker = "extra == 'tests'", specifier = ">=0.21" },
@@ -3938,7 +3938,7 @@ crypto = [
 
 [[package]]
 name = "pylance"
-version = "14.0.0b12"
+version = "14.0.0rc2"
 source = { registry = "https://pypi.fury.io/lance-format/" }
 dependencies = [
     { name = "lance-namespace" },
@@ -3948,12 +3948,12 @@ dependencies = [
     { name = "pyarrow" },
 ]
 wheels = [
-    { url = "https://pypi.fury.io/lance-format/-/ver_1Ixasc/pylance-14.0.0b12-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:84350a3c5c1eea3398f4c4fad7cfe85b831d831a5e43b5ca2a783dbdb0e11969" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_sCEkG/pylance-14.0.0b12-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:76b386c182a6a8e7b86fbef28f84d1dd39e4626ac8681a0cf36f40a45dd7cb87" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_1vdT1C/pylance-14.0.0b12-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6aa548c7937fcdfa8f1943a2d59041a42f8b500199880dbb509c7195fa253381" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_2fXu1V/pylance-14.0.0b12-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:79f82d6a6c50f37aab338470e3733436e6a27fbb5972d29fcf453ece56d3b3c6" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_24UavN/pylance-14.0.0b12-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:de0305999257002785f60169e6926896584d66f1da050bb5afd1d48c6e3d9bb9" },
-    { url = "https://pypi.fury.io/lance-format/-/ver_XNynX/pylance-14.0.0b12-cp310-abi3-win_amd64.whl", hash = "sha256:4d0cdb689e898ce71e8e434d00a3b97639cea8fb97da21f1c921543be363268f" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_SGDbc/pylance-14.0.0rc2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:ae15566c56938ce37c8d8a13f5ff7c3e82d293c0aff520418789d54196635fb0" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1qa82r/pylance-14.0.0rc2-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:07c5a529449ad64955aef0abec856f324ea2d3bedac037beb90784cb85327c85" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_wGVSF/pylance-14.0.0rc2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:024830a5eb8c597d2967394bb1dcd2312669f4abb81bb5562a2ab7cd5b629b00" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1XAIG6/pylance-14.0.0rc2-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:4a7aa506945f2c5f99b53a22254e0718f5cadc78987d6de7194863f12d2e883c" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1iZ3d7/pylance-14.0.0rc2-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:38f88a3d332c9e9d441c3715abc02066785d0da81387214aa3639047f6fc2ace" },
+    { url = "https://pypi.fury.io/lance-format/-/ver_1Mxn0O/pylance-14.0.0rc2-cp310-abi3-win_amd64.whl", hash = "sha256:8968e27b422213c83cf8e4e2e519163b8df3a7662fe7686b6a1b900fae9a09d4" },
 ]
 
 [[package]]
