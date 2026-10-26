@@ -97,10 +97,18 @@ impl SqlClient {
         } else {
             None
         };
+        let mut sql_options = vec![
+            format!("limit = {}", u64::from(limit) + 1),
+            "include_definition = true".to_owned(),
+        ];
+        if let Some((name, version)) = &after {
+            sql_options.push(format!("after_name = {}", literal(name)));
+            sql_options.push(format!("after_version = {}", literal(version)));
+        }
         let mut items: Vec<FunctionVersion> = self
             .object_job(
                 ExecuteQueryRequest {
-                    query: "SHOW FUNCTIONS".into(),
+                    query: format!("SHOW FUNCTIONS WITH ({})", sql_options.join(", ")),
                     default_namespace_path: namespace.to_vec(),
                     parameters: None,
                 },
