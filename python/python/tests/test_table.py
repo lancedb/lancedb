@@ -1751,6 +1751,28 @@ def test_create_index_async_returns_done_job(mem_db: DBConnection):
     job.cancel()
 
 
+@pytest.mark.parametrize(
+    "rq_kwargs", [{}, {"num_bits": None}, {"num_bits": 1}, {"num_bits": 4}]
+)
+@patch("lancedb.table.LanceTable.to_lance")
+def test_create_ivfrq_index_accelerator(mock_to_lance, mem_db: DBConnection, rq_kwargs):
+    from lancedb.index import IvfRq
+
+    table = mem_db.create_table("test", [{"vector": [1.0] * 8}])
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+    with patch.dict(sys.modules, {"torch": torch}):
+        table.create_index("vector", config=IvfRq(accelerator="cuda", **rq_kwargs))
+
+    kwargs = mock_to_lance.return_value.create_index.call_args.kwargs
+    assert kwargs["index_type"] == "IVF_RQ"
+    assert kwargs["accelerator"] == "cuda"
+    if rq_kwargs.get("num_bits") is None:
+        assert "num_bits" not in kwargs
+    else:
+        assert kwargs["num_bits"] == rq_kwargs["num_bits"]
+
+
 @pytest.mark.parametrize("method", ["create_index", "create_index_async"])
 @pytest.mark.parametrize("wait_timeout", ["invalid", 1, []])
 def test_create_index_invalid_wait_timeout(mem_db: DBConnection, method, wait_timeout):
@@ -2168,6 +2190,71 @@ def test_add_with_nans(mem_db: DBConnection):
     assert np.allclose(filled_vectors[20.0], np.array([0.0, 0.0]))
     assert np.allclose(filled_vectors[21.0], np.array([0.0, 5.0]))
     assert np.allclose(filled_vectors[22.0], np.array([5.0, 0.0]))
+
+
+@pytest.mark.parametrize("operation", ["create", "append", "overwrite"])
+@pytest.mark.parametrize("input_type", ["pandas", "rows", "arrow"])
+@pytest.mark.parametrize("on_bad_vectors", [None, "error", "drop", "fill", "null"])
+def test_write_vectors_with_null_elements(
+    mem_db: DBConnection, operation, input_type, on_bad_vectors
+):
+    schema = pa.schema({"vector": pa.list_(pa.float32(), 2), "id": pa.int64()})
+    vectors = [[3.0, 4.0], [np.nan, 1.0], [np.nan, np.nan]]
+    if input_type == "pandas":
+        pd = pytest.importorskip("pandas")
+
+        data = pd.DataFrame(
+            {
+                "vector": [np.array(v, dtype=np.float32) for v in vectors],
+                "id": [0, 1, 2],
+            }
+        )
+    else:
+        # Pandas turns the NaNs above into null child elements. Explicit nulls
+        # in other input formats must follow the same bad-vector policy.
+        data = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [None, 1.0], "id": 1},
+            {"vector": [None, None], "id": 2},
+        ]
+        if input_type == "arrow":
+            data = pa.Table.from_pylist(data, schema=schema)
+
+    options = {} if on_bad_vectors is None else {"on_bad_vectors": on_bad_vectors}
+    if on_bad_vectors == "fill":
+        options["fill_value"] = 42.0
+
+    table = None
+    if operation != "create":
+        table = mem_db.create_table("test", schema=schema)
+
+    def write():
+        if operation == "create":
+            return mem_db.create_table("test", data=data, schema=schema, **options)
+        table.add(data, mode=operation, **options)
+        return table
+
+    if on_bad_vectors in (None, "error"):
+        # Create/overwrite can wrap errors from lazy Arrow readers in RuntimeError.
+        expected_error = (
+            ValueError if operation == "append" else (ValueError, RuntimeError)
+        )
+        with pytest.raises(expected_error, match="NaN|null"):
+            write()
+        if table is not None:
+            assert table.count_rows() == 0
+        return
+
+    table = write()
+    if on_bad_vectors == "drop":
+        expected = [{"vector": [3.0, 4.0], "id": 0}]
+    else:
+        expected = [
+            {"vector": [3.0, 4.0], "id": 0},
+            {"vector": [42.0, 1.0] if on_bad_vectors == "fill" else None, "id": 1},
+            {"vector": [42.0, 42.0] if on_bad_vectors == "fill" else None, "id": 2},
+        ]
+    assert table.to_arrow().to_pylist() == expected
 
 
 def test_add_with_empty_fixed_size_list_drops_bad_rows(mem_db: DBConnection):
