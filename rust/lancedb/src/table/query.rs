@@ -34,8 +34,9 @@ use lance::dataset::scanner::Scanner;
 use lance::index::DatasetIndexInternalExt;
 use lance::io::exec::ANNIvfSubIndexExec;
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
+use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
-use lance_index::vector::{DIST_COL, quantizer::QuantizationType};
+use lance_index::vector::DIST_COL;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
 use lance_namespace::LanceNamespace;
 use lance_namespace::models::{
@@ -561,10 +562,13 @@ async fn normalized_l2_ann_indices(plan: &dyn ExecutionPlan) -> Result<HashSet<S
                 .dataset()
                 .open_vector_index(&ann.query().column, &index.uuid, &NoOpMetricsCollector)
                 .await?;
-            let (_, quantization_type) = vector_index.sub_index_type();
             if matches!(
-                quantization_type,
-                QuantizationType::Product | QuantizationType::Scalar | QuantizationType::Rabit
+                vector_index.index_type(),
+                IndexType::IvfPq
+                    | IndexType::IvfSq
+                    | IndexType::IvfRq
+                    | IndexType::IvfHnswPq
+                    | IndexType::IvfHnswSq
             ) {
                 normalized_l2.insert(uuid);
             }
@@ -1831,14 +1835,20 @@ mod tests {
             "plan should add query_index column, got:\n{display}"
         );
     }
-
+    #[rstest::rstest]
+    #[case::modern(false)]
+    #[case::legacy(true)]
     #[tokio::test]
-    async fn test_cosine_pq_distance_uses_public_cosine_scale() {
-        use arrow_array::{Int32Array, RecordBatch, types::Float32Type};
+    async fn test_cosine_pq_distance_uses_public_cosine_scale(#[case] legacy: bool) {
+        use arrow_array::{Float32Array, Int32Array, RecordBatch, types::Float32Type};
         use arrow_schema::{DataType, Field, Schema};
 
         use crate::connect;
         use crate::index::{Index, vector::IvfPqIndexBuilder};
+        use lance::index::{
+            DatasetIndexExt,
+            vector::{IndexFileVersion, VectorIndexParams},
+        };
 
         fn normalized_vector(state: &mut u64, dimension: usize) -> Vec<f32> {
             let mut vector = (0..dimension)
@@ -1889,19 +1899,72 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        table
-            .create_index(
-                &["vector"],
-                Index::IvfPq(
-                    IvfPqIndexBuilder::default()
-                        .distance_type(crate::DistanceType::Cosine)
-                        .num_partitions(1)
-                        .num_sub_vectors(1),
-                ),
-            )
-            .execute()
+        if legacy {
+            let mut dataset = (*table.dataset().unwrap().get().await.unwrap()).clone();
+            dataset
+                .create_index(
+                    &["vector"],
+                    IndexType::Vector,
+                    None,
+                    VectorIndexParams::ivf_pq(1, 8, 1, LanceDistanceType::Cosine, 10)
+                        .version(IndexFileVersion::Legacy),
+                    true,
+                )
+                .await
+                .unwrap();
+            table.dataset().unwrap().update(dataset);
+        } else {
+            table
+                .create_index(
+                    &["vector"],
+                    Index::IvfPq(
+                        IvfPqIndexBuilder::default()
+                            .distance_type(crate::DistanceType::Cosine)
+                            .num_partitions(1)
+                            .num_sub_vectors(1),
+                    ),
+                )
+                .execute()
+                .await
+                .unwrap();
+        }
+
+        let expected_index_version = if legacy { "Legacy" } else { "V3" };
+        let index_file_version = {
+            let dataset = table.dataset().unwrap().get().await.unwrap();
+            let metadata = dataset
+                .load_indices()
+                .await
+                .unwrap()
+                .first()
+                .unwrap()
+                .clone();
+            let index = dataset
+                .open_vector_index("vector", &metadata.uuid, &NoOpMetricsCollector)
+                .await
+                .unwrap();
+            index.statistics().unwrap()["index_file_version"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert_eq!(index_file_version, expected_index_version);
+
+        let plan = table
+            .dataset()
+            .unwrap()
+            .get()
+            .await
+            .unwrap()
+            .scan()
+            .nearest("vector", &Float32Array::from(query_vector.clone()), 5)
+            .unwrap()
+            .create_plan()
             .await
             .unwrap();
+        let mut ann_plans = Vec::new();
+        find_ann_plans(plan.as_ref(), &mut ann_plans);
+        assert!(!ann_plans.is_empty());
 
         let approximate = table
             .vector_search(query_vector.as_slice())
@@ -1926,6 +1989,7 @@ mod tests {
             .unwrap();
         let approximate_distances = distances(&approximate);
         let refined_distances = distances(&refined);
+        assert_eq!(approximate_distances.len(), 5);
         assert_eq!(approximate_distances.len(), refined_distances.len());
         for (approximate, refined) in approximate_distances.iter().zip(&refined_distances) {
             assert!(
