@@ -7,7 +7,6 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 import json
-import logging
 from concurrent.futures import ThreadPoolExecutor
 import sys
 from typing import (
@@ -47,7 +46,7 @@ from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
-    from .._lancedb import JobInfo
+    from .._lancedb import JobInfo, Session
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -239,6 +238,23 @@ class RemoteDBConnection(DBConnection):
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
+
+    @property
+    @override
+    def uri(self) -> str:
+        return self._conn.uri
+
+    @property
+    def session(self) -> Optional["Session"]:
+        """Remote connections do not expose a local cache session."""
+        raise NotImplementedError("session is not supported by remote connections")
+
+    @property
+    def read_consistency_interval(self) -> Optional[timedelta]:
+        """Remote connections do not expose a local read consistency interval."""
+        raise NotImplementedError(
+            "read_consistency_interval is not supported by remote connections"
+        )
 
     @override
     def serialize(self) -> str:
@@ -485,18 +501,14 @@ class RemoteDBConnection(DBConnection):
 
         if namespace_path is None:
             namespace_path = []
-        if storage_options is not None:
-            logging.info(
-                "storage_options is ignored for remote tables"
-                " (storage is managed; set storage_options on connect() instead)"
+        table = LOOP.run(
+            self._conn.open_table(
+                name,
+                namespace_path=namespace_path,
+                storage_options=storage_options,
+                index_cache_size=index_cache_size,
             )
-        if index_cache_size is not None:
-            logging.info(
-                "index_cache_size is ignored for remote tables"
-                " (there is no local cache to configure)"
-            )
-
-        table = LOOP.run(self._conn.open_table(name, namespace_path=namespace_path))
+        )
         tbl = RemoteTable(
             table,
             self.db_name,
@@ -576,6 +588,9 @@ class RemoteDBConnection(DBConnection):
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace_path: Optional[List[str]] = None,
+        storage_options: Optional[Dict[str, str]] = None,
+        data_storage_version: Optional[str] = None,
+        enable_v2_manifest_paths: Optional[bool] = None,
     ) -> Table:
         """Create a [Table][lancedb.table.Table] in the database.
 
@@ -615,6 +630,12 @@ class RemoteDBConnection(DBConnection):
         embedding_functions: list of EmbeddingFunctionConfig, optional
             The embedding functions to store in the table schema and use to
             generate vectors when creating the table or adding data.
+        storage_options: dict, optional
+            Not supported for remote table creation. Raises NotImplementedError.
+        data_storage_version: str, optional
+            Not supported for remote table creation. Raises NotImplementedError.
+        enable_v2_manifest_paths: bool, optional
+            Not supported for remote table creation. Raises NotImplementedError.
 
         Returns
         -------
@@ -681,6 +702,14 @@ class RemoteDBConnection(DBConnection):
         LanceTable(table4)
 
         """
+        for option, value in (
+            ("data_storage_version", data_storage_version),
+            ("enable_v2_manifest_paths", enable_v2_manifest_paths),
+        ):
+            if value is not None:
+                raise NotImplementedError(
+                    f"{option} is not supported for remote table creation"
+                )
         if exist_ok:
             if mode == "create":
                 mode = "exist_ok"
@@ -702,6 +731,7 @@ class RemoteDBConnection(DBConnection):
                 on_bad_vectors=on_bad_vectors,
                 fill_value=fill_value,
                 embedding_functions=embedding_functions,
+                storage_options=storage_options,
             )
         )
         return RemoteTable(
