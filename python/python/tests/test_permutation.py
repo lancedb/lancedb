@@ -8,6 +8,11 @@ import pytest
 from lancedb import DBConnection, Table, connect
 from lancedb.background_loop import LOOP
 from lancedb.permutation import Permutation, Permutations, permutation_builder
+from utils import (
+    MockPermutationServer,
+    assert_server_safe_row_id_requests,
+    mock_remote_table,
+)
 
 
 def test_split_random_ratios(mem_db):
@@ -51,6 +56,31 @@ def test_execute_does_not_reenter_background_loop(tmp_path, monkeypatch):
     assert permutation_tbl._conn.read_consistency_interval is None
 
 
+def test_pickled_permutation_reads_pinned_version(tmp_path):
+    """An unpickled copy must still read the pinned version, which also covers the
+    version surviving the ``to_arrow()`` round trip in ``__getstate__``."""
+    import pickle
+
+    db = connect(tmp_path)
+    tbl = db.create_table("base", pa.table({"idx": range(20)}))
+    permutation_tbl = permutation_builder(tbl).execute()
+    perm = Permutation.from_tables(tbl, permutation_tbl)
+
+    payload = pickle.dumps(perm)
+
+    # Compact so the stored row addresses no longer describe these rows at latest.
+    tbl.delete("true")
+    tbl.optimize()
+    assert tbl.count_rows() == 0
+
+    # Unpickle after the mutation: __setstate__ reopens at latest, so this only
+    # passes if the recorded version is applied on reopen.
+    restored = pickle.loads(payload)
+    assert len(restored) == 20
+    rows = restored.__getitems__(list(range(20)))
+    assert sorted(row["idx"] for row in rows) == list(range(20))
+
+
 def test_split_random_counts(mem_db):
     """Test random splitting with absolute counts."""
     tbl = mem_db.create_table(
@@ -85,6 +115,35 @@ def test_split_random_fixed(mem_db):
         assert split_ids.count(split_id) == 25
 
 
+def test_permutation_over_table_with_schema_metadata(tmp_path):
+    """Schema-level metadata on the base table must not break the build.
+
+    Hugging Face datasets carry keys like `huggingface` or `source-column-name-map`.
+    """
+    schema = pa.schema(
+        [pa.field("x", pa.int64())],
+        # `split_names` collides with a permutation config key; the config must win.
+        metadata={b"huggingface": b"{}", b"split_names": b'["base"]'},
+    )
+    tbl = connect(tmp_path).create_table(
+        "t", pa.table({"x": list(range(100))}, schema=schema)
+    )
+    permutation_tbl = (
+        permutation_builder(tbl)
+        .split_random(fixed=2, seed=1, split_names=["train", "test"])
+        .execute()
+    )
+
+    permutations = Permutations(tbl, permutation_tbl)
+    assert permutations.split_names == ["train", "test"]
+    train = Permutation.from_tables(tbl, permutation_tbl, "train")
+    test = Permutation.from_tables(tbl, permutation_tbl, "test")
+    assert train.num_rows + test.num_rows == 100
+    train_x = [row["x"] for batch in train.iter(16) for row in batch]
+    test_x = [row["x"] for batch in test.iter(16) for row in batch]
+    assert sorted(train_x + test_x) == list(range(100))
+
+
 def test_split_random_with_seed(mem_db):
     """Test that seeded random splits are reproducible."""
     tbl = mem_db.create_table("test_table", pa.table({"x": range(50), "y": range(50)}))
@@ -100,6 +159,76 @@ def test_split_random_with_seed(mem_db):
 
     assert data1["row_id"] == data2["row_id"]
     assert data1["split_id"] == data2["split_id"]
+
+
+def test_bootstrap_sample_fixed(mem_db):
+    """Output row count is num_samples, not the input row count, and splits divide
+    it evenly."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(20)}))
+    permutation_tbl = (
+        permutation_builder(tbl).bootstrap_sample(1000, fixed=4, seed=42).execute()
+    )
+
+    assert permutation_tbl.count_rows() == 1000
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    split_ids = data["split_id"]
+    assert set(split_ids) == {0, 1, 2, 3}
+    for split_id in range(4):
+        assert split_ids.count(split_id) == 250
+
+    # Every sampled row_id must still be one of the 20 real rows.
+    assert set(data["row_id"]).issubset(set(range(20)))
+
+
+def test_bootstrap_sample_draws_with_replacement(mem_db):
+    """Sampling more rows than exist must produce repeats."""
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(5)}))
+    permutation_tbl = (
+        permutation_builder(tbl).bootstrap_sample(500, fixed=1, seed=1).execute()
+    )
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    assert len(data["row_id"]) == 500
+    # Only 5 distinct rows exist, so with 500 draws every one of them must repeat.
+    for row_id in range(5):
+        assert data["row_id"].count(row_id) > 1
+
+
+def test_bootstrap_sample_with_seed_is_reproducible(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(50)}))
+
+    perm1 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
+    perm2 = permutation_builder(tbl).bootstrap_sample(200, fixed=2, seed=42).execute()
+
+    data1 = perm1.search(None).to_arrow().to_pydict()
+    data2 = perm2.search(None).to_arrow().to_pydict()
+    assert data1["row_id"] == data2["row_id"]
+    assert data1["split_id"] == data2["split_id"]
+
+
+def test_bootstrap_sample_respects_filter(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(20)}))
+    permutation_tbl = (
+        permutation_builder(tbl)
+        .filter("x >= 15")
+        .bootstrap_sample(100, fixed=1, seed=7)
+        .execute()
+    )
+
+    data = permutation_tbl.search(None).to_arrow().to_pydict()
+    assert len(data["row_id"]) == 100
+    assert set(data["row_id"]).issubset(set(range(15, 20)))
+
+
+def test_bootstrap_sample_requires_exactly_one_size_arg(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"x": range(10)}))
+    with pytest.raises(ValueError):
+        permutation_builder(tbl).bootstrap_sample(10).execute()
+    with pytest.raises(ValueError):
+        permutation_builder(tbl).bootstrap_sample(
+            10, ratios=[0.5, 0.5], fixed=2
+        ).execute()
 
 
 def test_split_hash(mem_db):
@@ -682,6 +811,13 @@ def test_rename_column(some_permutation: Permutation):
         some_permutation.rename_column("non_existent", "new_value")
 
 
+def test_rename_column_keeps_position(some_permutation: Permutation):
+    renamed = some_permutation.rename_column("id", "new_id")
+    assert renamed.schema == pa.schema([("new_id", pa.int64()), ("value", pa.int64())])
+    batch = renamed.with_format("arrow").__getitems__([0])
+    assert batch.schema.names == ["new_id", "value"]
+
+
 def test_rename_columns(some_permutation: Permutation):
     assert some_permutation.rename_columns({"value": "new_value"}).schema == pa.schema(
         [("id", pa.int64()), ("new_value", pa.int64())]
@@ -1214,3 +1350,57 @@ def test_remove_rowid_after_select(some_permutation: Permutation):
     perm_without_rowid = perm_with_rowid.remove_columns(["_rowid"])
     assert "_rowid" not in perm_without_rowid.column_names
     assert perm_without_rowid.column_names == ["id"]
+
+
+def test_permutation_is_stable_when_remote_scan_order_varies():
+    """Splits are assigned by scan position, and every rank builds its own
+    permutation, so two ranks seeing different scan orders must still agree."""
+    server = MockPermutationServer(num_rows=16, vary_scan_order=True)
+
+    def split_of_each_row(permutation_tbl):
+        # Sequential splits are assigned by position, so a reversed scan would put
+        # the last rows in split 0.  Compare the mapping rather than the table order,
+        # which the split-id sort does not pin down.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        return dict(zip(rows["row_id"], rows["split_id"]))
+
+    with mock_remote_table(server) as table:
+        first = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+        second = split_of_each_row(
+            permutation_builder(table).split_sequential(fixed=2).execute()
+        )
+
+    assert server.scan_calls == 2, "both builds must have scanned"
+    assert first == second
+    assert first[0] == 0 and first[server.num_rows - 1] == 1, first
+
+
+def test_permutation_over_remote_table():
+    """The permutation API accepts a remote table, addressing rows by `_rowid` just
+    as `take_row_ids` does.  Also pins the request shapes sent to the server.
+    """
+    server = MockPermutationServer()
+
+    with mock_remote_table(server) as table:
+        permutation_tbl = permutation_builder(table).split_sequential(fixed=2).execute()
+        assert permutation_tbl.count_rows() == server.num_rows
+
+        permutation = Permutation.from_tables(table, permutation_tbl, 0)
+        assert permutation.num_rows == server.num_rows // 2
+
+        # Compare against the permutation's own order; the split-id sort is not stable.
+        rows = permutation_tbl.search(None).to_arrow().to_pydict()
+        split0 = [
+            row_id
+            for row_id, split in zip(rows["row_id"], rows["split_id"])
+            if not split
+        ]
+        # The mock table's `id` equals its `_rowid`.
+        assert permutation.take_offsets([2, 0]) == [
+            {"id": split0[2]},
+            {"id": split0[0]},
+        ]
+
+    assert_server_safe_row_id_requests(server)

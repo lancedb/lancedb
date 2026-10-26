@@ -1,0 +1,120 @@
+---
+title: "Aggregation"
+sidebarTitle: "Aggregation"
+description: "GROUP BY, HAVING, and the aggregate function set."
+icon: layer-group
+keywords: ["group by", "having", "count", "sum", "avg", "aggregate", "approximate"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
+
+Use SQL aggregates to summarize records, either across a whole table or
+within groups. Common examples include counts by category, totals and averages.
+
+## Grouping {#grouping}
+
+```sql
+SELECT category, count(*) AS n, avg(score) AS mean_score
+FROM documents
+GROUP BY category
+HAVING count(*) > 10
+ORDER BY n DESC
+```
+
+`WHERE` filters rows before grouping; `HAVING` filters groups after. Use `WHERE` for row-level conditions and `HAVING` for conditions on aggregate
+results. The planner may push eligible predicates earlier in the query.
+
+Grouping by several expressions produces one row per distinct combination:
+
+```sql
+SELECT category, source, count(*) FROM documents GROUP BY category, source
+```
+
+## Aggregate without grouping {#whole-table}
+
+Omitting `GROUP BY` aggregates the whole table into one row, which is the usual way to
+ask how big something is:
+
+```sql
+SELECT count(*), min(created_at), max(created_at) FROM documents
+```
+
+`count(*)` counts rows; `count(col)` counts non-null values, which is how you
+measure how populated a [computed column](/feature-engineering/add-computed-column)
+is before deciding to refresh it again.
+
+## The function set {#functions}
+
+Registered in DataFusion 54. Names below are what is actually available.
+
+**General**
+
+```text
+count  sum  min  max  avg  median
+bit_and  bit_or  bit_xor  bool_and  bool_or
+first_value  last_value  nth_value  grouping
+```
+
+**Statistical**
+
+```text
+stddev  stddev_pop  stddev_samp
+var  var_pop  var_samp
+corr  covar_pop  covar_samp
+regr_slope  regr_intercept  regr_count  regr_r2
+regr_avgx  regr_avgy  regr_sxx  regr_syy  regr_sxy
+```
+
+**Approximate**
+
+```text
+approx_distinct  approx_median
+approx_percentile_cont  approx_percentile_cont_with_weight
+percentile_cont
+```
+
+**Collecting**
+
+```text
+array_agg  string_agg
+```
+
+The approximate functions are the ones worth reaching for on a large table.
+`approx_distinct` answers "roughly how many distinct values" for a fraction of
+what `count(DISTINCT ...)` costs, which can help with high-cardinality columns. Measure the accuracy and runtime
+for your workload.
+
+`DISTINCT` works inside an aggregate: `count(DISTINCT category)`. `FILTER`
+narrows one aggregate without narrowing the others:
+
+```sql
+SELECT
+    count(*) AS total,
+    count(*) FILTER (WHERE score > 0.9) AS confident
+FROM documents
+```
+
+## Aggregating a sample {#sampling}
+
+For an estimate over a very large table, aggregate a
+[sample](/sql/dql/sampling) rather than the whole thing:
+
+```sql
+SELECT category, count(*) * 100 AS estimated
+FROM documents TABLESAMPLE (1)
+GROUP BY category
+```
+
+For a uniform percentage sample, counts and sums can be scaled by the inverse
+of the sample fraction to estimate whole-table values. Do not apply that scaling
+to averages, minima or maxima. Small samples can miss rare categories; consider
+the sampling method and uncertainty when interpreting the result.
+
+## What aggregation does not do {#not}
+
+Aggregates run over rows the query already produced. Whether a statement can
+include [vector search](/search/vector-search)
+is described under [SQL vector search](/basics/sql#no-vector-sql). If your server
+does not support that query form, run the
+search in an SDK and aggregate its result, or materialize the search output
+first.

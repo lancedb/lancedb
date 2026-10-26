@@ -99,7 +99,7 @@ def test_quickstart(tmp_path):
     # --8<-- [end:create_index]
     tbl.search([100, 100]).limit(2).to_pandas()
     # --8<-- [start:delete_rows]
-    tbl.delete('item = "fizz"')
+    tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_rows]
     # --8<-- [start:drop_table]
     db.drop_table("my_table")
@@ -189,7 +189,7 @@ async def test_quickstart_async(tmp_path):
     # --8<-- [end:create_index_async]
     await tbl.vector_search([100, 100]).limit(2).to_pandas()
     # --8<-- [start:delete_rows_async]
-    await tbl.delete('item = "fizz"')
+    await tbl.delete("item = 'fizz'")
     # --8<-- [end:delete_rows_async]
     # --8<-- [start:drop_table_async]
     await db.drop_table("my_table_async")

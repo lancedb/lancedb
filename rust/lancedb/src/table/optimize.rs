@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use lance::dataset::cleanup::RemovalStats;
+use chrono::{DateTime, Utc};
+use lance::dataset::cleanup::{CleanupPolicyBuilder, RemovalStats};
 use lance::dataset::optimize::{CompactionMetrics, IndexRemapperOptions, compact_files};
 use lance::index::DatasetIndexExt;
 use lance_index::optimize::OptimizeOptions;
@@ -68,7 +69,11 @@ pub enum OptimizeAction {
         /// **WARNING**: This should only be set to true if you can guarantee that no other process is
         /// currently working on this dataset.  Otherwise the dataset could be put into a corrupted state.
         delete_unverified: Option<bool>,
+        /// Tagged versions are never removed, regardless of their age.
+        ///
         /// If true, an error will be returned if there are any old versions that are still tagged.
+        /// If false or `None` (the default), tagged versions are silently retained and all other
+        /// old versions are removed.
         error_if_tagged_old_versions: Option<bool>,
     },
     /// Optimize the indices
@@ -124,6 +129,12 @@ pub(crate) async fn optimize_indices(table: &NativeTable, options: &OptimizeOpti
 ///   no other process is currently working on this dataset.  Otherwise the
 ///   dataset could be put into a corrupted state.
 ///
+/// * `error_if_tagged_old_versions` - Tagged versions are always retained.  If
+///   this is true, an error is returned when a tagged version is older than the
+///   cutoff.  Defaults to false (the tagged versions are retained silently),
+///   unlike Lance's own default, so that `optimize` does not fail (and skip the
+///   steps after pruning) once a tagged version ages past the cutoff.
+///
 /// This calls into [lance::dataset::Dataset::cleanup_old_versions] and
 /// returns the result.
 pub(crate) async fn cleanup_old_versions(
@@ -134,9 +145,47 @@ pub(crate) async fn cleanup_old_versions(
 ) -> Result<RemovalStats> {
     table.dataset.ensure_mutable()?;
     let dataset = table.dataset.get().await?;
-    Ok(dataset
-        .cleanup_old_versions(older_than, delete_unverified, error_if_tagged_old_versions)
-        .await?)
+    let stats = dataset
+        .cleanup_old_versions(
+            older_than,
+            delete_unverified,
+            Some(error_if_tagged_old_versions.unwrap_or(false)),
+        )
+        .await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
+}
+
+/// Remove dataset versions committed before an absolute timestamp.
+pub(crate) async fn cleanup_old_versions_before(
+    table: &NativeTable,
+    before_timestamp: DateTime<Utc>,
+    delete_unverified: Option<bool>,
+    error_if_tagged_old_versions: Option<bool>,
+) -> Result<RemovalStats> {
+    table.dataset.ensure_mutable()?;
+    let dataset = table.dataset.get().await?;
+    let mut policy = CleanupPolicyBuilder::default().before_timestamp(before_timestamp);
+    if let Some(delete_unverified) = delete_unverified {
+        policy = policy.delete_unverified(delete_unverified);
+    }
+    // Tagged versions are retained rather than raising an error unless asked.
+    policy = policy.error_if_tagged_old_versions(error_if_tagged_old_versions.unwrap_or(false));
+    let stats = dataset.cleanup_with_policy(policy.build()).await?;
+    // Computed-column signature sidecars live outside lance's directories;
+    // drop the ones the surviving versions no longer reference.
+    let removed =
+        super::freshness::prune_sidecars(&dataset, delete_unverified.unwrap_or(false)).await?;
+    if removed > 0 {
+        log::debug!("removed {removed} unreferenced computed-column signature sidecars");
+    }
+    Ok(stats)
 }
 
 /// Compact files in the dataset.
@@ -473,6 +522,90 @@ mod tests {
         all_values.sort();
         let expected: Vec<i32> = (0..60).collect();
         assert_eq!(all_values, expected);
+    }
+
+    #[tokio::test]
+    async fn test_optimize_prune_retains_tagged_versions() {
+        let tmpdir = tempfile::tempdir().unwrap();
+        let conn = connect(tmpdir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+
+        let schema = Arc::new(Schema::new(vec![Field::new("i", DataType::Int32, false)]));
+        let make_batch = |start: i32| {
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int32Array::from_iter_values(start..start + 10))],
+            )
+            .unwrap()
+        };
+
+        let table = conn
+            .create_table("test_prune_tagged", make_batch(0))
+            .execute()
+            .await
+            .unwrap();
+        // Tag the first version, then create more versions after it.
+        table.tags().await.unwrap().create("keep", 1).await.unwrap();
+        for i in 1..4 {
+            table.add(make_batch(i * 10)).execute().await.unwrap();
+        }
+        assert_eq!(table.list_versions().await.unwrap().len(), 4);
+
+        // Explicitly asking for an error still errors, and leaves everything in place.
+        let err = table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::try_days(0).unwrap()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: Some(true),
+            })
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("tagged version"), "{err}");
+        assert_eq!(table.list_versions().await.unwrap().len(), 4);
+
+        // By default, tagged versions are retained and the other old versions are removed.
+        let stats = table
+            .optimize(OptimizeAction::Prune {
+                older_than: Some(chrono::Duration::try_days(0).unwrap()),
+                delete_unverified: Some(true),
+                error_if_tagged_old_versions: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(stats.prune.unwrap().old_versions, 2);
+        let mut versions = table
+            .list_versions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|v| v.version)
+            .collect::<Vec<_>>();
+        versions.sort();
+        assert_eq!(versions, vec![1, 4]);
+
+        // Same through the absolute-cutoff entry point used by the Node binding.
+        table.add(make_batch(40)).execute().await.unwrap();
+        let stats = table
+            .optimize_prune_before(chrono::Utc::now(), Some(true), None)
+            .await
+            .unwrap();
+        assert_eq!(stats.prune.unwrap().old_versions, 1);
+
+        // The tagged version is still readable, including its data files.
+        assert_eq!(table.count_rows(None).await.unwrap(), 50);
+        table.checkout_tag("keep").await.unwrap();
+        let batches = table
+            .query()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 10);
     }
 
     #[tokio::test]

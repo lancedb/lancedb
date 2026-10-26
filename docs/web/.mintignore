@@ -1,0 +1,6 @@
+# Functions are documented before their release. At release, remove these
+# entries, add the pages back to the navigation in docs.json, restore the
+# /feature-engineering/functions redirect to /management/function, and publish
+# the drafts marked "Draft for the Functions release".
+management/function.mdx
+sql/ddl/function.mdx

@@ -71,6 +71,16 @@ pub enum Error {
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
+    #[snafu(display("Column '{name}' was not found"))]
+    ColumnNotFound { name: String },
+    #[snafu(display("Column '{name}' already exists"))]
+    ColumnAlreadyExists { name: String },
+    #[snafu(display("Column '{name}' is not a computed column"))]
+    NotAComputedColumn { name: String },
+    #[snafu(display("Table '{name}' is not a materialized view"))]
+    NotAMaterializedView { name: String },
+    #[snafu(display("Invalid expression for column '{column}': {message}"))]
+    InvalidExpression { column: String, message: String },
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
@@ -92,6 +102,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
+    #[snafu(display("Job '{job_id}' was not found"))]
+    JobNotFound { job_id: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -115,7 +127,7 @@ pub enum Error {
         "Hit retry limit for request_id={request_id} (\
         request_failures={request_failures}/{max_request_failures}, \
         connect_failures={connect_failures}/{max_connect_failures}, \
-        read_failures={read_failures}/{max_read_failures})"
+        read_failures={read_failures}/{max_read_failures}): {source}"
     ))]
     Retry {
         request_id: String,

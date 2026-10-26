@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -16,8 +17,8 @@ use arrow::pyarrow::FromPyArrow;
 use arrow::pyarrow::IntoPyArrow;
 use arrow::pyarrow::ToPyArrow;
 use lancedb::index::scalar::{
-    BooleanQuery, BoostQuery, FtsQuery, FullTextSearchQuery, MatchQuery, MultiMatchQuery, Occur,
-    Operator, PhraseQuery,
+    BooleanQuery, BoostQuery, DocumentGranularity, FtsQuery, FullTextSearchQuery, MatchQuery,
+    MultiMatchQuery, Occur, Operator, PhraseQuery,
 };
 use lancedb::query::AnalyzePlanDistributedMetrics;
 use lancedb::query::QueryBase;
@@ -70,37 +71,56 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
         match class_name(&ob)?.as_str() {
             "MatchQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let boost = ob.getattr("boost")?.extract()?;
                 let fuzziness = ob.getattr("fuzziness")?.extract()?;
                 let max_expansions = ob.getattr("max_expansions")?.extract()?;
                 let operator = ob.getattr("operator")?.extract::<String>()?;
                 let prefix_length = ob.getattr("prefix_length")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
+                let mut query =
                     MatchQuery::new(query)
-                        .with_column(Some(column))
+                        .with_column(column)
                         .with_boost(boost)
                         .with_fuzziness(fuzziness)
                         .with_max_expansions(max_expansions)
                         .with_operator(Operator::try_from(operator.as_str()).map_err(|e| {
                             PyValueError::new_err(format!("Invalid operator: {}", e))
                         })?)
-                        .with_prefix_length(prefix_length)
-                        .into(),
-                ))
+                        .with_prefix_length(prefix_length);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
                 let column = ob.getattr("column")?.extract()?;
                 let slop = ob.getattr("slop")?.extract()?;
+                let document_granularity = ob
+                    .getattr("document_granularity")?
+                    .extract::<Option<String>>()?
+                    .map(|value| {
+                        DocumentGranularity::try_from(value.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))
+                    })
+                    .transpose()?;
 
-                Ok(Self(
-                    PhraseQuery::new(query)
-                        .with_column(Some(column))
-                        .with_slop(slop)
-                        .into(),
-                ))
+                let mut query = PhraseQuery::new(query)
+                    .with_column(Some(column))
+                    .with_slop(slop);
+                if let Some(document_granularity) = document_granularity {
+                    query = query.with_document_granularity(document_granularity);
+                }
+                Ok(Self(query.into()))
             }
             "BoostQuery" => {
                 let positive: Self = ob.getattr("positive")?.extract()?;
@@ -160,6 +180,9 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
             .expect("Failed to import namespace");
 
         match self.0 {
+            FtsQuery::CombinedFields(_) => Err(PyValueError::new_err(
+                "Combined-fields FTS queries are not yet supported in Python",
+            )),
             FtsQuery::Match(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("boost", query.boost)?;
@@ -167,13 +190,27 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 kwargs.set_item("max_expansions", query.max_expansions)?;
                 kwargs.set_item::<_, &str>("operator", query.operator.into())?;
                 kwargs.set_item("prefix_length", query.prefix_length)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "MatchQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Phrase(query) => {
                 let kwargs = PyDict::new(py);
                 kwargs.set_item("slop", query.slop)?;
+                if let Some(document_granularity) = query.document_granularity {
+                    let value = match document_granularity {
+                        DocumentGranularity::Row => "row",
+                        DocumentGranularity::ListElement => "list_element",
+                    };
+                    kwargs.set_item("document_granularity", value)?;
+                }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
                     .call((query.terms, query.column.unwrap()), Some(&kwargs))
@@ -289,18 +326,20 @@ impl<'py> IntoPyObject<'py> for PyQueryVectors {
 pub struct PyQueryRequest {
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub take_offsets: Option<Vec<u64>>,
     pub filter: Option<PyQueryFilter>,
     pub full_text_search: Option<PyLanceDB<FtsQuery>>,
     pub select: PySelect,
+    pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
-    pub use_lsm: Option<bool>,
+    pub use_rte: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
+    pub nprobes: Option<usize>,
     pub minimum_nprobes: Option<usize>,
-    // None means user did not set it and default shoud be used (currenty 20)
-    // Some(0) means user set it to None and there is no limit
     pub maximum_nprobes: Option<usize>,
+    pub search_effort: Option<f64>,
     pub lower_bound: Option<f32>,
     pub upper_bound: Option<f32>,
     pub ef: Option<usize>,
@@ -318,18 +357,22 @@ impl From<AnyQuery> for PyQueryRequest {
             AnyQuery::Query(query_request) => Self {
                 limit: query_request.limit,
                 offset: query_request.offset,
+                take_offsets: query_request.take_offsets,
                 filter: query_request.filter.map(PyQueryFilter),
                 full_text_search: query_request
                     .full_text_search
                     .map(|fts| PyLanceDB(fts.query)),
+                select_source_columns: PySelect::source_columns(&query_request.select),
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
-                use_lsm: query_request.use_lsm,
+                use_rte: query_request.use_rte,
                 column: None,
                 query_vector: None,
+                nprobes: None,
                 minimum_nprobes: None,
                 maximum_nprobes: None,
+                search_effort: None,
                 lower_bound: None,
                 upper_bound: None,
                 ef: None,
@@ -345,19 +388,20 @@ impl From<AnyQuery> for PyQueryRequest {
             AnyQuery::VectorQuery(vector_query) => Self {
                 limit: vector_query.base.limit,
                 offset: vector_query.base.offset,
+                take_offsets: vector_query.base.take_offsets,
                 filter: vector_query.base.filter.map(PyQueryFilter),
                 full_text_search: None,
+                select_source_columns: PySelect::source_columns(&vector_query.base.select),
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
-                use_lsm: vector_query.base.use_lsm,
+                use_rte: vector_query.base.use_rte,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
-                minimum_nprobes: Some(vector_query.minimum_nprobes),
-                maximum_nprobes: match vector_query.maximum_nprobes {
-                    None => Some(0),
-                    Some(value) => Some(value),
-                },
+                nprobes: vector_query.nprobes,
+                minimum_nprobes: vector_query.minimum_nprobes,
+                maximum_nprobes: vector_query.maximum_nprobes,
+                search_effort: vector_query.search_effort,
                 lower_bound: vector_query.lower_bound,
                 upper_bound: vector_query.upper_bound,
                 ef: vector_query.ef,
@@ -378,6 +422,25 @@ impl From<AnyQuery> for PyQueryRequest {
 // Python representation of query selection
 #[derive(Clone)]
 pub struct PySelect(Select);
+
+impl PySelect {
+    fn source_columns(select: &Select) -> Option<HashMap<String, String>> {
+        match select {
+            Select::Expr(pairs) => Some(
+                pairs
+                    .iter()
+                    .filter_map(|(output, expr)| match expr {
+                        lancedb::expr::DfExpr::Column(column) if column.relation.is_none() => {
+                            Some((output.clone(), column.name.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        }
+    }
+}
 
 impl<'py> IntoPyObject<'py> for PySelect {
     type Target = PyAny;
@@ -477,8 +540,8 @@ impl Query {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -643,8 +706,8 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[pyo3(signature = ())]
@@ -756,8 +819,8 @@ impl FTSQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -907,8 +970,8 @@ impl VectorQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -933,8 +996,18 @@ impl VectorQuery {
         self.inner = self.inner.clone().refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner = self.inner.clone().nprobes(nprobe as usize);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner = self.inner.clone().nprobes(nprobe as usize).infer_error()?;
+        Ok(())
+    }
+
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner = self
+            .inner
+            .clone()
+            .search_effort(search_effort)
+            .infer_error()?;
+        Ok(())
     }
 
     pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
@@ -1105,9 +1178,9 @@ impl HybridQuery {
         self.inner_fts.postfilter();
     }
 
-    pub fn use_lsm(&mut self, enable: bool) {
-        self.inner_vec.use_lsm(enable);
-        self.inner_fts.use_lsm(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner_vec.use_rte(enable);
+        self.inner_fts.use_rte(enable);
     }
 
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {
@@ -1126,8 +1199,20 @@ impl HybridQuery {
         self.inner_vec.refine_factor(refine_factor);
     }
 
-    pub fn nprobes(&mut self, nprobe: u32) {
-        self.inner_vec.nprobes(nprobe);
+    pub fn nprobes(&mut self, nprobe: u32) -> PyResult<()> {
+        self.inner_vec.nprobes(nprobe)
+    }
+
+    pub fn search_effort(&mut self, search_effort: Option<f64>) -> PyResult<()> {
+        self.inner_vec.search_effort(search_effort)
+    }
+
+    pub fn minimum_nprobes(&mut self, minimum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.minimum_nprobes(minimum_nprobes)
+    }
+
+    pub fn maximum_nprobes(&mut self, maximum_nprobes: u32) -> PyResult<()> {
+        self.inner_vec.maximum_nprobes(maximum_nprobes)
     }
 
     pub fn ef(&mut self, ef: u32) {
@@ -1174,6 +1259,10 @@ impl HybridQuery {
         req.query_vector = vec_req.query_vector;
         req.column = vec_req.column;
         req.distance_type = vec_req.distance_type;
+        req.nprobes = vec_req.nprobes;
+        req.minimum_nprobes = vec_req.minimum_nprobes;
+        req.maximum_nprobes = vec_req.maximum_nprobes;
+        req.search_effort = vec_req.search_effort;
         req.ef = vec_req.ef;
         req.refine_factor = vec_req.refine_factor;
         req.lower_bound = vec_req.lower_bound;
