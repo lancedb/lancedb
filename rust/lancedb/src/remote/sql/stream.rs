@@ -1,26 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! SQL statements sent with parameters.
-//!
-//! A statement without parameters is polled: `PollFlightInfo` starts it
-//! detached from the connection and `DoGet` reads its endpoints. Neither call
-//! carries Arrow data, so a statement's values would have to be spelled into
-//! its text. A statement with parameters is sent on one `DoExchange` instead:
-//! the command and the parameter schema, then one row, and the result rows
-//! come back on the same call. The call is the statement's lifetime, so
-//! cancelling it -- or dropping the handle before reading -- stops the
-//! statement on the server.
+//! SQL submitted on one call, with either streamed rows or a polling handoff.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Instant;
 
 use arrow_array::RecordBatch;
-use arrow_flight::FlightDescriptor;
+use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::encode::FlightDataEncoderBuilder;
-use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
+use arrow_flight::sql::{Any, CommandStatementQuery, ProstMessageExt};
+use arrow_flight::{FlightDescriptor, PollInfo, Ticket};
 use arrow_schema::SchemaRef;
+use futures::TryStreamExt;
 use prost::Message;
 use tokio::sync::{Notify, mpsc};
 use uuid::Uuid;
@@ -51,8 +44,8 @@ fn failure(error: &Error) -> Lifecycle {
     })
 }
 
-/// A statement running on its own `DoExchange` call.
-pub(super) struct ExchangeQuery {
+/// A statement streaming on its initial `DoGet` or `DoExchange` call.
+pub(super) struct StreamingQuery {
     id: Uuid,
     client: Arc<SqlClientInner>,
     /// The call's rows, until a reader takes them or a cancellation drops them.
@@ -63,7 +56,7 @@ pub(super) struct ExchangeQuery {
     last_accessed: StdMutex<Instant>,
 }
 
-struct PreparedExchange {
+struct PreparedStream {
     schema: SchemaRef,
     first: Option<RecordBatch>,
     rest: Option<ResultEndpointStream>,
@@ -76,7 +69,7 @@ struct PreparedExchange {
 /// this one did. A query cancelled meanwhile has its rows dropped instead,
 /// which ends the call.
 struct Borrowed<'a> {
-    query: &'a ExchangeQuery,
+    query: &'a StreamingQuery,
     rows: Option<ResultEndpointStream>,
 }
 
@@ -104,18 +97,37 @@ impl Drop for Borrowed<'_> {
     }
 }
 
-impl ExchangeQuery {
-    /// Send the statement and its parameters, returning once the server has
-    /// planned it: a statement it refuses is refused here, as a polled one is
-    /// on its first poll.
+pub(super) const PROTOCOL_HEADER: &str = "lancedb-sql-protocol";
+pub(super) const PROTOCOL_VERSION: &str = "adaptive-v1";
+const RESPONSE_TYPE_URL: &str = "type.googleapis.com/lancedb.sql.QueryResponse";
+
+#[derive(Clone, PartialEq, Message)]
+pub(super) struct QueryResponse {
+    #[prost(message, optional, tag = "1")]
+    pub poll_info: Option<PollInfo>,
+}
+
+#[derive(Clone, PartialEq, Message)]
+struct CommandTicket {
+    #[prost(bytes = "vec", tag = "2")]
+    command: Vec<u8>,
+}
+
+pub(super) enum Submission {
+    Stream(ResultEndpointStream),
+    Deferred(PollInfo),
+}
+
+impl StreamingQuery {
     pub(super) async fn open(
-        id: Uuid,
         client: Arc<SqlClientInner>,
         query: &str,
-        parameters: RecordBatch,
+        parameters: Option<RecordBatch>,
         default_namespace_path: &[String],
-    ) -> Result<Self> {
-        if parameters.num_rows() != 1 {
+    ) -> Result<Submission> {
+        if let Some(parameters) = &parameters
+            && parameters.num_rows() != 1
+        {
             return Err(Error::InvalidInput {
                 message: format!(
                     "SQL query parameters must be exactly one row, got {}",
@@ -130,39 +142,102 @@ impl ExchangeQuery {
             Some(DEFAULT_READ_TIMEOUT),
         )?
         .unwrap();
-        let descriptor = FlightDescriptor::new_cmd(
-            CommandStatementQuery {
-                query: query.to_string(),
-                transaction_id: None,
+        let command = CommandStatementQuery {
+            query: query.to_string(),
+            transaction_id: None,
+        }
+        .as_any()
+        .encode_to_vec();
+        let connection = client.connection(&request_id).await?;
+        let headers = client.headers(default_namespace_path, &request_id).await?;
+        let mut metadata = super::client_with_headers(connection.client.clone(), &headers)?
+            .metadata()
+            .clone();
+        metadata.insert(PROTOCOL_HEADER, PROTOCOL_VERSION.parse().unwrap());
+        let mut flight = connection.client.clone();
+        let response = if let Some(parameters) = parameters {
+            let messages = FlightDataEncoderBuilder::new()
+                .with_flight_descriptor(Some(FlightDescriptor::new_cmd(command)))
+                .with_schema(parameters.schema())
+                .build(futures::stream::iter([Ok(parameters)]))
+                .try_collect::<Vec<_>>()
+                .await
+                .map_err(|error| sql_error(&request_id, error))?;
+            let mut request = tonic::Request::new(futures::stream::iter(messages));
+            *request.metadata_mut() = metadata;
+            tokio::time::timeout(read_timeout, flight.do_exchange(request)).await
+        } else {
+            let mut request =
+                tonic::Request::new(Ticket::new(CommandTicket { command }.encode_to_vec()));
+            *request.metadata_mut() = metadata;
+            tokio::time::timeout(read_timeout, flight.do_get(request)).await
+        }
+        .map_err(|_| sql_error(&request_id, "SQL query submission timed out"))?
+        .map_err(|error| sql_error(&request_id, error))?;
+        let negotiated = response
+            .metadata()
+            .get(PROTOCOL_HEADER)
+            .is_some_and(|value| value == PROTOCOL_VERSION);
+        let mut response_stream = response.into_inner();
+        if negotiated {
+            let first = tokio::time::timeout(read_timeout, response_stream.message())
+                .await
+                .map_err(|_| sql_error(&request_id, "SQL query handoff timed out"))?
+                .map_err(|error| sql_error(&request_id, error))?
+                .ok_or_else(|| {
+                    sql_error(&request_id, "SQL response omitted its execution decision")
+                })?;
+            if !first.data_header.is_empty() || !first.data_body.is_empty() {
+                return Err(sql_error(
+                    &request_id,
+                    "SQL response sent rows before its execution decision",
+                ));
             }
-            .as_any()
-            .encode_to_vec(),
+            let envelope =
+                Any::decode(first.app_metadata).map_err(|error| sql_error(&request_id, error))?;
+            if envelope.type_url != RESPONSE_TYPE_URL {
+                return Err(sql_error(
+                    &request_id,
+                    "SQL response returned an unknown execution decision",
+                ));
+            }
+            let decision = QueryResponse::decode(envelope.value)
+                .map_err(|error| sql_error(&request_id, error))?;
+            if let Some(info) = decision.poll_info {
+                if info.info.is_none() && info.flight_descriptor.is_none() {
+                    return Err(sql_error(
+                        &request_id,
+                        "SQL handoff omitted result and continuation information",
+                    ));
+                }
+                return Ok(Submission::Deferred(info));
+            }
+        }
+        let stream = FlightRecordBatchStream::new_from_flight_data(
+            response_stream
+                .map_err(|status| arrow_flight::error::FlightError::Tonic(Box::new(status))),
         );
-        // The descriptor rides on the schema message, and the row follows it.
-        let request = FlightDataEncoderBuilder::new()
-            .with_flight_descriptor(Some(descriptor))
-            .with_schema(parameters.schema())
-            .build(futures::stream::iter([Ok(parameters)]));
-        let mut flight = client
-            .client_with_headers(default_namespace_path, &request_id)
-            .await?;
-        let stream = tokio::time::timeout(read_timeout, flight.do_exchange(request))
-            .await
-            .map_err(|_| sql_error(&request_id, "SQL query submission timed out"))?
-            .map_err(|err| sql_error(&request_id, err))?;
-        Ok(Self {
+        Ok(Submission::Stream(ResultEndpointStream {
+            stream,
+            request_id,
+            read_timeout,
+        }))
+    }
+
+    pub(super) fn new(
+        id: Uuid,
+        client: Arc<SqlClientInner>,
+        response: ResultEndpointStream,
+    ) -> Self {
+        Self {
             id,
             client,
-            response: StdMutex::new(Some(ResultEndpointStream {
-                stream,
-                request_id,
-                read_timeout,
-            })),
+            response: StdMutex::new(Some(response)),
             lifecycle: StdMutex::new(Lifecycle::Running),
             cancelled: Notify::new(),
             terminal_at: OnceLock::new(),
             last_accessed: StdMutex::new(Instant::now()),
-        })
+        }
     }
 
     pub(super) fn touch(&self) {
@@ -242,7 +317,7 @@ impl ExchangeQuery {
     }
 
     /// Take the rows and wait for the first batch, which carries the schema.
-    async fn prepare(&self) -> Result<PreparedExchange> {
+    async fn prepare(&self) -> Result<PreparedStream> {
         let Some(rows) = self.response.lock().unwrap().take() else {
             // Taken by an earlier attempt that failed, or dropped by a cancel.
             return Err(match &*self.lifecycle.lock().unwrap() {
@@ -275,7 +350,7 @@ impl ExchangeQuery {
         if first.is_none() {
             self.settle(Lifecycle::Finished);
         }
-        Ok(PreparedExchange {
+        Ok(PreparedStream {
             schema,
             rest: first.is_some().then_some(rows),
             first,
@@ -284,7 +359,7 @@ impl ExchangeQuery {
 
     async fn run(
         self: Arc<Self>,
-        mut prepared: PreparedExchange,
+        mut prepared: PreparedStream,
         sender: mpsc::Sender<Result<RecordBatch>>,
     ) -> Result<()> {
         if let Some(batch) = prepared.first.take()
@@ -343,13 +418,13 @@ impl ExchangeQuery {
     }
 }
 
-pub(super) struct ExchangeQueryHandle {
-    query: Arc<ExchangeQuery>,
+pub(super) struct StreamingQueryHandle {
+    query: Arc<StreamingQuery>,
     result_started: AtomicBool,
 }
 
-impl ExchangeQueryHandle {
-    pub(super) fn new(query: Arc<ExchangeQuery>) -> Self {
+impl StreamingQueryHandle {
+    pub(super) fn new(query: Arc<StreamingQuery>) -> Self {
         Self {
             query,
             result_started: AtomicBool::new(false),
@@ -357,7 +432,7 @@ impl ExchangeQueryHandle {
     }
 }
 
-impl Drop for ExchangeQueryHandle {
+impl Drop for StreamingQueryHandle {
     // Rows nobody took are rows nobody will read. Keeping the call open would
     // hold the statement running on the server, stalled on flow control,
     // until the registry forgot it.
@@ -369,7 +444,7 @@ impl Drop for ExchangeQueryHandle {
 }
 
 #[async_trait::async_trait]
-impl QueryHandle for ExchangeQueryHandle {
+impl QueryHandle for StreamingQueryHandle {
     fn id(&self) -> Uuid {
         self.query.touch();
         self.query.id

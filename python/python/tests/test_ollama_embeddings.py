@@ -3,7 +3,6 @@
 
 import json
 
-import httpx
 import numpy as np
 import pyarrow as pa
 import pytest
@@ -14,6 +13,7 @@ from lancedb.embeddings import get_registry
 
 @pytest.fixture
 def ollama_embeddings():
+    httpx = pytest.importorskip("httpx")
     pytest.importorskip("ollama")
     requests = []
 

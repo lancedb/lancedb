@@ -20,19 +20,33 @@ pip install lancedb
 The following methods describe the synchronous API client. There
 is also an [asynchronous API client](#connections-asynchronous).
 
+Connections to `db://` databases reject local-only options with
+`NotImplementedError`. These include `session` and `manifest_enabled=True` on
+connect, per-table storage and write options on create, and `index_cache_size`,
+`storage_options`, or `location` on open (where the method accepts them).
+Omit these options to use server-managed storage and caching. Connection-level
+`storage_options` supported by an Enterprise deployment remain available.
+
+The synchronous remote `create_table` uses the same positional order as the
+local API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
+embedding_functions`. Prefer keyword arguments for optional parameters.
+
 ## Connections (Synchronous)
 
 ::: lancedb.connect
 
 ::: lancedb.db.DBConnection
 
-Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
-`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
-collect synchronous results, or `[name async for name in db.list_views()]` with
-an asynchronous connection. `page_limit` controls each request, and `page_token`
-resumes a listing. Drain the iterator's cached results before saving its token.
+Resource listings return iterators. Use `list(db.list_tables())` to collect all
+table names. `db.list_tables().tables` is a list of the first page; `limit`
+controls its page size and `page_token` resumes at a saved token. The same
+patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
 ::: lancedb.listing.Listing
+
+::: lancedb.listing.TableListing
+
+::: lancedb.listing.NamespaceListing
 
 ::: lancedb.Session
 
@@ -218,10 +232,19 @@ The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
 reader as soon as its initial result stream is available. `execute_query_async`
-returns a query handle immediately; use it to inspect progress, open a reader,
+returns a query handle once submission is accepted; use it to inspect progress, open a reader,
 or cancel the query. The SQL client is initialized by the first query and
 retained for the lifetime of the remote connection. Query ids are random,
-connection-scoped references rather than encoded SQL or durable resume tokens:
+connection-scoped references rather than encoded SQL or durable resume tokens.
+
+Both APIs start with one Flight call. The server can stream results on that
+call or return a polling continuation that the SDK follows automatically.
+This behavior is the same with and without parameters. Open the reader directly;
+a directly streamed query needs its reader to make progress. Dropping an unread
+handle or its reader stops direct streaming. Deferred execution continues until
+explicitly cancelled.
+
+For example:
 
 ```python
 import lancedb
@@ -285,6 +308,25 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
+Local and remote tables use the same arguments for index creation, deletion,
+index statistics, and search. For example, `table.delete(where="id = 1")`,
+`table.create_index("cosine", 2)` (the deprecated vector API), and
+`table.search([1.0, 1.0], fast_search=True)` work with either backend.
+`fast_search=True` excludes rows that have not been indexed.
+
+`create_scalar_index` defaults to `replace=True` on both backends. Both scalar
+and full-text index creation accept `wait_timeout`. Remote maintenance methods
+accept the local options: cleanup and compaction warn that they are no-ops,
+while `optimize` reports an unsupported operation. Removed Tantivy options
+produce the same explanatory errors on both backends.
+
+The old remote keyword names `predicate` for `delete`, `index_name` for
+`drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
+remain available with deprecation warnings. Use `where`, `name`, `index_name`,
+and `field_names`, respectively. For positional calls, use the argument order
+documented by `Table` below; specify index options by keyword when migrating
+code that used the former remote-only argument order.
+
 ::: lancedb.table.Table
 
 ::: lancedb.table.FragmentStatistics
@@ -300,6 +342,14 @@ listing a storage directory.
 ::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
+
+Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
+with `bytes` to materialize its contents before the Function runs. Reader
+inputs infer the Blob V2 type without an explicit input schema. Readers are
+scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
+`size`, and cursor-independent `read_range`.
+
+::: lancedb.BlobReader
 
 ::: lancedb.functions.FunctionArtifact
 
@@ -518,11 +568,63 @@ instead of being materialized with the rest of the row.
 
 `lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
 pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
-still work. Queries return descriptors. Call
+still work. Native table queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
+
+Remote SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+return an openable reference instead, then use
+[`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
+[`open_blob_files`][lancedb.table.Table.open_blob_files]:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+This example uses a remote SQL connection that produces source-bearing
+descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
+`blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
+`branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
+the source table and commit and reads the captured version without changing
+the table handle's checkout. Raw native storage descriptors omit `source`;
+use `fetch_blob_files(column, row_ids)` for those query results.
+
+The singular API accepts a dictionary or Arrow struct scalar. The iterable
+accepts Arrow arrays/chunked arrays or another iterable, opens handles as
+iteration advances, and preserves order, duplicates, and nulls as `None`.
+Close each non-null handle after use. Async tables provide
+`await table.open_blob_file(...)` and
+`async for file in table.open_blob_files(...)`.
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+For an async table, the iterable is consumed with `async for`:
+
+```python
+async for video in async_videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            payload = await video.aread()
+```
+
+Payload bytes load on reads. Opening an external blob with unspecified size
+can issue a metadata-only HEAD request. Remote reads use authenticated range
+requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted
 from `blob_columns()` because row ids do not identify individual list elements,
@@ -630,6 +732,16 @@ can be used to create, list, or open tables.
 ::: lancedb.db.AsyncConnection
 
 ::: lancedb.listing.AsyncListing
+
+`async for name in db.list_tables()` loads pages as needed. To inspect the
+first page, use `page = await db.list_tables()` and then `page.tables`. Reading
+the page list does not consume the iterator. `page.page_token` is the token for
+the next request; drain cached results before using it to resume in a new
+listing. The same behavior applies to namespaces.
+
+::: lancedb.listing.AsyncTableListing
+
+::: lancedb.listing.AsyncNamespaceListing
 
 ## Namespaces (Asynchronous)
 
