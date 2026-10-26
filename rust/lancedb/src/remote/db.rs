@@ -1889,9 +1889,6 @@ mod tests {
         }
     }
 
-    /// An unbound name and an inline deletion both answer `200`: the name is gone and
-    /// nothing is left to wait for, so the job is already finished.
-
     #[tokio::test]
     async fn test_retries() {
         // We'll record the request_id here, to check it matches the one in the error.
@@ -3968,9 +3965,6 @@ mod tests {
         ));
     }
 
-    /// Reject relative segments and their encoded forms before sending a request,
-    /// so a function name cannot change the route through URL normalization.
-
     /// Only `.` and `..` are relative segments. `...` and longer runs are
     /// ordinary and address perfectly well, so refusing them would make an
     /// object that works today stop working on upgrade. This pins that.
@@ -4352,14 +4346,6 @@ mod tests {
             );
         }
     }
-
-    /// A Function's namespace is addressed in the path the way a Secret's is:
-    /// every route takes the joined identifier and no body carries the
-    /// namespace, so a namespaced request differs from a root one only in its
-    /// path.
-
-    /// Each namespace segment is checked before a request is built, so an
-    /// empty segment cannot collapse the identifier onto the parent namespace.
 
     #[tokio::test]
     async fn test_conn_job_waits_to_done() {
