@@ -23,22 +23,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Specification selecting Lance's MemWAL LSM-style write path for {@code mergeInsert}.
+ * Specification enabling the realtime engine (RTE), which routes {@code mergeInsert} through
+ * Lance's MemWAL LSM-style write path.
  *
  * <p>Construct via {@link #bucket}, {@link #identity}, or {@link #unsharded}, then optionally chain
  * {@link #withMaintainedIndexes} and {@link #withWriterConfigDefaults}. Install it with {@link
- * LanceDbTableMemWal#enableMemWal} and remove it with {@link LanceDbTableMemWal#disableMemWal}.
+ * LanceDbTableRTE#enableRTE} and remove it with {@link LanceDbTableRTE#disableRTE}.
  *
  * <p>This is deliberately not {@code org.lance.memwal.InitializeMemWalParams}. That type is Lance's
  * own, and its maintained-index default is the opposite of this one: it defaults to maintaining
  * <em>nothing</em>, while a fresh spec here maintains <em>every</em> index. It also cannot express
  * the null that asks the server to resolve the set.
  */
-public class MemWalWriteSpec {
+public class RTEWriteSpec {
 
-  private static final String CONTEXT = "get_memwal_spec response";
+  private static final String CONTEXT = "get_rte_spec response";
 
-  /** How writes are routed to MemWAL shards. */
+  /** How writes are routed to RTE shards. */
   public enum Sharding {
     /** Hash-bucket writes by a scalar column. */
     BUCKET("bucket"),
@@ -73,7 +74,7 @@ public class MemWalWriteSpec {
   private final List<String> maintainedIndexes;
   private final Map<String, String> writerConfigDefaults;
 
-  private MemWalWriteSpec(
+  private RTEWriteSpec(
       Sharding sharding,
       String column,
       Integer numBuckets,
@@ -95,11 +96,11 @@ public class MemWalWriteSpec {
    * @param column A non-nested column with a supported scalar type.
    * @param numBuckets The number of buckets, in {@code [1, 1024]}.
    */
-  public static MemWalWriteSpec bucket(String column, int numBuckets) {
+  public static RTEWriteSpec bucket(String column, int numBuckets) {
     if (column == null || column.trim().isEmpty()) {
       throw new IllegalArgumentException("Column cannot be null or empty");
     }
-    return new MemWalWriteSpec(
+    return new RTEWriteSpec(
         Sharding.BUCKET, column, numBuckets, null, new HashMap<String, String>());
   }
 
@@ -111,29 +112,28 @@ public class MemWalWriteSpec {
    * with a given primary key must always produce the same {@code column} value, or upserts of that
    * key can land in different shards and a stale version can win.
    */
-  public static MemWalWriteSpec identity(String column) {
+  public static RTEWriteSpec identity(String column) {
     if (column == null || column.trim().isEmpty()) {
       throw new IllegalArgumentException("Column cannot be null or empty");
     }
-    return new MemWalWriteSpec(
-        Sharding.IDENTITY, column, null, null, new HashMap<String, String>());
+    return new RTEWriteSpec(Sharding.IDENTITY, column, null, null, new HashMap<String, String>());
   }
 
-  /** No sharding — every write goes to a single MemWAL shard — maintaining every index. */
-  public static MemWalWriteSpec unsharded() {
-    return new MemWalWriteSpec(Sharding.UNSHARDED, null, null, null, new HashMap<String, String>());
+  /** No sharding — every write goes to a single RTE shard — maintaining every index. */
+  public static RTEWriteSpec unsharded() {
+    return new RTEWriteSpec(Sharding.UNSHARDED, null, null, null, new HashMap<String, String>());
   }
 
   /**
-   * Set the indexes the MemWAL keeps up to date as rows are appended.
+   * Set the indexes the RTE keeps up to date as rows are appended.
    *
    * <p>Pass {@code null} — the default for a fresh spec — to maintain every index the table has,
    * including ones created later. Pass an empty list to maintain none.
    *
    * <p>Note that {@code null} and the empty list mean opposite things here.
    */
-  public MemWalWriteSpec withMaintainedIndexes(List<String> maintainedIndexes) {
-    return new MemWalWriteSpec(
+  public RTEWriteSpec withMaintainedIndexes(List<String> maintainedIndexes) {
+    return new RTEWriteSpec(
         sharding,
         column,
         numBuckets,
@@ -150,11 +150,11 @@ public class MemWalWriteSpec {
    * max_unflushed_memtable_bytes}, and {@code enable_memtable}. Duration knobs carry an {@code _ms}
    * suffix, such as {@code max_wal_flush_interval_ms}.
    */
-  public MemWalWriteSpec withWriterConfigDefaults(Map<String, String> writerConfigDefaults) {
+  public RTEWriteSpec withWriterConfigDefaults(Map<String, String> writerConfigDefaults) {
     if (writerConfigDefaults == null) {
       throw new IllegalArgumentException("writerConfigDefaults cannot be null");
     }
-    return new MemWalWriteSpec(
+    return new RTEWriteSpec(
         sharding,
         column,
         numBuckets,
@@ -178,7 +178,7 @@ public class MemWalWriteSpec {
   }
 
   /**
-   * Which indexes the MemWAL maintains.
+   * Which indexes the RTE maintains.
    *
    * <p>Null selects automatically: every supported index the table has now or gains later. An empty
    * list maintains none. A non-empty list maintains exactly those.
@@ -192,7 +192,7 @@ public class MemWalWriteSpec {
     return Collections.unmodifiableMap(writerConfigDefaults);
   }
 
-  /** Render this spec as the {@code enable_memwal} request body. */
+  /** Render this spec as the {@code enable_rte} request body. */
   Map<String, Object> toRequestBody() {
     Map<String, Object> shardingBody = new LinkedHashMap<String, Object>();
     shardingBody.put("mode", sharding.wireName());
@@ -212,15 +212,15 @@ public class MemWalWriteSpec {
   }
 
   /**
-   * Rebuild a spec from a {@code get_memwal_spec} response body.
+   * Rebuild a spec from a {@code get_rte_spec} response body.
    *
    * <p>A null {@code maintained_indexes} selects every index the table has; an empty list selects
    * none.
    */
-  static MemWalWriteSpec fromJson(JsonNode node) {
+  static RTEWriteSpec fromJson(JsonNode node) {
     JsonNode shardingNode = node.get("sharding");
     if (shardingNode == null || shardingNode.get("mode") == null) {
-      throw new IllegalStateException("get_memwal_spec response has no sharding mode");
+      throw new IllegalStateException("get_rte_spec response has no sharding mode");
     }
     Sharding sharding = Sharding.fromWireName(shardingNode.get("mode").asText());
 
@@ -253,12 +253,12 @@ public class MemWalWriteSpec {
           .forEachRemaining(name -> defaults.put(name, defaultsNode.get(name).asText()));
     }
 
-    return new MemWalWriteSpec(sharding, column, numBuckets, maintainedIndexes, defaults);
+    return new RTEWriteSpec(sharding, column, numBuckets, maintainedIndexes, defaults);
   }
 
   @Override
   public String toString() {
-    return "MemWalWriteSpec{sharding="
+    return "RTEWriteSpec{sharding="
         + sharding
         + ", column="
         + column

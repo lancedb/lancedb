@@ -13,11 +13,11 @@ availability:
 
 Every write keeps the version before it, which is what makes
 [time travel](/management/table#versioning) possible. Cleanup is what ends
-that -- pruning versions older than a retention window, and the files that only
+that: pruning versions older than a retention window, and the files that only
 those versions referenced.
 
 <Note>
-**Enterprise job type:** `cleanup`. Distinct from `compact` -- compaction
+**Enterprise job type:** `cleanup`. Distinct from `compact`: compaction
 merges files, cleanup removes them. `optimize()` in OSS runs both in one call;
 Enterprise schedules them as separate jobs, and runs cleanup only when the
 deployment's configuration enables it.
@@ -65,12 +65,33 @@ files, so a tag on what was the latest version can become an older one by the
 time cleanup runs. `optimize()` then raises after compacting, and its index
 update does not run.
 
-A deployment's background cleanup follows the same rules. Its own background
-jobs, such as compaction and index updates, also commit new versions, so a tag
-on what is now the latest version can become an older one without a call from
-you. If you rely on reading old versions, set the window to cover the range you
+Enterprise background cleanup keeps tagged snapshots while pruning unrelated
+expired versions. If you rely on reading untagged old versions, set the window
+to cover the range you
 need before running this, not after.
 </Warning>
+
+## Managed blob objects {#managed-blobs}
+
+[Managed blobs](/management/table#managed-blobs) store out-of-line payloads
+under the table's `_blobs/` directory. Cleanup follows the references from
+retained snapshots, including protected tags and branches, before selecting
+objects for deletion. Replacing a blob or deleting a row makes its old payload
+eligible only after no retained snapshot references it.
+
+Cleanup removes whole objects. If a packed object contains several blobs, it
+remains while any of them is live. Compaction preserves Managed payload objects
+rather than copying their bytes, so compaction alone does not reclaim the
+unused portion of a packed object.
+
+Use table maintenance to remove Managed objects; deleting `_blobs/` files
+directly can corrupt current or historical snapshots. Upgrade all clients and
+maintenance workers to a version that understands Managed blobs before using
+them, and reopen handles created before that upgrade.
+
+For local tables, `optimize()` performs compaction and cleanup. Enterprise runs
+these as background jobs; the remote Python table does not support `optimize()`.
+See [Background jobs](/maintenance/background-jobs) for the Enterprise path.
 
 ## Disk usage does not drop immediately {#disk}
 
@@ -100,7 +121,7 @@ cleanup jobs never set it.
 
 <Warning>
 `delete_unverified=True` removes them regardless of age. Only set it when you
-can guarantee **no other process is writing to the table** -- otherwise it can
+can guarantee **no other process is writing to the table**. Otherwise it can
 delete files belonging to a write that is genuinely in progress, and corrupt
 the table.
 </Warning>
@@ -109,7 +130,7 @@ the table.
 
 <CardGroup cols={2}>
   <Card title="Compaction" icon="broom" href="/maintenance/compaction">
-    Merging small files -- the other half of `optimize()`.
+    Merging small files, the other half of `optimize()`.
   </Card>
   <Card title="Background jobs" icon="gears" href="/maintenance/background-jobs">
     The Enterprise jobs that run without a call from you.

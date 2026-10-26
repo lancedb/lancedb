@@ -38,7 +38,7 @@ collecting the entire result in application memory. See
 
 The endpoint executes one statement per request and is meant for the queries
 and DDL/DML pages below. Reach for the SDKs instead for table-management
-operations that have no SQL form, such as a merge insert -- see
+operations that have no SQL form, such as a merge insert. See
 [What SQL cannot do](#cannot).
 
 ## Reference {#reference}
@@ -66,7 +66,7 @@ Draft for the Functions release. Add this row to the table above, after Index:
 | [Insert](/sql/dml/insert) | `INSERT INTO`, including `INSERT ... SELECT` |
 | [Update](/sql/dml/update) | `UPDATE ... SET` |
 | [Delete](/sql/dml/delete) | `DELETE FROM` |
-| [Copy](/sql/dml/copy) | `COPY` -- refused by recent deployment versions |
+| [Copy](/sql/dml/copy) | `COPY` (refused by recent deployment versions) |
 | [Refresh](/sql/dml/refresh) | filling computed columns and materialized views |
 
 ### DQL {#dql}
@@ -97,9 +97,9 @@ Draft for the Functions release. Add this row to the table above, after Index:
 | | |
 | --- | --- |
 | Vector search | See [SQL vector search](/basics/sql#no-vector-sql) for supported query forms and server-version requirements. The [SDK query builder](/search/vector-search) also supports vector search. |
-| Merge insert | no SQL form -- needs a source relation and a per-match policy |
+| Merge insert | no SQL form: it needs a source relation and a per-match policy |
 | `information_schema` | not enabled, so `SHOW TABLES` and `SHOW COLUMNS` fail |
-| `COPY` | refused by recent deployment versions -- see [Copy](/sql/dml/copy) |
+| `COPY` | refused by recent deployment versions (see [Copy](/sql/dml/copy)) |
 | `PREPARE` / `EXECUTE` | preparation is a [protocol feature](/sql/prepared-statements), not a statement |
 | Run on a local database | no engine to plan the statement |
 

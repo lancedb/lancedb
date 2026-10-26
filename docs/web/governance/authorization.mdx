@@ -23,8 +23,8 @@ A grant is held by one of four kinds of subject, distinguished by a prefix:
 
 | Prefix | Subject |
 | --- | --- |
-| `p:` | a principal, by ID -- `P:` by name |
-| `g:` | a group, by ID -- `G:` by name |
+| `p:` | a principal, by ID (`P:` by name) |
+| `g:` | a group, by ID (`G:` by name) |
 | `r:` | a role |
 | `a:` | the principal holding an API key, named by the key |
 
@@ -67,7 +67,7 @@ A nested namespace joins its path with `$`, as in `namespace:db:parent$child`
 or `table:db:parent$child$table`.
 
 The hierarchy is not decorative. Reaching a table requires `USAGE` on the
-namespace containing it and on the database containing that -- a grant on the
+namespace containing it and on the database containing that. A grant on the
 table alone is not enough to traverse to it.
 
 ## Privileges {#privileges}
@@ -118,14 +118,14 @@ A subtlety worth knowing, because it explains grants that appear to work on
 objects that do not exist yet.
 
 When you create an object, the deployment checks the database and each
-namespace that will contain it. One that **has no owner** -- because it does
-not exist yet, or predates per-object authorization -- is treated as one you are
+namespace that will contain it. One that **has no owner** (because it does
+not exist yet, or predates per-object authorization) is treated as one you are
 creating: the check falls back to `CREATE_DATABASE` on `system` for the
 database, or to `CREATE_NAMESPACE` on its parent for a namespace, and you become
 its owner. One that has an owner needs `USAGE` as usual.
 
 So a principal holding `CREATE_DATABASE` can create a table in a database that
-has not been created -- which is what makes creation possible at all, and why
+has not been created, which is what makes creation possible at all, and why
 an empty ACL set is not the same as a deny. The fallback applies only when
 creating; other operations on a database or namespace need `USAGE` on it.
 

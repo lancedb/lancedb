@@ -96,7 +96,7 @@ JSON scalar index. See [Functions](/sql/scalar-functions#json).
 
 ### Blobs {#blobs}
 
-A blob column is read either as its binary contents or as a **description** — a
+A blob column is read either as its binary contents or as a **description**: a
 pointer plus metadata, without fetching the bytes. That choice changes the
 column's Arrow type, and therefore the schema your query sees.
 
@@ -121,7 +121,7 @@ error naming the missing feature rather than an unknown-function error, and the
 spatial index is gated the same way.
 </Warning>
 
-Geometry can still be stored -- it is binary, and binary columns work -- but
+Geometry can still be stored (it is binary, and binary columns work), but
 nothing interprets it. Filter on a bounding box held in ordinary numeric
 columns if you need spatial predicates today.
 

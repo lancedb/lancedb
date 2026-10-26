@@ -28,7 +28,7 @@ table.add_columns(computed={"doubled": "x * 2"})
 ```
 
 That commits a new table version with the column present and empty. It is an
-ordinary table version, so the usual [versioning](/management/table#versioning) applies --
+ordinary table version, so the usual [versioning](/management/table#versioning) applies,
 including that you can travel back to before the column existed.
 
 ## Compute now or on refresh {#computed-vs-transforms}
@@ -61,7 +61,7 @@ table.add_columns(computed={
 })
 ```
 
-Declaration order is dependency order -- a computed column may reference one
+Declaration order is dependency order: a computed column may reference one
 declared earlier in the same mapping, but not one declared after it.
 
 The functions available are the ones the
@@ -92,8 +92,8 @@ reshape later. Dropping the computed column releases the constraint.
 
 <Badge color="red">Enterprise</Badge>
 
-When the value cannot be expressed in SQL -- an embedding, a model call, an
-image decode -- [Geneva](/geneva), the feature engineering package for LanceDB
+When the value cannot be expressed in SQL (an embedding, a model call, an
+image decode), [Geneva](/geneva), the feature engineering package for LanceDB
 Enterprise, fills the column with a Python function instead.
 
 {/*

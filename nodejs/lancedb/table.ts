@@ -35,9 +35,9 @@ import {
   FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
-  MemWalStats,
   Branches as NativeBranches,
   OptimizeStats,
+  RTEStats,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
@@ -61,7 +61,7 @@ export { IndexConfig } from "./native";
 export {
   TableShardStats,
   SsTableStats,
-  MemWalStats,
+  RTEStats,
   MemtableStats,
 } from "./native";
 
@@ -207,8 +207,8 @@ export type TokenizeTableOptions =
     };
 
 /**
- * Specification selecting Lance's MemWAL LSM-style write path for
- * `mergeInsert`.
+ * Specification enabling the realtime engine (RTE), which routes
+ * `mergeInsert` through Lance's MemWAL LSM-style write path.
  *
  * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
  * `column` and `numBuckets` are required; for `"identity"`, `column` is
@@ -217,7 +217,7 @@ export type TokenizeTableOptions =
  * `column` value, or upserts of that key can land in different shards and a
  * stale version can win).
  */
-export interface MemWalWriteSpec {
+export interface RTEWriteSpec {
   /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
   specType: "bucket" | "identity" | "unsharded";
   /** Bucket and identity variants: the sharding column. */
@@ -225,7 +225,7 @@ export interface MemWalWriteSpec {
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
   /**
-   * Indexes the MemWAL keeps up to date. Omit for every index the table has,
+   * Indexes the RTE keeps up to date. Omit for every index the table has,
    * including ones created later. Pass `[]` for none.
    */
   maintainedIndexes?: string[];
@@ -758,10 +758,10 @@ export abstract class Table {
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
   /**
-   * Install an {@link MemWalWriteSpec} on this table, selecting Lance's MemWAL
+   * Install an {@link RTEWriteSpec} on this table, selecting Lance's MemWAL
    * LSM-style write path for future `mergeInsert` calls.
    *
-   * `MemWalWriteSpec` chooses one of three sharding strategies via `specType`:
+   * `RTEWriteSpec` chooses one of three sharding strategies via `specType`:
    *
    * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
    *   key (`column` and `numBuckets` required).
@@ -773,15 +773,15 @@ export abstract class Table {
    * requires it to be the single column being bucketed.
    *
    * Omitting `maintainedIndexes` maintains every index the table has,
-   * including ones created later, and skips a kind the MemWAL cannot maintain.
+   * including ones created later, and skips a kind the RTE cannot maintain.
    * Naming them pins an exact set, and a still-building index is rejected
    * rather than quietly omitted.
-   * @param {MemWalWriteSpec} spec The sharding spec to install.
+   * @param {RTEWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
    * ```ts
    * await table.setUnenforcedPrimaryKey("id");
-   * await table.enableMemWal({
+   * await table.enableRTE({
    *   specType: "bucket",
    *   column: "id",
    *   numBuckets: 16,
@@ -789,36 +789,36 @@ export abstract class Table {
    * });
    * ```
    */
-  abstract enableMemWal(spec: MemWalWriteSpec): Promise<void>;
+  abstract enableRTE(spec: RTEWriteSpec): Promise<void>;
   /**
-   * Remove the {@link MemWalWriteSpec} from this table, reverting to the standard
+   * Remove the {@link RTEWriteSpec} from this table, reverting to the standard
    * `mergeInsert` write path.
    *
    * Errors if no spec is currently set.
    * @returns {Promise<void>}
    */
-  abstract disableMemWal(): Promise<void>;
+  abstract disableRTE(): Promise<void>;
   /**
-   * Read the {@link MemWalWriteSpec} currently installed on this table.
+   * Read the {@link RTEWriteSpec} currently installed on this table.
    *
-   * Resolves to `undefined` when the MemWAL write path is not enabled (no
-   * spec has been set, or it was removed with {@link Table#disableMemWal}).
+   * Resolves to `undefined` when the RTE write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#disableRTE}).
    * The spec is the one installed, including its maintained-index selection:
    * an absent `maintainedIndexes` for every index the table has, an empty
    * array for none.
-   * @returns {Promise<MemWalWriteSpec | undefined>}
+   * @returns {Promise<RTEWriteSpec | undefined>}
    */
-  abstract getMemWalSpec(): Promise<MemWalWriteSpec | undefined>;
+  abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
   /**
-   * Drain and close any cached MemWAL shard writers held for this table.
+   * Drain and close any cached RTE shard writers held for this table.
    *
-   * When an {@link MemWalWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * When an {@link RTEWriteSpec} is installed, `mergeInsert` opens RTE
    * shard writers and caches them for reuse across calls. This closes them,
    * flushing pending data; writers reopen lazily on the next `mergeInsert`.
    * It is a no-op when no writers are cached.
    * @returns {Promise<void>}
    */
-  abstract closeMemWalWriters(): Promise<void>;
+  abstract closeRTEWriters(): Promise<void>;
   /**
    * Freeze every table shard's active memtable into a new SSTable.
    *
@@ -826,18 +826,18 @@ export abstract class Table {
    * so this is safe to call repeatedly.
    * @returns {Promise<void>}
    */
-  abstract flushMemWal(): Promise<void>;
+  abstract flushRTE(): Promise<void>;
   /**
    * Trigger a background SSTable compaction pass per table shard.
    *
    * Returns once the passes are *dispatched*, not once they finish — watch
-   * {@link Table#getMemWalStats} for progress, or use
-   * {@link Table#checkpointMemWal} to wait for convergence.
+   * {@link Table#getRTEStats} for progress, or use
+   * {@link Table#checkpointRTE} to wait for convergence.
    * @returns {Promise<void>}
    */
-  abstract compactMemWal(): Promise<void>;
+  abstract compactRTE(): Promise<void>;
   /**
-   * Converge this table's MemWAL write path into its base table.
+   * Converge this table's RTE write path into its base table.
    *
    * Freezes once, then triggers compaction and polls until the SSTables that existed
    * at the start is gone. The target set is fixed at the start, so
@@ -852,26 +852,26 @@ export abstract class Table {
    * @returns {Promise<void>}
    * @example
    * ```ts
-   * const before = await table.getMemWalStats();
-   * await table.checkpointMemWal();
-   * const after = await table.getMemWalStats();
+   * const before = await table.getRTEStats();
+   * await table.checkpointRTE();
+   * const after = await table.getRTEStats();
    * ```
    */
-  abstract checkpointMemWal(): Promise<void>;
+  abstract checkpointRTE(): Promise<void>;
   /**
-   * Read live per-table-shard MemWAL state.
+   * Read live per-table-shard RTE state.
    *
    * Answers "how far behind is my fresh tier", "which table shard is hot", and
    * "why is my fresh-tier vector search brute-force". Mutates no table state.
    *
-   * Resolves to `undefined` only when the MemWAL write path is not enabled.
+   * Resolves to `undefined` only when the RTE write path is not enabled.
    * @param {boolean} includeSstableRows Also count rows per SSTable.
    *   Off by default because each count opens an uncached Lance dataset.
-   * @returns {Promise<MemWalStats | undefined>}
+   * @returns {Promise<RTEStats | undefined>}
    */
-  abstract getMemWalStats(
+  abstract getRTEStats(
     includeSstableRows?: boolean,
-  ): Promise<MemWalStats | undefined>;
+  ): Promise<RTEStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -989,7 +989,11 @@ export abstract class Table {
    *
    * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
    * the client process from index metadata. For remote tables, this means the
-   * same tokenizer model files must also exist locally.
+   * same tokenizer model files must also exist locally (under
+   * `LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
+   * mismatch cannot be detected: the returned tokens may differ from what the
+   * server's index produces. If the model files are missing, an error naming
+   * the tokenizer is raised.
    */
   abstract tokenize(
     query: string,
@@ -1480,43 +1484,43 @@ export class LocalTable extends Table {
     return await this.inner.setUnenforcedPrimaryKey(cols);
   }
 
-  async enableMemWal(spec: MemWalWriteSpec): Promise<void> {
-    return await this.inner.enableMemWal(spec);
+  async enableRTE(spec: RTEWriteSpec): Promise<void> {
+    return await this.inner.enableRTE(spec);
   }
 
-  async disableMemWal(): Promise<void> {
-    return await this.inner.disableMemWal();
+  async disableRTE(): Promise<void> {
+    return await this.inner.disableRTE();
   }
 
-  async getMemWalSpec(): Promise<MemWalWriteSpec | undefined> {
+  async getRTESpec(): Promise<RTEWriteSpec | undefined> {
     // The native binding types `specType` as a plain `string`; narrow it back
     // to the public union. The Rust `From` impl only ever emits one of the
     // three valid values, so the cast is safe.
-    return ((await this.inner.getMemWalSpec()) ?? undefined) as
-      | MemWalWriteSpec
+    return ((await this.inner.getRTESpec()) ?? undefined) as
+      | RTEWriteSpec
       | undefined;
   }
 
-  async closeMemWalWriters(): Promise<void> {
-    return await this.inner.closeMemWalWriters();
+  async closeRTEWriters(): Promise<void> {
+    return await this.inner.closeRTEWriters();
   }
 
-  async flushMemWal(): Promise<void> {
-    return await this.inner.flushMemWal();
+  async flushRTE(): Promise<void> {
+    return await this.inner.flushRTE();
   }
 
-  async compactMemWal(): Promise<void> {
-    return await this.inner.compactMemWal();
+  async compactRTE(): Promise<void> {
+    return await this.inner.compactRTE();
   }
 
-  async checkpointMemWal(): Promise<void> {
-    return await this.inner.checkpointMemWal();
+  async checkpointRTE(): Promise<void> {
+    return await this.inner.checkpointRTE();
   }
 
-  async getMemWalStats(
+  async getRTEStats(
     includeSstableRows: boolean = false,
-  ): Promise<MemWalStats | undefined> {
-    return (await this.inner.getMemWalStats(includeSstableRows)) ?? undefined;
+  ): Promise<RTEStats | undefined> {
+    return (await this.inner.getRTEStats(includeSstableRows)) ?? undefined;
   }
 
   async version(): Promise<number> {

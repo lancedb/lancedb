@@ -40,7 +40,7 @@ LanceDB implements **ANN (Approximate Nearest-Neighbor)** queries with several t
 ## Do you need one? {#do-you-need-one}
 
 Not always. LanceDB's disk-based brute-force kNN search is fast even without an
-index -- computing 100K pairs of 1000-dimension vectors takes under 20ms in
+index: computing 100K pairs of 1000-dimension vectors takes under 20ms in
 benchmarks. For datasets around 100K rows or fewer, or applications that can
 accept ~100ms latency, a vector index is usually unnecessary overhead.
 
@@ -276,7 +276,7 @@ The snippet below builds and queries an `IVF_HNSW_SQ` index.
 In LanceDB Enterprise, vector indexes are managed **automatically**. The system asynchronously updates and optimizes indexes as a background process:
 - Automatically manages indexing parameters and storage
 - Can build an `IVF_PQ` index automatically on a vector column the deployment is configured to index
-- GPU-based `IVF_PQ` builds are available on request -- [contact support](/deployment/support) to enable them for your deployment. Build time depends on dataset size, dimensions and GPU resources.
+- GPU-based `IVF_PQ` builds are available on request. [Contact support](/deployment/support) to enable them for your deployment. Build time depends on dataset size, dimensions and GPU resources.
 
  <Badge color="gray">Open-Source</Badge> 
  LanceDB OSS users can manually create vector indexes by calling `table.create_index()`. 
@@ -350,7 +350,7 @@ discussion of LanceDB vector indexes and quantized vector indexes can be found [
 
 ### Quantization Techniques
 LanceDB provides $3$ distinct quantization techniques: Product Quantization (PQ), RaBitQ Quantization (RQ), and Scalar Quantization (SQ).
-Recall that all quantizations perform **lossy** compression, in that they irreversibly lose some degree of precision in order to 
+Recall that all quantizations perform **lossy** compression, in that they irreversibly lose some degree of precision to
 compactly store an index.
 
 #### Product Quantization (PQ)
@@ -384,7 +384,7 @@ The inner workings of RaBitQ quantization are rather mathematically dense. It ge
 applying a uniformly random, approximately distance-preserving orthogonal transformation of the vertices of the $d$-dimensional hypercube, 
 where $d$ is the dimensionality of the dataset. We defer the details, and an elegant theoretical error bound, to [the original paper.](https://arxiv.org/pdf/2405.12497)
 
-##### Using RaBitQ
+##### Using RaBitQ {#using-rabitq}
 Use RaBitQ quantization by selecting quantized index types ending in the suffix `RQ`. For example, call `create_index` with `index_type="IVF_RQ"`. 
 Note that when using `IVF_RQ`, the dimension of the dataset must be a multiple of `8`.
 

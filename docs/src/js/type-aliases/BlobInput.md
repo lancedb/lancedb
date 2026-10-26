@@ -12,6 +12,7 @@ type BlobInput:
   | BlobUri
   | object
   | object
+  | object
   | null
   | undefined;
 ```
@@ -20,6 +21,9 @@ A value accepted for a `lance.blob.v2` column (see [blob](../functions/blob.md))
 
 Either inline bytes, a URI pointing at external bytes, or a struct that sets
 exactly one of `data` or `uri`. `null` and `undefined` write a null blob.
+External byte ranges require both
+`position` (non-negative) and `size` (positive). Use safe integer numbers or
+`bigint` values for these unsigned 64-bit byte counts.
 
 ## Example
 

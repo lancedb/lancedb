@@ -1,14 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-"""WAL-PK-FUSION: hybrid search's primary-key fallback for MemWAL tables.
+"""WAL-PK-FUSION: hybrid search's primary-key fallback for RTE tables.
 
-Hybrid search joins its vector and full-text legs on `_rowid`, which a MemWAL
+Hybrid search joins its vector and full-text legs on `_rowid`, which an RTE
 table cannot supply: the fresh tier has no stable row id, so the server rejects
 `with_row_id` before it plans. When that happens the legs are joined on a
 surrogate `_rowid` built from the table's primary key instead.
 
-This is a stopgap until MemWAL supports `_rowid`, and everything it needs lives
+This is a stopgap until RTE supports `_rowid`, and everything it needs lives
 here so it can be removed in one pass:
 
 1. Delete this file and `tests/test_wal_hybrid.py`.
@@ -69,21 +69,21 @@ def _pk_columns(schema: pa.Schema) -> List[str]:
 # builds it from the same words -- so this substring survives either path and
 # the wrapping each adds. It is a coupling to a message rather than a code,
 # because the refusal arrives as a generic 400; if the server ever rewords it
-# the fallback stops firing and hybrid on a MemWAL table errors visibly again,
+# the fallback stops firing and hybrid on an RTE table errors visibly again,
 # which is loud rather than silently wrong.
 _WAL_ROW_ID_REFUSAL = "does not support with_row_id"
 
 WAL_ROW_ID_UNSUPPORTED = (
-    "hybrid search on a MemWAL table cannot return _rowid: the fresh tier has "
+    "hybrid search on an RTE table cannot return _rowid: the fresh tier has "
     "no stable row id, and the ids the fusion joins on are synthesized from "
-    "the primary key. Set use_memwal(False) to read the base table only (results "
-    "will exclude un-compacted MemWAL data)"
+    "the primary key. Set use_rte(False) to read the base table only (results "
+    "will exclude un-compacted RTE data)"
 )
 
 
 def _is_wal_row_id_refusal(error: BaseException) -> bool:
     """Whether `error` is the server declining `_rowid` because the table is
-    MemWAL-backed, as opposed to any other failure the query might hit."""
+    RTE-backed, as opposed to any other failure the query might hit."""
     return _WAL_ROW_ID_REFUSAL in str(error)
 
 
@@ -112,7 +112,7 @@ def _stamp_surrogate_row_ids(
     """Give each table a `_rowid` column derived from its primary key.
 
     The fusion only ever compares that column for equality — to deduplicate, to
-    group by in a reranker, and to restore the original scores — so on a MemWAL
+    group by in a reranker, and to restore the original scores — so on an RTE
     table, where the server has no stable row id to hand out, any injective
     mapping of the primary key does the same job. Ids are assigned in first-seen
     order across `tables`, so passing them in fusion order (vector, then FTS)
@@ -124,7 +124,7 @@ def _stamp_surrogate_row_ids(
     """
     if not pk_columns:
         raise ValueError(
-            "hybrid search on a MemWAL table needs an unenforced primary key to "
+            "hybrid search on an RTE table needs an unenforced primary key to "
             "deduplicate on, and this table declares none"
         )
 
@@ -151,13 +151,13 @@ def _stamp_surrogate_row_ids(
     return stamped
 
 
-def pk_fusion_learned(table, use_memwal: Optional[bool]) -> bool:
+def pk_fusion_learned(table, use_rte: Optional[bool]) -> bool:
     """Whether a previous hybrid query on `table` was refused `_rowid`, so this
     one should go straight to the primary key.
 
     Learned from a refusal, never probed, so asking is free.
     """
-    if table is None or use_memwal is False:
+    if table is None or use_rte is False:
         return False
     # Only an unambiguous True forks to the key: a table type that answers the
     # question loosely keeps the `_rowid` path.
@@ -165,7 +165,7 @@ def pk_fusion_learned(table, use_memwal: Optional[bool]) -> bool:
 
 
 class PkFusion:
-    """How the legs of a hybrid query on a MemWAL table are joined: on a
+    """How the legs of a hybrid query on an RTE table are joined: on a
     surrogate `_rowid` built from the primary key."""
 
     def __init__(self, pk_columns: List[str]):
@@ -190,16 +190,16 @@ class PkFusion:
         # has turned `_with_row_id` on — including `return_score="all"`.
         if blob_v2_projection_sources(schema, projection):
             raise NotImplementedError(
-                "hybrid search cannot project a blob column on a MemWAL table: "
+                "hybrid search cannot project a blob column on an RTE table: "
                 "fetching blobs needs a real _rowid, and the fresh tier has no "
-                "stable one. Set use_memwal(False) to read the base table only "
-                "(results will exclude un-compacted MemWAL data)"
+                "stable one. Set use_rte(False) to read the base table only "
+                "(results will exclude un-compacted RTE data)"
             )
         return cls(_pk_columns(schema))
 
     def inject(self, columns):
         """`columns` with the key columns it is missing, to project in place of
-        the `_rowid` a MemWAL table would refuse."""
+        the `_rowid` an RTE table would refuse."""
         columns, self.injected = _with_pk_columns(columns, self.pk_columns)
         return columns
 
@@ -226,7 +226,7 @@ class PkFusion:
 
 
 def _check_refusal(error: Exception, *, fused: bool, caller_requested_row_id: bool):
-    """Re-raise `error` unless it is a MemWAL `_rowid` refusal worth retrying on
+    """Re-raise `error` unless it is an RTE `_rowid` refusal worth retrying on
     the primary key."""
     if fused or not _is_wal_row_id_refusal(error):
         raise error
@@ -248,7 +248,7 @@ def with_pk_fallback(
     `_rowid`.
 
     `_rowid` is asked for first rather than paying a round trip up front to
-    find out: only a MemWAL table refuses, and the refusal has to be handled
+    find out: only an RTE table refuses, and the refusal has to be handled
     anyway -- a write spec installed elsewhere can arrive between any two
     queries. It costs nothing server-side: it is raised before the query is
     planned. `fused` reports whether the attempt already used the key.

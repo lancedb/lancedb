@@ -653,94 +653,48 @@ See [Listing](Listing.md) for pagination state and error behavior.
 ### listNamespaces()
 
 ```ts
-abstract listNamespaces(namespacePath?, options?): Promise<ListNamespacesResponse>
+abstract listNamespaces(namespacePath?, options?): Listing<string>
 ```
 
-List the immediate child namespaces under the given parent.
-
-Results may be paginated. To retrieve subsequent pages, pass the
-`pageToken` returned by a previous call.
+Lazily list immediate child namespaces, 100 per page by default.
 
 #### Parameters
 
 * **namespacePath?**: `string`[]
-    The parent namespace path. Defaults
-    to the root namespace if omitted.
 
-* **options?**: `Partial`&lt;[`ListNamespacesOptions`](../interfaces/ListNamespacesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`ListNamespacesResponse`](../interfaces/ListNamespacesResponse.md)&gt;
-
-Child namespace names and
-  an optional token for fetching the next page.
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
 ### listTables()
 
-#### listTables(options)
-
 ```ts
-abstract listTables(options?): Promise<ListTablesResponse>
+abstract listTables(namespacePath?, options?): Listing<string>
 ```
 
-List a page of the tables in this database.
+Lazily list tables in a namespace, requesting 100 per page by default.
 
-To retrieve the tables after the page, pass the `pageToken` the response
-carries back in. A page can be shorter than `limit` without being the last
-one, so walk until a response carries no page token:
-
-```ts
-const names = [];
-let pageToken = undefined;
-do {
-  const page = await conn.listTables({ pageToken, limit: 100 });
-  names.push(...page.tables);
-  pageToken = page.pageToken;
-} while (pageToken);
-```
-
-##### Parameters
-
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
-
-##### Returns
-
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
-
-A page of table names and an
-  optional token for the tables after it.
-
-#### listTables(namespacePath, options)
-
-```ts
-abstract listTables(namespacePath?, options?): Promise<ListTablesResponse>
-```
-
-List a page of the tables in this database.
-
-##### Parameters
+#### Parameters
 
 * **namespacePath?**: `string`[]
-    The namespace path to list tables from
-    (defaults to root namespace)
 
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
-##### Returns
+#### Returns
 
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
-A page of table names and an
-  optional token for the tables after it.
+#### Example
+
+```ts
+for await (const name of conn.listTables([], { pageLimit: 20 })) {
+  console.log(name);
+}
+```
 
 ***
 

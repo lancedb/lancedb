@@ -87,7 +87,7 @@ async fn execute_refresh_column_with_source(
     column: &str,
 ) -> Result<RefreshExecution> {
     table.dataset.ensure_mutable()?;
-    ensure_no_memwal_spec(table).await?;
+    ensure_no_rte_spec(table).await?;
     let dataset = table.dataset.get().await?;
 
     let expression = declared_expression(&dataset, column)?;
@@ -303,7 +303,7 @@ pub(crate) async fn execute_refresh_column_async(
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
-    ensure_no_memwal_spec(table).await?;
+    ensure_no_rte_spec(table).await?;
     let dataset = table.dataset.get().await?;
     declared_expression(&dataset, column)?;
     drop(dataset);
@@ -323,12 +323,12 @@ pub(crate) async fn execute_refresh_column_async(
     })))
 }
 
-/// Refuse to refresh under a MemWAL write spec.
+/// Refuse to refresh under an RTE write spec.
 ///
 /// Refresh enumerates base fragments, and a write spec keeps visible rows in
-/// un-compacted MemWAL tiers it cannot reach -- success would silently omit
+/// un-compacted RTE tiers it cannot reach -- success would silently omit
 /// readable rows.
-async fn ensure_no_memwal_spec(table: &NativeTable) -> Result<()> {
+async fn ensure_no_rte_spec(table: &NativeTable) -> Result<()> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
     // Unset drops the MemWAL index, so the spec alone stops describing a table
@@ -341,7 +341,7 @@ async fn ensure_no_memwal_spec(table: &NativeTable) -> Result<()> {
         .list_mem_wal_latest_shard_ids()
         .await?
         .is_empty();
-    if retained_sstables || table.get_memwal_spec().await?.is_some() {
+    if retained_sstables || table.get_rte_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "refresh_column is not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -1637,7 +1637,7 @@ mod tests {
     /// writer left in that state.
     #[tokio::test]
     async fn test_refresh_refuses_a_foreign_lsm_state() {
-        use crate::table::MemWalWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -1654,10 +1654,7 @@ mod tests {
                 .unwrap();
         let table = conn.create_table("lsm", batch).execute().await.unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();
@@ -1673,7 +1670,7 @@ mod tests {
     /// flag still marks retained SSTable rows; refresh refuses on the flag.
     #[tokio::test]
     async fn test_refresh_refuses_retained_catchup_state() {
-        use crate::table::MemWalWriteSpec;
+        use crate::table::RTEWriteSpec;
 
         let tmp_dir = tempfile::tempdir().unwrap();
         let conn = connect(tmp_dir.path().to_str().unwrap())
@@ -1696,15 +1693,12 @@ mod tests {
             .await
             .unwrap();
         table.set_unenforced_primary_key(["x"]).await.unwrap();
-        table
-            .enable_memwal(MemWalWriteSpec::unsharded())
-            .await
-            .unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let mut merge = table.merge_insert(&["x"]);
         merge
             .when_matched_update_all(None)
             .when_not_matched_insert_all()
-            .use_memwal(true);
+            .use_rte(true);
         merge
             .execute(Box::new(arrow_array::RecordBatchIterator::new(
                 vec![Ok(batch)],
@@ -1712,7 +1706,7 @@ mod tests {
             )))
             .await
             .unwrap();
-        table.disable_memwal().await.unwrap();
+        table.disable_rte().await.unwrap();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();
@@ -1747,7 +1741,7 @@ mod tests {
         RecordBatch::try_new(
             Arc::new(Schema::new(vec![
                 Field::new("id", arrow_schema::DataType::Int32, false),
-                crate::blob("image", true),
+                lance::blob::blob_field("image", true),
             ])),
             vec![Arc::new(Int32Array::from(ids)), builder.finish().unwrap()],
         )
@@ -1901,7 +1895,7 @@ mod tests {
         let mut blob_builder = lance::blob::BlobArrayBuilder::new(2);
         blob_builder.push_bytes(b"nested").unwrap();
         blob_builder.push_null().unwrap();
-        let blob_field = crate::blob("image", true);
+        let blob_field = lance::blob::blob_field("image", true);
         let metadata_fields = Fields::from(vec![blob_field.clone()]);
         let metadata = StructArray::new(
             metadata_fields.clone(),
@@ -1968,7 +1962,7 @@ mod tests {
         blob_builder.push_bytes(b"a").unwrap();
         blob_builder.push_bytes(b"bb").unwrap();
         blob_builder.push_null().unwrap();
-        let item = Arc::new(crate::blob("item", true));
+        let item = Arc::new(lance::blob::blob_field("item", true));
         let images = ListArray::new(
             item.clone(),
             OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),

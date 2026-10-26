@@ -34,8 +34,8 @@ Three operations, in one call:
 | | |
 | --- | --- |
 | **Compaction** | merges small files into larger ones |
-| **Prune** | removes versions older than the retention window -- see [Cleanup](/maintenance/cleanup) |
-| **Index** | folds newly added rows into existing indexes -- see [Build & Repair](/indexing/reindexing) |
+| **Prune** | removes versions older than the retention window (see [Cleanup](/maintenance/cleanup)) |
+| **Index** | folds newly added rows into existing indexes (see [Build & Repair](/indexing/reindexing)) |
 
 Compaction itself is only the first of the three: merging small fragments back
 into larger ones, which is what keeps a scan from opening more files than it
@@ -43,7 +43,7 @@ needs to.
 
 <Note>
 **Enterprise job type:** `compact`. Runs automatically as data accumulates,
-separately from [`cleanup`](/maintenance/cleanup) -- the two are distinct jobs
+separately from [`cleanup`](/maintenance/cleanup). The two are distinct jobs
 even though `optimize()` bundles both in one OSS call.
 </Note>
 

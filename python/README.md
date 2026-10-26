@@ -8,6 +8,8 @@ A Python library for [LanceDB](https://github.com/lancedb/lancedb).
 pip install lancedb
 ```
 
+If no wheel is published for your platform, pip builds `lancedb` from the source distribution. That build needs a [Rust toolchain](https://rustup.rs/) and [protoc](https://grpc.io/docs/protoc-installation/) (the Protocol Buffers compiler) on your `PATH`, and can take a while.
+
 ### Pre-Haswell x86_64 hosts: `lancedb-compat`
 
 The default `lancedb` wheel targets `x86-64-haswell` (AVX2 + FMA + F16C) for full performance on modern hardware. Pre-Haswell hosts — Intel Sandy Bridge / Ivy Bridge / Westmere; AMD Bulldozer / Piledriver / Steamroller — don't have AVX2 and crash with `Illegal instruction` at `import lancedb`.
@@ -37,6 +39,33 @@ Stable releases are created about every 2 weeks. For the latest features and bug
 ```bash
 pip install --pre --extra-index-url https://pypi.fury.io/lancedb/ lancedb
 ```
+
+If you also need the optional `lance` Python API, install the `pylance` extra
+and include the Lance preview index:
+
+```bash
+pip install --pre \
+  --extra-index-url https://pypi.fury.io/lancedb/ \
+  --extra-index-url https://pypi.fury.io/lance-format/ \
+  "lancedb[pylance]"
+```
+
+With uv, also select the best matching version across the indexes:
+
+```bash
+uv pip install --prerelease allow \
+  --index https://pypi.fury.io/lancedb/ \
+  --index https://pypi.fury.io/lance-format/ \
+  --index-strategy unsafe-best-match \
+  "lancedb[pylance]"
+```
+
+The LanceDB preview index contains old `pylance` releases; current Lance previews
+are published to the `lance-format` index. By default, uv only considers versions
+from the first index containing a package, which can select an old `pylance` or
+backtrack to an older LanceDB release. `unsafe-best-match` searches all configured
+indexes, like pip; use it only with indexes you trust. Install the extra rather
+than an unconstrained `pylance` so LanceDB's minimum supported version is enforced.
 
 ### Threading in CPU-limited containers
 
@@ -72,3 +101,52 @@ print(results)
 ### Development
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to LanceDB.
+
+### Opening SQL blob descriptors
+
+A SQL `blob_descriptor(video)` result keeps the Blob V2 storage metadata and a
+`source` struct containing its table URI, version, commit timestamp, branch,
+column and row identity. This example uses a remote SQL connection whose SQL
+service produces those source-bearing descriptors. Open the reference on the
+source table to read incrementally:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+`open_blob_file` accepts the dictionary or an Arrow struct scalar directly. It
+keeps the query's version and branch without changing the table handle's checkout.
+Payload bytes load on reads. An external blob with an unspecified size may need a
+metadata-only HEAD request to open.
+
+`videos.open_blob_files(rows["video"])` returns an iterator over the same handles,
+preserving order, duplicates and nulls (`None`). It accepts Arrow arrays/chunked
+arrays or another iterable and opens each handle as iteration advances. Close each
+non-null handle after use. Async tables offer `await videos.open_blob_file(...)`
+and `async for video in videos.open_blob_files(...)`.
+
+```python
+for video in videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            header = video.read(4096)
+```
+
+To extract a frame while retaining each row's timestamp, iterate over the
+handles and rows together:
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
