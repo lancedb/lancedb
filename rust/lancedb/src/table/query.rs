@@ -105,9 +105,9 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
     {
         return Ok(false);
     }
-    // A MemWAL write spec means reads auto-route through the LSM scanner in
-    // `create_plan` even when `use_lsm` is unset. The namespace request has no
-    // use_lsm field, so pushing the default query down would silently omit
+    // An RTE write spec means reads auto-route through the LSM scanner in
+    // `create_plan` even when `use_rte` is unset. The namespace request has no
+    // use_rte field, so pushing the default query down would silently omit
     // un-compacted rows — force local execution whenever a spec is installed.
     let dataset = table.dataset.get().await?;
     if dataset.mem_wal_index_details().await?.is_some() {
@@ -117,19 +117,16 @@ async fn can_execute_namespace_query(table: &NativeTable, query: &AnyQuery) -> R
 }
 
 fn requires_local_namespace_execution(query: &AnyQuery) -> bool {
-    // The namespace QueryTable request has no approx_mode or use_lsm field yet, so
-    // pushing these down would silently ignore the user's setting. For use_lsm that
-    // is worse than a tuning miss: MemWAL read routing lives only in `create_plan`,
-    // so a pushed-down query would return stale base-only data with no error.
-    if query.base().use_lsm.is_some() {
+    // The namespace QueryTable request cannot represent approx_mode, search_effort or use_rte.
+    // For use_rte that is worse than a tuning miss: RTE read routing lives only
+    // in `create_plan`, so a pushed-down query would return stale base-only data.
+    if query.base().use_rte.is_some() || query.base().take_offsets.is_some() {
         return true;
     }
     matches!(
         query,
-        AnyQuery::VectorQuery(VectorQueryRequest {
-            approx_mode: Some(_),
-            ..
-        })
+        AnyQuery::VectorQuery(vector_query)
+            if vector_query.approx_mode.is_some() || vector_query.search_effort.is_some()
     )
 }
 
@@ -165,33 +162,41 @@ pub async fn create_plan(
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
     let query = query.canonicalized()?;
+    if let AnyQuery::Query(request) = &query
+        && let Some(offsets) = &request.take_offsets
+    {
+        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
+            .await;
+    }
+
     let query = match query {
         AnyQuery::VectorQuery(query) => query,
         AnyQuery::Query(query) => VectorQueryRequest::from_plain_query(query),
     };
     query.base.check_filter()?;
+    query.validate_search_effort()?;
 
     let ds_ref = table.dataset.get().await?;
 
-    // MemWAL read routing driven by `use_lsm`:
+    // RTE read routing driven by `use_rte`:
     //   * unset  — route through the LSM scanner iff the table carries a write spec
-    //   * Some(true)  — force LSM routing; error if the table has no write spec
-    //   * Some(false) — read the base table only, bypassing the MemWAL
+    //   * Some(true)  — force RTE routing; error if the table has no write spec
+    //   * Some(false) — read the base table only, bypassing the RTE
     // The LSM scanner surfaces in-flight `merge_insert` data (active/frozen
-    // memtables + flushed generations); validation and dispatch live in `lsm`.
+    // memtables + SSTables); validation and dispatch live in `lsm`.
     let has_spec = ds_ref.mem_wal_index_details().await?.is_some();
-    let use_lsm = match query.base.use_lsm {
+    let use_rte = match query.base.use_rte {
         Some(true) if !has_spec => {
             return Err(Error::InvalidInput {
-                message: "use_lsm(true) was set but the table has no MemWAL write spec; \
-                    install one with set_lsm_write_spec or leave use_lsm unset"
+                message: "use_rte(true) was set but the table has no RTE write spec; \
+                    install one with enable_rte or leave use_rte unset"
                     .to_string(),
             });
         }
         Some(enable) => enable,
         None => has_spec,
     };
-    if use_lsm {
+    if use_rte {
         return lsm::create_lsm_plan(table, ds_ref, query).await;
     }
 
@@ -286,7 +291,13 @@ pub async fn create_plan(
 
         let (_, element_type) = lance::index::vector::utils::get_vector_type(schema, &column)?;
         let is_binary = matches!(element_type, DataType::UInt8);
-        let top_k = query.base.limit.unwrap_or(DEFAULT_TOP_K) + query.base.offset.unwrap_or(0);
+        let top_k = query
+            .base
+            .limit
+            .unwrap_or(DEFAULT_TOP_K)
+            .saturating_add(query.base.offset.unwrap_or(0))
+            // Lance allocates candidates from k; no search can return more rows than the table.
+            .min(ds_ref.count_rows(None).await?.max(1));
 
         if is_binary {
             let query_vector = arrow::compute::cast(&query_vector, &DataType::UInt8)?;
@@ -300,18 +311,41 @@ pub async fn create_plan(
             scanner.approx_mode(approx_mode.into());
         }
 
-        scanner.minimum_nprobes(query.minimum_nprobes);
-        if let Some(maximum_nprobes) = query.maximum_nprobes {
+        if query.search_effort.is_none()
+            && let Some(nprobes) = query.nprobes
+        {
+            if query.maximum_nprobes == Some(0) {
+                scanner.minimum_nprobes(nprobes);
+            } else {
+                scanner.nprobes(nprobes);
+            }
+        }
+        if let Some(minimum_nprobes) = query.minimum_nprobes {
+            scanner.minimum_nprobes(minimum_nprobes);
+        }
+        if let Some(maximum_nprobes) = query.maximum_nprobes.filter(|nprobes| *nprobes != 0) {
             scanner.maximum_nprobes(maximum_nprobes);
+        }
+        if let Some(search_effort) = query.search_effort {
+            scanner.search_effort(search_effort)?;
         }
     }
 
     // For a batch query, `nearest` already applies k to each query vector.
     // Adding Scanner's global limit would truncate the combined result to k rows.
     if !is_batch_query {
+        let offset = query
+            .base
+            .offset
+            .map(|offset| i64::try_from(offset).unwrap_or(i64::MAX));
         scanner.limit(
-            query.base.limit.map(|limit| limit as i64),
-            query.base.offset.map(|offset| offset as i64),
+            // Lance's FTS planner adds limit + offset as i64.
+            query.base.limit.map(|limit| {
+                i64::try_from(limit)
+                    .unwrap_or(i64::MAX)
+                    .min(i64::MAX - offset.unwrap_or(0))
+            }),
+            offset,
         )?;
     }
 
@@ -800,6 +834,11 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             };
 
             // Check for unsupported features
+            if vq.search_effort.is_some() {
+                return Err(Error::NotSupported {
+                    message: "namespace QueryTable does not support search_effort; execute the query locally".to_string(),
+                });
+            }
             if vq.base.reranker.is_some() {
                 return Err(Error::NotSupported {
                     message: "Reranker is not supported for server-side queries".to_string(),
@@ -832,7 +871,9 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                 columns,
                 offset: vq.base.offset.map(|o| o as i32),
                 distance_type: vq.distance_type.map(|dt| dt.to_string()),
-                nprobes: Some(vq.minimum_nprobes as i32),
+                nprobes: vq.nprobes.map(|nprobes| nprobes as i32),
+                minimum_nprobes: vq.minimum_nprobes.map(|nprobes| nprobes as i32),
+                maximum_nprobes: vq.maximum_nprobes.map(|nprobes| nprobes as i32),
                 ef: vq.ef.map(|e| e as i32),
                 refine_factor: vq.refine_factor.map(|r| r as i32),
                 lower_bound: vq.lower_bound,
@@ -853,6 +894,12 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
                         .to_string(),
                 });
             }
+
+            let k = match q.limit {
+                Some(limit) => limit as i32,
+                None if q.full_text_search.is_some() => DEFAULT_TOP_K as i32,
+                None => i32::MAX,
+            };
 
             let filter = q.filter.as_ref().map(filter_to_sql).transpose()?;
 
@@ -906,7 +953,7 @@ fn convert_to_namespace_query(query: &AnyQuery) -> Result<NsQueryTableRequest> {
             Ok(NsQueryTableRequest {
                 id: None, // Will be set by caller
                 vector,
-                k: q.limit.unwrap_or(10) as i32,
+                k,
                 filter,
                 columns,
                 prefilter: Some(q.prefilter),
@@ -1121,7 +1168,6 @@ mod tests {
             column: Some("vector".to_string()),
             // We cast here to satisfy the struct definition
             query_vector: vec![query_vector as Arc<dyn Array>],
-            minimum_nprobes: 20,
             distance_type: Some(crate::DistanceType::L2),
             ..Default::default()
         };
@@ -1142,6 +1188,7 @@ mod tests {
         );
         assert_eq!(ns_request.vector_column, Some("vector".to_string()));
         assert_eq!(ns_request.distance_type, Some("l2".to_string()));
+        assert_eq!(ns_request.nprobes, None);
 
         // Verify the vector data was extracted correctly
         assert!(ns_request.vector.single_vector.is_some());
@@ -1149,6 +1196,79 @@ mod tests {
             ns_request.vector.single_vector.as_ref().unwrap(),
             &vec![1.0, 2.0, 3.0, 4.0]
         );
+    }
+
+    #[test]
+    fn test_namespace_query_probe_pushdown_compatibility() {
+        let default_query = AnyQuery::VectorQuery(VectorQueryRequest::default());
+        assert!(!requires_local_namespace_execution(&default_query));
+
+        for effort in [0.0, 0.5, 1.0] {
+            let effort_query = AnyQuery::VectorQuery(VectorQueryRequest {
+                query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+                search_effort: Some(effort),
+                ..Default::default()
+            });
+            assert!(requires_local_namespace_execution(&effort_query));
+            assert!(matches!(
+                convert_to_namespace_query(&effort_query),
+                Err(Error::NotSupported { message }) if message.contains("search_effort")
+            ));
+        }
+
+        let nprobes_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            nprobes: Some(20),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&nprobes_query));
+        assert_eq!(
+            convert_to_namespace_query(&nprobes_query).unwrap().nprobes,
+            Some(20)
+        );
+
+        let minimum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            minimum_nprobes: Some(5),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&minimum_query));
+        let request = convert_to_namespace_query(&minimum_query).unwrap();
+        assert_eq!(request.minimum_nprobes, Some(5));
+        assert_eq!(request.maximum_nprobes, None);
+
+        let maximum_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            maximum_nprobes: Some(10),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&maximum_query));
+        let request = convert_to_namespace_query(&maximum_query).unwrap();
+        assert_eq!(request.minimum_nprobes, None);
+        assert_eq!(request.maximum_nprobes, Some(10));
+
+        let exact_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            nprobes: Some(8),
+            minimum_nprobes: Some(20),
+            maximum_nprobes: Some(20),
+            ..Default::default()
+        });
+        assert!(!requires_local_namespace_execution(&exact_query));
+        let request = convert_to_namespace_query(&exact_query).unwrap();
+        assert_eq!(request.nprobes, Some(8));
+        assert_eq!(request.minimum_nprobes, Some(20));
+        assert_eq!(request.maximum_nprobes, Some(20));
+
+        let explicitly_unbounded_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![Arc::new(Float32Array::from(vec![1.0, 2.0]))],
+            nprobes: Some(8),
+            maximum_nprobes: Some(0),
+            ..Default::default()
+        });
+        let request = convert_to_namespace_query(&explicitly_unbounded_query).unwrap();
+        assert_eq!(request.nprobes, Some(8));
+        assert_eq!(request.maximum_nprobes, Some(0));
     }
 
     #[test]
@@ -1181,6 +1301,54 @@ mod tests {
         assert!(ns_request.vector_column.is_none());
 
         assert!(ns_request.vector.single_vector.as_ref().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest::default());
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, i32::MAX);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_plain_query_with_explicit_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            limit: Some(10),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_vector_without_limit() {
+        let query_vector = Arc::new(Float32Array::from(vec![1.0, 2.0, 3.0, 4.0]));
+        let any_query = AnyQuery::VectorQuery(VectorQueryRequest {
+            query_vector: vec![query_vector as ArrayRef],
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
+    }
+
+    #[test]
+    fn test_convert_to_namespace_query_fts_without_limit() {
+        let any_query = AnyQuery::Query(QueryRequest {
+            full_text_search: Some(lance_index::scalar::FullTextSearchQuery::new(
+                "hello world".to_string(),
+            )),
+            ..Default::default()
+        });
+
+        let ns_request = convert_to_namespace_query(&any_query).unwrap();
+
+        assert_eq!(ns_request.k, 10);
     }
 
     #[tokio::test]
@@ -1305,7 +1473,7 @@ mod tests {
 
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .set_lsm_write_spec(crate::table::LsmWriteSpec::unsharded())
+            .enable_rte(crate::table::RTEWriteSpec::unsharded())
             .await
             .unwrap();
         let lsm_error = table
@@ -1505,7 +1673,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_execute_query_use_lsm_with_namespace_pushdown_runs_locally() {
+    async fn test_execute_query_use_rte_with_namespace_pushdown_runs_locally() {
         use crate::connect;
         use crate::table::query::execute_query;
         use arrow_array::{Int32Array, RecordBatch};
@@ -1528,7 +1696,7 @@ mod tests {
         .unwrap();
 
         let table = conn
-            .create_table("test_use_lsm_namespace_fallback", batch)
+            .create_table("test_use_rte_namespace_fallback", batch)
             .execute()
             .await
             .unwrap();
@@ -1539,13 +1707,13 @@ mod tests {
             .pushdown_operations
             .insert(NamespaceClientPushdownOperation::QueryTable);
 
-        // `use_lsm` set (even to false) must force local execution — the namespace
-        // request has no use_lsm field, so a pushdown would silently ignore it.
+        // `use_rte` set (even to false) must force local execution — the namespace
+        // request has no use_rte field, so a pushdown would silently ignore it.
         let query_vector = Arc::new(Float32Array::from(vec![0.0, 0.0]));
         let query = AnyQuery::VectorQuery(VectorQueryRequest {
             base: QueryRequest {
                 limit: Some(1),
-                use_lsm: Some(false),
+                use_rte: Some(false),
                 ..Default::default()
             },
             column: Some("vector".to_string()),

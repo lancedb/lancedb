@@ -20,24 +20,38 @@ use datafusion_common::{DataFusionError, Result as DataFusionResult, Statistics}
 use datafusion_execution::{SendableRecordBatchStream, TaskContext};
 use datafusion_expr::{Expr, TableProviderFilterPushDown, TableType, dml::InsertOp};
 use datafusion_physical_plan::{
-    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, stream::RecordBatchStreamAdapter,
+    DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, execution_plan::CardinalityEffect,
+    stream::RecordBatchStreamAdapter,
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
+use lance_core::{ROW_ADDR, ROW_ADDR_FIELD, ROW_ID, ROW_ID_FIELD};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    Result,
+    Error, Result,
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
 };
 use arrow_schema::{DataType, Field};
 use lance_index::scalar::FullTextSearchQuery;
 
-/// Datafusion attempts to maintain batch metadata
+/// An execution plan that erases Arrow schema-level metadata from its input's batches.
 ///
-/// This is needless and it triggers bugs in DF.  This operator erases metadata from the batches.
+/// DataFusion attempts to maintain batch metadata. This is needless and it triggers bugs in
+/// DF, so [`BaseTableAdapter::scan`] wraps every scan it produces in one of these.
+///
+/// ```
+/// use std::sync::Arc;
+///
+/// use datafusion_physical_plan::ExecutionPlan;
+/// use lancedb::table::datafusion::MetadataEraserExec;
+///
+/// # fn erase_metadata(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+/// Arc::new(MetadataEraserExec::new(scan))
+/// # }
+/// ```
 #[derive(Debug)]
-struct MetadataEraserExec {
+pub struct MetadataEraserExec {
     input: Arc<dyn ExecutionPlan>,
     schema: Arc<ArrowSchema>,
     properties: Arc<PlanProperties>,
@@ -62,7 +76,8 @@ impl MetadataEraserExec {
         )
     }
 
-    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
+    /// Wrap `input` in an operator that strips schema-level metadata from its batches.
+    pub fn new(input: Arc<dyn ExecutionPlan>) -> Self {
         let schema = Arc::new(
             input
                 .schema()
@@ -110,12 +125,11 @@ impl ExecutionPlan for MetadataEraserExec {
         children: Vec<Arc<dyn ExecutionPlan>>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
         assert_eq!(children.len(), 1);
-        let new_properties = Self::compute_properties_from_input(&children[0], &self.schema);
-        Ok(Arc::new(Self {
-            input: children[0].clone(),
-            schema: self.schema.clone(),
-            properties: new_properties,
-        }))
+        Ok(Arc::new(Self::new(children[0].clone())))
+    }
+
+    fn cardinality_effect(&self) -> CardinalityEffect {
+        CardinalityEffect::Equal
     }
 
     fn execute(
@@ -153,6 +167,7 @@ pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
     schema: Arc<ArrowSchema>,
     fts_query: Option<FullTextSearchQuery>,
+    use_rte: Option<bool>,
 }
 
 impl BaseTableAdapter {
@@ -168,7 +183,54 @@ impl BaseTableAdapter {
             table,
             schema: Arc::new(schema),
             fts_query: None,
+            use_rte: None,
         })
+    }
+
+    /// Expose the requested Lance system columns to DataFusion.
+    ///
+    /// Supports [`ROW_ID`] (`_rowid`) and [`ROW_ADDR`] (`_rowaddr`), both nullable
+    /// `UInt64` fields. Columns are appended in the requested order, skipping any
+    /// already exposed by this adapter. Other names return [`Error::InvalidInput`].
+    ///
+    /// System columns are hidden by default so existing `SELECT *` queries keep
+    /// their data-only schema. After opting in, `SELECT *` includes these columns.
+    ///
+    /// ```
+    /// use lance_core::{ROW_ADDR, ROW_ID};
+    /// use lancedb::table::datafusion::BaseTableAdapter;
+    ///
+    /// # async fn adapter(table: &lancedb::Table) -> lancedb::Result<BaseTableAdapter> {
+    /// BaseTableAdapter::try_new(table.base_table().clone())
+    ///     .await?
+    ///     .with_system_columns(&[ROW_ID, ROW_ADDR])
+    /// # }
+    /// ```
+    pub fn with_system_columns(mut self, columns: &[impl AsRef<str>]) -> Result<Self> {
+        let mut fields = self.schema.fields().to_vec();
+        for column in columns {
+            let column = column.as_ref();
+            let field = match column {
+                ROW_ID => &*ROW_ID_FIELD,
+                ROW_ADDR => &*ROW_ADDR_FIELD,
+                _ => {
+                    return Err(Error::InvalidInput {
+                        message: format!("Unsupported system column: {column}"),
+                    });
+                }
+            };
+            if !fields.iter().any(|field| field.name() == column) {
+                fields.push(Arc::new(field.clone()));
+            }
+        }
+        self.schema = Arc::new(ArrowSchema::new(fields));
+        Ok(self)
+    }
+
+    /// Set the RTE read routing of every scan; see [`QueryRequest::use_rte`].
+    pub fn with_use_rte(mut self, use_rte: Option<bool>) -> Self {
+        self.use_rte = use_rte;
+        self
     }
 
     /// Create a new adapter with an FTS query applied.
@@ -183,6 +245,7 @@ impl BaseTableAdapter {
             table: self.table.clone(),
             schema,
             fts_query: Some(fts_query),
+            use_rte: self.use_rte,
         }
     }
 }
@@ -210,6 +273,7 @@ impl TableProvider for BaseTableAdapter {
         let mut query = QueryRequest {
             full_text_search: self.fts_query.clone(),
             disable_scoring_autoprojection: disable_scoring,
+            use_rte: self.use_rte,
             ..Default::default()
         };
 
@@ -219,6 +283,15 @@ impl TableProvider for BaseTableAdapter {
                 .map(|i| self.schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
+        } else {
+            // Select::All excludes system columns, which may be part of our schema.
+            query.select = Select::Columns(
+                self.schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+            );
         }
         if !filters.is_empty() {
             let first = filters.first().unwrap().clone();
@@ -296,6 +369,7 @@ pub mod tests {
         BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use arrow_select::concat::concat_batches;
     use datafusion::{
         datasource::provider_as_source,
         prelude::{SessionConfig, SessionContext},
@@ -305,11 +379,13 @@ pub mod tests {
     use datafusion_execution::SendableRecordBatchStream;
     use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, col, lit};
     use futures::{StreamExt, TryStreamExt};
+    use lance_core::{ROW_ADDR, ROW_ADDR_FIELD, ROW_ID, ROW_ID_FIELD};
     use tempfile::tempdir;
 
     use crate::{
         connect,
         index::{Index, scalar::BTreeIndexBuilder},
+        query::{ExecutableQuery, Query, QueryBase, Select},
         table::datafusion::BaseTableAdapter,
     };
 
@@ -487,6 +563,173 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn test_system_columns_opt_in() {
+        let fixture = TestFixture::new().await;
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT * FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_columns(), 2);
+        assert_eq!(batches[0].schema(), fixture.adapter.schema());
+        for column in [ROW_ID, ROW_ADDR] {
+            assert!(ctx.sql(&format!("SELECT {column} FROM foo")).await.is_err());
+        }
+
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ADDR, ROW_ADDR])
+            .unwrap();
+        assert_eq!(adapter.schema().fields().len(), 3);
+        assert_eq!(adapter.schema().field(2), &*ROW_ADDR_FIELD);
+        assert!(adapter.schema().index_of(ROW_ID).is_err());
+
+        let adapter = adapter
+            .with_system_columns(&[ROW_ID.to_string(), ROW_ADDR.to_string()])
+            .unwrap();
+        assert_eq!(adapter.schema().fields().len(), 4);
+        assert_eq!(adapter.schema().field(3), &*ROW_ID_FIELD);
+        assert!(adapter.schema().metadata().is_empty());
+
+        let err = adapter.with_system_columns(&["_unknown"]).unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidInput { .. }));
+
+        // Default adapters must remain compatible with INSERT ... SELECT *.
+        ctx.sql("INSERT INTO foo SELECT * FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let batches = ctx
+            .sql("SELECT COUNT(*) FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .value(0),
+            20
+        );
+    }
+
+    #[tokio::test]
+    async fn test_system_columns_sql() {
+        let fixture = TestFixture::new().await;
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ID, ROW_ADDR])
+            .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", Arc::new(adapter)).unwrap();
+
+        // Compare SQL results with the native query's row IDs and row addresses.
+        let native = Query::new(fixture.adapter.table.clone())
+            .select(Select::columns(&["i", "indexed", ROW_ADDR]))
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let schema = Arc::new(
+            native[0]
+                .schema()
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::new()),
+        );
+        let expected = concat_batches(&schema, &native).unwrap();
+
+        for columns in [
+            vec!["i", ROW_ID],
+            vec![ROW_ID, "i"],
+            vec!["i", ROW_ADDR],
+            vec![ROW_ADDR, "i"],
+            vec![ROW_ADDR, ROW_ID],
+            vec![ROW_ID],
+            vec![ROW_ADDR],
+            vec!["i", "indexed", ROW_ID, ROW_ADDR],
+        ] {
+            let sql = format!("SELECT {} FROM foo ORDER BY i", columns.join(", "));
+            let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+            let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+            let indices = columns
+                .iter()
+                .map(|name| schema.index_of(name).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected.project(&indices).unwrap(), "{sql}");
+        }
+
+        let batches = ctx
+            .sql("SELECT * FROM foo ORDER BY i")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let indices = ["i", "indexed", ROW_ID, ROW_ADDR].map(|name| schema.index_of(name).unwrap());
+        assert_eq!(batches[0], expected.project(&indices).unwrap());
+
+        // Filtering on the ID must work even when the ID is not in the output.
+        let row_id = expected
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_primitive::<arrow_array::types::UInt64Type>()
+            .value(3);
+        let batches = ctx
+            .sql(&format!("SELECT i FROM foo WHERE _rowid = {row_id}"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches[0], expected.project(&[0]).unwrap().slice(3, 1));
+    }
+
+    #[tokio::test]
+    async fn test_system_columns_scan_without_projection() {
+        let fixture = TestFixture::new().await;
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ADDR, ROW_ID])
+            .unwrap();
+        let ctx = SessionContext::new();
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
+        let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 10);
+        for batch in batches {
+            assert_eq!(batch.schema(), adapter.schema());
+            assert_eq!(
+                batch
+                    .column(2)
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .values(),
+                batch
+                    .column(3)
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .values()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn test_batch_size() {
         let fixture = TestFixture::new().await;
 
@@ -654,5 +897,98 @@ pub mod tests {
         let partition_stats = physical_plan.partition_statistics(None).unwrap();
 
         assert!(matches!(partition_stats.num_rows, Precision::Exact(10)));
+    }
+
+    #[tokio::test]
+    async fn test_count_pushdown_through_metadata_eraser() {
+        let fixture = TestFixture::new().await;
+        let state = datafusion::execution::SessionStateBuilder::new()
+            .with_default_features()
+            .with_physical_optimizer_rule(Arc::new(lance::io::exec::count_pushdown::CountPushdown))
+            .build();
+        let ctx = SessionContext::new_with_state(state);
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let df = ctx
+            .sql("SELECT COUNT(*) FROM foo WHERE indexed > 2")
+            .await
+            .unwrap();
+        let plan = df.clone().create_physical_plan().await.unwrap();
+        let plan = datafusion_physical_plan::displayable(plan.as_ref())
+            .indent(true)
+            .to_string();
+        assert!(plan.contains("CountFromMask"), "{plan}");
+
+        let batches = df.collect().await.unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .value(0),
+            7
+        );
+    }
+
+    #[tokio::test]
+    async fn test_topk_late_materialization_over_table_adapter() {
+        use lance::io::exec::topk_late_materialization::TopKLateMaterialization;
+
+        let fixture = TestFixture::new().await;
+        let run = |rule: Option<TopKLateMaterialization>| {
+            let adapter = fixture.adapter2.clone();
+            async move {
+                let mut state =
+                    datafusion::execution::SessionStateBuilder::new().with_default_features();
+                if let Some(rule) = rule {
+                    state = state.with_physical_optimizer_rule(Arc::new(rule));
+                }
+                let ctx = SessionContext::new_with_state(state.build());
+                ctx.register_table("tbl2", adapter).unwrap();
+                let df = ctx
+                    .sql("SELECT ints, strings, jsons FROM tbl2 WHERE floats > 10 ORDER BY ints DESC LIMIT 5")
+                    .await
+                    .unwrap();
+                let plan = df.clone().create_physical_plan().await.unwrap();
+                let plan = datafusion_physical_plan::displayable(plan.as_ref())
+                    .indent(true)
+                    .to_string();
+                (plan, df.collect().await.unwrap())
+            }
+        };
+
+        let (plan, expected) = run(None).await;
+        assert!(!plan.contains("Take"), "{plan}");
+
+        // The sort lands below `MetadataEraserExec`, so the rule needs no
+        // certification for it.
+        let (plan, batches) = run(Some(TopKLateMaterialization::new())).await;
+        assert!(plan.contains("Take"), "{plan}");
+        assert_eq!(batches, expected);
+        assert!(batches[0].schema().metadata().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_metadata_eraser_with_new_children_takes_child_schema() {
+        let fixture = TestFixture::new().await;
+        let ctx = SessionContext::new();
+        let scan = |adapter: Arc<BaseTableAdapter>, name: &str| {
+            LogicalPlanBuilder::scan(name, provider_as_source(adapter), None)
+                .unwrap()
+                .build()
+                .unwrap()
+        };
+        let foo = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter.clone(), "foo"))
+            .await
+            .unwrap();
+        let tbl2 = ctx
+            .state()
+            .create_physical_plan(&scan(fixture.adapter2.clone(), "tbl2"))
+            .await
+            .unwrap();
+
+        let rewired = foo.with_new_children(vec![tbl2.clone()]).unwrap();
+        assert_eq!(rewired.schema(), tbl2.schema());
     }
 }

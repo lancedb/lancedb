@@ -1,0 +1,124 @@
+---
+title: "Architecture"
+sidebarTitle: "Architecture"
+description: "How LanceDB Enterprise separates query serving, background work, and storage, and how it compares with embedded LanceDB OSS."
+icon: cubes
+keywords: ["architecture", "embedded", "distributed", "object storage", "compute", "deployment"]
+---
+
+LanceDB OSS is an embedded library for working with Lance tables. LanceDB
+Enterprise is a multimodal lakehouse for data curation, feature engineering,
+search, and training data access. Its architecture separates query serving,
+read execution, caching, and background work. Both use the open
+[Lance](/basics/lance) format.
+
+Teams can curate datasets, derive features, search multimodal records, and
+read the resulting tables into training frameworks. Enterprise separates the
+resources that serve shared data from those that build indexes and run
+background work, so teams can size them for these different workloads.
+
+![LanceDB OSS runs the application and embedded library in one process, using local disk or object storage. Enterprise applications connect to query serving, with separate read execution and caching, indexing and background workers, and durable object storage. Both use the Lance format, but they do not share a storage location automatically.](/static/assets/images/overview/lancedb-architecture.svg)
+
+The diagram shows the main compute and storage boundaries, not every request
+path. The control plane governs the Enterprise service.
+
+## A shared format, different storage choices {#storage}
+
+Lance stores table data, versions, and indexes. OSS can read and write tables on
+local disk or in object storage. Enterprise keeps durable table data and index
+artifacts in object storage, independently of the machines serving requests.
+Its caches accelerate reads; they are not the durable source of truth.
+
+Sharing a format does not mean that an Enterprise deployment automatically
+opens an existing OSS database. Plan how to move or connect your data and
+configure access for your deployment.
+
+## OSS: an embedded library inside your application {#embedded}
+
+With an embedded connection, the LanceDB library plans and executes queries,
+builds indexes, and updates tables inside your process. There is no separate
+database server to deploy.
+
+This fits local retrieval applications, notebooks, development, and
+single-node data pipelines. Your application controls the compute resources and
+when to run [table maintenance](/maintenance/compaction). You also manage access
+to the local files or object storage that hold your tables.
+
+## Enterprise: a multimodal lakehouse for shared workloads {#distributed}
+
+Applications connect to remote tables through a LanceDB SDK. The service handles
+requests across a fleet, with components sized for different kinds of work:
+
+- **Query serving** receives requests, resolves tables, and plans operations.
+  Add serving capacity as more applications and users depend on your data.
+- **Read execution and caching** use separately provisioned resources. Executors
+  cache table data to reduce repeated reads from object storage.
+- **Indexing and background workers** build indexes and perform maintenance
+  outside the query request path. Size this work separately from query serving
+  as your data grows.
+
+The control plane manages configuration, identity, policy, and cluster
+lifecycle. It governs the service rather than executing table queries.
+[Authorization](/governance/authorization) lets teams control access to catalog
+objects when enabled and configured by the administrator. Deployment settings govern background
+[compaction](/maintenance/compaction) and
+[cleanup](/maintenance/cleanup), including retention.
+
+These boundaries support different parts of an AI data workflow.
+[SQL curation](/curation) requires a deployment with SQL enabled.
+[Feature engineering](/feature-engineering) can produce derived columns and
+tables; computed columns and materialized views require a deployment that
+enables them. [Geneva](/geneva) runs distributed Python feature backfills while
+its capabilities continue to transition to LanceDB APIs.
+[Training data loaders](/training/data-loading) read tables into model training
+frameworks in both offerings. LanceDB provides data access for training; the
+training framework runs the model.
+
+Size and monitor each tier for your workload. Read the
+[Enterprise architecture](/enterprise/architecture) for the component details
+and request flows.
+
+## Application changes for Enterprise {#differences}
+
+Core operations remain familiar: create a table, add data, and run a search.
+With OSS, the application executes those operations. With Enterprise, the SDK
+sends requests to the service, and the service manages execution and configured
+background maintenance.
+
+To use Enterprise, configure the cluster endpoint, database URI and credentials,
+and make your data available in the Enterprise database. Review SDK methods
+that behave differently on remote tables, including result retrieval and
+background jobs. [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise)
+describes these application changes. If you plan to use materialized views, check the
+[stable row ID requirements](/basics/limits#schema) before creating source tables.
+
+## Choose for the workload you need to run {#choosing}
+
+Choose OSS when you want an embedded library and can manage its resources and
+maintenance in your application.
+
+Choose Enterprise when multiple applications or teams need a shared multimodal
+lakehouse for curation, feature engineering, search, and training data access.
+It also fits workloads whose query and indexing demand grow at different rates,
+or that need configured service-level access controls and background operations.
+You can begin with Enterprise.
+
+[Talk to us about your workload](https://www.lancedb.com/contact) to plan capacity,
+deployment options, and the path from your existing data to Enterprise.
+
+## Where to go next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Enterprise architecture" icon="cubes" href="/enterprise/architecture">
+    Query serving, execution, and background work in detail.
+  </Card>
+  <Card title="Connect to Enterprise" icon="plug" href="/basics/connect#enterprise">
+    Connect an application to your deployment.
+  </Card>
+  <Card title="Guarantees" icon="shield-check" href="/basics/guarantees">
+    What a write promises, and what a reader sees.
+  </Card>
+  <Card title="Lance format" icon="layer-group" href="/basics/lance">
+    The open format underneath both offerings.
+  </Card>
+</CardGroup>

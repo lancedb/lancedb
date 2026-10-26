@@ -17,8 +17,11 @@ import {
   tableFromIPC,
 } from "./arrow";
 
+import { BlobFile, BlobReadOptions, runWithSignal } from "./blob";
 import { EmbeddingFunctionConfig, getRegistry } from "./embedding/registry";
 import { IndexOptions } from "./indices";
+import { Job } from "./job";
+import { validateNonNegativeInteger } from "./materialized_view";
 import { MergeInsertBuilder } from "./merge";
 import {
   AddColumnsResult,
@@ -28,12 +31,13 @@ import {
   BranchContents,
   DeleteResult,
   DropColumnsResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
   IndexConfig,
   IndexStatistics,
-  Job,
-  LsmStats,
   Branches as NativeBranches,
   OptimizeStats,
+  RTEStats,
   RefreshColumnResult,
   RefreshMaterializedViewResult,
   TableStatistics,
@@ -55,9 +59,9 @@ import { sanitizeType } from "./sanitize";
 import { IntoSql, toSQL } from "./util";
 export { IndexConfig } from "./native";
 export {
-  BucketStats,
-  GenerationStats,
-  LsmStats,
+  TableShardStats,
+  SsTableStats,
+  RTEStats,
   MemtableStats,
 } from "./native";
 
@@ -120,6 +124,17 @@ export interface AddDataOptions {
    * ```
    */
   progress: (progress: WriteProgress) => void;
+
+  /**
+   * Whether blob URIs outside registered external bases may be written.
+   *
+   * Defaults to `false`. This option is supported only for local/native
+   * tables; remote tables return an error when it is enabled. An enabled write
+   * stores the absolute URI reference without registering a base or copying
+   * the external object into the database. The object must remain accessible
+   * when the blob is read later.
+   */
+  allowExternalBlobOutsideBases?: boolean;
 }
 
 export interface UpdateOptions {
@@ -147,7 +162,8 @@ export interface OptimizeOptions {
    * olderThan.setDate(olderThan.getDate() - 1));
    * tbl.optimize({cleanupOlderThan: olderThan});
    *
-   * // Delete all versions except the current version
+   * // Delete versions committed before this point. Versions created by the
+   * // optimize call itself are newer than the cutoff and will be retained.
    * tbl.optimize({cleanupOlderThan: new Date()});
    */
   cleanupOlderThan: Date;
@@ -191,8 +207,8 @@ export type TokenizeTableOptions =
     };
 
 /**
- * Specification selecting Lance's MemWAL LSM-style write path for
- * `mergeInsert`.
+ * Specification enabling the realtime engine (RTE), which routes
+ * `mergeInsert` through Lance's MemWAL LSM-style write path.
  *
  * `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
  * `column` and `numBuckets` are required; for `"identity"`, `column` is
@@ -201,7 +217,7 @@ export type TokenizeTableOptions =
  * `column` value, or upserts of that key can land in different shards and a
  * stale version can win).
  */
-export interface LsmWriteSpec {
+export interface RTEWriteSpec {
   /** One of `"bucket"`, `"identity"`, or `"unsharded"`. */
   specType: "bucket" | "identity" | "unsharded";
   /** Bucket and identity variants: the sharding column. */
@@ -209,9 +225,8 @@ export interface LsmWriteSpec {
   /** Bucket variant: the number of buckets, in `[1, 1024]`. */
   numBuckets?: number;
   /**
-   * Indexes the MemWAL keeps up to date. Omit to maintain every supported
-   * index, resolved on install — a snapshot, so indexes created later are not
-   * maintained. Pass `[]` for none.
+   * Indexes the RTE keeps up to date. Omit for every index the table has,
+   * including ones created later. Pass `[]` for none.
    */
   maintainedIndexes?: string[];
   /** Default `ShardWriter` configuration recorded in the MemWAL index. */
@@ -313,7 +328,7 @@ export abstract class Table {
    * Note: if your condition is something like "some_id_column == 7" and
    * you are updating many rows (with different ids) then you will get
    * better performance with a single [`merge_insert`] call instead of
-   * repeatedly calilng this method.
+   * repeatedly calling this method.
    * @param {Map<string, string> | Record<string, string>} updates - the
    * columns to update
    * @returns {Promise<UpdateResult>} A promise that resolves to an object
@@ -511,6 +526,48 @@ export abstract class Table {
   abstract takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery;
 
   /**
+   * Blob v2 columns addressable by row ID, including struct-nested dotted paths.
+   * Blobs inside lists are omitted because a row ID does not identify an element.
+   */
+  abstract blobColumns(): Promise<string[]>;
+
+  /**
+   * Bytes for `column` at row IDs from {@link Query.withRowId}.
+   *
+   * Reads the table's current checkout. IDs from another version can fail after
+   * compaction unless stable row ids are enabled. Results keep input order and
+   * duplicates. Null blobs are `null`. Empty blobs are empty buffers.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial results are returned.
+   * Blobs inside lists cannot be fetched by row ID.
+   *
+   * Remote servers limit each request to 1024 row IDs and 64 MiB of blob bytes.
+   * The client splits requests automatically and reads an individual larger
+   * blob through the Range route. This method still materializes all bytes in
+   * memory; use {@link Table.fetchBlobFiles} for large values.
+   */
+  abstract fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]>;
+
+  /**
+   * Opens lazy blob handles for `column` at the given row IDs using the
+   * table's current checkout.
+   *
+   * Preserves input order, duplicates, and nulls. Use this for large payloads.
+   * See {@link Table.fetchBlobs} for row-ID validity across versions.
+   * One missing or deleted row ID rejects the entire batch, including on remote
+   * tables; no partial handles are returned.
+   */
+  abstract fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(BlobFile | null)[]>;
+
+  /**
    * Create a search query to find the nearest neighbors
    * of the given query
    * @param {string | IntoVector} query - the query, a vector or string
@@ -542,10 +599,10 @@ export abstract class Table {
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
    * large table as on an empty one.
    *
-   * A refresh does not revisit rows it has already filled, so mutating an
-   * input leaves the value computed at fill time; recomputing means dropping
-   * the column and declaring it again. While a declaration reads a column,
-   * that column cannot be renamed, retyped or dropped.
+   * A refresh also recomputes the rows whose inputs changed since they were
+   * computed, so a mutated input is reflected by the next refresh. While a
+   * declaration reads a column, that column cannot be renamed, retyped or
+   * dropped.
    *
    * On LanceDB Cloud and Enterprise the expression is planned by the
    * server, and the refresh runs as a server job -- see
@@ -576,10 +633,10 @@ export abstract class Table {
   /**
    * Fill the rows of a computed column that hold no value yet.
    *
-   * Rows appended since the last refresh are filled by the next one; rows
-   * already filled are left as they are, so the call is idempotent and does
-   * not observe a mutated input. Local tables only: a remote refresh runs
-   * as a server job, through {@link Table#refreshColumnAsync}.
+   * Rows appended since the last refresh are filled by the next one, and
+   * rows whose inputs changed since they were computed are recomputed;
+   * everything else is left as it is. Local tables only: a remote refresh
+   * runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
@@ -606,16 +663,39 @@ export abstract class Table {
   abstract refreshColumnAsync(column: string): Promise<Job>;
 
   /**
+   * The per-row errors Function refreshes recorded on this table.
+   *
+   * A refresh running under a skip policy records each row it skipped with
+   * the input that failed and the error. This lists those records, newest
+   * job first, plus a summary for any fragment whose per-row detail was
+   * capped. LanceDB Cloud and Enterprise only; reading errors needs read
+   * access to the table, since a message carries the value that failed.
+   * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
+   * `column`, and `limit` (server default 10000, cap 100000).
+   * @returns {Promise<FunctionErrors>} The records, the capped fragments,
+   * and whether the listing stopped at its limit.
+   * @example
+   * ```ts
+   * const { records, truncated } = await table.functionErrors({ column: "embedding" });
+   * ```
+   */
+  abstract functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors>;
+
+  /**
    * Recompute this table's contents from its materialized-view definition.
    *
    * Plumbing for {@link MaterializedView.refresh}, which is the way to call
-   * it: rejects tables that carry no view definition. Local tables only.
+   * it: rejects tables that carry no view definition.
    * @ignore
    */
   abstract refreshMaterializedView(
-    full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult>;
+
+  /** @ignore */
+  abstract materializedViewDefinition(): Promise<string>;
 
   /**
    * Alter the name or nullability of columns.
@@ -678,10 +758,10 @@ export abstract class Table {
    */
   abstract setUnenforcedPrimaryKey(columns: string | string[]): Promise<void>;
   /**
-   * Install an {@link LsmWriteSpec} on this table, selecting Lance's MemWAL
+   * Install an {@link RTEWriteSpec} on this table, selecting Lance's MemWAL
    * LSM-style write path for future `mergeInsert` calls.
    *
-   * `LsmWriteSpec` chooses one of three sharding strategies via `specType`:
+   * `RTEWriteSpec` chooses one of three sharding strategies via `specType`:
    *
    * - `"bucket"` — hash-bucket writes by the single-column unenforced primary
    *   key (`column` and `numBuckets` required).
@@ -692,16 +772,16 @@ export abstract class Table {
    * ({@link Table#setUnenforcedPrimaryKey}); bucket sharding additionally
    * requires it to be the single column being bucketed.
    *
-   * Omitting `maintainedIndexes` maintains every index on the table, resolved
-   * here, failing if one cannot be maintained — name them to install anyway.
+   * Omitting `maintainedIndexes` maintains every index the table has,
+   * including ones created later, and skips a kind the RTE cannot maintain.
    * Naming them pins an exact set, and a still-building index is rejected
    * rather than quietly omitted.
-   * @param {LsmWriteSpec} spec The sharding spec to install.
+   * @param {RTEWriteSpec} spec The sharding spec to install.
    * @returns {Promise<void>}
    * @example
    * ```ts
    * await table.setUnenforcedPrimaryKey("id");
-   * await table.setLsmWriteSpec({
+   * await table.enableRTE({
    *   specType: "bucket",
    *   column: "id",
    *   numBuckets: 16,
@@ -709,60 +789,59 @@ export abstract class Table {
    * });
    * ```
    */
-  abstract setLsmWriteSpec(spec: LsmWriteSpec): Promise<void>;
+  abstract enableRTE(spec: RTEWriteSpec): Promise<void>;
   /**
-   * Remove the {@link LsmWriteSpec} from this table, reverting to the standard
+   * Remove the {@link RTEWriteSpec} from this table, reverting to the standard
    * `mergeInsert` write path.
    *
    * Errors if no spec is currently set.
    * @returns {Promise<void>}
    */
-  abstract unsetLsmWriteSpec(): Promise<void>;
+  abstract disableRTE(): Promise<void>;
   /**
-   * Read the {@link LsmWriteSpec} currently installed on this table.
+   * Read the {@link RTEWriteSpec} currently installed on this table.
    *
-   * Resolves to `undefined` when the MemWAL LSM write path is not enabled (no
-   * spec has been set, or it was removed with {@link Table#unsetLsmWriteSpec}).
-   * The returned spec mirrors what was passed to
-   * {@link Table#setLsmWriteSpec}, except that `maintainedIndexes` always
-   * reports the concrete list resolved when the spec was set — `undefined`
-   * never round-trips.
-   * @returns {Promise<LsmWriteSpec | undefined>}
+   * Resolves to `undefined` when the RTE write path is not enabled (no
+   * spec has been set, or it was removed with {@link Table#disableRTE}).
+   * The spec is the one installed, including its maintained-index selection:
+   * an absent `maintainedIndexes` for every index the table has, an empty
+   * array for none.
+   * @returns {Promise<RTEWriteSpec | undefined>}
    */
-  abstract getLsmWriteSpec(): Promise<LsmWriteSpec | undefined>;
+  abstract getRTESpec(): Promise<RTEWriteSpec | undefined>;
   /**
-   * Drain and close any cached MemWAL shard writers held for this table.
+   * Drain and close any cached RTE shard writers held for this table.
    *
-   * When an {@link LsmWriteSpec} is installed, `mergeInsert` opens MemWAL
+   * When an {@link RTEWriteSpec} is installed, `mergeInsert` opens RTE
    * shard writers and caches them for reuse across calls. This closes them,
    * flushing pending data; writers reopen lazily on the next `mergeInsert`.
    * It is a no-op when no writers are cached.
    * @returns {Promise<void>}
    */
-  abstract closeLsmWriters(): Promise<void>;
+  abstract closeRTEWriters(): Promise<void>;
   /**
-   * Seal every bucket's active memtable into a new L0 generation.
+   * Freeze every table shard's active memtable into a new SSTable.
    *
-   * Returns once the seal is committed. Sealing an empty memtable is a no-op,
+   * Returns once the freeze is committed. Freezing an empty memtable is a no-op,
    * so this is safe to call repeatedly.
    * @returns {Promise<void>}
    */
-  abstract flushLsm(): Promise<void>;
+  abstract flushRTE(): Promise<void>;
   /**
-   * Trigger a background L0 → base compaction pass per bucket.
+   * Trigger a background SSTable compaction pass per table shard.
    *
    * Returns once the passes are *dispatched*, not once they finish — watch
-   * {@link Table#getLsmStats} for progress, or use
-   * {@link Table#checkpointLsm} to wait for convergence.
+   * {@link Table#getRTEStats} for progress, or use
+   * {@link Table#checkpointRTE} to wait for convergence.
    * @returns {Promise<void>}
    */
-  abstract compactLsm(): Promise<void>;
+  abstract compactRTE(): Promise<void>;
   /**
-   * Converge this table's LSM write path into its base table.
+   * Converge this table's RTE write path into its base table.
    *
-   * Seals once, then triggers compaction and polls until the L0 that existed
+   * Freezes once, then triggers compaction and polls until the SSTables that existed
    * at the start is gone. The target set is fixed at the start, so
-   * generations created *during* the checkpoint are ignored — that is what
+   * SSTables created *during* the checkpoint are ignored — that is what
    * lets it terminate under write load, and what makes it best-effort: it
    * converges the fresh tier as of some instant. Idempotent, abandonable at
    * any point, and safe to run on a cadence.
@@ -773,26 +852,26 @@ export abstract class Table {
    * @returns {Promise<void>}
    * @example
    * ```ts
-   * const before = await table.getLsmStats();
-   * await table.checkpointLsm();
-   * const after = await table.getLsmStats();
+   * const before = await table.getRTEStats();
+   * await table.checkpointRTE();
+   * const after = await table.getRTEStats();
    * ```
    */
-  abstract checkpointLsm(): Promise<void>;
+  abstract checkpointRTE(): Promise<void>;
   /**
-   * Read live per-bucket LSM state.
+   * Read live per-table-shard RTE state.
    *
-   * Answers "how far behind is my fresh tier", "which bucket is hot", and
+   * Answers "how far behind is my fresh tier", "which table shard is hot", and
    * "why is my fresh-tier vector search brute-force". Mutates no table state.
    *
-   * Resolves to `undefined` only when the LSM write path is not enabled.
-   * @param {boolean} includeGenerationRows Also count rows per L0 generation.
+   * Resolves to `undefined` only when the RTE write path is not enabled.
+   * @param {boolean} includeSstableRows Also count rows per SSTable.
    *   Off by default because each count opens an uncached Lance dataset.
-   * @returns {Promise<LsmStats | undefined>}
+   * @returns {Promise<RTEStats | undefined>}
    */
-  abstract getLsmStats(
-    includeGenerationRows?: boolean,
-  ): Promise<LsmStats | undefined>;
+  abstract getRTEStats(
+    includeSstableRows?: boolean,
+  ): Promise<RTEStats | undefined>;
   /** Retrieve the version of the table */
 
   abstract version(): Promise<number>;
@@ -910,7 +989,11 @@ export abstract class Table {
    *
    * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
    * the client process from index metadata. For remote tables, this means the
-   * same tokenizer model files must also exist locally.
+   * same tokenizer model files must also exist locally (under
+   * `LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
+   * mismatch cannot be detected: the returned tokens may differ from what the
+   * server's index produces. If the model files are missing, an error naming
+   * the tokenizer is raised.
    */
   abstract tokenize(
     query: string,
@@ -919,6 +1002,16 @@ export abstract class Table {
   /** Return the table as an arrow table */
   abstract toArrow(): Promise<ArrowTable>;
 
+  /**
+   * Create a {@link MergeInsertBuilder}, which combines new data with the
+   * existing table in a single transaction — inserting, updating and deleting
+   * rows depending on how they match.
+   *
+   * @param on - The column, or columns, to match source rows against target
+   * rows on. Typically a key or id column. Several columns match on the
+   * composite key: a source row updates a target row only when it agrees on
+   * every one of them.
+   */
   abstract mergeInsert(on: string | string[]): MergeInsertBuilder;
 
   /** List all the stats of a specified index
@@ -1023,7 +1116,12 @@ export class LocalTable extends Table {
           }
         }
       : undefined;
-    return await this.inner.add(buffer, mode, progress);
+    return await this.inner.add(
+      buffer,
+      mode,
+      progress,
+      options?.allowExternalBlobOutsideBases,
+    );
   }
 
   async update(
@@ -1114,13 +1212,15 @@ export class LocalTable extends Table {
   ): Promise<Job> {
     // biome-ignore lint/suspicious/noExplicitAny: skip
     const nativeIndex = (options?.config as any)?.inner;
-    return await this.inner.createIndexAsync(
-      nativeIndex,
-      column,
-      options?.replace,
-      options?.waitTimeoutSeconds,
-      options?.name,
-      options?.train,
+    return new Job(
+      await this.inner.createIndexAsync(
+        nativeIndex,
+        column,
+        options?.replace,
+        options?.waitTimeoutSeconds,
+        options?.name,
+        options?.train,
+      ),
     );
   }
 
@@ -1144,27 +1244,47 @@ export class LocalTable extends Table {
   }
 
   takeOffsets(offsets: number[]): TakeQuery {
-    return new TakeQuery(this.inner.takeOffsets(offsets));
+    return new TakeQuery(this.inner.takeOffsets(offsets), {
+      table: this.inner,
+      withRowId: false,
+    });
   }
 
   takeRowIds(rowIds: readonly (bigint | number)[]): TakeQuery {
-    const ids = rowIds.map((id) => {
-      if (typeof id === "bigint") {
-        return id;
-      }
-      if (!Number.isInteger(id)) {
-        throw new Error("Row id must be an integer (or bigint)");
-      }
-      if (id < 0) {
-        throw new Error("Row id cannot be negative");
-      }
-      if (!Number.isSafeInteger(id)) {
-        throw new Error("Row id is too large for number; use bigint instead");
-      }
-      return BigInt(id);
+    return new TakeQuery(this.inner.takeRowIds(rowIdsToBigInts(rowIds)), {
+      table: this.inner,
+      withRowId: false,
     });
+  }
 
-    return new TakeQuery(this.inner.takeRowIds(ids));
+  blobColumns(): Promise<string[]> {
+    return this.inner.blobColumns();
+  }
+
+  async fetchBlobs(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(Buffer | null)[]> {
+    const values = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobs(column, rowIdsToBigInts(rowIds), signal),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return values.map((value) => value ?? null);
+  }
+
+  async fetchBlobFiles(
+    column: string,
+    rowIds: readonly (bigint | number)[],
+    options?: BlobReadOptions,
+  ): Promise<(BlobFile | null)[]> {
+    const files = await runWithSignal(options?.signal, (signal) =>
+      this.inner.fetchBlobFiles(column, rowIdsToBigInts(rowIds), signal),
+    );
+    // N-API Option maps missing values to undefined. Collapse those to null.
+    return files.map((file) =>
+      file == null ? null : BlobFile.fromNative(file),
+    );
   }
 
   query(): Query {
@@ -1303,14 +1423,24 @@ export class LocalTable extends Table {
   }
 
   async refreshColumnAsync(column: string): Promise<Job> {
-    return await this.inner.refreshColumnAsync(column);
+    return new Job(await this.inner.refreshColumnAsync(column));
+  }
+
+  async functionErrors(
+    options?: FunctionErrorsOptions,
+  ): Promise<FunctionErrors> {
+    validateNonNegativeInteger(options?.limit, "limit");
+    return await this.inner.functionErrors(options);
   }
 
   async refreshMaterializedView(
-    full?: boolean,
     sourceVersion?: number,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(full, sourceVersion);
+    return await this.inner.refreshMaterializedView(sourceVersion);
+  }
+
+  async materializedViewDefinition(): Promise<string> {
+    return await this.inner.materializedViewDefinition();
   }
 
   async alterColumns(
@@ -1354,43 +1484,43 @@ export class LocalTable extends Table {
     return await this.inner.setUnenforcedPrimaryKey(cols);
   }
 
-  async setLsmWriteSpec(spec: LsmWriteSpec): Promise<void> {
-    return await this.inner.setLsmWriteSpec(spec);
+  async enableRTE(spec: RTEWriteSpec): Promise<void> {
+    return await this.inner.enableRTE(spec);
   }
 
-  async unsetLsmWriteSpec(): Promise<void> {
-    return await this.inner.unsetLsmWriteSpec();
+  async disableRTE(): Promise<void> {
+    return await this.inner.disableRTE();
   }
 
-  async getLsmWriteSpec(): Promise<LsmWriteSpec | undefined> {
+  async getRTESpec(): Promise<RTEWriteSpec | undefined> {
     // The native binding types `specType` as a plain `string`; narrow it back
     // to the public union. The Rust `From` impl only ever emits one of the
     // three valid values, so the cast is safe.
-    return ((await this.inner.getLsmWriteSpec()) ?? undefined) as
-      | LsmWriteSpec
+    return ((await this.inner.getRTESpec()) ?? undefined) as
+      | RTEWriteSpec
       | undefined;
   }
 
-  async closeLsmWriters(): Promise<void> {
-    return await this.inner.closeLsmWriters();
+  async closeRTEWriters(): Promise<void> {
+    return await this.inner.closeRTEWriters();
   }
 
-  async flushLsm(): Promise<void> {
-    return await this.inner.flushLsm();
+  async flushRTE(): Promise<void> {
+    return await this.inner.flushRTE();
   }
 
-  async compactLsm(): Promise<void> {
-    return await this.inner.compactLsm();
+  async compactRTE(): Promise<void> {
+    return await this.inner.compactRTE();
   }
 
-  async checkpointLsm(): Promise<void> {
-    return await this.inner.checkpointLsm();
+  async checkpointRTE(): Promise<void> {
+    return await this.inner.checkpointRTE();
   }
 
-  async getLsmStats(
-    includeGenerationRows: boolean = false,
-  ): Promise<LsmStats | undefined> {
-    return (await this.inner.getLsmStats(includeGenerationRows)) ?? undefined;
+  async getRTEStats(
+    includeSstableRows: boolean = false,
+  ): Promise<RTEStats | undefined> {
+    return (await this.inner.getRTEStats(includeSstableRows)) ?? undefined;
   }
 
   async version(): Promise<number> {
@@ -1433,16 +1563,8 @@ export class LocalTable extends Table {
   }
 
   async optimize(options?: Partial<OptimizeOptions>): Promise<OptimizeStats> {
-    let cleanupOlderThanMs;
-    if (
-      options?.cleanupOlderThan !== undefined &&
-      options?.cleanupOlderThan !== null
-    ) {
-      cleanupOlderThanMs =
-        new Date().getTime() - options.cleanupOlderThan.getTime();
-    }
     return await this.inner.optimize(
-      cleanupOlderThanMs,
+      options?.cleanupOlderThan?.getTime(),
       options?.deleteUnverified,
     );
   }
@@ -1720,4 +1842,22 @@ export class Branches {
       dryRun,
     )) as unknown as CherryPickResult;
   }
+}
+
+function rowIdsToBigInts(rowIds: readonly (bigint | number)[]): bigint[] {
+  return rowIds.map((id) => {
+    if (typeof id === "bigint") {
+      return id;
+    }
+    if (!Number.isInteger(id)) {
+      throw new Error("Row id must be an integer (or bigint)");
+    }
+    if (id < 0) {
+      throw new Error("Row id cannot be negative");
+    }
+    if (!Number.isSafeInteger(id)) {
+      throw new Error("Row id is too large for number; use bigint instead");
+    }
+    return BigInt(id);
+  });
 }

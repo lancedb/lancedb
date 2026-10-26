@@ -734,6 +734,7 @@ impl<S: HttpSend + 'static> ExecutionPlan for RemoteWriteExec<S> {
                 WriteOp::MergeInsert { query, timeout } => {
                     let mut request = client
                         .post(&format!("/v1/table/{}/merge_insert/", identifier))
+                        .query(&query.on_query_params())
                         .query(query)
                         .header(CONTENT_TYPE, ARROW_STREAM_CONTENT_TYPE);
                     if let Some(timeout) = timeout {
@@ -1489,14 +1490,14 @@ mod tests {
         });
 
         let query = MergeInsertRequest {
-            on: "id".to_string(),
+            on: vec!["id".to_string()],
             when_matched_update_all: false,
             when_matched_update_all_filt: None,
             when_not_matched_insert_all: false,
             when_not_matched_by_source_delete: false,
             when_not_matched_by_source_delete_filt: None,
             use_index: true,
-            use_lsm: None,
+            use_rte: None,
         };
 
         let input: Arc<dyn ExecutionPlan> = Arc::new(ErroringExec::new());

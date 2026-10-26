@@ -107,8 +107,24 @@ class RRFReranker(Reranker):
                     `search().with_row_id(True)`"
             )
 
-        combined = pa.concat_tables(vector_results, **self._concat_tables_args)
-        empty_table = pa.Table.from_arrays([], names=[])
-        reranked = self.rerank_hybrid(query, combined, empty_table)
+        # RRF ranks each result list on its own, so a document's rank is its
+        # position within the list it came from, not within the concatenation.
+        rrf_score_map = defaultdict(float)
+        for result in vector_results:
+            for i, result_id in enumerate(result["_rowid"].to_pylist(), 1):
+                rrf_score_map[result_id] += 1 / (i + self.K)
 
-        return reranked
+        combined = pa.concat_tables(vector_results, **self._concat_tables_args)
+        combined = self._deduplicate(combined)
+        relevance_scores = [
+            rrf_score_map[row_id] for row_id in combined["_rowid"].to_pylist()
+        ]
+        combined = combined.append_column(
+            "_relevance_score", pa.array(relevance_scores, type=pa.float32())
+        )
+        combined = combined.sort_by([("_relevance_score", "descending")])
+
+        if self.score == "relevance":
+            combined = self._keep_relevance_score(combined)
+
+        return combined

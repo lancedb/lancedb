@@ -1,0 +1,91 @@
+---
+title: "Guarantees"
+sidebarTitle: "Guarantees"
+description: "Understand table commits, concurrent writes and the boundaries of recovery."
+icon: shield-check
+keywords: ["guarantees", "consistency", "atomicity", "durability", "concurrency"]
+---
+
+## Atomic table writes {#writes}
+
+A table transaction commits its changes atomically: readers see the committed
+table version, not a partially applied transaction. For example, a committed
+append adds its rows together.
+
+This boundary is one table transaction. A workflow that updates several tables
+or runs a background job can contain multiple commits. Do not assume the whole
+workflow is atomic.
+
+<span id="schema" />
+
+Schema changes are also part of table history. Changing a column's type can
+rewrite data; adding a derived column can write the new column independently.
+
+## Consistent reads {#reads}
+
+A read of a table uses a consistent snapshot. A consistent snapshot can still
+be older than another writer's latest commit. [Consistency](/tables/consistency)
+explains how OSS and Enterprise choose the version a reader sees.
+
+For an experiment that must keep using the same data, select a specific retained
+table version rather than relying on a connection's default freshness.
+
+## Concurrent writes {#concurrency}
+
+Lance uses optimistic concurrency control. Writers prepare changes, then check
+compatibility with intervening commits. Compatible changes can be committed;
+conflicts may be retried or returned as errors.
+
+Applications must handle failed writes. Concurrent appends are compatible, but
+that does not promise success through storage failures or exhausted retries.
+Do not rely on a particular ordering between independent writers.
+
+The [Lance transaction specification](https://lance.org/format/table/transaction/)
+describes commit behavior and compatibility between operations.
+
+## Storage durability {#durability}
+
+A committed table version is stored in the table’s configured storage. LanceDB
+OSS uses your local filesystem or object store; LanceDB Enterprise uses the
+cluster’s configured storage.
+
+Table version history does not replace backups. Configure storage redundancy
+and backups to meet your recovery requirements.
+
+## Background job completion {#jobs}
+
+In LanceDB Enterprise, operations such as index builds and column refreshes
+can run as background jobs. Receiving a job handle confirms submission. Wait
+for the job to succeed before relying on its result.
+
+Some operations save results in batches. If a job fails or is cancelled,
+batches already committed can remain in the table. Each operation’s guide
+explains whether it can leave partial results.
+
+## Writes after a client timeout {#timeouts}
+
+If a client times out while waiting for a write, the write may already have
+committed. Retrying an append can therefore insert the same records again.
+
+Check whether the intended records were written before retrying. For an
+operation submitted as a background job, check its status using the job handle.
+
+## Version history and recovery {#history}
+
+Retained table versions let you inspect earlier data or restore a table to a
+previous version. Cleanup can remove those versions and their underlying files,
+so configure retention to cover the history you need.
+
+Dropping a table is different from deleting records. Table version history
+cannot undo `drop_table`.
+
+<span id="not-guaranteed" />
+
+## Learn more {#next}
+
+- [Consistency](/tables/consistency): control when reads observe updates.
+- [Table versioning](/management/table#versioning): inspect and restore history.
+- [Cleanup](/maintenance/cleanup): configure retention and understand protected versions.
+- [Jobs](/basics/jobs): distinguish submission, completion and cancellation.
+- [Column refresh](/feature-engineering/refresh-column): understand partial progress.
+- [Architecture](/architecture): understand storage and background maintenance.

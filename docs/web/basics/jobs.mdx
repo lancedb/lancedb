@@ -1,0 +1,100 @@
+---
+title: "Jobs"
+sidebarTitle: "Job"
+description: "Track background work from submission to completion."
+icon: hourglass-half
+keywords: ["job", "background", "progress", "events", "cancel"]
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Job handles track operations in OSS and Enterprise. Enterprise also
+    supports listing server jobs, reopening them by ID and reading their events.
+---
+
+## Job handles {#convention}
+
+A job handle lets you track an operation, such as an index build or a computed
+column refresh. Use it to check progress, wait for completion and inspect
+failures.
+
+Methods such as Python's `create_index_async` and TypeScript's
+`createIndexAsync` return job handles. In OSS, the work runs in your application
+process; in Enterprise, it runs on server workers or through the SQL query
+backend. A returned handle can represent an operation that has already finished,
+so check its status before
+waiting or requesting cancellation. See the operation's API reference for when
+the method returns.
+
+## Submit and wait for a job {#waiting}
+
+1. **Submit the operation.** Keep the returned job handle. For an Enterprise
+    registry job, also keep its ID if another process needs to look it up later.
+2. **Check progress.** Read the current status while the operation runs.
+3. **Wait for completion.** Check that the job succeeded before using its
+    result. If it failed or was cancelled, inspect the failure details and any
+    results it committed before stopping.
+
+In Python, `job.status()` reports the current state and `job.wait()` waits for
+completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
+The timeout does not cancel the server job.
+
+<span id="inspecting" />
+<span id="events" />
+
+## Inspect and cancel jobs {#managing}
+
+| Task | What to do |
+| --- | --- |
+| Inspect progress | Check status and refresh the handle to retrieve details. Enterprise job events can help explain ongoing work or failures. |
+| Reattach from another process | Open an existing server job with its ID, such as Python's `db.open_job(job_id)`. The server must still retain the job record. |
+| Diagnose a failure | Inspect failure details and relevant events. Enterprise SQL also provides `SHOW ERRORS`. |
+| Request cancellation | Call the job's cancellation method. Cancellation may take time, and work already committed is not rolled back. |
+
+Reopening a job retrieves the existing operation; it does not restart failed
+work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
+
+Event responses have [row limits](/basics/limits#jobs). An explicit limit can
+request more than the default, but it does not guarantee a complete event
+history.
+
+## OSS and Enterprise execution {#in-process}
+
+The following table describes local operations and Enterprise registry jobs.
+SQL-backed job handles follow the query lifecycle described below.
+
+| | OSS | Enterprise registry job |
+| --- | --- | --- |
+| Execution | In your application process | On server workers |
+| Job identity | No server ID | A server ID for looking up the job |
+| Event history | No server event history | Available through the jobs API |
+| Reattaching after a client restart | No server job to reopen | Reopen by ID while the record is retained |
+
+### SQL-backed job handles
+
+Remote materialized-view CREATE and REFRESH use the SQL query backend. Python's
+`create_materialized_view_async()` and `mv.refresh_async()` still return job
+handles with `status()`, `wait()` and `cancel()`. Synchronous creation and refresh
+wait on the same SQL execution before returning.
+
+The existing `job.job_type` identifies query-backed handles as `"query"` from
+submission, and `job.id` contains the connection-scoped SQL query UUID string.
+Use `describe_query(job.id)` on the submitting connection to inspect the query.
+Registry handles retain their server-reported job types (available after
+`status()` or `refresh()`) and registry IDs. Local handles have no ID or job type.
+
+SQL-backed handles do not expose registry records or event history and cannot
+be reopened through `open_job()` or reattached after a client restart. Their IDs
+are not durable resume tokens. Cancellation follows the SQL server's
+capabilities and can be unsupported.
+
+The server decides whether SQL executes on its serving fleet or starts SQL job
+workers. That placement does not change the handle's query-backed identity.
+
+## Learn more {#next}
+
+- [Build and repair indexes](/indexing/reindexing): submit index work.
+- [Column refresh](/feature-engineering/refresh-column): populate derived values.
+- [Background jobs](/maintenance/background-jobs): understand Enterprise maintenance.
+- [SQL job commands](/sql/ddl/job): list jobs and inspect errors.
+- [SDKs](/basics/sdk): find the job API for your client.
