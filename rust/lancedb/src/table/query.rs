@@ -32,7 +32,7 @@ use lance::dataset::mem_wal::DatasetMemWalExt;
 use lance::dataset::scanner::DatasetRecordBatchStream;
 use lance::dataset::scanner::Scanner;
 use lance::index::DatasetIndexInternalExt;
-use lance::io::exec::ANNIvfSubIndexExec;
+use lance::io::exec::{ANNIvfBatchExec, ANNIvfSubIndexExec};
 use lance_datafusion::exec::{analyze_plan as lance_analyze_plan, execute_plan};
 use lance_index::IndexType;
 use lance_index::metrics::NoOpMetricsCollector;
@@ -538,6 +538,56 @@ fn leaf_field_paths(schema: &Schema) -> Vec<String> {
 
 const COSINE_ANN_SCALE: f32 = 0.5;
 
+#[derive(Clone, Copy)]
+enum AnnExecRef<'a> {
+    Single(&'a ANNIvfSubIndexExec),
+    Batch(&'a ANNIvfBatchExec),
+}
+
+impl<'a> AnnExecRef<'a> {
+    fn from_plan(plan: &'a dyn ExecutionPlan) -> Option<Self> {
+        if let Some(single) = plan.downcast_ref::<ANNIvfSubIndexExec>() {
+            return Some(Self::Single(single));
+        }
+        plan.downcast_ref::<ANNIvfBatchExec>().map(Self::Batch)
+    }
+
+    fn query(self) -> &'a lance_index::vector::Query {
+        match self {
+            Self::Single(ann) => ann.query(),
+            Self::Batch(ann) => ann.query(),
+        }
+    }
+
+    fn dataset(self) -> &'a Arc<lance::Dataset> {
+        match self {
+            Self::Single(ann) => ann.dataset(),
+            Self::Batch(ann) => ann.dataset(),
+        }
+    }
+
+    fn indices(self) -> &'a [lance_table::format::IndexMetadata] {
+        match self {
+            Self::Single(ann) => ann.indices(),
+            Self::Batch(ann) => ann.indices(),
+        }
+    }
+
+    fn query_count(self) -> Option<usize> {
+        match self {
+            Self::Single(_) => None,
+            Self::Batch(ann) => Some(ann.query_count()),
+        }
+    }
+
+    fn same_kind(self, other: Self) -> bool {
+        matches!(
+            (self, other),
+            (Self::Single(_), Self::Single(_)) | (Self::Batch(_), Self::Batch(_))
+        )
+    }
+}
+
 /// Find ANN index segments whose scores use normalized squared L2 for cosine search.
 ///
 /// Cosine PQ/SQ/RQ indices normalize their vectors and use squared L2 internally.  This
@@ -592,9 +642,10 @@ pub(super) async fn normalize_cosine_ann_branches(
     normalize_ann_branches(plan.clone(), plan, &normalized_l2_indices)
 }
 
-fn find_ann_plans<'a>(plan: &'a dyn ExecutionPlan, ann_plans: &mut Vec<&'a ANNIvfSubIndexExec>) {
-    if let Some(ann) = plan.downcast_ref::<ANNIvfSubIndexExec>() {
+fn find_ann_plans<'a>(plan: &'a dyn ExecutionPlan, ann_plans: &mut Vec<AnnExecRef<'a>>) {
+    if let Some(ann) = AnnExecRef::from_plan(plan) {
         ann_plans.push(ann);
+        return;
     }
     for child in plan.children() {
         find_ann_plans(child.as_ref(), ann_plans);
@@ -605,7 +656,7 @@ fn collect_ann_plans(
     plan: &Arc<dyn ExecutionPlan>,
     ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
 ) {
-    if plan.downcast_ref::<ANNIvfSubIndexExec>().is_some() {
+    if AnnExecRef::from_plan(plan.as_ref()).is_some() {
         ann_plans.push_back(plan.clone());
         return;
     }
@@ -639,21 +690,25 @@ fn replace_ann_branches(
     internal_ann_plans: &mut VecDeque<Arc<dyn ExecutionPlan>>,
     normalized_l2_indices: &HashSet<String>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    if let Some(public_ann) = public_plan.downcast_ref::<ANNIvfSubIndexExec>() {
+    if let Some(public_ann) = AnnExecRef::from_plan(public_plan.as_ref()) {
         let internal_plan = internal_ann_plans
             .pop_front()
             .ok_or_else(|| Error::Runtime {
                 message: "internal vector plan was missing an ANN branch".to_string(),
             })?;
-        let internal_ann = internal_plan
-            .downcast_ref::<ANNIvfSubIndexExec>()
-            .expect("collected only ANN plans");
+        let internal_ann =
+            AnnExecRef::from_plan(internal_plan.as_ref()).ok_or_else(|| Error::Runtime {
+                message: "internal vector plan contained a non-ANN branch where an ANN branch was expected"
+                    .to_string(),
+            })?;
         let same_indices = public_ann
             .indices()
             .iter()
             .map(|index| &index.uuid)
             .eq(internal_ann.indices().iter().map(|index| &index.uuid));
-        if public_ann.query().column != internal_ann.query().column
+        if !public_ann.same_kind(internal_ann)
+            || public_ann.query_count() != internal_ann.query_count()
+            || public_ann.query().column != internal_ann.query().column
             || public_ann.query().metric_type != internal_ann.query().metric_type
             || !same_indices
         {
@@ -1840,7 +1895,10 @@ mod tests {
     #[case::legacy(true)]
     #[tokio::test]
     async fn test_cosine_pq_distance_uses_public_cosine_scale(#[case] legacy: bool) {
-        use arrow_array::{Float32Array, Int32Array, RecordBatch, types::Float32Type};
+        use arrow_array::{
+            Float32Array, Int32Array, RecordBatch,
+            types::{Float32Type, Int32Type},
+        };
         use arrow_schema::{DataType, Field, Schema};
 
         use crate::connect;
@@ -2015,6 +2073,91 @@ mod tests {
         let ranged_distances = distances(&ranged);
         assert_eq!(ranged_distances.len(), 1);
         assert!((ranged_distances[0] - nearest).abs() < 1e-5);
+
+        if !legacy {
+            fn batch_distances_by_query(
+                batches: &[RecordBatch],
+                query_count: usize,
+            ) -> Vec<Vec<f32>> {
+                let mut distances = vec![Vec::new(); query_count];
+                for batch in batches {
+                    let query_index_column = batch["query_index"].as_primitive::<Int32Type>();
+                    let distance_column = batch[DIST_COL].as_primitive::<Float32Type>();
+                    for row in 0..batch.num_rows() {
+                        let query_index = query_index_column.value(row) as usize;
+                        distances[query_index].push(distance_column.value(row));
+                    }
+                }
+                distances
+            }
+
+            fn sorted(mut values: Vec<f32>) -> Vec<f32> {
+                values.sort_by(|left, right| left.partial_cmp(right).unwrap());
+                values
+            }
+
+            let batch_query = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(5);
+            let batch_plan = batch_query.explain_plan(false).await.unwrap();
+            assert!(batch_plan.contains("ANNIvfBatch"), "{batch_plan}");
+            let batched = batch_query
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_distances = batch_distances_by_query(&batched, 2);
+            let expected_distances = sorted(approximate_distances.clone());
+            for (query_index, actual) in batched_distances.into_iter().enumerate() {
+                assert_eq!(
+                    actual.len(),
+                    expected_distances.len(),
+                    "query {query_index} returned the wrong number of rows"
+                );
+                for (actual, expected) in sorted(actual).into_iter().zip(&expected_distances) {
+                    assert!(
+                        (actual - expected).abs() < 1e-5,
+                        "batch distance {actual} for query {query_index} must use single-query public scale {expected}"
+                    );
+                }
+            }
+
+            let batched_ranged = table
+                .vector_search(query_vector.as_slice())
+                .unwrap()
+                .add_query_vector(query_vector.as_slice())
+                .unwrap()
+                .nprobes(1)
+                .unwrap()
+                .limit(1)
+                .distance_range(None, Some(nearest + 1e-5))
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            let batched_ranged_distances = batch_distances_by_query(&batched_ranged, 2);
+            for (query_index, query_distances) in batched_ranged_distances.into_iter().enumerate() {
+                assert_eq!(
+                    query_distances.len(),
+                    1,
+                    "public cosine range must return one hit for query {query_index}"
+                );
+                assert!(
+                    (query_distances[0] - nearest).abs() < 1e-5,
+                    "ranged batch distance {} for query {query_index} must match {nearest}",
+                    query_distances[0]
+                );
+            }
+        }
 
         let refined_ranged = table
             .vector_search(query_vector.as_slice())

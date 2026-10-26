@@ -2603,8 +2603,9 @@ mod lsm_tests {
             target_uri: &str,
             out: &mut Vec<&'a ANNIvfSubIndexExec>,
         ) {
+            // Local datasets may report their path with a different separator on Windows.
             if let Some(ann) = (node as &dyn Any).downcast_ref::<ANNIvfSubIndexExec>()
-                && ann.dataset().uri() == target_uri
+                && std::path::Path::new(ann.dataset().uri()) == std::path::Path::new(target_uri)
             {
                 out.push(ann);
             }
