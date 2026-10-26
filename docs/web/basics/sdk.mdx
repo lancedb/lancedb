@@ -79,6 +79,10 @@ manages background maintenance.
 - **Configure the connection.** Replace the local path with your database URI,
   and supply the endpoint, region and credentials provided by your administrator.
   [Connect to Enterprise](/basics/connect#enterprise) shows these settings.
+- **Remove local storage and cache settings.** `db://` connections reject local
+  sessions, table cache settings, and per-table storage and write options. Omit
+  these options so Enterprise manages storage and caching. Connection-level
+  storage options supported by your Enterprise deployment remain available.
 - **Retrieve query results.** Python's remote tables do not support whole-table
   `to_arrow()` or `to_pandas()` calls. Use a query and select the columns and
   number of rows you need, for example `table.search().limit(10).to_arrow()`.
