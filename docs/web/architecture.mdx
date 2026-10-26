@@ -1,153 +1,124 @@
 ---
 title: "Architecture"
 sidebarTitle: "Architecture"
-description: "How LanceDB is put together, and what changes between running it embedded and running it distributed."
+description: "How LanceDB Enterprise separates query serving, background work, and storage, and how it compares with embedded LanceDB OSS."
 icon: cubes
 keywords: ["architecture", "embedded", "distributed", "object storage", "compute", "deployment"]
 ---
 
-LanceDB has one storage layer and two ways to put compute on top of it. Which
-one you run decides where queries execute, what runs on your behalf, and what
-you have to operate — and almost nothing else. The data is the same
-[Lance](/basics/lance) tables either way.
+LanceDB OSS is an embedded library for working with Lance tables. LanceDB
+Enterprise is a multimodal lakehouse for data curation, feature engineering,
+search, and training data access. Its architecture separates query serving,
+read execution, caching, and background work. Both use the open
+[Lance](/basics/lance) format.
 
-## One storage layer {#storage}
+Teams can curate datasets, derive features, search multimodal records, and
+read the resulting tables into training frameworks. Enterprise separates the
+resources that serve shared data from those that build indexes and run
+background work, so teams can size them for these different workloads.
 
-Everything durable lives in object storage: table data, manifests, indexes. No
-machine owns a dataset, and no server has to be running for the data to exist.
+![LanceDB OSS runs the application and embedded library in one process, using local disk or object storage. Enterprise applications connect to query serving, with separate read execution and caching, indexing and background workers, and durable object storage. Both use the Lance format, but they do not share a storage location automatically.](/static/assets/images/overview/lancedb-architecture.svg)
 
-```
-        ┌──────────────────────────────────────────┐
-        │           object storage                 │
-        │  table data · manifests · indexes        │
-        └──────────────────────────────────────────┘
-```
+The diagram shows the main compute and storage boundaries, not every request
+path. The control plane governs the Enterprise service.
 
-That is the whole persistence story, and it is why the two deployment shapes can
-differ so much above it while staying compatible below it. A table written
-embedded is opened by a deployment, and the reverse, without conversion.
+## A shared format, different storage choices {#storage}
 
-## Embedded {#embedded}
+Lance stores table data, versions, and indexes. OSS can read and write tables on
+local disk or in object storage. Enterprise keeps durable table data and index
+artifacts in object storage, independently of the machines serving requests.
+Its caches accelerate reads; they are not the durable source of truth.
 
-```
-   your process
-   ┌────────────────────────────────┐
-   │  application                   │
-   │  LanceDB library               │  ← plans, executes, indexes, compacts
-   └────────────────────────────────┘
-                  │
-        ┌─────────▼─────────┐
-        │  object storage   │
-        └───────────────────┘
-```
+Sharing a format does not mean that an Enterprise deployment automatically
+opens an existing OSS database. Plan how to move or connect your data and
+configure access for your deployment.
 
-`lancedb.connect("./data")` or `connect("s3://bucket/path")` gives you a
-**library**, not a client. Your process opens the tables, plans the queries,
-runs the scans, builds the indexes, and writes the new versions. There is no
-server in the picture at all.
+## OSS: an embedded library inside your application {#embedded}
 
-**What follows from that.** Nothing runs unless you call it — no background
-compaction, no server-side [jobs](/basics/jobs), no
-[SQL endpoint](/basics/sql). Scale is your process's scale: a query gets the
-cores and memory your process has. Access control is whatever your object store
-enforces, since there is no other gatekeeper.
+With an embedded connection, the LanceDB library plans and executes queries,
+builds indexes, and updates tables inside your process. There is no separate
+database server to deploy.
 
-**What it is good at.** Development, notebooks, single-node pipelines, embedding
-LanceDB inside an application, and anything where "no service to operate" is
-worth more than elasticity. Comfortably handles millions of vectors on one
-node -- disk-based indexes keep it performant without extra infrastructure.
+This fits local retrieval applications, notebooks, development, and
+single-node data pipelines. Your application controls the compute resources and
+when to run [table maintenance](/maintenance/compaction). You also manage access
+to the local files or object storage that hold your tables.
 
-## Distributed {#distributed}
+## Enterprise: a multimodal lakehouse for shared workloads {#distributed}
 
-<Badge color="red">Enterprise</Badge>
+Applications connect to remote tables through a LanceDB SDK. The service handles
+requests across a fleet, with components sized for different kinds of work:
 
-```
-   your process
-   ┌──────────────┐
-   │ application  │
-   │ LanceDB SDK  │  ← a thin client
-   └──────┬───────┘
-          │  db://  (REST / Flight SQL)
-   ┌──────▼──────────────────────────────────────┐
-   │  control plane   config · identity · policy │
-   ├─────────────────────────────────────────────┤
-   │  data plane      query serving · writes     │
-   │  indexers        indexing · compaction      │
-   └──────┬──────────────────────────────────────┘
-          │
-   ┌──────▼────────────┐
-   │  object storage   │
-   └───────────────────┘
-```
+- **Query serving** receives requests, resolves tables, and plans operations.
+  Add serving capacity as more applications and users depend on your data.
+- **Read execution and caching** use separately provisioned resources. Executors
+  cache table data to reduce repeated reads from object storage.
+- **Indexing and background workers** build indexes and perform maintenance
+  outside the query request path. Size this work separately from query serving
+  as your data grows.
 
-`connect("db://...")` gives you a **client**. Planning and execution move to a
-cluster, and the work splits across tiers that scale independently: a control
-plane governing configuration, identity and policy; a data plane serving reads
-and writes; and indexers building indexes and compacting outside the request
-path.
+The control plane manages configuration, identity, policy, and cluster
+lifecycle. It governs the service rather than executing table queries.
+[Authorization](/governance/authorization) lets teams control access to catalog
+objects when enabled and configured by the administrator. Deployment settings govern background
+[compaction](/maintenance/compaction) and
+[cleanup](/maintenance/cleanup), including retention.
 
-**What follows from that.** Compute and storage are separated, so a query fleet
-scales for interactive traffic without also scaling indexing capacity, and heavy
-background work does not steal resources from user queries. Because a server
-exists, so do the things that need one: [SQL](/sql),
-[functions](/management/function), server-side jobs, and
-[authorization](/governance/authorization) per object rather than per bucket.
+These boundaries support different parts of an AI data workflow.
+[SQL curation](/curation) requires a deployment with SQL enabled.
+[Feature engineering](/feature-engineering) can produce derived columns and
+tables; computed columns and materialized views require a deployment that
+enables them. [Geneva](/geneva) runs distributed Python feature backfills while
+its capabilities continue to transition to LanceDB APIs.
+[Training data loaders](/training/data-loading) read tables into model training
+frameworks in both offerings. LanceDB provides data access for training; the
+training framework runs the model.
 
-**What it is good at.** Many concurrent queries, continuous ingestion and
-indexing, multi-team access with real permissions, and workloads too large for
-one machine -- customers regularly operate on billions of rows and tens of
-terabytes.
+Size and monitor each tier for your workload. Read the
+[Enterprise architecture](/enterprise/architecture) for the component details
+and request flows.
 
-## What changes, precisely {#differences}
+## Application changes for Enterprise {#differences}
 
-| | Embedded | Distributed |
-| --- | --- | --- |
-| What you connect to | a library in your process | a cluster |
-| Where queries plan and execute | your process | the data plane |
-| Table handle | `LanceTable` | `RemoteTable` |
-| Indexing and compaction | when you call it | dedicated indexers |
-| [Jobs](/basics/jobs) | run in-process, no server record | real jobs: id, status, events, cancel |
-| [SQL](/sql) | unavailable | Flight SQL endpoint |
-| [Functions](/management/function) | unavailable | run on workers |
-| Access control | object-store permissions | [per-object grants](/governance/authorization) |
-| Scale bound | your process | the cluster |
-| What you operate | nothing | a deployment |
+Core operations remain familiar: create a table, add data, and run a search.
+With OSS, the application executes those operations. With Enterprise, the SDK
+sends requests to the service, and the service manages execution and configured
+background maintenance.
 
-Both expose the same table API — create, open, mutate, query — so application
-code moves between them by changing the URI. What does not move is code that
-depends on a row in the right-hand column.
+To use Enterprise, configure the cluster endpoint, database URI and credentials,
+and make your data available in the Enterprise database. Review SDK methods
+that behave differently on remote tables, including result retrieval and
+background jobs. [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise)
+describes these application changes. If you plan to use materialized views, check the
+[stable row ID requirements](/basics/limits#schema) before creating source tables.
 
-## Choosing, and changing your mind {#choosing}
+## Choose for the workload you need to run {#choosing}
 
-Start embedded. It has no operational cost and the API is the same one you will
-keep using.
+Choose OSS when you want an embedded library and can manage its resources and
+maintenance in your application.
 
-Move when you hit something in the right-hand column — usually concurrent
-serving, ingestion that outgrows one machine, or a permissions requirement.
-Because the storage layer is identical, moving is a connection-string change
-plus a data migration, not a rewrite.
+Choose Enterprise when multiple applications or teams need a shared multimodal
+lakehouse for curation, feature engineering, search, and training data access.
+It also fits workloads whose query and indexing demand grow at different rates,
+or that need configured service-level access controls and background operations.
+You can begin with Enterprise.
 
-<Note>
-The one thing to decide early is **stable row ids**: the SDK can give them to a
-table only when it creates one on a local path or an object store, and a
-deployment may require them on a
-[materialized view](/management/materialized-view) source. See
-[Limits](/basics/limits#schema).
-</Note>
+[Talk to us about your workload](https://www.lancedb.com/contact) to plan capacity,
+deployment options, and the path from your existing data to Enterprise.
 
 ## Where to go next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Enterprise architecture" icon="cubes" href="/enterprise/architecture">
+    Query serving, execution, and background work in detail.
+  </Card>
+  <Card title="Connect to Enterprise" icon="plug" href="/basics/connect#enterprise">
+    Connect an application to your deployment.
+  </Card>
   <Card title="Guarantees" icon="shield-check" href="/basics/guarantees">
     What a write promises, and what a reader sees.
   </Card>
   <Card title="Lance format" icon="layer-group" href="/basics/lance">
-    The open format underneath both shapes.
-  </Card>
-  <Card title="Enterprise architecture" icon="cubes" href="/enterprise/architecture">
-    The distributed tiers in detail.
-  </Card>
-  <Card title="Limits" icon="ruler" href="/basics/limits">
-    The bounds you can actually hit.
+    The open format underneath both offerings.
   </Card>
 </CardGroup>

@@ -36,6 +36,9 @@ Supported parameters on `.create()`:
 ## Usage {#usage}
 
 ```py Python icon=Python
+import tempfile
+from pathlib import Path
+
 import lancedb
 from lancedb.embeddings import get_registry
 from lancedb.pydantic import LanceModel, Vector
@@ -47,22 +50,23 @@ sie = get_registry().get("sie").create(
 )
 
 class Documents(LanceModel):
+    id: int
     text: str = sie.SourceField()
     vector: Vector(sie.ndims()) = sie.VectorField()
 
-db = lancedb.connect("~/.lancedb")
-table = db.create_table("docs", schema=Documents, mode="overwrite")
+db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "superlinked-demo"))
+table = db.create_table("docs", schema=Documents)
 
 table.add([
-    {"text": "Machine learning is a subset of AI."},
-    {"text": "Neural networks use multiple layers."},
-    {"text": "Python is popular for ML development."},
+    {"id": 1, "text": "Machine learning is a subset of AI."},
+    {"id": 2, "text": "Neural networks use multiple layers."},
+    {"id": 3, "text": "Python is popular for ML development."},
 ])
 
 results = table.search("What is deep learning?").limit(3).to_list()
 ```
 
-LanceDB handles embedding generation for both inserts and queries automatically, based on the `SourceField` / `VectorField` declarations on the schema.
+LanceDB handles embedding generation for both inserts and queries automatically, based on the `SourceField` / `VectorField` declarations on the schema. The `id` column gives each document a stable key, which [entity extraction](#entity-extraction) uses to merge its results back.
 
 ## Hybrid search with reranker {#hybrid-search-with-reranker}
 
@@ -88,7 +92,7 @@ for r in results:
 The reranker also works with pure vector or pure FTS search via `.rerank()`.
 
 ## ColBERT and multivector {#colbert-and-multivector}
-`SIEMultiVectorEmbeddingFunction` (registered as `"sie-multivector"`) works with LanceDB's native `MultiVector` type and MaxSim scoring for ColBERT and ColPali models:
+`SIEMultiVectorEmbeddingFunction` (registered as `"sie-multivector"`) works with LanceDB's native `MultiVector` type and MaxSim scoring for ColBERT and ColPali models. In LanceDB Python 0.40.0, a multivector that LanceDB generates on insert is stored as null unless the document's token count happens to equal the per-token dimension, so this example computes the document multivectors with `compute_source_embeddings()` and passes them in the `vector` column. LanceDB still generates the query multivector automatically:
 
 ```py Python icon=Python
 from lancedb.pydantic import MultiVector
@@ -102,8 +106,12 @@ class ColBERTDocs(LanceModel):
     text: str = sie_colbert.SourceField()
     vector: MultiVector(sie_colbert.ndims()) = sie_colbert.VectorField()
 
-table = db.create_table("colbert_docs", schema=ColBERTDocs, mode="overwrite")
-table.add([{"text": "Machine learning is a subset of AI."}])
+table = db.create_table("colbert_docs", schema=ColBERTDocs)
+
+# Compute the document multivectors and store them with their text
+texts = ["Machine learning is a subset of AI."]
+vectors = sie_colbert.compute_source_embeddings(texts)
+table.add([{"text": text, "vector": vector} for text, vector in zip(texts, vectors)])
 
 # MaxSim search - query and document multivectors compared token-by-token
 results = table.search("What is ML?").limit(5).to_list()
@@ -111,7 +119,7 @@ results = table.search("What is ML?").limit(5).to_list()
 
 ## Entity extraction {#entity-extraction}
 
-`SIEExtractor` adds entity extraction to LanceDB's data-enrichment workflows. Extract entities from a text column and merge the results back as a structured Arrow column - enabling filtered search on extracted entities:
+`SIEExtractor` adds entity extraction to LanceDB's data-enrichment workflows. Extract entities from a text column and merge the results back as a structured Arrow column - enabling filtered search on extracted entities. This example enriches the `docs` table from [Usage](#usage), matching rows on its `id` column:
 
 ```py Python icon=Python
 from sie_lancedb import SIEExtractor
@@ -121,8 +129,9 @@ extractor = SIEExtractor(
     model="urchade/gliner_multi-v2.1",
 )
 
+docs = db.open_table("docs")
 extractor.enrich_table(
-    table,
+    docs,
     source_column="text",
     target_column="entities",
     labels=["person", "technology", "organization"],

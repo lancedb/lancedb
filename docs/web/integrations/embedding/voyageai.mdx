@@ -1,6 +1,6 @@
 ---
-title: VoyageAI
-sidebarTitle: VoyageAI
+title: Voyage AI
+sidebarTitle: Voyage AI
 ---
 
 import { PyEmbeddingVoyageaiUsage, PyEmbeddingVoyageaiMultimodal } from '/snippets/integrations.mdx';
@@ -9,7 +9,11 @@ Voyage AI provides cutting-edge embedding and rerankers.
 
 
 Using voyageai API requires voyageai package, which can be installed using `pip install voyageai`. Voyage AI embeddings are used to generate embeddings for text data. The embeddings can be used for various tasks like semantic search, clustering, and classification.
-You also need to set the `VOYAGE_API_KEY` environment variable to use the VoyageAI API.
+You also need to set the `VOYAGE_API_KEY` environment variable to use the Voyage AI API.
+
+```shell
+export VOYAGE_API_KEY="your-api-key"
+```
 
 Supported models are:
 
@@ -28,7 +32,7 @@ Supported models are:
 - voyage-multimodal-3.5 (multimodal - supports text, images, and video)
 
 <Info>
-**Multimodal Model:** `voyage-multimodal-3.5` supports text, images, and video inputs. It outputs 1024-dimensional embeddings by default, configurable via the `output_dimension` parameter (256, 512, 1024, 2048). See the [VoyageAI multimodal embeddings documentation](https://docs.voyageai.com/docs/multimodal-embeddings) for more details.
+**Multimodal Model:** `voyage-multimodal-3.5` supports text, images, and video inputs. It outputs 1024-dimensional embeddings by default, configurable via the `output_dimension` parameter (256, 512, 1024, 2048). See the [Voyage AI multimodal embeddings documentation](https://docs.voyageai.com/docs/multimodal-embeddings) for more details.
 </Info>
 
 Supported parameters (to be passed in `create` method) are:
@@ -41,6 +45,8 @@ Supported parameters (to be passed in `create` method) are:
 | `output_dimension` | `int` | `None` | Output embedding dimension. Only supported by `voyage-multimodal-3.5`. Valid options: 256, 512, 1024 (default), 2048. |
 
 
+For text models, `compute_source_embeddings()` accepts a single string, a list of strings, a one-dimensional NumPy array, or a PyArrow `Array` or `ChunkedArray`. Batch inputs retain their order.
+
 Usage Example:
 
 <CodeGroup>
@@ -51,7 +57,12 @@ Usage Example:
 
 ### Multimodal Example {#multimodal-example}
 
-The `voyage-multimodal-3.5` model can embed text alongside images. You can use image URLs, file paths, or PIL Image objects:
+The `voyage-multimodal-3.5` model can embed text alongside images. You can use image URLs, local `pathlib.Path` objects, raw image bytes, or PIL Image objects.
+
+For source embeddings, PIL images and images loaded from bytes or local paths are
+converted to RGB and encoded as JPEG. This supports RGBA, grayscale with alpha,
+and palette images; transparency is discarded. Composite transparent images onto
+your chosen background before embedding if the background color matters.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

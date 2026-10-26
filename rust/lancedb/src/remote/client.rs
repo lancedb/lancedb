@@ -8,6 +8,7 @@ use reqwest::{
     header::{HeaderMap, HeaderValue},
 };
 use std::{collections::HashMap, future::Future, str::FromStr, sync::Arc, time::Duration};
+use tokio::sync::Semaphore;
 
 use crate::error::{Error, Result};
 use crate::remote::db::RemoteOptions;
@@ -15,6 +16,7 @@ use crate::remote::retry::{ResolvedRetryConfig, RetryCounter};
 use crate::utils::validate_database_name;
 
 const REQUEST_ID_HEADER: HeaderName = HeaderName::from_static("x-request-id");
+const DEFAULT_BLOB_REQUEST_CONCURRENCY: usize = 8;
 
 pub fn redact_sensitive_headers(headers: &mut HeaderMap) {
     const SENSITIVE_HEADERS: [&str; 5] = [
@@ -86,6 +88,11 @@ const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
     pub retry_config: RetryConfig,
+    /// Maximum concurrent blob HTTP requests for this connection, shared by all
+    /// tables and blob handles. Defaults to 8. The environment variable
+    /// `LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY` can also set this limit.
+    /// The value must be greater than zero.
+    pub blob_request_concurrency: Option<usize>,
     /// User agent to use for requests. The default provides the library
     /// name and version.
     pub user_agent: String,
@@ -140,6 +147,7 @@ impl std::fmt::Debug for ClientConfig {
         f.debug_struct("ClientConfig")
             .field("timeout_config", &self.timeout_config)
             .field("retry_config", &self.retry_config)
+            .field("blob_request_concurrency", &self.blob_request_concurrency)
             .field("user_agent", &self.user_agent)
             .field("extra_headers", &self.extra_headers)
             .field("id_delimiter", &self.id_delimiter)
@@ -160,6 +168,7 @@ impl Default for ClientConfig {
         Self {
             timeout_config: TimeoutConfig::default(),
             retry_config: RetryConfig::default(),
+            blob_request_concurrency: None,
             user_agent: concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")).into(),
             extra_headers: HashMap::new(),
             id_delimiter: None,
@@ -308,6 +317,7 @@ pub struct RestfulLanceDbClient<S: HttpSend = Sender> {
     client: reqwest::Client,
     host: String,
     pub(crate) retry_config: ResolvedRetryConfig,
+    pub(crate) blob_request_semaphore: Arc<Semaphore>,
     pub(crate) sender: S,
     pub(crate) header_provider: Option<Arc<dyn HeaderProvider>>,
     /// Connection-level read consistency interval. Drives the
@@ -368,23 +378,30 @@ pub struct ParsedDbUrl {
 
 /// Parse a database URL and extract the database name and optional prefix.
 ///
-/// Expected format: `db://db_name` or `db://db_name/prefix`
+/// Expected format: `db://db_name`, `db://db_name/prefix`, or `db://` when
+/// connecting to the storage root through a host override.
 pub fn parse_db_url(db_url: &str) -> Result<ParsedDbUrl> {
     let parsed_url = url::Url::parse(db_url).map_err(|err| Error::InvalidInput {
         message: format!("db_url is not a valid URL. '{db_url}'. Error: {err}"),
     })?;
     debug_assert_eq!(parsed_url.scheme(), "db");
-    if !parsed_url.has_host() {
-        return Err(Error::InvalidInput {
-            message: format!("Invalid database URL (missing host) '{}'", db_url),
-        });
-    }
-    let db_name = urlencoding::decode(parsed_url.host_str().unwrap())
-        .map_err(|err| Error::InvalidInput {
-            message: format!("Invalid encoded database name: {err}"),
-        })?
-        .into_owned();
-    validate_database_name(&db_name)?;
+    let db_name = match parsed_url.host_str() {
+        Some(db_name) => {
+            let db_name = urlencoding::decode(db_name)
+                .map_err(|err| Error::InvalidInput {
+                    message: format!("Invalid encoded database name: {err}"),
+                })?
+                .into_owned();
+            validate_database_name(&db_name)?;
+            db_name
+        }
+        None if matches!(parsed_url.path(), "" | "/") => String::new(),
+        None => {
+            return Err(Error::InvalidInput {
+                message: format!("Invalid database URL (missing host) '{}'", db_url),
+            });
+        }
+    };
     let db_prefix = {
         let prefix = parsed_url.path().trim_start_matches('/');
         if prefix.is_empty() {
@@ -469,6 +486,11 @@ impl ClientConfig {
     /// mistake is reported where it was made rather than as a confusing
     /// response later. Public so a caller can ask without connecting.
     pub fn validate(&self) -> Result<()> {
+        if self.blob_request_concurrency == Some(0) {
+            return Err(Error::InvalidInput {
+                message: "blob_request_concurrency must be greater than zero".into(),
+            });
+        }
         if let Some(delimiter) = &self.id_delimiter {
             validate_id_delimiter(delimiter)?;
         }
@@ -504,6 +526,8 @@ impl RestfulLanceDbClient<Sender> {
         // Before anything is built from it, so the error names the caller's
         // configuration rather than a request.
         client_config.validate()?;
+        let blob_request_concurrency =
+            Self::resolve_blob_request_concurrency(client_config.blob_request_concurrency)?;
 
         // Get the timeouts
         let timeout =
@@ -603,12 +627,33 @@ impl RestfulLanceDbClient<Sender> {
             client,
             host,
             retry_config,
+            blob_request_semaphore: Arc::new(Semaphore::new(blob_request_concurrency)),
             sender: Sender,
             header_provider: client_config.header_provider,
             read_consistency_interval,
             max_bytes_per_request,
             max_request_duration,
         })
+    }
+
+    fn resolve_blob_request_concurrency(passed: Option<usize>) -> Result<usize> {
+        let value = if let Some(value) = passed {
+            value
+        } else if let Ok(env) = std::env::var("LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY") {
+            env.parse::<usize>().map_err(|_| Error::InvalidInput {
+                message: format!(
+                    "LANCE_CLIENT_BLOB_REQUEST_CONCURRENCY must be a positive integer, got '{env}'"
+                ),
+            })?
+        } else {
+            DEFAULT_BLOB_REQUEST_CONCURRENCY
+        };
+        if value == 0 {
+            return Err(Error::InvalidInput {
+                message: "blob request concurrency must be greater than zero".into(),
+            });
+        }
+        Ok(value)
     }
 
     /// Resolve the max bytes per insert request from config, environment, or the
@@ -762,6 +807,11 @@ impl<S: HttpSend> RestfulLanceDbClient<S> {
     pub fn get(&self, uri: &str) -> RequestBuilder {
         let full_uri = format!("{}{}", self.host, uri);
         self.client.get(full_uri)
+    }
+
+    pub fn head(&self, uri: &str) -> RequestBuilder {
+        let full_uri = format!("{}{}", self.host, uri);
+        self.client.head(full_uri)
     }
 
     pub fn post(&self, uri: &str) -> RequestBuilder {
@@ -1106,6 +1156,7 @@ pub mod test_utils {
             client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1132,6 +1183,11 @@ pub mod test_utils {
             client: reqwest::Client::new(),
             host: "http://localhost".to_string(),
             retry_config: config.retry_config.try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(
+                config
+                    .blob_request_concurrency
+                    .unwrap_or(DEFAULT_BLOB_REQUEST_CONCURRENCY),
+            )),
             sender: MockSender {
                 f: Arc::new(wrapper),
             },
@@ -1181,6 +1237,21 @@ mod tests {
         }
         .validate()
         .expect_err("a configured delimiter other than the supported one must be refused");
+    }
+
+    #[test]
+    fn test_blob_request_concurrency_must_be_positive() {
+        let error = super::ClientConfig {
+            blob_request_concurrency: Some(0),
+            ..Default::default()
+        }
+        .validate()
+        .unwrap_err();
+        assert!(error.to_string().contains("blob_request_concurrency"));
+        assert_eq!(
+            RestfulLanceDbClient::<Sender>::resolve_blob_request_concurrency(Some(3)).unwrap(),
+            3
+        );
     }
 
     use super::*;
@@ -1515,6 +1586,7 @@ mod tests {
             client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1553,6 +1625,7 @@ mod tests {
             client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,
@@ -1617,6 +1690,7 @@ mod tests {
             client: reqwest::Client::new(),
             host: "https://example.com".to_string(),
             retry_config: RetryConfig::default().try_into().unwrap(),
+            blob_request_semaphore: Arc::new(Semaphore::new(DEFAULT_BLOB_REQUEST_CONCURRENCY)),
             sender: Sender,
             header_provider: Some(Arc::new(provider) as Arc<dyn HeaderProvider>),
             read_consistency_interval: None,

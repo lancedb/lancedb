@@ -11,6 +11,7 @@ on:
       - rust-toolchain.toml
       - deny.toml
       - rust/**
+      - docs/web-tests/blob-v2/rs/**
       - nodejs/Cargo.toml
       - python/Cargo.toml
       - .github/workflows/rust.yml
@@ -29,6 +30,63 @@ env:
   RUST_BACKTRACE: "1"
 
 jobs:
+  dependency-overrides:
+    name: Downstream Lance override
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Read the pinned Lance tag
+        id: lance
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          import tomllib
+          from pathlib import Path
+
+          manifest = tomllib.loads(Path("Cargo.toml").read_text())
+          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"tag={tag}\n")
+          PYTHON
+      - uses: actions/checkout@v6
+        with:
+          repository: lance-format/lance
+          ref: ${{ steps.lance.outputs.tag }}
+          path: local-lance
+      - name: Resolve a downstream workspace with a local Lance override
+        run: |
+          mkdir -p downstream/src
+          touch downstream/src/lib.rs
+          cat > downstream/Cargo.toml <<'TOML'
+          [package]
+          name = "lancedb-local-lance-consumer"
+          version = "0.1.0"
+          edition = "2024"
+
+          [workspace]
+
+          [dependencies]
+          lancedb = { path = "../rust/lancedb", default-features = false }
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+
+          [patch."https://github.com/lance-format/lance.git"]
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+          TOML
+          cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+
+          graph = json.loads(Path("downstream/graph.json").read_text())
+          packages = [p for p in graph["packages"] if p["name"] == "lance-arrow"]
+          assert len(packages) == 1, [p["id"] for p in packages]
+          assert Path(packages[0]["manifest_path"]).resolve() == Path(
+              "local-lance/rust/lance-arrow/Cargo.toml"
+          ).resolve()
+          PYTHON
+
   lint:
     timeout-minutes: 30
     runs-on: ubuntu-24.04
@@ -165,6 +223,11 @@ jobs:
         run: CARGO_ARGS="--profile ci" make -C ./lancedb feature-tests
       - name: Run examples
         run: cargo run --profile ci --all-features --example simple --locked
+      - name: Run blob v2 docs example
+        # Python and TypeScript blob docs tests install preview packages.
+        # Those builds are not guaranteed to remain available for more than
+        # 6 months, so they stay a manual run. This example uses the workspace crate.
+        run: cargo run --profile ci --all-features -p lancedb-blob-v2-docs --example multimodal --locked
 
   remote:
     timeout-minutes: 30
@@ -245,12 +308,6 @@ jobs:
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-2022
-          # windows-11-arm is a standard runner, so it is free on public repos.
-          # Running natively lets the aarch64 tests actually execute -- this
-          # job used to cross-compile them and then skip the test step, paying
-          # full codegen and link cost for a compile check.
-          - target: aarch64-pc-windows-msvc
-            runner: windows-11-arm
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -278,6 +335,43 @@ jobs:
           # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
           # dependency graph a second time.
           cargo test --profile ci --features aws,remote --locked --target ${{ matrix.target }}
+
+  # Run the aarch64 Windows tests only on main so PRs wait for a single
+  # Windows platform. windows-11-arm is a standard runner, so it is free on
+  # public repos. Running natively lets the aarch64 tests actually execute --
+  # this job used to cross-compile them and then skip the test step, paying
+  # full codegen and link cost for a compile check.
+  windows-arm:
+    # Keep the historical name so the check shows up as before on main.
+    name: windows (aarch64-pc-windows-msvc, windows-11-arm)
+    if: github.ref == 'refs/heads/main'
+    runs-on: windows-11-arm
+    defaults:
+      run:
+        working-directory: rust/lancedb
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set target
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Restore everywhere, but only save from main. Per-PR saves are
+          # unreadable outside their own branch anyway, since GitHub scopes
+          # caches to the creating ref.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install Protoc v21.12
+        run: choco install --no-progress protoc
+      - name: Build
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cargo build --profile ci --features aws,remote --tests --locked --target aarch64-pc-windows-msvc
+      - name: Run tests
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          # `--target` has to match the build step above. Without it cargo uses
+          # target/ci/ rather than target/<triple>/ci/ and rebuilds the entire
+          # dependency graph a second time.
+          cargo test --profile ci --features aws,remote --locked --target aarch64-pc-windows-msvc
 
   msrv:
     # Check the minimum supported Rust version

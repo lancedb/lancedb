@@ -23,6 +23,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb import BlobReader
 from lancedb.functions import (
     PythonRuntimeSpec,
     SecretBinding,
@@ -622,7 +623,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -967,6 +967,60 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_blob_input_access_is_inferred_from_annotations():
+    @udf
+    def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
+        video.seek(int(timestamp_s))
+        return video.read(4)
+
+    @udf
+    def read_bytes(video: bytes) -> int:
+        return len(video)
+
+    reader = read_blob.registration_request.signature
+    assert reader.inputs[0].arrow_type == "blob_v2"
+    assert reader.inputs[0].blob_access == "reader"
+    assert reader.inputs[1].blob_access is None
+    assert reader.output.arrow_type == "binary"
+    eager = read_bytes.registration_request.signature.inputs[0]
+    assert eager.arrow_type == "binary"
+    assert eager.blob_access == "bytes"
+    encoded = json.loads(read_blob.registration_request.to_canonical_json())
+    assert encoded["signature"]["inputs"][0]["blob_access"] == "reader"
+
+
+def test_nullable_blob_reader_and_explicit_blob_bytes():
+    @udf
+    def nullable(video: Optional[BlobReader]) -> int:
+        return 0 if video is None else video.size()
+
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def eager(video: bytes) -> int:
+        return len(video)
+
+    parameter = nullable.registration_request.signature.inputs[0]
+    assert parameter.nullable is True
+    assert parameter.blob_access == "reader"
+    parameter = eager.registration_request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "bytes"
+
+
+def test_blob_reader_rejects_an_incompatible_explicit_schema():
+    def read(video: BlobReader) -> int:
+        return video.size()
+
+    with pytest.raises(TypeError, match="requires a Blob V2 field"):
+        udf(
+            read,
+            input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+
+
 def test_whole_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1276,6 +1330,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
                 "nullable": True,
                 "type": {"type": "large_utf8"},
             }
+        ],
+    }
+
+
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
         ],
     }
 
@@ -1653,7 +1729,11 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
         )
         registration = db.create_function_async(normalize_score)
         assert registration.id == "job-register"
+        assert registration.job_type is None
+        assert registration.status() == "finished"
+        assert registration.job_type == "create_function"
         created = registration.wait()
+        assert registration.job_type == "create_function"
         reopened = db.get_function("normalize_score", version=created.version)
 
     assert created == reopened

@@ -51,10 +51,6 @@ use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
 
-fn quote_sql_identifier(identifier: &str) -> String {
-    format!("\"{}\"", identifier.replace('"', "\"\""))
-}
-
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
 struct RemoteCloneTableRequest {
@@ -297,6 +293,12 @@ pub struct RemoteHostOverrides {
 }
 
 impl RemoteDatabase {
+    pub(crate) fn authz(&self) -> Arc<dyn crate::authz::Authorization> {
+        Arc::new(super::authz::RemoteAuthorization {
+            client: self.client.clone(),
+        })
+    }
+
     pub(crate) fn try_new(
         uri: &str,
         api_key: &str,
@@ -307,6 +309,13 @@ impl RemoteDatabase {
         read_consistency_interval: Option<std::time::Duration>,
     ) -> Result<Self> {
         let parsed = super::client::parse_db_url(uri)?;
+        if parsed.db_name.is_empty() && host_overrides.rest.is_none() {
+            return Err(Error::InvalidInput {
+                message:
+                    "A host override is required when connecting to the storage root with 'db://'"
+                        .to_string(),
+            });
+        }
         Self::try_new_with_identity(
             uri,
             api_key,
@@ -574,6 +583,11 @@ mod test_utils {
                 sql_client: None,
                 is_catalog_root: false,
             }
+        }
+
+        pub(in crate::remote) fn with_sql_client(mut self, client: SqlClient) -> Self {
+            self.sql_client = Some(client);
+            self
         }
 
         pub fn new_mock_with_config<F, T>(handler: F, config: ClientConfig) -> Self
@@ -867,20 +881,47 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<Job> {
         if request.with_no_data {
             return Err(Error::NotSupported {
-                message: "remote materialized views are always populated by their SQL job"
-                    .to_string(),
+                message: "remote materialized views must be populated during creation".to_string(),
             });
         }
-        let client = self.sql_client.clone().ok_or_else(|| Error::NotSupported {
-            message: "SQL is unavailable for this remote database client".to_string(),
-        })?;
-        let namespace = request.namespace_path;
-        let statement = format!(
-            "CREATE MATERIALIZED VIEW {} AS {}",
-            quote_sql_identifier(&request.name),
-            request.query
-        );
-        Ok(client.submit_as_job(statement, namespace, || async { Ok(()) }))
+        if let Some(seconds) = request.auto_refresh_interval_seconds
+            && (!seconds.is_finite() || seconds <= 0.0)
+        {
+            return Err(Error::InvalidInput {
+                message: "auto_refresh_interval_seconds must be positive, finite seconds".into(),
+            });
+        }
+        validate_table_name(&request.name)?;
+        validate_namespace(&request.namespace_path)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?;
+        let mut options = Vec::new();
+        if let Some(enabled) = request.auto_refresh_enabled {
+            options.push(format!("auto_refresh_enabled = {enabled}"));
+        }
+        if let Some(seconds) = request.auto_refresh_interval_seconds {
+            options.push(format!("auto_refresh_interval_seconds = {seconds}"));
+        }
+        let name = request.name.replace('"', "\"\"");
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", options.join(", "))
+        };
+        client
+            .submit_as_job(
+                format!(
+                    "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
+                    request.query
+                ),
+                request.namespace_path,
+                || async { Ok(()) },
+            )
+            .await
     }
 
     async fn drop_materialized_view_async(
@@ -1440,6 +1481,23 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // The remote create endpoint does not transmit Lance write parameters.
+        // Reject them before consuming data or issuing a request, especially
+        // for overwrite: silently using the server's format can lose intent.
+        for (option, provided) in [
+            (
+                "write_options (including storage_options)",
+                request.write_options.lance_write_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!("{option} is not supported for remote table creation"),
+                });
+            }
+        }
         let data_schema = request.data.schema();
         let body = stream_as_body(request.data.scan_as_stream())?;
 
@@ -1564,11 +1622,39 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     }
 
     async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+        // Validate before looking in the cache as well as before sending HTTP.
+        for (option, provided) in [
+            ("index_cache_size", request.index_cache_size.is_some()),
+            (
+                "lance_read_params (including storage_options)",
+                request.lance_read_params.is_some(),
+            ),
+            ("location", request.location.is_some()),
+            ("namespace_client", request.namespace_client.is_some()),
+            ("managed_versioning", request.managed_versioning.is_some()),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!("{option} is not supported for remote table access"),
+                });
+            }
+        }
         let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
         let cache_key = build_cache_key(&request.name, &request.namespace_path);
 
         // Every open gets its own checkout, schema cache, and freshness state.
         if let Some(version) = self.table_cache.get(&cache_key).await {
+            // A cached version can outlive a drop from another connection. Verify that
+            // the table still exists before returning a handle for it.
+            let req = self
+                .client
+                .post(&format!("/v1/table/{}/describe/", identifier))
+                .json(&serde_json::json!({}));
+            let (request_id, rsp) = self.client.send_with_retry(req, None, true).await?;
+            let rsp =
+                RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
+            self.client.check_response(&request_id, rsp).await?;
+
             Ok(Arc::new(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name,
@@ -1669,7 +1755,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         // TODO: Implement namespace-aware drop_all_tables
         let _namespace_path = namespace_path; // Suppress unused warning for now
         Err(crate::Error::NotSupported {
-            message: "Dropping all tables is not currently supported in the remote API".to_string(),
+            message: "Dropping all tables is not currently supported in the remote API. \
+                      List tables and call drop_table for each table instead."
+                .to_string(),
         })
     }
 
@@ -1958,21 +2046,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_materialized_view_requires_sql_client() {
-        let db = super::RemoteDatabase::new_mock(|request| -> http::Response<String> {
-            panic!("unexpected REST request: {}", request.url().path())
+    async fn test_create_materialized_view_validates_before_submission() {
+        let db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("materialized-view creation must not send REST requests")
         });
-        let error = db
-            .create_materialized_view_async(CreateMaterializedViewRequest {
-                name: "adults".into(),
-                namespace_path: vec!["analytics".into()],
-                query: "SELECT age AS \"age\" FROM \"raw\".\"people\" WHERE age >= 18 LIMIT 10"
-                    .into(),
-                with_no_data: false,
-            })
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("SQL is unavailable"));
+        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let result = db
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: "adults".into(),
+                    namespace_path: vec![],
+                    query: "SELECT * FROM people".into(),
+                    with_no_data: false,
+                    auto_refresh_enabled: None,
+                    auto_refresh_interval_seconds: Some(seconds),
+                })
+                .await;
+            assert!(matches!(result, Err(Error::InvalidInput { .. })));
+        }
     }
 
     #[tokio::test]
@@ -2259,16 +2349,8 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        let page = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace),
-                limit: Some(0),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert!(page.tables.is_empty());
-        assert!(page.page_token.is_none());
+        let mut listing = conn.list_tables(&namespace, ListingOptions::default().page_limit(0));
+        assert!(listing.next_page().await.is_err());
     }
 
     #[rstest::rstest]
@@ -2303,25 +2385,17 @@ mod tests {
                 )
                 .unwrap()
         });
-        let first = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace.clone()),
-                ..Default::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(first.tables.len(), 100);
+        let mut first_listing = conn.list_tables(&namespace, ListingOptions::default());
+        let first = first_listing.next_page().await.unwrap().unwrap();
+        assert_eq!(first.items.len(), 100);
         assert_eq!(first.page_token.as_deref(), Some("opaque-token"));
-        let second = conn
-            .list_tables(lance_namespace::models::ListTablesRequest {
-                id: Some(namespace),
-                page_token: first.page_token,
-                ..Default::default()
-            })
-            .await
-            .unwrap();
+        let mut second_listing = conn.list_tables(
+            &namespace,
+            ListingOptions::default().page_token(first.page_token.unwrap()),
+        );
+        let second = second_listing.next_page().await.unwrap().unwrap();
         let expected: Vec<_> = (100..130).map(|i| format!("t{i:03}")).collect();
-        assert_eq!(second.tables, expected);
+        assert_eq!(second.items, expected);
         assert!(second.page_token.is_none());
     }
 
@@ -2464,14 +2538,45 @@ mod tests {
         let table = conn.open_table("table1").execute().await.unwrap();
         assert_eq!(table.name(), "table1");
 
-        // Storage options should be ignored.
-        let table = conn
+        // Per-table storage options must not be silently ignored.
+        let result = conn
             .open_table("table1")
             .storage_option("key", "value")
             .execute()
-            .await
-            .unwrap();
-        assert_eq!(table.name(), "table1");
+            .await;
+        assert!(matches!(result, Err(Error::NotSupported { message })
+            if message.contains("storage_options")));
+    }
+
+    #[tokio::test]
+    async fn test_open_table_checks_that_a_cached_table_still_exists() {
+        let describe_calls = Arc::new(AtomicUsize::new(0));
+        let calls = describe_calls.clone();
+        let mut db = super::RemoteDatabase::new_mock(move |request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/describe/");
+            match calls.fetch_add(1, Ordering::SeqCst) {
+                0 => http::Response::builder()
+                    .status(200)
+                    .body(r#"{"version": 1}"#.to_string())
+                    .unwrap(),
+                1 => http::Response::builder()
+                    .status(404)
+                    .body("table not found".to_string())
+                    .unwrap(),
+                call => panic!("unexpected describe call: {call}"),
+            }
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+
+        conn.open_table("table1").execute().await.unwrap();
+        let result = conn.open_table("table1").execute().await;
+
+        assert!(matches!(result, Err(Error::TableNotFound { .. })));
+        assert_eq!(describe_calls.load(Ordering::SeqCst), 2);
     }
 
     #[tokio::test]
@@ -2662,6 +2767,126 @@ mod tests {
         assert!(
             matches!(result, Err(crate::Error::TableAlreadyExists { name }) if name == "table1")
         );
+    }
+
+    #[rstest]
+    #[case("new_table_data_storage_version", "2.0")]
+    #[case("new_table_enable_v2_manifest_paths", "false")]
+    #[case("bogus_option_xyz", "1")]
+    #[tokio::test]
+    async fn test_create_rejects_local_storage_options(#[case] key: &str, #[case] value: &str) {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::new(vec![Field::new("a", DataType::Int32, false)]));
+        let data = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        for builder in [
+            conn.create_table("table1", data),
+            conn.create_empty_table("table1", schema),
+        ] {
+            let result = builder
+                .mode(CreateTableMode::Overwrite)
+                .storage_option(key, value)
+                .execute()
+                .await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains("write_options") && message.contains("remote")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_create_rejects_local_write_params_and_location() {
+        let conn = Connection::new_with_handler(|_| -> http::Response<&'static str> {
+            panic!("must not send a create request")
+        });
+        let schema = Arc::new(Schema::empty());
+        for builder in [
+            conn.create_empty_table("table1", schema.clone())
+                .write_options(crate::table::WriteOptions {
+                    lance_write_params: Some(lance::dataset::WriteParams::default()),
+                }),
+            conn.create_empty_table("table1", schema)
+                .location("/tmp/elsewhere"),
+        ] {
+            assert!(matches!(
+                builder.execute().await,
+                Err(Error::NotSupported { .. })
+            ));
+        }
+    }
+
+    #[rstest]
+    #[tokio::test]
+    async fn test_open_rejects_local_options_even_when_cached(#[values(false, true)] cached: bool) {
+        let mut db = super::RemoteDatabase::new_mock(|request| {
+            assert_eq!(request.url().path(), "/v1/table/table1/create/");
+            http::Response::builder().status(200).body("").unwrap()
+        });
+        db.table_cache = moka::future::Cache::new(10);
+        let table_cache = db.table_cache.clone();
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
+        if cached {
+            conn.create_empty_table("table1", Arc::new(Schema::empty()))
+                .execute()
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            table_cache
+                .get(&build_cache_key("table1", &[]))
+                .await
+                .is_some(),
+            cached
+        );
+        for (option, builder) in [
+            (
+                "index_cache_size",
+                conn.open_table("table1").index_cache_size(10),
+            ),
+            (
+                "storage_options",
+                conn.open_table("table1").storage_option("x", "y"),
+            ),
+            ("location", conn.open_table("table1").location("/tmp/zzz")),
+            (
+                "managed_versioning",
+                conn.open_table("table1").managed_versioning(false),
+            ),
+            (
+                "lance_read_params",
+                conn.open_table("table1")
+                    .lance_read_params(Default::default()),
+            ),
+        ] {
+            let result = builder.execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("remote")));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_connect_rejects_local_options() {
+        for (option, builder) in [
+            (
+                "manifest_enabled",
+                ConnectBuilder::new("db://dev").manifest_enabled(true),
+            ),
+            (
+                "namespace_client_properties",
+                ConnectBuilder::new("db://dev").namespace_client_properties([("root", "/tmp/db")]),
+            ),
+        ] {
+            let result = builder.api_key("fake").region("us-east-1").execute().await;
+            assert!(matches!(result, Err(Error::NotSupported { message })
+                if message.contains(option) && message.contains("remote")));
+        }
     }
 
     #[rstest]
@@ -3590,14 +3815,9 @@ mod tests {
             assert!(table.is_ok(), "Failed to create table: {:?}", table.err());
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .expect("Failed to list tables");
-            assert_eq!(list_response.tables, vec!["test_table"]);
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names, vec!["test_table"]);
 
             // Get namespace client and verify it can also list tables
             let namespace_client = conn.namespace_client().await.unwrap();
@@ -3664,17 +3884,12 @@ mod tests {
             }
 
             // List tables in the child namespace
-            let list_response = conn
-                .list_tables(ListTablesRequest {
-                    id: Some(namespace.clone()),
-                    ..Default::default()
-                })
-                .await
-                .unwrap();
-            assert_eq!(list_response.tables.len(), 3);
-            assert!(list_response.tables.contains(&"table1".to_string()));
-            assert!(list_response.tables.contains(&"table2".to_string()));
-            assert!(list_response.tables.contains(&"table3".to_string()));
+            let list_response = conn.list_tables(&namespace, ListingOptions::default());
+            let names = list_response.try_collect::<Vec<_>>().await.unwrap();
+            assert_eq!(names.len(), 3);
+            assert!(names.contains(&"table1".to_string()));
+            assert!(names.contains(&"table2".to_string()));
+            assert!(names.contains(&"table3".to_string()));
         }
     }
 

@@ -81,6 +81,11 @@ impl Job {
         self.inner.id().map(str::to_string)
     }
 
+    #[getter]
+    pub fn job_type(&self) -> Option<String> {
+        self.inner.job_type()
+    }
+
     pub fn status(self_: PyRef<'_, Self>) -> PyResult<Bound<'_, PyAny>> {
         let inner = self_.inner.clone();
         future_into_py(

@@ -50,10 +50,10 @@ impl NativeMergeInsertBuilder {
         this
     }
 
-    #[napi]
-    pub fn use_lsm(&self, enable: bool) -> Self {
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&self, enable: bool) -> Self {
         let mut this = self.clone();
-        this.inner.use_lsm(enable);
+        this.inner.use_rte(enable);
         this
     }
 

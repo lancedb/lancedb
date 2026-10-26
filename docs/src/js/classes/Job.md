@@ -17,7 +17,8 @@ extra round trip on every call:
 - [Job.refresh](Job.md#refresh) and [Job.status](Job.md#status) fetch the whole record.
 - [Job.wait](Job.md#wait) records the terminal state it establishes, but not the
   rest of the record.
-- Everything is null until one of those runs.
+- Registry details are null until one of those runs. Query handles report
+  jobType "query" immediately.
 
 ## Accessors
 
@@ -57,8 +58,10 @@ get id(): null | string
 
 Identifies the operation on the server that is running it.
 
-Operations that run in this process have no server id. The value is
-opaque: parsing it or storing it to resume the job later is not supported.
+Registry handles expose a registry job ID; query handles expose a
+connection-scoped SQL query UUID string. Local handles have no ID.
+Query handles report jobType "query". Their IDs are not registry IDs or
+durable resume tokens.
 
 #### Returns
 
@@ -72,8 +75,8 @@ opaque: parsing it or storing it to resume the job later is not supported.
 get jobType(): null | string
 ```
 
-The job's type, as the server names it. Null for an in-process job, which
-has no server-side record.
+"query" immediately for SQL-backed handles; otherwise the cached
+server-reported job type. Null for in-process handles.
 
 #### Returns
 

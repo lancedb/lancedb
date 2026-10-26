@@ -6,6 +6,7 @@
 //! building client/server applications with LanceDB or as a client for some
 //! other custom LanceDB service.
 
+mod authz;
 pub mod catalog;
 pub(crate) mod client;
 pub(crate) mod db;
