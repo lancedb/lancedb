@@ -5,6 +5,7 @@ import contextlib
 from datetime import timedelta
 import http.server
 import io
+import inspect
 import json
 import multiprocessing as mp
 import pickle
@@ -763,6 +764,15 @@ def test_create_table_embedding_functions(with_schema):
         assert received["insert"]["vector"].to_pylist() == [
             func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
+
+
+def test_create_table_positional_parameters_match_base_contract():
+    from lancedb.db import DBConnection
+    from lancedb.remote.db import RemoteDBConnection
+
+    expected = list(inspect.signature(DBConnection.create_table).parameters)[:9]
+    actual = list(inspect.signature(RemoteDBConnection.create_table).parameters)[:9]
+    assert actual == expected
 
 
 def test_create_table_exist_ok():
