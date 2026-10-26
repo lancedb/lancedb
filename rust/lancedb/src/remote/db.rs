@@ -14,8 +14,8 @@ use reqwest::header::CONTENT_TYPE;
 
 use lance_namespace::models::{
     CreateNamespaceRequest, CreateNamespaceResponse, DescribeNamespaceRequest,
-    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, JsonArrowSchema,
-    ListNamespacesRequest, ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
+    DescribeNamespaceResponse, DropNamespaceRequest, DropNamespaceResponse, ListNamespacesRequest,
+    ListNamespacesResponse, ListTablesRequest, ListTablesResponse,
 };
 
 use crate::Error;
@@ -648,14 +648,6 @@ fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
     }
 }
 
-/// Build a full path to a view. Note that we do not need to percent-encode
-/// this when using it in a URL because the validation functions ensure that
-/// only URL-safe characters are present.
-fn build_view_identifier(name: &str, namespace: &[String]) -> Result<String> {
-    validate_view_name(name)?;
-    build_compound_identifier(name, namespace)
-}
-
 /// Build a secure cache key using length prefixes.
 /// This format is completely unambiguous regardless of delimiter or content.
 /// Format: [u32_len][namespace1][u32_len][namespace2]...[u32_len][table_name]
@@ -696,59 +688,6 @@ struct RemoteListJobRow {
 struct RemoteListJobsResponse {
     #[serde(default)]
     jobs: Vec<RemoteListJobRow>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-/// Define a view from a query. The name and its namespace are the path
-/// identifier, so neither appears here.
-#[derive(serde::Serialize)]
-struct RemoteCreateViewRequest<'a> {
-    query: &'a str,
-}
-
-/// What the service reports about one view. The schema arrives as the
-/// namespace spec's JSON encoding, which is what `describe_table` uses too.
-#[derive(serde::Deserialize)]
-struct RemoteViewDescription {
-    name: String,
-    #[serde(default)]
-    namespace: Vec<String>,
-    query: String,
-    default_database: String,
-    /// A path, like `namespace`: the root is the absent field rather than a
-    /// spelling of its own.
-    #[serde(default)]
-    default_namespace: Vec<String>,
-    schema: JsonArrowSchema,
-}
-
-impl RemoteViewDescription {
-    fn into_description(self, request_id: String) -> Result<ViewDescription> {
-        let schema =
-            lance_namespace::schema::convert_json_arrow_schema(&self.schema).map_err(|source| {
-                Error::Http {
-                    source: format!("View '{}' has an undecodable schema: {source}", self.name)
-                        .into(),
-                    request_id,
-                    status_code: None,
-                }
-            })?;
-        Ok(ViewDescription {
-            name: self.name,
-            namespace_path: self.namespace,
-            query: self.query,
-            default_database: self.default_database,
-            default_namespace_path: self.default_namespace,
-            schema: Arc::new(schema),
-        })
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListViewsResponse {
-    #[serde(default)]
-    views: Vec<String>,
     #[serde(default)]
     page_token: Option<String>,
 }
@@ -965,90 +904,45 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         query: &str,
         namespace_path: &[String],
     ) -> Result<ViewDescription> {
-        let view_id = build_view_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/view/{view_id}/create"))
-            .json(&RemoteCreateViewRequest { query });
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let description: RemoteViewDescription =
-            response.json().await.err_to_http(request_id.clone())?;
-        description.into_description(request_id)
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .create_view(name, query, namespace_path)
+            .await
     }
-
     async fn describe_view(
         &self,
         name: &str,
         namespace_path: &[String],
     ) -> Result<ViewDescription> {
-        let view_id = build_view_identifier(name, namespace_path)?;
-        let req = self.client.post(&format!("/v1/view/{view_id}/describe"));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let description: RemoteViewDescription =
-            response.json().await.err_to_http(request_id.clone())?;
-        description.into_description(request_id)
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.describe_view(name, namespace_path).await
     }
-
     async fn drop_view(&self, name: &str, namespace_path: &[String]) -> Result<()> {
         self.drop_view_async(name, namespace_path)
             .await?
             .wait()
             .await
     }
-
     async fn drop_view_async(&self, name: &str, namespace_path: &[String]) -> Result<Job> {
-        let view_id = build_view_identifier(name, namespace_path)?;
-        let req = self.client.post(&format!("/v1/view/{view_id}/drop"));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        match status {
-            // Nothing was bound to the name, so nothing is being deleted.
-            StatusCode::OK => Ok(Job::new_done()),
-            StatusCode::ACCEPTED => {
-                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-                    source: "view drop response did not contain a valid job_id".into(),
-                    request_id,
-                    status_code: Some(status),
-                })?;
-                Ok(Job::new(Box::new(RemoteJob::new(
-                    self.client.clone(),
-                    job_id,
-                ))))
-            }
-            _ => Err(Error::Http {
-                source: "view drop must return 200 OK or 202 Accepted".into(),
-                request_id,
-                status_code: Some(status),
-            }),
-        }
+        validate_view_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .submit_as_job(
+                format!("DROP VIEW {}", quote_identifier(name)),
+                namespace_path.to_vec(),
+                || async { Ok(()) },
+            )
+            .await
     }
-
     async fn list_views(
         &self,
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        let namespace_id = build_namespace_identifier(namespace_path)?;
-        let path = format!("/v1/namespace/{namespace_id}/view/list");
-        let mut req = self.client.get(&path);
-        if let Some(token) = options.page_token {
-            req = req.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteListViewsResponse = response.json().await.err_to_http(request_id)?;
-        let items = response.views;
-        Ok(ListingPage {
-            items,
-            page_token: response.page_token,
-        })
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.list_views(namespace_path, options).await
     }
 
     async fn open_job(&self, job_id: &str) -> Result<Job> {
@@ -1779,26 +1673,6 @@ mod tests {
         // Case 4: Verify same inputs produce same key (consistency)
         let key6 = build_cache_key("table1", &["ns1".to_string(), "ns2".to_string()]);
         assert_eq!(key1, key6, "Same inputs should produce same cache key");
-    }
-
-    #[tokio::test]
-    async fn test_create_materialized_view_validates_before_submission() {
-        let db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
-            panic!("materialized-view creation must not send REST requests")
-        });
-        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
-            let result = db
-                .create_materialized_view_async(CreateMaterializedViewRequest {
-                    name: "adults".into(),
-                    namespace_path: vec![],
-                    query: "SELECT * FROM people".into(),
-                    with_no_data: false,
-                    auto_refresh_enabled: None,
-                    auto_refresh_interval_seconds: Some(seconds),
-                })
-                .await;
-            assert!(matches!(result, Err(Error::InvalidInput { .. })));
-        }
     }
 
     #[tokio::test]
@@ -3362,7 +3236,7 @@ mod tests {
             assert!(items.try_next().await.unwrap().is_none());
             assert!(items.try_next().await.unwrap().is_none());
         }
-        for resource in ["view", "jobs"] {
+        for resource in ["jobs"] {
             let count = Arc::new(AtomicUsize::new(0));
             let conn = Connection::new_with_handler({
                 let count = count.clone();
@@ -3852,222 +3726,6 @@ mod tests {
             conn.drop_table("t", &["team/search".to_string()]).await,
             Err(Error::InvalidInput { .. })
         ));
-    }
-
-    /// A view description carries the schema in the namespace spec's JSON
-    /// encoding, so the body a test asserts against is the one that encoding
-    /// produces rather than a hand-written guess at it.
-    fn view_description_body(name: &str, namespace: &[&str], query: &str) -> String {
-        let schema = Schema::new(vec![Field::new("id", DataType::Int32, true)]);
-        serde_json::json!({
-            "name": name,
-            "namespace": namespace,
-            "query": query,
-            "default_database": "db",
-            "default_namespace": namespace,
-            "schema": lance_namespace::schema::arrow_schema_to_json(&schema).unwrap(),
-        })
-        .to_string()
-    }
-
-    #[tokio::test]
-    async fn test_create_view_posts_the_query_and_returns_the_resolved_schema() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/view/analytics$adults/create");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            // The name and its namespace address the view in the path, so the
-            // body says only what they cannot.
-            assert_eq!(body, serde_json::json!({"query": "SELECT id FROM people"}));
-            http::Response::builder()
-                .status(200)
-                .body(view_description_body(
-                    "adults",
-                    &["analytics"],
-                    "SELECT id FROM people",
-                ))
-                .unwrap()
-        });
-        let view = conn
-            .create_view("adults", "SELECT id FROM people", &["analytics".into()])
-            .await
-            .unwrap();
-        assert_eq!(view.name, "adults");
-        assert_eq!(view.namespace_path, vec!["analytics".to_string()]);
-        assert_eq!(view.query, "SELECT id FROM people");
-        assert_eq!(view.default_database, "db");
-        assert_eq!(view.default_namespace_path, vec!["analytics".to_string()]);
-        assert_eq!(view.schema.field(0).name(), "id");
-    }
-
-    #[tokio::test]
-    async fn test_describe_and_drop_address_the_view_in_the_path() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/view/adults/describe");
-            assert!(request.body().is_none(), "{:?}", request.body());
-            http::Response::builder()
-                .status(200)
-                .body(view_description_body(
-                    "adults",
-                    &[],
-                    "SELECT id FROM people",
-                ))
-                .unwrap()
-        });
-        let view = conn.describe_view("adults", &[]).await.unwrap();
-        assert!(view.namespace_path.is_empty());
-        assert_eq!(view.schema.fields().len(), 1);
-
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/view/analytics$adults/drop");
-            assert!(request.body().is_none(), "{:?}", request.body());
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_view("adults", &["analytics".into()])
-            .await
-            .unwrap();
-    }
-
-    /// An accepted drop hands back the job so a caller can wait on the delete,
-    /// and the waiting `drop_view` does that for them.
-    #[tokio::test]
-    async fn test_drop_view_async_reports_the_cleanup_job() {
-        let db = super::RemoteDatabase::new_mock(|_| {
-            http::Response::builder()
-                .status(202)
-                .body(r#"{"job_id":"j1-do-abc"}"#)
-                .unwrap()
-        });
-        let job = db.drop_view_async("adults", &[]).await.unwrap();
-        assert_eq!(job.id(), Some("j1-do-abc"));
-    }
-
-    /// Nothing was bound, so nothing is being deleted and the job is already done.
-    #[tokio::test]
-    async fn test_drop_view_async_reports_a_finished_job_when_nothing_was_bound() {
-        let db = super::RemoteDatabase::new_mock(|_| {
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        let job = db.drop_view_async("adults", &[]).await.unwrap();
-        assert_eq!(job.id(), None);
-        assert_eq!(job.status().await.unwrap(), "finished");
-        job.wait().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_drop_view_rejects_incomplete_acceptance() {
-        for body in ["{}", r#"{"job_id":""}"#, r#"{"job_id":null}"#] {
-            let db = super::RemoteDatabase::new_mock(move |_| {
-                http::Response::builder().status(202).body(body).unwrap()
-            });
-            let error = db.drop_view_async("adults", &[]).await.err().unwrap();
-            assert!(error.to_string().contains("valid job_id"), "{error}");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_drop_view_rejects_unexpected_success_status() {
-        let db = super::RemoteDatabase::new_mock(|_| {
-            http::Response::builder().status(204).body("").unwrap()
-        });
-        let error = db.drop_view_async("adults", &[]).await.err().unwrap();
-        assert!(
-            error.to_string().contains("200 OK or 202 Accepted"),
-            "{error}"
-        );
-    }
-
-    /// A schema the client cannot decode is a broken response, not a view
-    /// with no columns: reporting it as an error keeps a caller from reading
-    /// an empty schema as the truth about the view.
-    #[tokio::test]
-    async fn test_describe_view_rejects_an_undecodable_schema() {
-        let conn = Connection::new_with_handler(|_| {
-            http::Response::builder()
-                .status(200)
-                .body(
-                    r#"{"name":"adults","query":"SELECT 1","default_database":"db",
-                        "schema":{"fields":[{"name":"id","type":{"type":"nonesuch"},
-                        "nullable":true}]}}"#,
-                )
-                .unwrap()
-        });
-        let error = conn.describe_view("adults", &[]).await.unwrap_err();
-        assert!(error.to_string().contains("undecodable schema"), "{error}");
-    }
-
-    #[tokio::test]
-    async fn test_list_views_walks_pages() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/namespace/analytics/view/list");
-            let page = request
-                .url()
-                .query_pairs()
-                .find(|(key, _)| key == "page_token")
-                .map(|(_, value)| value.into_owned());
-            let body = match page.as_deref() {
-                None => r#"{"views":[],"page_token":"p2"}"#,
-                Some("p2") => r#"{"views":["adults"]}"#,
-                Some(other) => panic!("unexpected page token: {other}"),
-            };
-            http::Response::builder().status(200).body(body).unwrap()
-        });
-        assert_eq!(
-            conn.list_views(&["analytics".into()], Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap(),
-            vec!["adults".to_string()]
-        );
-    }
-
-    /// A server that keeps handing back the same token would otherwise spin
-    /// forever.
-    #[tokio::test]
-    async fn test_list_views_rejects_a_repeated_page_token() {
-        let conn = Connection::new_with_handler(|_| {
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"views":["adults"],"page_token":"same"}"#)
-                .unwrap()
-        });
-        let error = conn
-            .list_views(&[], Default::default())
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("repeated a page_token"),
-            "{error}"
-        );
-    }
-
-    /// A name carrying the delimiter would split back apart as a different
-    /// view, so it is refused before it reaches a route.
-    #[tokio::test]
-    async fn test_view_names_that_would_resplit_are_refused() {
-        let conn = Connection::new_with_handler(|_| -> http::Response<String> {
-            panic!("an invalid identifier must not reach the service")
-        });
-        for (name, namespace) in [
-            ("analytics$adults", vec![]),
-            ("adults", vec!["ana$lytics".to_string()]),
-            ("", vec![]),
-            ("..", vec![]),
-        ] {
-            let error = match conn.describe_view(name, &namespace).await {
-                Ok(_) => panic!("accepted {name:?} in {namespace:?}"),
-                Err(error) => error.to_string(),
-            };
-            // A view is not a table, so the refusal says so.
-            assert!(
-                error.contains("view name") || error.contains("namespace component"),
-                "{error}"
-            );
-        }
     }
 
     #[tokio::test]

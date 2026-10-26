@@ -352,19 +352,18 @@ export abstract class Connection {
   ): Promise<ViewDescription>;
 
   /**
-   * Drop the view named `name` and wait for its definition to be deleted.
+   * Drop the view named `name` and wait for catalog removal.
    *
    * The tables it reads are untouched: a view holds no rows of its own. Use
-   * {@link dropViewAsync} to retain the cleanup job instead of waiting on it.
+   * {@link dropViewAsync} to retain its SQL query job. Completion confirms
+   * catalog removal; physical cleanup continues in the background.
    */
   abstract dropView(name: string, namespacePath?: string[]): Promise<void>;
 
   /**
-   * Start dropping the view named `name` and return the job deleting its
-   * definition, without waiting for completion.
-   *
-   * The name is free before this resolves. When nothing was bound to it, the
-   * returned job is already finished and has no id.
+   * Drop a view and return its SQL query job.
+   * The job has type `query` and its ID is the SQL query UUID. Waiting confirms
+   * catalog removal; physical cleanup continues in the background.
    */
   abstract dropViewAsync(name: string, namespacePath?: string[]): Promise<Job>;
 
