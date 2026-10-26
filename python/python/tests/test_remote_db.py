@@ -5,6 +5,7 @@ import contextlib
 from datetime import timedelta
 import http.server
 import io
+import inspect
 import json
 import multiprocessing as mp
 import pickle
@@ -763,6 +764,15 @@ def test_create_table_embedding_functions(with_schema):
         assert received["insert"]["vector"].to_pylist() == [
             func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
+
+
+def test_create_table_positional_parameters_match_base_contract():
+    from lancedb.db import DBConnection
+    from lancedb.remote.db import RemoteDBConnection
+
+    expected = list(inspect.signature(DBConnection.create_table).parameters)[:9]
+    actual = list(inspect.signature(RemoteDBConnection.create_table).parameters)[:9]
+    assert actual == expected
 
 
 def test_create_table_exist_ok():
@@ -1608,7 +1618,10 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
-def test_remote_create_index_new_api(caplog):
+@pytest.mark.parametrize(
+    "rq_kwargs", [{}, {"num_bits": None}, {"num_bits": 1}, {"num_bits": 4}]
+)
+def test_remote_create_index_new_api(caplog, rq_kwargs):
     received_requests = []
 
     def handler(request):
@@ -1681,7 +1694,7 @@ def test_remote_create_index_new_api(caplog):
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
-            table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index("vector", config=IvfRq(distance_type="l2", **rq_kwargs))
             table.create_index(
                 "vector", config=IvfPq(distance_type="l2"), replace=False
             )
@@ -1706,6 +1719,10 @@ def test_remote_create_index_new_api(caplog):
             "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        if rq_kwargs.get("num_bits") is None:
+            assert "num_bits" not in received_requests[3]
+        else:
+            assert received_requests[3]["num_bits"] == rq_kwargs["num_bits"]
         assert received_requests[4]["replace"] is False
         assert received_requests[5]["replace"] is False
         assert "replace is not supported" not in caplog.text

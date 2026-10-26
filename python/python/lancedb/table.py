@@ -545,10 +545,11 @@ def _sanitize_data(
     metadata : Optional[dict], default None
         The embedding metadata to add to the schema.
     on_bad_vectors : Literal["error", "drop", "fill", "null"], default "error"
-        What to do if any of the vectors are not the same size or contains NaNs.
+        How to handle vectors with incorrect sizes, NaNs, or null elements.
     fill_value : float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
-        All entries in the vector will be set to this value.
+        NaN or null elements and missing trailing elements are replaced with this
+        value. Valid elements are preserved.
     """
     # At this point, the table might not match the schema we are targeting:
     # 1. There might be embedding columns missing that will be added
@@ -2099,8 +2100,8 @@ class Table(ABC):
             "append" and "overwrite". Overwrite adopts explicitly declared blob
             layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
         progress: bool, callable, or tqdm-like, optional
@@ -3955,6 +3956,11 @@ class LanceTable(Table):
                     cfg_type = type(config).__name__
                     lance_index_type = index_type_map.get(cfg_type, "IVF_PQ")
 
+                    quantization_kwargs = {}
+                    num_bits = getattr(config, "num_bits", 8)
+                    if num_bits is not None:
+                        quantization_kwargs["num_bits"] = num_bits
+
                     dataset.create_index(
                         column=column,
                         index_type=lance_index_type,
@@ -3963,12 +3969,12 @@ class LanceTable(Table):
                         num_sub_vectors=getattr(config, "num_sub_vectors", None),
                         replace=replace,
                         accelerator=acc,
-                        num_bits=getattr(config, "num_bits", 8),
                         m=getattr(config, "m", 20),
                         ef_construction=getattr(config, "ef_construction", 300),
                         target_partition_size=getattr(
                             config, "target_partition_size", None
                         ),
+                        **quantization_kwargs,
                     )
                     self.checkout_latest()
                     return
@@ -4285,7 +4291,7 @@ class LanceTable(Table):
             "append" and "overwrite". Overwrite adopts explicitly declared blob
             layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
@@ -4608,7 +4614,7 @@ class LanceTable(Table):
             otherwise just open the table, it will not add the provided
             data but will validate against any schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
@@ -5297,7 +5303,7 @@ def _handle_bad_vector_column(
     vector_column_name: str
         The name of the vector column.
     on_bad_vectors: str, default "error"
-        What to do if any of the vectors are not the same size or contains NaNs.
+        How to handle vectors with incorrect sizes, NaNs, or null elements.
         One of "error", "drop", "fill", "null".
     fill_value: float, default 0.0
         The value to use when filling vectors. Only used if on_bad_vectors="fill".
@@ -5316,7 +5322,8 @@ def _handle_bad_vector_column(
         data = data.set_column(position, vector_column_name, vec_arr)
 
     if expected_value_type is not None and (
-        pa.types.is_integer(vec_arr.type.value_type)
+        pa.types.is_null(vec_arr.type.value_type)
+        or pa.types.is_integer(vec_arr.type.value_type)
         or pa.types.is_unsigned_integer(vec_arr.type.value_type)
     ):
         vec_arr = pa.array(vec_arr.to_pylist(), type=pa.list_(expected_value_type))
@@ -5360,7 +5367,7 @@ def _handle_bad_vector_column(
                 )
             else:
                 raise ValueError(
-                    f"Vector column '{vector_column_name}' has NaNs. "
+                    f"Vector column '{vector_column_name}' has NaNs or null values. "
                     "Set on_bad_vectors='drop' to remove them, "
                     "set on_bad_vectors='fill' and fill_value=<value> to replace them, "
                     "or set on_bad_vectors='null' to replace them with null."
@@ -5396,29 +5403,11 @@ def _fill_bad_vector_values(
     arr = arr.combine_chunks()
 
     # A fixed-size slice truncates long vectors and pads short vectors with nulls.
-    # Slice an array marking the original child nulls in parallel so padding nulls
-    # can be distinguished from null values that were already present.
+    # Both padding and existing null elements need to be filled.
     sliced = pc.list_slice(arr, 0, dim, return_fixed_size_list=True)
-    child_nulls = pc.is_null(arr.values)
-    parent_nulls = pc.is_null(arr)
-    if pa.types.is_list(arr.type):
-        original_child_nulls = pa.ListArray.from_arrays(
-            arr.offsets, child_nulls, mask=parent_nulls
-        )
-    elif pa.types.is_large_list(arr.type):
-        original_child_nulls = pa.LargeListArray.from_arrays(
-            arr.offsets, child_nulls, mask=parent_nulls
-        )
-    else:
-        original_child_nulls = pa.FixedSizeListArray.from_arrays(
-            child_nulls, arr.type.list_size, mask=parent_nulls
-        )
-    sliced_child_nulls = pc.list_slice(
-        original_child_nulls, 0, dim, return_fixed_size_list=True
-    )
-    needs_fill = pc.is_null(sliced_child_nulls.values)
 
     values = sliced.values
+    needs_fill = pc.is_null(values)
     if pa.types.is_floating(values.type):
         values_for_nan_check = (
             values.cast(pa.float32()) if pa.types.is_float16(values.type) else values
@@ -5432,6 +5421,7 @@ def _fill_bad_vector_values(
 
 
 def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray:
+    """Find vectors with NaN or null components, including pandas-converted NaNs."""
     if isinstance(arr, pa.ChunkedArray):
         values = pa.chunked_array([chunk.flatten() for chunk in arr.chunks])
     else:
@@ -5442,6 +5432,9 @@ def has_nan_values(arr: Union[pa.ListArray, pa.ChunkedArray]) -> pa.BooleanArray
         values_has_nan = pc.is_nan(values.cast(pa.float32()))
     else:
         values_has_nan = pc.is_nan(values)
+    # Pandas represents NaN components as Arrow nulls. is_nan returns null
+    # for these values, so count them as invalid before filtering parent indices.
+    values_has_nan = pc.fill_null(values_has_nan, True)
     values_indices = pc.list_parent_indices(arr)
     if arr.null_count:
         # Match flatten(), which excludes child spans under null parent lists.
@@ -6355,7 +6348,7 @@ class AsyncTable:
             "append" and "overwrite". Overwrite adopts explicitly declared blob
             layouts, while inferred bytes retain the existing blob v2 fields.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
             One of "error", "drop", "fill", "null".
         fill_value: float, default 0.
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
