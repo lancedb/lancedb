@@ -33,8 +33,7 @@ use crate::remote::util::stream_as_body;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{
-    validate_database_name, validate_namespace, validate_secret_name, validate_table_name,
-    validate_view_name,
+    validate_database_name, validate_namespace, validate_table_name, validate_view_name,
 };
 use crate::view::ViewDescription;
 
@@ -177,6 +176,12 @@ pub struct RemoteDatabaseOptionsBuilder {
 }
 
 impl RemoteDatabaseOptionsBuilder {
+    fn sql_client(&self) -> Result<&SqlClient> {
+        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".into(),
+        })
+    }
+
     pub fn new() -> Self {
         Self {
             options: RemoteDatabaseOptions::default(),
@@ -468,30 +473,6 @@ impl<S: HttpSend> RemoteDatabase<S> {
         }
     }
 
-    /// Post a request whose body carries a credential.
-    ///
-    /// Shared by the create and alter verbs, which declare their own request
-    /// types: the two mean different things to the service and are free to
-    /// diverge, so what they share is the posting and not the shape.
-    ///
-    /// The value is a request field and never a path segment or query
-    /// parameter, which keeps it out of access logs and proxy traces.
-    fn sql_client(&self) -> Result<&SqlClient> {
-        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
-            message: "SQL is unavailable for this remote database client".into(),
-        })
-    }
-
-    async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
-        let req = self.client.post(route).json(body);
-        // This call is what says the body is a credential. Nothing downstream
-        // can tell from the bytes, and a route list in the transport would have
-        // to be kept in step with endpoints declared here.
-        let (request_id, response) = self.client.send_suppressing_body(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
-    }
-
     async fn submit_drop_table(
         &self,
         name: &str,
@@ -667,14 +648,6 @@ fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
     }
 }
 
-/// Build a full path to a secret. Note that we do not need to percent-encode
-/// this when using it in a URL because the validation functions ensure that
-/// only URL-safe characters are present.
-fn build_secret_identifier(name: &str, namespace: &[String]) -> Result<String> {
-    validate_secret_name(name)?;
-    build_compound_identifier(name, namespace)
-}
-
 /// Build a full path to a view. Note that we do not need to percent-encode
 /// this when using it in a URL because the validation functions ensure that
 /// only URL-safe characters are present.
@@ -725,40 +698,6 @@ struct RemoteListJobsResponse {
     jobs: Vec<RemoteListJobRow>,
     #[serde(default)]
     page_token: Option<String>,
-}
-
-/// Create a Secret under a name the database does not yet hold.
-///
-/// Declared separately from the alter request although the two are identical
-/// today: they are different operations to the service -- one refuses an
-/// existing name, the other requires it -- and either may grow a field the
-/// other has no meaning for.
-///
-/// The name and its namespace are the path identifier, so neither appears here.
-#[derive(serde::Serialize)]
-struct RemoteCreateSecretRequest<'a> {
-    value: &'a str,
-}
-
-/// Replace the credential behind a Secret the database already holds.
-#[derive(serde::Serialize)]
-struct RemoteAlterSecretRequest<'a> {
-    value: &'a str,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListSecretsResponse {
-    #[serde(default)]
-    secrets: Vec<RemoteListedSecret>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-/// An object rather than a bare name so a later listing can carry a Secret's
-/// type or last-updated time without breaking this one.
-#[derive(serde::Deserialize)]
-struct RemoteListedSecret {
-    name: String,
 }
 
 /// Define a view from a query. The name and its namespace are the path
@@ -984,67 +923,40 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         value: &str,
         namespace_path: &[String],
     ) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path)?;
-        self.post_secret_write(
-            &format!("/v1/secret/{secret_id}/create"),
-            &RemoteCreateSecretRequest { value },
-        )
-        .await
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .write_secret(name, value, namespace_path, true)
+            .await
     }
-
     async fn alter_secret(&self, name: &str, value: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path)?;
-        self.post_secret_write(
-            &format!("/v1/secret/{secret_id}/alter"),
-            &RemoteAlterSecretRequest { value },
-        )
-        .await
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .write_secret(name, value, namespace_path, false)
+            .await
     }
-
     async fn list_secrets(
         &self,
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<String>> {
-        let namespace_id = build_namespace_identifier(namespace_path)?;
-        let path = format!("/v1/namespace/{namespace_id}/secret/list");
-        let mut req = self.client.get(&path);
-        if let Some(token) = options.page_token {
-            req = req.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteListSecretsResponse = response.json().await.err_to_http(request_id)?;
-        let items = response
-            .secrets
-            .into_iter()
-            .map(|secret| secret.name)
-            .collect();
-        Ok(ListingPage {
-            items,
-            page_token: response.page_token,
-        })
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .list_secrets(namespace_path, options)
+            .await
     }
-
     async fn drop_secret(&self, name: &str, namespace_path: &[String]) -> Result<()> {
-        let secret_id = build_secret_identifier(name, namespace_path)?;
-        let req = self.client.post(&format!("/v1/secret/{secret_id}/drop"));
-        let (request_id, response) = self.client.send(req).await?;
-        self.client.check_response(&request_id, response).await?;
-        Ok(())
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?.drop_secret(name, namespace_path).await
     }
-
     async fn describe_secret(&self, name: &str, namespace_path: &[String]) -> Result<SecretInfo> {
-        let secret_id = build_secret_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/secret/{secret_id}/describe"));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        response.json().await.err_to_http(request_id)
+        crate::utils::validate_secret_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .describe_secret(name, namespace_path)
+            .await
     }
 
     async fn create_view(
@@ -3450,7 +3362,7 @@ mod tests {
             assert!(items.try_next().await.unwrap().is_none());
             assert!(items.try_next().await.unwrap().is_none());
         }
-        for resource in ["secret", "view", "jobs"] {
+        for resource in ["view", "jobs"] {
             let count = Arc::new(AtomicUsize::new(0));
             let conn = Connection::new_with_handler({
                 let count = count.clone();
@@ -3886,26 +3798,6 @@ mod tests {
 
     /// An identifier the service accepts is untouched by the encoding, so the
     /// route reads like the table and Function routes beside it.
-    #[tokio::test]
-    async fn test_an_admissible_identifier_is_not_encoded() {
-        use std::sync::{Arc, Mutex};
-        let seen = Arc::new(Mutex::new(String::new()));
-        let captured = seen.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            *captured.lock().unwrap() = request.url().path().to_string();
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_secret(
-            "openai-prod.v1",
-            &["prod".to_string(), "vision_2".to_string()],
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            *seen.lock().unwrap(),
-            "/v1/secret/prod$vision_2$openai-prod.v1/drop"
-        );
-    }
 
     /// A table name is joined into the route the same way a Secret's is, so the
     /// same two failures are reachable: a dot-only name leaves the table route
@@ -3968,168 +3860,14 @@ mod tests {
     /// Only `.` and `..` are relative segments. `...` and longer runs are
     /// ordinary and address perfectly well, so refusing them would make an
     /// object that works today stop working on upgrade. This pins that.
-    #[tokio::test]
-    async fn test_a_longer_run_of_periods_is_an_ordinary_name() {
-        use std::sync::{Arc, Mutex};
-        for name in ["...", "....", "a.", ".a", "a..b"] {
-            let seen = Arc::new(Mutex::new(String::new()));
-            let captured = seen.clone();
-            let conn = Connection::new_with_handler(move |request| {
-                *captured.lock().unwrap() = request.url().path().to_string();
-                http::Response::builder().status(200).body("{}").unwrap()
-            });
-            conn.drop_secret(name, &[])
-                .await
-                .unwrap_or_else(|error| panic!("{name:?} must remain addressable: {error}"));
-            assert_eq!(
-                *seen.lock().unwrap(),
-                format!("/v1/secret/{name}/drop"),
-                "{name:?} did not reach its own route"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_and_alter_secret_send_the_value_in_the_request_body() {
-        for (route, call) in [
-            ("/v1/secret/openai-prod/create", true),
-            ("/v1/secret/openai-prod/alter", false),
-        ] {
-            let conn = Connection::new_with_handler(move |request| {
-                assert_eq!(request.method(), &reqwest::Method::POST);
-                assert_eq!(request.url().path(), route);
-                // Never a path segment or query parameter, which is what keeps
-                // it out of access logs and proxy traces.
-                assert!(request.url().query().is_none(), "{:?}", request.url());
-                let body: serde_json::Value =
-                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                // The name is the path identifier, so the body is the value alone.
-                assert_eq!(body, serde_json::json!({ "value": "sk-live-0001" }));
-                http::Response::builder().status(200).body("{}").unwrap()
-            });
-            if call {
-                conn.create_secret("openai-prod", "sk-live-0001", &[])
-                    .await
-                    .unwrap();
-            } else {
-                conn.alter_secret("openai-prod", "sk-live-0001", &[])
-                    .await
-                    .unwrap();
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_list_secrets_walks_pages_and_returns_names_only() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/namespace/$/secret/list");
-            let page = request
-                .url()
-                .query_pairs()
-                .find(|(key, _)| key == "page_token")
-                .map(|(_, value)| value.into_owned());
-            let body = match page.as_deref() {
-                None => r#"{"secrets":[{"name":"openai-prod"}],"page_token":"p2"}"#,
-                Some("p2") => r#"{"secrets":[{"name":"hf-prod"}]}"#,
-                Some(other) => panic!("unexpected page token: {other}"),
-            };
-            http::Response::builder().status(200).body(body).unwrap()
-        });
-        assert_eq!(
-            conn.list_secrets(&[], Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap(),
-            vec!["openai-prod".to_string(), "hf-prod".to_string()]
-        );
-    }
 
     /// A server that keeps handing back the same token would otherwise spin
     /// forever.
-    #[tokio::test]
-    async fn test_list_secrets_rejects_a_repeated_page_token() {
-        let conn = Connection::new_with_handler(|_| {
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"secrets":[{"name":"openai-prod"}],"page_token":"same"}"#)
-                .unwrap()
-        });
-        let error = conn
-            .list_secrets(&[], Default::default())
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap_err();
-        assert!(
-            error.to_string().contains("repeated a page_token"),
-            "{error}"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_drop_and_describe_address_the_secret_in_the_path() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/secret/openai-prod/drop");
-            // Nothing is left to say once the path names the Secret.
-            assert!(request.body().is_none(), "{:?}", request.body());
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_secret("openai-prod", &[]).await.unwrap();
-
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/secret/openai-prod/describe");
-            assert!(request.body().is_none(), "{:?}", request.body());
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"name":"openai-prod","created_at_millis":1,"updated_at_millis":2}"#)
-                .unwrap()
-        });
-        let info = conn.describe_secret("openai-prod", &[]).await.unwrap();
-        assert_eq!(info.name, "openai-prod");
-    }
 
     /// The namespace is part of the identifier the path addresses, joined with
     /// the client's configured delimiter the way every other object's is. A
     /// root Secret is therefore addressed by its bare name, and a namespaced
     /// one by the joined path -- there is no body field either way.
-    #[tokio::test]
-    async fn test_a_namespace_path_is_addressed_in_the_path() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/secret/prod$vision$openai-prod/drop"
-            );
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_secret("openai-prod", &["prod".to_string(), "vision".to_string()])
-            .await
-            .unwrap();
-
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.url().path(), "/v1/secret/openai-prod/drop");
-            http::Response::builder().status(200).body("{}").unwrap()
-        });
-        conn.drop_secret("openai-prod", &[]).await.unwrap();
-
-        // Listing is namespace-scoped, so the namespace is the whole identifier.
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(
-                request.url().path(),
-                "/v1/namespace/prod$vision/secret/list"
-            );
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"secrets":[]}"#)
-                .unwrap()
-        });
-        conn.list_secrets(
-            &["prod".to_string(), "vision".to_string()],
-            Default::default(),
-        )
-        .try_collect::<Vec<_>>()
-        .await
-        .unwrap();
-    }
 
     /// A view description carries the schema in the namespace spec's JSON
     /// encoding, so the body a test asserts against is the one that encoding

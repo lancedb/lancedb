@@ -2196,6 +2196,89 @@ async fn function_drop_keeps_the_query_id_and_reports_catalog_removal() {
 }
 
 #[tokio::test]
+async fn secret_writes_bind_credentials_and_never_put_them_in_sql() {
+    for defer in [false, true] {
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            ..Default::default()
+        };
+        let exchanges = service.exchanges.clone();
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client);
+        db.create_secret("api-key", "credential's value", &["team".into()])
+            .await
+            .unwrap();
+        db.alter_secret("api-key", "rotated-value", &["team".into()])
+            .await
+            .unwrap();
+        db.drop_secret("api-key", &["team".into()]).await.unwrap();
+        assert_eq!(
+            statements.lock().unwrap().as_slice(),
+            [
+                "CREATE SECRET \"api-key\" AS $1",
+                "ALTER SECRET \"api-key\" AS $1",
+                "DROP SECRET IF EXISTS \"api-key\""
+            ]
+        );
+        let seen = exchanges.lock().unwrap();
+        assert_eq!(
+            seen[0]
+                .1
+                .as_ref()
+                .unwrap()
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "credential's value"
+        );
+        assert_eq!(
+            seen[1]
+                .1
+                .as_ref()
+                .unwrap()
+                .column(0)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0),
+            "rotated-value"
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+#[tokio::test]
+async fn secret_description_uses_the_sql_metadata_projection() {
+    let definition = r#"{"name":"api-key","created_at_millis":1,"updated_at_millis":2,"history":[{"generation":2,"at_millis":2}]}"#;
+    let result = RecordBatch::try_from_iter(vec![(
+        "definition",
+        Arc::new(StringArray::from(vec![definition])) as ArrayRef,
+    )])
+    .unwrap();
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        result,
+        ..Default::default()
+    };
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client);
+    let info = db.describe_secret("api-key", &[]).await.unwrap();
+    assert_eq!(info.name, "api-key");
+    assert_eq!(info.updated_at_millis, 2);
+    shutdown.send(()).unwrap();
+}
+
+#[tokio::test]
 async fn function_listing_uses_bounded_sql_and_scoped_version_cursors() {
     const VERSION: &str = include_str!(
         "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
