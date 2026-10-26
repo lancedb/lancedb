@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-use arrow_array::{BooleanArray, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, BooleanArray, Int64Array, LargeStringArray, RecordBatch, StringArray, StringViewArray,
+};
 use serde_json::Value;
 
 use crate::storage_integration::{
@@ -82,6 +84,18 @@ pub(super) fn create_sql(
     Ok(sql)
 }
 
+fn string_value(column: &dyn Array, row: usize) -> Option<&str> {
+    if let Some(array) = column.as_any().downcast_ref::<StringArray>() {
+        Some(array.value(row))
+    } else if let Some(array) = column.as_any().downcast_ref::<LargeStringArray>() {
+        Some(array.value(row))
+    } else if let Some(array) = column.as_any().downcast_ref::<StringViewArray>() {
+        Some(array.value(row))
+    } else {
+        None
+    }
+}
+
 pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationInfo> {
     let mut rows = batches.iter().filter(|batch| batch.num_rows() > 0);
     let batch = rows
@@ -94,8 +108,8 @@ pub(super) fn decode_info(batches: &[RecordBatch]) -> Result<StorageIntegrationI
     for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
         let mut value = if column.is_null(0) {
             Value::Null
-        } else if let Some(array) = column.as_any().downcast_ref::<StringArray>() {
-            Value::String(array.value(0).into())
+        } else if let Some(value) = string_value(column.as_ref(), 0) {
+            Value::String(value.into())
         } else if let Some(array) = column.as_any().downcast_ref::<BooleanArray>() {
             Value::Bool(array.value(0))
         } else if let Some(array) = column.as_any().downcast_ref::<Int64Array>() {
@@ -126,12 +140,16 @@ pub(super) fn decode_names(batches: &[RecordBatch]) -> Result<Vec<String>> {
     for batch in batches {
         let column = batch
             .column_by_name("name")
-            .and_then(|column| column.as_any().downcast_ref::<StringArray>())
             .ok_or_else(|| invalid("SQL storage integration listing is missing names"))?;
-        for value in column.iter() {
+        for row in 0..batch.num_rows() {
+            if column.is_null(row) {
+                return Err(invalid("SQL storage integration name cannot be null"));
+            }
             names.push(
-                value
-                    .ok_or_else(|| invalid("SQL storage integration name cannot be null"))?
+                string_value(column.as_ref(), row)
+                    .ok_or_else(|| {
+                        invalid("SQL storage integration listing requires string names")
+                    })?
                     .to_string(),
             );
         }

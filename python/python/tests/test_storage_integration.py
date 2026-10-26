@@ -27,7 +27,7 @@ ROLE = "arn:aws:iam::123456789012:role/access"
 
 
 @contextlib.contextmanager
-def remote_server():
+def remote_server(text_type=pa.string()):
     calls = []
     info = dict(INFO)
 
@@ -39,7 +39,7 @@ def remote_server():
             command = ticket.ticket
             calls.append(command)
             if b"SHOW STORAGE INTEGRATIONS" in command:
-                result = pa.table({"name": ["zeta", NAME]})
+                result = pa.table({"name": pa.array(["zeta", NAME], type=text_type)})
             elif b"DROP STORAGE INTEGRATION" in command:
                 result = pa.table({"dropped": [True]})
             else:
@@ -77,7 +77,7 @@ def remote_server():
                                 if field == "access_verified"
                                 else pa.int64()
                                 if field == "created_at_millis"
-                                else pa.string()
+                                else text_type
                             ),
                         )
                         for field, value in row.items()
@@ -105,8 +105,11 @@ def test_storage_integration_methods_belong_to_databases():
     assert not hasattr(AsyncCatalog, "create_storage_integration")
 
 
-def test_sync_storage_integration_lifecycle_and_aws_information():
-    with remote_server() as (host, calls):
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_sync_storage_integration_lifecycle_and_aws_information(text_type):
+    with remote_server(text_type) as (host, calls):
         db = connect(host)
         info = db.create_storage_integration(
             NAME, INFO["storage_prefix"], aws_role_arn=ROLE
@@ -158,8 +161,11 @@ def test_integration_authorization_object_and_creation_privilege():
     assert Privilege.CREATE_STORAGE_INTEGRATION.value == "CREATE_STORAGE_INTEGRATION"
 
 
-def test_static_credentials_use_explicit_cross_database_secret_references():
-    with remote_server() as (host, calls):
+@pytest.mark.parametrize(
+    "text_type", [pa.string(), pa.large_string(), pa.string_view()]
+)
+def test_static_credentials_use_explicit_cross_database_secret_references(text_type):
+    with remote_server(text_type) as (host, calls):
         db = connect(host)
         info = db.create_storage_integration(
             "raw",
