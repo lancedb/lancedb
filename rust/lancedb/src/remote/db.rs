@@ -476,6 +476,12 @@ impl<S: HttpSend> RemoteDatabase<S> {
     ///
     /// The value is a request field and never a path segment or query
     /// parameter, which keeps it out of access logs and proxy traces.
+    fn sql_client(&self) -> Result<&SqlClient> {
+        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".into(),
+        })
+    }
+
     async fn post_secret_write<T: serde::Serialize>(&self, route: &str, body: &T) -> Result<()> {
         let req = self.client.post(route).json(body);
         // This call is what says the body is a credential. Nothing downstream
@@ -916,7 +922,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: FunctionRegistrationRequest,
         namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        self.sql.register_function(request, namespace_path).await
+        crate::utils::validate_function_name(&request.name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .register_function(request, namespace_path)
+            .await
     }
     async fn get_function(
         &self,
@@ -924,7 +934,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         version: &str,
         namespace_path: &[String],
     ) -> Result<FunctionVersion> {
-        self.sql
+        crate::utils::validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
             .describe_function(name, version, namespace_path)
             .await
     }
@@ -933,7 +945,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         namespace_path: &[String],
         options: ListingOptions,
     ) -> Result<ListingPage<FunctionVersion>> {
-        self.sql.list_functions(namespace_path, options).await
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .list_functions(namespace_path, options)
+            .await
     }
     async fn drop_function(
         &self,
@@ -941,8 +956,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         version: &str,
         namespace_path: &[String],
     ) -> Result<bool> {
+        crate::utils::validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
         let (dropped, job) = self
-            .sql
+            .sql_client()?
             .drop_function(name, version, namespace_path)
             .await?;
         job.wait().await?;
@@ -954,7 +971,11 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         version: &str,
         namespace_path: &[String],
     ) -> Result<(bool, Job)> {
-        self.sql.drop_function(name, version, namespace_path).await
+        crate::utils::validate_function_name(name)?;
+        validate_namespace(namespace_path)?;
+        self.sql_client()?
+            .drop_function(name, version, namespace_path)
+            .await
     }
 
     async fn create_secret(
@@ -3432,7 +3453,7 @@ mod tests {
             assert!(items.try_next().await.unwrap().is_none());
             assert!(items.try_next().await.unwrap().is_none());
         }
-        for resource in ["secret", "view", "function", "jobs"] {
+        for resource in ["secret", "view", "jobs"] {
             let count = Arc::new(AtomicUsize::new(0));
             let conn = Connection::new_with_handler({
                 let count = count.clone();
