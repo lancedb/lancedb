@@ -2372,4 +2372,325 @@ mod lsm_tests {
             sstables.len()
         );
     }
+
+    #[tokio::test]
+    async fn lsm_cosine_distance_scale_and_mixed_tier_ordering() {
+        use arrow::array::{
+            FixedSizeListArray, FixedSizeListBuilder, Float32Array, Float32Builder,
+        };
+        use arrow::datatypes::Float32Type;
+
+        use crate::index::Index;
+        use crate::index::vector::IvfPqIndexBuilder;
+        use datafusion_physical_plan::{ExecutionPlan, displayable};
+        use lance::io::exec::ANNIvfSubIndexExec;
+        use std::any::Any;
+
+        const DIM: usize = 8;
+        const N: usize = 256;
+
+        fn normalized_vector(state: &mut u64) -> Vec<f32> {
+            let mut vector = (0..DIM)
+                .map(|_| {
+                    *state = state
+                        .wrapping_mul(6_364_136_223_846_793_005)
+                        .wrapping_add(1);
+                    ((*state >> 32) as u32 as f32 / u32::MAX as f32) * 2.0 - 1.0
+                })
+                .collect::<Vec<_>>();
+            let norm = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+            vector.iter_mut().for_each(|value| *value /= norm);
+            vector
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "vec",
+                DataType::FixedSizeList(
+                    Arc::new(Field::new("item", DataType::Float32, true)),
+                    DIM as i32,
+                ),
+                false,
+            ),
+        ]));
+        let make_batch = |rows: Vec<(i64, Vec<f32>)>| {
+            let ids = rows.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+            let mut vectors = FixedSizeListBuilder::new(Float32Builder::new(), DIM as i32);
+            for (_, vector) in &rows {
+                vectors.values().append_slice(vector);
+                vectors.append(true);
+            }
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(Int64Array::from(ids)), Arc::new(vectors.finish())],
+            )
+            .unwrap()
+        };
+        let first_result = |batches: &[RecordBatch]| {
+            let batch = &batches[0];
+            let id = batch["id"].as_primitive::<Int64Type>().value(0);
+            let distance = batch["_distance"].as_primitive::<Float32Type>().value(0);
+            (id, distance)
+        };
+
+        let mut state = 42;
+        let base_rows = (0..N)
+            .map(|id| (id as i64, normalized_vector(&mut state)))
+            .collect::<Vec<_>>();
+        let query = normalized_vector(&mut state);
+
+        let dir = tempdir().unwrap();
+        let conn = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let base = make_batch(base_rows.clone());
+        let reader: Box<dyn RecordBatchReader + Send> =
+            Box::new(RecordBatchIterator::new(vec![Ok(base)], schema.clone()));
+        let table = conn
+            .create_table("cosine_lsm", reader)
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .create_index(
+                &["vec"],
+                Index::IvfPq(
+                    IvfPqIndexBuilder::default()
+                        .distance_type(crate::DistanceType::Cosine)
+                        .num_partitions(1)
+                        .num_sub_vectors(1),
+                ),
+            )
+            .name("vec_cosine".to_string())
+            .execute()
+            .await
+            .unwrap();
+        table
+            .enable_rte(
+                RTEWriteSpec::unsharded().with_maintained_indexes(vec!["vec_cosine".to_string()]),
+            )
+            .await
+            .unwrap();
+
+        let base_only = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .use_rte(false)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (base_id, public_distance) = first_result(&base_only);
+
+        let lsm = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (lsm_id, lsm_distance) = first_result(&lsm);
+        assert_eq!(lsm_id, base_id);
+        assert!(
+            (lsm_distance - public_distance).abs() < 1e-5,
+            "LSM cosine distance {lsm_distance} did not use the public scale {public_distance}"
+        );
+
+        // Add an exact memtable result whose distance lies between the public ANN
+        // score and its doubled internal score. Correctly normalized plans still
+        // rank the ANN row first; mixed units would incorrectly rank this row first.
+        assert!(public_distance > 0.0 && public_distance < 4.0 / 3.0);
+        let memtable_distance = public_distance * 1.5;
+        let cosine_similarity = 1.0 - memtable_distance;
+        let mut orthogonal = normalized_vector(&mut state);
+        let projection = orthogonal
+            .iter()
+            .zip(&query)
+            .map(|(left, right)| left * right)
+            .sum::<f32>();
+        for (value, query_value) in orthogonal.iter_mut().zip(&query) {
+            *value -= projection * query_value;
+        }
+        let norm = orthogonal
+            .iter()
+            .map(|value| value * value)
+            .sum::<f32>()
+            .sqrt();
+        orthogonal.iter_mut().for_each(|value| *value /= norm);
+        let sine = (1.0 - cosine_similarity * cosine_similarity).sqrt();
+        let memtable_vector = query
+            .iter()
+            .zip(&orthogonal)
+            .map(|(query_value, orthogonal_value)| {
+                cosine_similarity * query_value + sine * orthogonal_value
+            })
+            .collect::<Vec<_>>();
+
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let memtable = make_batch(vec![(N as i64, memtable_vector)]);
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(memtable)],
+                schema.clone(),
+            )))
+            .await
+            .unwrap();
+
+        let mixed = table
+            .query()
+            .nearest_to(query.as_slice())
+            .unwrap()
+            .limit(1)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (mixed_id, mixed_distance) = first_result(&mixed);
+        assert_eq!(
+            mixed_id, base_id,
+            "mixed LSM tiers must compare ANN and exact distances in public units"
+        );
+        assert!((mixed_distance - public_distance).abs() < 1e-5);
+
+        // Re-ingest every base row so the flushed SSTable generation owns a
+        // complete copy of the dataset. ANN ranking of the rebuilt index is an
+        // independent approximation, so exact row parity with the base scan is
+        // not guaranteed.
+        let mut merge = table.merge_insert(&[]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        let upsert_batch = make_batch(base_rows.clone());
+        merge
+            .execute(Box::new(RecordBatchIterator::new(
+                vec![Ok(upsert_batch)],
+                schema.clone(),
+            )))
+            .await
+            .unwrap();
+        assert!(
+            base_rows.iter().any(|(id, _)| *id == base_id),
+            "upsert source must still contain the nearest base row"
+        );
+
+        table.close_rte_writers().await.unwrap();
+        let sstables = published_sstables(&table).await;
+        assert_eq!(sstables.len(), 1, "expected one published SSTable");
+        assert_eq!(
+            sstables[0].count_rows(None).await.unwrap(),
+            N + 1,
+            "published SSTable must contain the complete replacement fixture"
+        );
+
+        // The public query sets no explicit refine factor. Because the upsert
+        // rewrote every base id, a newer generation exists, so the engine must
+        // auto-refine ANN results over the published SSTable.
+        let public_query = table.query().nearest_to(query.as_slice()).unwrap().limit(1);
+
+        fn collect_ann_nodes<'a>(
+            node: &'a dyn ExecutionPlan,
+            target_uri: &str,
+            out: &mut Vec<&'a ANNIvfSubIndexExec>,
+        ) {
+            // Local datasets may report their path with a different separator on Windows.
+            if let Some(ann) = (node as &dyn Any).downcast_ref::<ANNIvfSubIndexExec>()
+                && std::path::Path::new(ann.dataset().uri()) == std::path::Path::new(target_uri)
+            {
+                out.push(ann);
+            }
+            for child in node.children() {
+                collect_ann_nodes(child.as_ref(), target_uri, out);
+            }
+        }
+
+        let plan = public_query
+            .create_plan(crate::query::QueryExecutionOptions::default())
+            .await
+            .unwrap();
+        let mut ann_nodes = Vec::new();
+        collect_ann_nodes(plan.as_ref(), sstables[0].uri(), &mut ann_nodes);
+        assert!(
+            !ann_nodes.is_empty(),
+            "public plan must contain an ANN sub-index over the published SSTable"
+        );
+        assert_eq!(
+            ann_nodes[0].query().refine_factor,
+            Some(1),
+            "engine must auto-refine the SSTable ANN results"
+        );
+        println!(
+            "RTE LSM public query plan:\n{}",
+            displayable(plan.as_ref()).indent(true)
+        );
+
+        // Execute the same public query.
+        let published = public_query
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let (published_id, published_distance) = first_result(&published);
+        assert!(
+            (0_i64..=N as i64).contains(&published_id),
+            "SSTable result id {published_id} must belong to the complete 0..={N} replacement fixture"
+        );
+
+        // The maintained ANN index may rank near-tied rows differently than
+        // the base scan, so the durable contract is distance correctness: the
+        // auto-refined result carries its own stored vector, and the query
+        // returns the analytical cosine distance of that exact vector.
+        let expected_distance = {
+            let published_vec = published[0]["vec"]
+                .as_any()
+                .downcast_ref::<FixedSizeListArray>()
+                .unwrap()
+                .values()
+                .as_any()
+                .downcast_ref::<Float32Array>()
+                .unwrap();
+            // The query is a unit vector, so cosine distance is 1 - cos(q, v).
+            let dot = (0..DIM)
+                .map(|index| query[index] * published_vec.value(index))
+                .sum::<f32>();
+            let norm = (0..DIM)
+                .map(|index| published_vec.value(index) * published_vec.value(index))
+                .sum::<f32>()
+                .sqrt();
+            1.0 - dot / norm
+        };
+        assert!(
+            expected_distance > 0.0 && expected_distance.is_finite(),
+            "independent cosine oracle is degenerate: {expected_distance}"
+        );
+        assert!(
+            (published_distance - expected_distance).abs() < 1e-5,
+            "SSTable ANN distance {published_distance} must match the analytical cosine distance {expected_distance} of its returned vector"
+        );
+        println!(
+            "sstable_uri={} ann_nodes={} refine_factor={:?} observed_distance={} expected_cosine={}",
+            sstables[0].uri(),
+            ann_nodes.len(),
+            ann_nodes[0].query().refine_factor,
+            published_distance,
+            expected_distance,
+        );
+    }
 }
