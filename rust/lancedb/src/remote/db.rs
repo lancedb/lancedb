@@ -3796,9 +3796,6 @@ mod tests {
         }
     }
 
-    /// An identifier the service accepts is untouched by the encoding, so the
-    /// route reads like the table and Function routes beside it.
-
     /// A table name is joined into the route the same way a Secret's is, so the
     /// same two failures are reachable: a dot-only name leaves the table route
     /// entirely, and a name holding the delimiter is indistinguishable from a
@@ -3856,18 +3853,6 @@ mod tests {
             Err(Error::InvalidInput { .. })
         ));
     }
-
-    /// Only `.` and `..` are relative segments. `...` and longer runs are
-    /// ordinary and address perfectly well, so refusing them would make an
-    /// object that works today stop working on upgrade. This pins that.
-
-    /// A server that keeps handing back the same token would otherwise spin
-    /// forever.
-
-    /// The namespace is part of the identifier the path addresses, joined with
-    /// the client's configured delimiter the way every other object's is. A
-    /// root Secret is therefore addressed by its bare name, and a namespaced
-    /// one by the joined path -- there is no body field either way.
 
     /// A view description carries the schema in the namespace spec's JSON
     /// encoding, so the body a test asserts against is the one that encoding
