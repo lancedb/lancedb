@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! Live per-table-shard MemWAL state — the shape [`crate::Table::get_memwal_stats`]
+//! Live per-table-shard RTE state — the shape [`crate::Table::get_rte_stats`]
 //! returns and [`super::checkpoint`] polls.
 //!
 //! Nothing here is derived: sums and differences (total SSTable bytes, WAL lag)
@@ -79,18 +79,18 @@ impl TableShardStats {
     }
 }
 
-/// Live MemWAL state, one entry per table shard.
+/// Live RTE state, one entry per table shard.
 #[derive(Debug, Clone, Deserialize)]
-pub struct MemWalStats {
+pub struct RTEStats {
     pub table_shards: Vec<TableShardStats>,
 }
 
-/// Server-side JSON envelope for `get_memwal_stats`. `memwal_stats` is null when
-/// the table has no MemWAL write path.
+/// Server-side JSON envelope for `get_rte_stats`. `rte_stats` is null when
+/// the table has no RTE write path.
 #[derive(Debug, Deserialize)]
-pub(crate) struct GetMemWalStatsResponse {
+pub(crate) struct GetRTEStatsResponse {
     #[serde(default)]
-    pub memwal_stats: Option<MemWalStats>,
+    pub rte_stats: Option<RTEStats>,
 }
 
 #[cfg(test)]

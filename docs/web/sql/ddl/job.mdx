@@ -8,8 +8,8 @@ keywords: ["show jobs", "show errors", "pause job", "resume job", "cancel job", 
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-A [job](/basics/jobs) is not a catalog object -- it has no schema and is not
-namespaced -- but it has its own SQL statements, grouped here the same way the
+A [job](/basics/jobs) is not a catalog object (it has no schema and is not
+namespaced), but it has its own SQL statements, grouped here the same way the
 catalog objects are.
 
 ## SHOW JOBS {#show}
@@ -18,7 +18,7 @@ catalog objects are.
 SHOW JOBS
 ```
 
-Every job the server knows about -- id, type, state, creation time. The SQL
+Every job the server knows about: id, type, state, creation time. The SQL
 counterpart of `list_jobs`.
 
 ## SHOW ERRORS {#errors}
@@ -44,7 +44,7 @@ fewer filled rows than you expected.
 | Tables the server does not open directly | not supported |
 
 Without `FOR JOB` this surveys recent failures and stops at 32 jobs. When the
-listing stops at your `LIMIT`, the message says so -- narrow with `FOR JOB`
+listing stops at your `LIMIT`, the message says so. Narrow with `FOR JOB`
 rather than raising the limit blindly.
 
 ## PAUSE JOB {#pause}
@@ -66,7 +66,7 @@ CANCEL JOB 'j-ci-abc-def'
 ```
 
 The job id is always a quoted string literal. All three take exactly one and
-nothing after it -- a second token on the line is a syntax error rather than
+nothing after it: a second token on the line is a syntax error rather than
 being ignored.
 
 <Note>

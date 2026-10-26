@@ -80,6 +80,18 @@ ignore = [
     { id = "RUSTSEC-2026-0176", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
     { id = "RUSTSEC-2026-0177", reason = "pyo3 in Python bindings; awaiting patched pyo3 release" },
 
+    # zip < 9.0.0: SUID/SGID bits, symlink targets and permissions applied through
+    # symlinks during archive extraction. Transitive via candle-core (optional
+    # local-embedding feature); every published candle release pins zip < 9
+    # (0.9.x/0.10.x ^7.2, 0.11.0 ^8.6), so no dependency bump clears it.
+    # LanceDB never extracts archives; the zip crate is only linked.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0367
+    # https://rustsec.org/advisories/RUSTSEC-2026-0368
+    # https://rustsec.org/advisories/RUSTSEC-2026-0369
+    { id = "RUSTSEC-2026-0367", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0368", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+    { id = "RUSTSEC-2026-0369", reason = "zip via candle-core; candle pins zip < 9 and lancedb never extracts archives" },
+
     # quick-xml < 0.41.0: quadratic runtime on duplicate attribute names (DoS).
     # quick-xml < 0.41.0: unbounded namespace-declaration allocation in NsReader (DoS).
     # Pulled in transitively by inferno (dev-only flame-graph dep), lance-namespace-impls
@@ -98,7 +110,17 @@ ignore = [
     # compact_str/smol_str, so clearing this requires polars to migrate.
     # https://rustsec.org/advisories/RUSTSEC-2026-0249
     { id = "RUSTSEC-2026-0249", reason = "smartstring unmaintained via polars; no fixed upstream release" },
+    # crypto-bigint < 0.7.6: timing side-channels in constant-time ops,
+    # incl. subtraction, zero counting, division and Montgomery multiplication.
+    # Reached only through aws-sdk-s3 sigv4a -> aws-sigv4 (p256/ecdsa); signed
+    # requests carry the SigV4a credential-derived key. The patched 0.7.6 was
+    # published 2026-10-23, but no published aws-sigv4 release uses it yet
+    # (latest 1.6.3 pins crypto-bigint ^0.5), so clearing requires smithy-rs to
+    # ship an updated aws-sigv4.
+    # https://rustsec.org/advisories/RUSTSEC-2026-0387
+    { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via aws-sigv4 (sigv4a); no fixed upstream aws-sigv4 release yet" },
 ]
+
 
 # ---------------------------------------------------------------------------
 # Licenses: only allow licenses we've reviewed as compatible with Apache-2.0.
@@ -155,7 +177,9 @@ wildcards = "deny"
 # `[workspace.dependencies]` table: any crate used by more than one member must
 # go through `workspace = true`, and entries nothing uses are an error. This
 # keeps versions from drifting between the core crate and the bindings.
-workspace-dependencies = { duplicates = "deny", unused = "deny" }
+# Python bundles a patched path crate while the Rust SDK uses the overridable
+# upstream source. Check shared external declarations, not these path bindings.
+workspace-dependencies = { duplicates = "deny", unused = "deny", include-path-dependencies = false }
 # Internal workspace crates reference each other via `path = "..."`, which
 # cargo-deny sees as a wildcard version. That's fine for private workspace
 # members (not published to crates.io), so allow it specifically for paths.

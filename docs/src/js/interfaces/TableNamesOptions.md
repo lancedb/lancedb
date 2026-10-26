@@ -8,7 +8,7 @@
 
 ## Deprecated
 
-Use [ListTablesOptions](ListTablesOptions.md) with [Connection.listTables](../classes/Connection.md#listtables)
+Use [ListingOptions](ListingOptions.md) with [Connection.listTables](../classes/Connection.md#listtables)
 instead.
 
 ## Properties

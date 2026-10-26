@@ -24,14 +24,14 @@ JOIN categories AS c ON c.id = d.category_id
 | `LEFT [OUTER] JOIN` | every left row, nulls where the right has no match |
 | `RIGHT [OUTER] JOIN` | every right row |
 | `FULL [OUTER] JOIN` | every row from both |
-| `CROSS JOIN` | every combination -- the product of the two |
+| `CROSS JOIN` | every combination (the product of the two) |
 
 `USING (col)` is shorthand for an equality join on a shared column name, and
 avoids repeating it in the select list.
 
 ## Across namespaces {#namespaces}
 
-Tables in different [namespaces](/management/namespace) join by their dotted paths -- the
+Tables in different [namespaces](/management/namespace) join by their dotted paths. The
 catalog is one catalog, so there is nothing to federate:
 
 ```sql
@@ -56,7 +56,7 @@ ORDER BY hits DESC
 ```
 
 That composition is the reason full-text search is a relation rather than a
-predicate -- a `WHERE` clause has nowhere to put the relevance score.
+predicate: a `WHERE` clause has nowhere to put the relevance score.
 
 ## Performance {#performance}
 

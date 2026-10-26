@@ -18,7 +18,7 @@ INSERT INTO archive SELECT * FROM documents WHERE created_at < '2026-01-01'
 server-side, without a round trip through your process.
 
 Commits a new table version, so [versioning](/management/table#versioning) and
-the [write guarantees](/basics/guarantees#writes) apply -- including that the
+the [write guarantees](/basics/guarantees#writes) apply, including that the
 version advances even when the statement affects zero rows.
 
 ## What to read next {#next}
@@ -28,6 +28,6 @@ version advances even when the statement affects zero rows.
     The SDK equivalent.
   </Card>
   <Card title="Merge Insert" icon="code-merge" href="/ingestion/merge-insert">
-    Upsert -- matching incoming rows against existing keys -- has no SQL form.
+    Upsert (matching incoming rows against existing keys) has no SQL form.
   </Card>
 </CardGroup>

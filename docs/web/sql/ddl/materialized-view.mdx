@@ -8,8 +8,8 @@ keywords: ["materialized view", "create materialized view", "show materialized v
 
 <Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-A materialized view stores a query's result as rows, kept current by a refresh
--- the counterpart to a [view](/sql/ddl/view), which stores only the query.
+A materialized view stores a query's result as rows, kept current by a refresh.
+It is the counterpart to a [view](/sql/ddl/view), which stores only the query.
 
 <Note>
 Materialized views are off by default in LanceDB Enterprise and have to be enabled
@@ -51,7 +51,7 @@ and compatibility notes for older server versions.
 ## Dropping one {#drop}
 
 A materialized view **is** a table, so it is dropped with
-[`DROP TABLE`](/sql/ddl/table#drop) -- which is also why dropping one removes
+[`DROP TABLE`](/sql/ddl/table#drop). For the same reason, dropping one removes
 stored rows, unlike dropping a [view](/sql/ddl/view#drop).
 
 <Note>

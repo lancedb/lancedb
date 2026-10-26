@@ -127,7 +127,11 @@ def Vector(
                 core_schema.list_schema(
                     min_length=dim,
                     max_length=dim,
-                    items_schema=core_schema.float_schema(),
+                    items_schema=(
+                        core_schema.int_schema()
+                        if pa.types.is_integer(value_type)
+                        else core_schema.float_schema()
+                    ),
                 ),
             )
 
@@ -208,7 +212,11 @@ def MultiVector(
                     items_schema=core_schema.list_schema(
                         min_length=dim,
                         max_length=dim,
-                        items_schema=core_schema.float_schema(),
+                        items_schema=(
+                            core_schema.int_schema()
+                            if pa.types.is_integer(value_type)
+                            else core_schema.float_schema()
+                        ),
                     ),
                 ),
             )
@@ -260,7 +268,9 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
 
 def _pydantic_model_to_fields(model: pydantic.BaseModel) -> List[pa.Field]:
     return [
-        _pydantic_to_field(name, field) for name, field in model.model_fields.items()
+        _pydantic_to_field(name, field)
+        for name, field in model.model_fields.items()
+        if field.exclude is not True
     ]
 
 
@@ -493,6 +503,9 @@ class LanceModel(pydantic.BaseModel):
 
         vec_and_function = []
         for name, field_info in cls.safe_get_fields().items():
+            if field_info.exclude is True:
+                continue
+
             func = get_extras(field_info, "vector_column_for")
             if func is not None:
                 vec_and_function.append([name, func])
@@ -500,6 +513,8 @@ class LanceModel(pydantic.BaseModel):
         configs = []
         for vec, func in vec_and_function:
             for source, field_info in cls.safe_get_fields().items():
+                if field_info.exclude is True:
+                    continue
                 src_func = get_extras(field_info, "source_column_for")
                 if src_func is func:
                     # note we can't use == here since the function is a pydantic
@@ -524,4 +539,20 @@ def get_extras(field_info: FieldInfo, key: str) -> Any:
 
 def model_to_dict(model: pydantic.BaseModel) -> dict[str, Any]:
     """Convert a Pydantic model to a dictionary."""
-    return model.model_dump()
+    return _enum_members_to_values(model.model_dump())
+
+
+def _enum_members_to_values(value: Any) -> Any:
+    # model_dump() keeps Enum members, and Arrow cannot convert a member of a
+    # plain Enum (one without a str or int mixin). Write its value instead,
+    # which is what the Arrow type of the field is derived from.
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, dict):
+        return {k: _enum_members_to_values(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)) and value:
+        # Skip lists of plain scalars, such as vectors, without walking them.
+        if isinstance(value[0], (int, float, str, bytes)):
+            return value
+        return [_enum_members_to_values(v) for v in value]
+    return value

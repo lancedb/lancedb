@@ -32,7 +32,7 @@ SELECT category, source, count(*) FROM documents GROUP BY category, source
 
 ## Aggregate without grouping {#whole-table}
 
-Omitting `GROUP BY` aggregates the whole table into one row -- the usual way to
+Omitting `GROUP BY` aggregates the whole table into one row, which is the usual way to
 ask how big something is:
 
 ```sql

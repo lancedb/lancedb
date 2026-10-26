@@ -2,11 +2,11 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / MemWalStats
+[@lancedb/lancedb](../globals.md) / RTEStats
 
-# Interface: MemWalStats
+# Interface: RTEStats
 
-Live per-table-shard MemWAL state, as returned by `Table#getMemWalStats`.
+Live per-table-shard RTE state, as returned by `Table#getRTEStats`.
 
 Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 the caller's to compute.

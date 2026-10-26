@@ -21,6 +21,7 @@ from lancedb.table import (
     _infer_target_schema,
     _merge_metadata,
     _sanitize_data,
+    has_nan_values,
     sanitize_create_table,
 )
 import pyarrow as pa
@@ -30,6 +31,7 @@ import pytest
 import lancedb
 from lancedb.util import (
     flatten_columns,
+    get_uri_location,
     get_uri_scheme,
     inf_vector_column_query,
     join_uri,
@@ -84,6 +86,22 @@ def test_normalize_uri():
     for uri, expected_scheme in zip(uris, schemes):
         parsed_scheme = get_uri_scheme(uri)
         assert parsed_scheme == expected_scheme
+
+
+def test_get_uri_scheme_and_location_pathlib():
+    # Test pathlib.Path instances
+    abs_path = pathlib.Path("/tmp/data")
+    rel_path = pathlib.Path("relative/data")
+
+    assert get_uri_scheme(abs_path) == "file"
+    assert get_uri_scheme(rel_path) == "file"
+
+    assert get_uri_location(abs_path) == str(abs_path)
+    assert get_uri_location(rel_path) == str(rel_path)
+
+    # String URIs still behave identically
+    assert get_uri_scheme("s3://bucket/data") == "s3"
+    assert get_uri_location("s3://bucket/data") == "bucket/data"
 
 
 def test_join_uri_remote():
@@ -470,6 +488,20 @@ def test_handle_bad_vectors_nan(on_bad_vectors):
         expected = pa.array([None, [3.0, 4.0]])
 
     assert output["vector"].combine_chunks() == expected
+
+
+@pytest.mark.parametrize("dtype", [pa.float16(), pa.float32(), pa.float64()])
+@pytest.mark.parametrize("large", [False, True])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_has_nan_values_skips_hidden_children_of_null_lists(dtype, large, chunked):
+    array_type = pa.LargeListArray if large else pa.ListArray
+    values = pa.array([float("nan"), None, float("nan"), 3.0, 4.0, 5.0], type=dtype)
+    arr = array_type.from_arrays(
+        [0, 2, 4, 6], values, mask=pa.array([True, False, False])
+    )
+    if chunked:
+        arr = pa.chunked_array([arr.slice(0, 2), arr.slice(2, 1)])
+    assert has_nan_values(arr).to_pylist() == [False, True, False]
 
 
 def test_handle_bad_vectors_noop():

@@ -659,7 +659,7 @@ minimum; one searches all partitions within the caller maximum. Later
 probing may continue when too few candidates are found.
 Any explicit effort, including 0.5, overrides nprobes in either call order.
 Explicit minimum and maximum bounds still apply. This is not a recall
-guarantee and does not change refinement or HNSW ef. The MemWAL LSM
+guarantee and does not change refinement or HNSW ef. The RTE LSM
 scanner does not yet support this option.
 
 #### Parameters
@@ -781,16 +781,16 @@ Empty results retain the query's output schema.
 
 ***
 
-### useMemWal()
+### useRTE()
 
 ```ts
-useMemWal(enable): this
+useRTE(enable): this
 ```
 
-Control MemWAL read routing for this query.
+Control RTE read routing for this query.
 
-By default (unset), when the table carries a MemWAL write spec (see
-[Table#enableMemWal](Table.md#enablememwal)), reads are routed through the LSM scanner so
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
 the SSTables), deduplicated by primary key; a table without a spec
@@ -800,12 +800,12 @@ reads the base table.
 
 * **enable**: `boolean`
     `true` forces the LSM scanner and errors if the table has no
-    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
-    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useMemWal(false)` is set, because a base-only read would silently exclude
-    un-compacted MemWAL data.
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
 
 #### Returns
 
@@ -813,7 +813,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useMemWal`
+`StandardQueryBase.useRTE`
 
 ***
 

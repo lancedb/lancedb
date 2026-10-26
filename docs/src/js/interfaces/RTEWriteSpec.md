@@ -2,12 +2,12 @@
 
 ***
 
-[@lancedb/lancedb](../globals.md) / MemWalWriteSpec
+[@lancedb/lancedb](../globals.md) / RTEWriteSpec
 
-# Interface: MemWalWriteSpec
+# Interface: RTEWriteSpec
 
-Specification selecting Lance's MemWAL LSM-style write path for
-`mergeInsert`.
+Specification enabling the realtime engine (RTE), which routes
+`mergeInsert` through Lance's MemWAL LSM-style write path.
 
 `specType` is `"bucket"`, `"identity"`, or `"unsharded"`. For `"bucket"`,
 `column` and `numBuckets` are required; for `"identity"`, `column` is
@@ -34,7 +34,7 @@ Bucket and identity variants: the sharding column.
 optional maintainedIndexes: string[];
 ```
 
-Indexes the MemWAL keeps up to date. Omit for every index the table has,
+Indexes the RTE keeps up to date. Omit for every index the table has,
 including ones created later. Pass `[]` for none.
 
 ***

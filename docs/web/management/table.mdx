@@ -215,7 +215,7 @@ Renaming is not supported on a local directory connection. In LanceDB Enterprise
 whether a table can be renamed or cloned at all depends on how the deployment
 stores its catalog.
 
-A **shallow** clone -- the default -- references the source's data files rather
+A **shallow** clone (the default) references the source's data files rather
 than copying them, so it is fast and cheap regardless of table size. It is the
 practical way to branch an experiment off a known version, or to pin a training
 set to the exact version a model saw.
@@ -286,7 +286,7 @@ returned job has already finished.
 
 ## Data types {#data-types}
 
-A table's schema is an **Arrow schema** -- there is no separate LanceDB type
+A table's schema is an **Arrow schema**: there is no separate LanceDB type
 system mapped onto storage, so a column is the same object to the query engine
 as it is to the format.
 
@@ -298,7 +298,7 @@ as it is to the format.
 | Nested | `struct`, `list`, `large_list`, `fixed_size_list`, `map` |
 | Lance extensions | vectors, [JSON](/sql/data-types#json), [blobs](#multimodal), bfloat16 |
 
-A vector column is a `fixed_size_list<float32, dim>` -- an ordinary Arrow type,
+A vector column is a `fixed_size_list<float32, dim>`, an ordinary Arrow type,
 which is why it is selectable and joinable but why arithmetic over it is list
 arithmetic rather than scalar.
 
@@ -307,7 +307,7 @@ extension types and pseudo-columns.
 
 ## Multimodal data {#multimodal}
 
-Binary data -- images, audio, video, model artifacts -- lives in the table
+Binary data (images, audio, video, model artifacts) lives in the table
 beside the structured columns and embeddings that describe it, and is governed
 by the same versioning and search.
 
@@ -427,7 +427,91 @@ Once you have the bytes back from the search result, you can decode them into th
     </CodeBlock>
 </CodeGroup>
 
-### Large Blobs (Blob API) {#multimodal-large-blobs-blob-api}
+### Managed blobs (Blob v2) {#managed-blobs}
+
+Use `lancedb.blob()` for images, audio, videos, and other binary values whose
+payloads should load separately from the rest of a row. Write Python `bytes`
+normally. Set the table schema metadata `lance.blob.managed` to `true` to
+store small values inline and larger values in managed objects under the table's `_blobs/` directory. Medium values can share a packed
+object; large values use a dedicated object.
+
+The table owns these objects. You do not upload them separately, keep an object
+catalog, or delete their files yourself. A descriptor records where to read the
+bytes. Compaction preserves the descriptor and its payload object, so merging
+table fragments does not rewrite the blob payloads.
+
+<Warning>
+Use an SDK and Enterprise deployment that support Blob v2 Managed storage.
+Upgrade every reader, writer, and maintenance worker before activating Managed
+blobs on a table, and reopen existing table handles after the upgrade. Older
+clients cannot safely maintain a table containing Managed blobs.
+</Warning>
+
+#### Write and read blobs {#managed-blobs-read-write}
+
+This example uses a local connection. The same schema, `add`, query, and
+`fetch_blobs` calls work with an Enterprise database connection:
+
+```python
+import lancedb
+import pyarrow as pa
+
+db = lancedb.connect("./media")
+table = db.create_table(
+    "images",
+    schema=pa.schema([
+        pa.field("id", pa.int64(), nullable=False),
+        lancedb.blob("image"),
+    ], metadata={"lance.blob.managed": "true"}),
+)
+table.add([
+    {"id": 1, "image": b""},
+    {"id": 2, "image": bytes(range(256)) * 400},
+    {"id": 3, "image": None},
+])
+
+# Query descriptors first, then fetch only the selected rows' payloads.
+hits = (
+    table.search()
+    .where("id <= 2")
+    .select(["id", "image"])
+    .with_row_id(True)
+    .to_arrow()
+)
+images = table.fetch_blobs("image", hits).to_pylist()
+by_id = dict(zip(hits["id"].to_pylist(), images, strict=True))
+assert by_id[1] == b""
+assert len(by_id[2]) == 102400
+```
+
+`None` is a null value; `b""` is a present, empty blob. `fetch_blobs` returns
+bytes in the order of the supplied row IDs. It materializes the selected
+payloads, so fetch bounded batches when blobs are large. Row IDs belong to
+their table; fetch them from the same table and snapshot that produced the
+query result.
+
+Keep descriptors opaque in application code. Their representation can differ
+between inline values, Managed objects, and externally referenced blobs. For
+streaming and range reads, see the
+[Lance blob guide](https://lance.org/guide/blob/).
+
+#### Derived blobs and maintenance {#managed-blobs-lifecycle}
+
+Enterprise Functions can consume blob columns and
+return new blobs. Their output payloads are managed by the destination table.
+Local tables can also derive blob columns with
+[SQL computed columns](/feature-engineering/add-computed-column).
+
+Deleting a row or replacing its blob does not immediately remove the old
+payload: retained table versions may still reference it. [Cleanup](/maintenance/cleanup#managed-blobs)
+reclaims objects after those references expire. A packed object remains while
+any of its contained blobs is still referenced.
+
+### Legacy large-binary blobs {#multimodal-large-blobs-blob-api}
+
+The schema below describes the earlier large-binary Blob API. It is distinct
+from the `lancedb.blob()` schema above; changing the field's metadata alone does
+not migrate an existing column to Blob v2.
 
 For larger files like high-resolution images or videos, Lance provides a specialized **Blob API**. By using a large-binary Arrow type (`pa.large_binary()` in Python, `LargeBinary` in TypeScript, and `DataType::LargeBinary` in Rust) and specific metadata, you enable **lazy loading** and optimized encoding. This allows you to work with massive datasets without loading all binary data into memory upfront.
 
@@ -520,7 +604,7 @@ precision does.
 
 ## Schema evolution {#schema}
 
-Schema evolution enables non-breaking modifications to a database table's structure — such as adding columns, altering data types, or dropping fields — to adapt to evolving data requirements without service interruptions. 
+Schema evolution enables non-breaking modifications to a database table's structure (such as adding columns, altering data types, or dropping fields) to adapt to evolving data requirements without service interruptions.
 LanceDB supports ACID-compliant schema evolution through granular operations (add/alter/drop columns), allowing you to:
 
 * Iterate Safely: Modify schemas in production with versioned datasets and backward compatibility
@@ -575,7 +659,7 @@ First, let's create a sample table with product data to demonstrate schema evolu
 </CodeGroup>
 
 <Note>
-Columns derived from existing data -- SQL expressions over other columns -- are
+Columns derived from existing data (SQL expressions over other columns) are
 covered in [Data evolution](/feature-engineering/data-evolution), because
 deriving values is a feature-engineering job rather than a schema one.
 </Note>
@@ -776,7 +860,7 @@ Changing data types requires rewriting the column data and may be resource-inten
 
 ### Update field metadata {#schema-update-field-metadata}
 
-Each column in a LanceDB table can carry a small key/value map of Arrow field metadata — useful
+Each column in a LanceDB table can carry a small key/value map of Arrow field metadata, which is useful
 for annotating columns with units, provenance, PII flags, embedding model versions, or any other
 schema-level context your application needs.
 
@@ -788,7 +872,7 @@ the new `version`.
 
 Each update targets one field by **dot-path**: top-level columns are addressed by name (for
 example `"embedding"`), and nested fields by their full path (for example `"address.zip"`). By
-default, the keys you pass are **merged** into the field's existing metadata — keys you do not
+default, the keys you pass are **merged** into the field's existing metadata: keys you do not
 mention are preserved, and passing `None` (Python) or `null` (TypeScript) deletes a key. Set
 `replace: true` to swap the field's entire metadata map instead of merging.
 
@@ -823,8 +907,8 @@ To overwrite a field's metadata entirely instead of merging, set `replace` to `t
 </CodeGroup>
 
 <Tip>
-You can pass multiple updates in a single call to change metadata on several fields at once —
-each call commits a single new table version.
+You can pass multiple updates in a single call to change metadata on several fields at once.
+Each call commits a single new table version.
 </Tip>
 
 #### Canonical metadata keys {#schema-canonical-metadata-keys}
@@ -908,7 +992,7 @@ Remove several columns at once for efficiency:
 <Warning title="Dropping a column is undone only by restoring a version">
 Dropping a column changes the latest version only. Until
 [cleanup](/maintenance/cleanup) prunes the versions from before the drop,
-[restoring](#versioning) one of them brings the column and its values back --
+[restoring](#versioning) one of them brings the column and its values back,
 along with the rest of the table as it was then. Once those versions are
 pruned, the drop cannot be undone, so check before dropping a column you may
 need.
@@ -1071,11 +1155,11 @@ Numeric table versions like `v3` or `v17` are precise but hard to remember. Tags
 let you attach human-readable labels (e.g., `"prod"`, `"baseline"`,
 `"q3-evaluation"`) to specific versions and check those out by name. They are
 conceptually similar to git tags, and unlike numeric versions, **tagged versions
-are never pruned** -- a tagged version that is older than the retention window and
+are never pruned**. A tagged version that is older than the retention window and
 is not the latest stops cleanup instead (see the cleanup note at the bottom of this
 page).
 
-The tags API supports the standard CRUD operations — create, list, update, delete —
+The tags API supports the standard CRUD operations (create, list, update, delete),
 plus checking out by tag name.
 
 <CodeGroup>
@@ -1099,7 +1183,7 @@ deletion, the underlying table version becomes eligible for cleanup again.
 
 ### Branches {#versioning-branches}
 
-Beyond linear history, LanceDB also supports **branches** — isolated, writable
+Beyond linear history, LanceDB also supports **branches**: isolated, writable
 lines of history forked from `main` (or a specific version). Whereas tags and
 `checkout` give you read-only views of existing versions, a branch has its own
 writable history, making it ideal for experiments, backfills, and migrations

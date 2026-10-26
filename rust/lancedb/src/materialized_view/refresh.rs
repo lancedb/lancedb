@@ -288,15 +288,13 @@ fn refresh_conflict_filter(dataset: &Dataset) -> Result<KeyExistenceFilter> {
     Ok(filter.build())
 }
 
-/// Reject MemWAL/MemWAL state because an ordinary dataset scan cannot see its
+/// Reject RTE/RTE state because an ordinary dataset scan cannot see its
 /// un-compacted tiers.
 pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str) -> Result<()> {
     let retained = !dataset.list_mem_wal_latest_shard_ids().await?.is_empty();
     if retained || dataset.mem_wal_index_details().await?.is_some() {
         return Err(Error::NotSupported {
-            message: format!(
-                "{role} '{name}' has a MemWAL write spec or retained un-compacted rows"
-            ),
+            message: format!("{role} '{name}' has an RTE write spec or retained un-compacted rows"),
         });
     }
     Ok(())

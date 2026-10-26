@@ -20,18 +20,18 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * Live per-table-shard MemWAL state, as returned by {@link LanceDbTableMemWal#getMemWalStats()}.
+ * Live per-table-shard RTE state, as returned by {@link LanceDbTableRTE#getRTEStats()}.
  *
  * <p>Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are the caller's
  * to compute. There is no "LSM is off" shape — that case is an empty {@link java.util.Optional},
  * because a stats object of zeros would read as measurements.
  */
-public class MemWalStats {
-  private static final String CONTEXT = "memwal stats";
+public class RTEStats {
+  private static final String CONTEXT = "rte stats";
 
   private final List<TableShardStats> tableShards;
 
-  MemWalStats(List<TableShardStats> tableShards) {
+  RTEStats(List<TableShardStats> tableShards) {
     this.tableShards = Collections.unmodifiableList(tableShards);
   }
 
@@ -40,17 +40,17 @@ public class MemWalStats {
     return tableShards;
   }
 
-  static MemWalStats fromJson(JsonNode node) {
+  static RTEStats fromJson(JsonNode node) {
     JsonFields.requiredObject(node, CONTEXT);
     List<TableShardStats> tableShards = new ArrayList<TableShardStats>();
     for (JsonNode tableShard : JsonFields.requiredArray(node, "table_shards", CONTEXT)) {
       tableShards.add(TableShardStats.fromJson(tableShard));
     }
-    return new MemWalStats(tableShards);
+    return new RTEStats(tableShards);
   }
 
   @Override
   public String toString() {
-    return "MemWalStats{tableShards=" + tableShards + "}";
+    return "RTEStats{tableShards=" + tableShards + "}";
   }
 }

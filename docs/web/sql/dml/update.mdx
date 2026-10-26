@@ -1,7 +1,7 @@
 ---
 title: "Update"
 sidebarTitle: "Update"
-description: "UPDATE ... SET ... WHERE — and why it does not recompute derived columns."
+description: "UPDATE ... SET ... WHERE, and why it does not recompute derived columns."
 icon: pen
 keywords: ["update", "sql"]
 ---
@@ -19,12 +19,12 @@ clause every row is updated.
 <Warning>
 An update does not recompute [computed columns](/feature-engineering/add-computed-column)
 that derive from the column you changed. Those rows keep the value computed from
-the old input until the next refresh recomputes them -- see
+the old input until the next refresh recomputes them. See
 [Guarantees](/basics/guarantees#jobs).
 </Warning>
 
 Commits a new table version, so [versioning](/management/table#versioning) and
-the [write guarantees](/basics/guarantees#writes) apply -- including that the
+the [write guarantees](/basics/guarantees#writes) apply, including that the
 version advances even when the statement affects zero rows.
 
 ## What to read next {#next}
