@@ -46,7 +46,7 @@ from ..secrets import EnvVarSecret, SecretInfo
 from ..view import ViewDescription
 
 if TYPE_CHECKING:
-    from .._lancedb import JobInfo
+    from .._lancedb import JobInfo, Session
 from ..embeddings import EmbeddingFunctionConfig
 from lance_namespace import (
     LanceNamespace,
@@ -238,6 +238,23 @@ class RemoteDBConnection(DBConnection):
 
     def __repr__(self) -> str:
         return f"RemoteConnect(name={self.db_name})"
+
+    @property
+    @override
+    def uri(self) -> str:
+        return self._conn.uri
+
+    @property
+    def session(self) -> Optional["Session"]:
+        """Remote connections do not expose a local cache session."""
+        raise NotImplementedError("session is not supported by remote connections")
+
+    @property
+    def read_consistency_interval(self) -> Optional[timedelta]:
+        """Remote connections do not expose a local read consistency interval."""
+        raise NotImplementedError(
+            "read_consistency_interval is not supported by remote connections"
+        )
 
     @override
     def serialize(self) -> str:
@@ -564,7 +581,7 @@ class RemoteDBConnection(DBConnection):
         name: str,
         data: DATA = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        mode: str = "create",
+        mode: Optional[str] = None,
         exist_ok: bool = False,
         on_bad_vectors: str = "error",
         fill_value: float = 0.0,
@@ -1147,7 +1164,7 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(

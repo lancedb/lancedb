@@ -38,7 +38,11 @@ def test_remote_create_signature():
     assert list(actual) == list(expected)
     for name in expected:
         assert actual[name].kind == expected[name].kind
-        assert actual[name].default == expected[name].default
+        if name == "mode":
+            # Remote connections retain their existing server-default mode.
+            assert actual[name].default is None
+        else:
+            assert actual[name].default == expected[name].default
 
 
 def test_remote_create_positional_mode():

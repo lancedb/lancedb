@@ -63,15 +63,6 @@ struct RemoteCloneTableRequest {
     is_shallow: Option<bool>,
 }
 
-#[derive(serde::Serialize)]
-struct RemoteCreateMaterializedViewRequest {
-    query: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    auto_refresh_enabled: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    auto_refresh_interval_seconds: Option<f64>,
-}
-
 // the versions of the server that we support
 // for any new feature that we need to change the SDK behavior, we should bump the server version,
 // and add a feature flag as method of `ServerVersion` here.
@@ -594,6 +585,11 @@ mod test_utils {
             }
         }
 
+        pub(in crate::remote) fn with_sql_client(mut self, client: SqlClient) -> Self {
+            self.sql_client = Some(client);
+            self
+        }
+
         pub fn new_mock_with_config<F, T>(handler: F, config: ClientConfig) -> Self
         where
             F: Fn(reqwest::Request) -> http::Response<T> + Send + Sync + 'static,
@@ -885,8 +881,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<Job> {
         if request.with_no_data {
             return Err(Error::NotSupported {
-                message: "remote materialized views are always populated by their SQL job"
-                    .to_string(),
+                message: "remote materialized views must be populated during creation".to_string(),
             });
         }
         if let Some(seconds) = request.auto_refresh_interval_seconds
@@ -896,36 +891,37 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 message: "auto_refresh_interval_seconds must be positive, finite seconds".into(),
             });
         }
-        let identifier = build_table_identifier(&request.name, &request.namespace_path)?;
-        let body = RemoteCreateMaterializedViewRequest {
-            query: request.query,
-            auto_refresh_enabled: request.auto_refresh_enabled,
-            auto_refresh_interval_seconds: request.auto_refresh_interval_seconds,
-        };
-        let request = self
-            .client
-            .post(&format!("/v1/materialized_view/{identifier}/create"))
-            .json(&body);
-        let (request_id, response) = self.client.send(request).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        if status != StatusCode::ACCEPTED {
-            return Err(Error::Http {
-                source: "materialized-view creation must return 202 Accepted".into(),
-                request_id,
-                status_code: Some(status),
-            });
+        validate_table_name(&request.name)?;
+        validate_namespace(&request.namespace_path)?;
+        let client = self
+            .sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?;
+        let mut options = Vec::new();
+        if let Some(enabled) = request.auto_refresh_enabled {
+            options.push(format!("auto_refresh_enabled = {enabled}"));
         }
-        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-            source: "materialized-view create response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
-        })?;
-        Ok(Job::new(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        if let Some(seconds) = request.auto_refresh_interval_seconds {
+            options.push(format!("auto_refresh_interval_seconds = {seconds}"));
+        }
+        let name = request.name.replace('"', "\"\"");
+        let options = if options.is_empty() {
+            String::new()
+        } else {
+            format!(" WITH ({})", options.join(", "))
+        };
+        client
+            .submit_as_job(
+                format!(
+                    "CREATE MATERIALIZED VIEW \"{name}\"{options} AS {}",
+                    request.query
+                ),
+                request.namespace_path,
+                || async { Ok(()) },
+            )
+            .await
     }
 
     async fn drop_materialized_view_async(
@@ -2050,72 +2046,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_create_materialized_view_uses_rest_and_preserves_optional_settings() {
-        for (enabled, interval) in [(None, None), (Some(true), None), (Some(false), Some(0.5))] {
-            let db = super::RemoteDatabase::new_mock(move |request| {
-                assert_eq!(request.method(), "POST");
-                assert_eq!(
-                    request.url().path(),
-                    "/v1/materialized_view/analytics$adults/create"
-                );
-                let body: serde_json::Value =
-                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                assert_eq!(body["query"], "SELECT * FROM people");
-                assert_eq!(
-                    body.get("auto_refresh_enabled"),
-                    enabled.map(serde_json::Value::from).as_ref()
-                );
-                assert_eq!(
-                    body.get("auto_refresh_interval_seconds"),
-                    interval.map(serde_json::Value::from).as_ref()
-                );
-                http::Response::builder()
-                    .status(202)
-                    .body(serde_json::json!({"job_id": "j1-mv-create"}).to_string())
-                    .unwrap()
-            });
-            let job = db
-                .create_materialized_view_async(CreateMaterializedViewRequest {
-                    name: "adults".into(),
-                    namespace_path: vec!["analytics".into()],
-                    query: "SELECT * FROM people".into(),
-                    with_no_data: false,
-                    auto_refresh_enabled: enabled,
-                    auto_refresh_interval_seconds: interval,
-                })
-                .await
-                .unwrap();
-            assert_eq!(job.id(), Some("j1-mv-create"));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_create_materialized_view_rejects_invalid_acceptance() {
-        for (status, body) in [
-            (200, r#"{"job_id":"j1"}"#),
-            (202, "{}"),
-            (202, r#"{"job_id":""}"#),
-        ] {
-            let db = super::RemoteDatabase::new_mock(move |_| {
-                http::Response::builder().status(status).body(body).unwrap()
-            });
-            let error = db
+    async fn test_create_materialized_view_validates_before_submission() {
+        let db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("materialized-view creation must not send REST requests")
+        });
+        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let result = db
                 .create_materialized_view_async(CreateMaterializedViewRequest {
                     name: "adults".into(),
                     namespace_path: vec![],
                     query: "SELECT * FROM people".into(),
                     with_no_data: false,
                     auto_refresh_enabled: None,
-                    auto_refresh_interval_seconds: None,
+                    auto_refresh_interval_seconds: Some(seconds),
                 })
-                .await
-                .err()
-                .unwrap();
-            assert!(error.to_string().contains(if status == 200 {
-                "202 Accepted"
-            } else {
-                "job_id"
-            }));
+                .await;
+            assert!(matches!(result, Err(Error::InvalidInput { .. })));
         }
     }
 

@@ -1716,7 +1716,8 @@ impl CreateMaterializedViewBuilder {
     }
 
     /// Submit creation and initial population, returning a [`Job`] that
-    /// settles when the view is ready.
+    /// settles when the view is ready. Remote creation submits SQL; the handle's
+    /// [`Job::job_type`] is `"query"` and its ID identifies that query.
     pub async fn execute_async(self) -> Result<Job> {
         if self.connection.uri().starts_with("db://") {
             return self
