@@ -2538,8 +2538,7 @@ mod tests {
         let table = conn.open_table("table1").execute().await.unwrap();
         assert_eq!(table.name(), "table1");
 
-        // Per-table storage options must not be silently ignored, even when
-        // the table is already cached.
+        // Per-table storage options must not be silently ignored.
         let result = conn
             .open_table("table1")
             .storage_option("key", "value")
@@ -2823,16 +2822,29 @@ mod tests {
     #[rstest]
     #[tokio::test]
     async fn test_open_rejects_local_options_even_when_cached(#[values(false, true)] cached: bool) {
-        let conn = Connection::new_with_handler(|request| {
+        let mut db = super::RemoteDatabase::new_mock(|request| {
             assert_eq!(request.url().path(), "/v1/table/table1/create/");
             http::Response::builder().status(200).body("").unwrap()
         });
+        db.table_cache = moka::future::Cache::new(10);
+        let table_cache = db.table_cache.clone();
+        let conn = Connection::new(
+            Arc::new(db),
+            Arc::new(crate::embeddings::MemoryRegistry::new()),
+        );
         if cached {
             conn.create_empty_table("table1", Arc::new(Schema::empty()))
                 .execute()
                 .await
                 .unwrap();
         }
+        assert_eq!(
+            table_cache
+                .get(&build_cache_key("table1", &[]))
+                .await
+                .is_some(),
+            cached
+        );
         for (option, builder) in [
             (
                 "index_cache_size",
