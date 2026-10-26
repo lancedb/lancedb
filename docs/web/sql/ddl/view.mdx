@@ -1,7 +1,7 @@
 ---
 title: "View"
 sidebarTitle: "View"
-description: "CREATE VIEW and DROP VIEW: a saved query, evaluated when read."
+description: "Create, describe, list, and drop saved queries with SQL."
 icon: eye
 keywords: ["create view", "drop view", "sql", "catalog"]
 ---
@@ -15,8 +15,10 @@ stores rows and is brought up to date by a refresh; both are
 [catalog objects](/basics/catalog) defined by a query, differing only in when
 that query runs.
 
-There is no SDK method for a view, because the thing it stores *is* a SQL
-statement.
+The SDK methods `create_view`, `describe_view`, `list_views`, and `drop_view`
+submit SQL through the connection's Flight endpoint. `drop_view_async` returns
+a job of type `query` whose single `id` is the SQL query UUID. Waiting confirms
+catalog removal; physical cleanup can continue afterward.
 
 ## CREATE VIEW {#create}
 
@@ -27,8 +29,10 @@ FROM "documents" AS t1
 INNER JOIN "categories" AS t2 ON t1.ints = t2.ints
 ```
 
-The statement returns the view's schema (column name, data type, nullability),
-resolved from the query at creation time. Anything the
+The statement returns one UTF-8 `definition` column containing JSON with the
+view name, namespace, original query, default database and namespace, and its
+Arrow schema resolved at creation time. `DESCRIBE VIEW "recent_matches"`
+returns the same metadata shape. Anything the
 [dialect](/sql/functions) supports can define one: joins, predicates,
 aggregates, window functions.
 
@@ -54,6 +58,18 @@ Removes the saved query. Unlike dropping a table, no data is removed: there
 was none to begin with.
 
 ## Listing {#listing}
+
+```sql
+SHOW VIEWS
+SHOW VIEWS IN "analytics" WHERE name > 'previous_view' LIMIT 100
+```
+
+`SHOW VIEWS` returns ascending `name` values and a nullable `location` column.
+Locations are populated only when the deployment exposes catalog locations.
+The `name` cursor is scoped to the selected namespace.
+
+Object commands retain their small results in shared storage even when general
+query-result copying is disabled, so asynchronous polling can use any query node.
 
 Views and tables share a namespace, and both are things you can query. The
 catalog distinguishes them:
