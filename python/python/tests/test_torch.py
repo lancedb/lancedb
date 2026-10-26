@@ -325,6 +325,7 @@ def _fork_dataloader_diagnostics(worker_id=None):
     print(
         f"DataLoader pid={os.getpid()} worker={worker_id}", file=sys.stderr, flush=True
     )
+    faulthandler.disable()
     faulthandler.enable(all_threads=True)
     faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
 
