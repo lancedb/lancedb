@@ -2,18 +2,13 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import contextlib
-import faulthandler
 import functools
 import http.server
 import json
 import multiprocessing as mp
-import os
 import pickle
-import signal
 import sys
 import threading
-import time
-from pathlib import Path
 
 import lancedb
 import pyarrow as pa
@@ -319,64 +314,7 @@ def test_permutation_with_builder_is_picklable(tmp_db):
     assert restored.__getitems__(indices) == expected
 
 
-def _fork_dataloader_diagnostics(worker_id=None):
-    if worker_id is None:
-        os.setsid()
-    print(
-        f"DataLoader pid={os.getpid()} worker={worker_id}", file=sys.stderr, flush=True
-    )
-    faulthandler.disable()
-    faulthandler.enable(all_threads=True)
-    faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
-    if worker_id is not None and (core_root := os.environ.get("PR3851_CORE_DIRECTORY")):
-        core_directory = Path(core_root) / str(os.getpid())
-        core_directory.mkdir()
-        os.chdir(core_directory)
-
-
-def _join_fork_dataloader(proc):
-    deadline = time.monotonic() + 30
-    proc.join(timeout=28)
-    if proc.is_alive():
-        children = Path(f"/proc/{proc.pid}/task/{proc.pid}/children")
-        try:
-            worker_pids = [int(pid) for pid in children.read_text().split()]
-        except FileNotFoundError:
-            worker_pids = []
-        for pid in [*worker_pids, proc.pid]:
-            print(
-                f"Requesting DataLoader traceback pid={pid}",
-                file=sys.stderr,
-                flush=True,
-            )
-            with contextlib.suppress(ProcessLookupError):
-                os.kill(pid, signal.SIGUSR1)
-            time.sleep(0.1)
-        proc.join(timeout=max(0, deadline - time.monotonic()))
-
-
-def _stop_fork_dataloader(proc):
-    try:
-        owns_group = os.getpgid(proc.pid) == proc.pid
-    except ProcessLookupError:
-        proc.join()
-        return
-    if owns_group:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGTERM)
-    else:
-        proc.terminate()
-    proc.join(timeout=5)
-    if owns_group:
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-    if proc.is_alive():
-        proc.kill()
-    proc.join()
-
-
 def _multiworker_dataloader_target(db_uri: str, result_queue):
-    _fork_dataloader_diagnostics()
     import lancedb
     from lancedb.permutation import Permutation
 
@@ -389,7 +327,6 @@ def _multiworker_dataloader_target(db_uri: str, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
-        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
@@ -419,7 +356,6 @@ class _LazyPermutationDataset(torch.utils.data.Dataset):
 
 
 def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
-    _fork_dataloader_diagnostics()
     table = lancedb.connect(db_uri).open_table("test_table")
     dataset = _LazyPermutationDataset(table)
     dataloader = torch.utils.data.DataLoader(
@@ -427,7 +363,6 @@ def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
-        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
@@ -437,7 +372,6 @@ def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
 
 
 def _remote_multiworker_dataloader_target(port: int, result_queue):
-    _fork_dataloader_diagnostics()
     import lancedb
     from lancedb.permutation import Permutation
 
@@ -458,7 +392,6 @@ def _remote_multiworker_dataloader_target(port: int, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
-        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
@@ -492,10 +425,14 @@ def test_permutation_dataloader_fork_workers(tmp_path):
     queue = ctx.Queue()
     proc = ctx.Process(target=_multiworker_dataloader_target, args=(db_uri, queue))
     proc.start()
-    _join_fork_dataloader(proc)
+    proc.join(timeout=30)
 
     if proc.is_alive():
-        _stop_fork_dataloader(proc)
+        proc.terminate()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
         pytest.fail("Permutation hung when iterated in a fork-based DataLoader worker")
 
     assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
@@ -528,10 +465,14 @@ def test_lazy_permutation_reopens_inherited_table_in_fork_worker(tmp_path):
         args=(db_uri, queue),
     )
     proc.start()
-    _join_fork_dataloader(proc)
+    proc.join(timeout=30)
 
     if proc.is_alive():
-        _stop_fork_dataloader(proc)
+        proc.terminate()
+        proc.join(timeout=5)
+        if proc.is_alive():
+            proc.kill()
+            proc.join()
         pytest.fail("Lazy Permutation hung in a fork-based DataLoader worker")
 
     assert proc.exitcode == 0, f"child exited with code {proc.exitcode}"
@@ -561,10 +502,14 @@ def test_remote_permutation_dataloader_fork_workers():
                 args=(port, queue),
             )
             proc.start()
-            _join_fork_dataloader(proc)
+            proc.join(timeout=30)
 
             if proc.is_alive():
-                _stop_fork_dataloader(proc)
+                proc.terminate()
+                proc.join(timeout=5)
+                if proc.is_alive():
+                    proc.kill()
+                    proc.join()
                 pytest.fail(
                     "Remote permutation hung when iterated in a fork-based "
                     "DataLoader worker"
