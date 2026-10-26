@@ -156,11 +156,20 @@ pub struct FunctionArtifact {
 }
 
 /// One ordered Arrow input parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BlobAccess {
+    Bytes,
+    Reader,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FunctionParameter {
     pub name: String,
     pub arrow_type: String,
     pub nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_access: Option<BlobAccess>,
 }
 
 /// One field of an ordered named-struct result.
@@ -453,7 +462,8 @@ pub struct FunctionVersion {
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
-    created_at: String,
+    /// When this version was created, in milliseconds since the epoch.
+    created_at_millis: i64,
     metadata: BTreeMap<String, String>,
     disabled: bool,
 }
@@ -507,8 +517,9 @@ impl FunctionVersion {
         &self.secret_bindings
     }
 
-    pub fn created_at(&self) -> &str {
-        &self.created_at
+    /// When this version was created, in milliseconds since the epoch.
+    pub fn created_at_millis(&self) -> i64 {
+        self.created_at_millis
     }
 }
 
@@ -953,6 +964,20 @@ mod conda_environment_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blob_reader_access_survives_signature_round_trip() {
+        let parameter: FunctionParameter = serde_json::from_value(serde_json::json!({
+            "name": "video", "arrow_type": "blob_v2", "nullable": false,
+            "blob_access": "reader"
+        }))
+        .unwrap();
+        assert_eq!(parameter.blob_access, Some(BlobAccess::Reader));
+        assert_eq!(
+            serde_json::to_value(parameter).unwrap()["blob_access"],
+            "reader"
+        );
+    }
 
     /// Canonical form is what the FunctionVersion hash is taken over, so key
     /// order must come from the keys and not from however serde happened to

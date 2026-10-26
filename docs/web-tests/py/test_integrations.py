@@ -740,13 +740,16 @@ def test_reranking_answerdotai_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_answerdotai_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import AnswerdotaiRerankers
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "answerdotai-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -756,18 +759,20 @@ def test_reranking_answerdotai_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = AnswerdotaiRerankers()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -819,13 +824,16 @@ def test_reranking_colbert_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_colbert_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import ColbertReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "colbert-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -835,18 +843,20 @@ def test_reranking_colbert_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = ColbertReranker()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -857,13 +867,16 @@ def test_reranking_cross_encoder_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_cross_encoder_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import CrossEncoderReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "cross-encoder-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -873,18 +886,20 @@ def test_reranking_cross_encoder_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = CrossEncoderReranker()
 
     # Run vector search with a reranker
     result = tbl.search("hello").rerank(reranker=reranker).to_list()
 
+    # Build the full-text index before either FTS or hybrid search.
+    tbl.create_fts_index("text", replace=True)
+
     # Run FTS search with a reranker
     result = tbl.search("hello", query_type="fts").rerank(reranker=reranker).to_list()
 
     # Run hybrid search with a reranker
-    tbl.create_fts_index("text", replace=True)
     result = (
         tbl.search("hello", query_type="hybrid").rerank(reranker=reranker).to_list()
     )
@@ -936,13 +951,16 @@ def test_reranking_linear_combination_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_linear_combination_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import LinearCombinationReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "linear-combination-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -952,7 +970,7 @@ def test_reranking_linear_combination_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = LinearCombinationReranker()
 
@@ -1007,13 +1025,16 @@ def test_reranking_rrf_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_rrf_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import RRFReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "rrf-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -1023,7 +1044,7 @@ def test_reranking_rrf_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = RRFReranker()
 
@@ -1039,13 +1060,16 @@ def test_reranking_mrr_usage() -> None:
     require_flag("RUN_RERANKER_SNIPPETS")
 
     # --8<-- [start:reranking_mrr_usage]
+    import tempfile
+    from pathlib import Path
+
     import lancedb
     from lancedb.embeddings import get_registry
     from lancedb.pydantic import LanceModel, Vector
     from lancedb.rerankers import MRRReranker
 
     embedder = get_registry().get("sentence-transformers").create()
-    db = lancedb.connect("~/.lancedb")
+    db = lancedb.connect(str(Path(tempfile.mkdtemp()) / "mrr-rerank"))
 
     class Schema(LanceModel):
         text: str = embedder.SourceField()
@@ -1055,7 +1079,7 @@ def test_reranking_mrr_usage() -> None:
         {"text": "hello world"},
         {"text": "goodbye world"},
     ]
-    tbl = db.create_table("test", schema=Schema, mode="overwrite")
+    tbl = db.create_table("test", schema=Schema)
     tbl.add(data)
     reranker = MRRReranker(weight_vector=0.7, weight_fts=0.3)
 
@@ -1390,9 +1414,12 @@ def test_frameworks_pydantic_examples() -> None:
             {"text": "goodbye world", "vector": [0.0, 1.0]},
         ]
     )
-    results = table.search("hello world").limit(1).to_pydantic(LanceDocs)
+    results = table.search([1.0, 0.0]).limit(1).to_pydantic(LanceDocs)
     print(results[0].text)
+    # hello world
     # --8<-- [end:frameworks_pydantic_base_example]
+    assert isinstance(results[0], LanceDocs)
+    assert results[0].text == "hello world"
 
 
 # Platform integrations
@@ -1686,7 +1713,7 @@ def test_platforms_pandas_examples() -> None:
     # --8<-- [end:platforms_pandas_vector_search]
 
     # --8<-- [start:platforms_pandas_async_example]
-    async def run_pandas_async_example() -> None:
+    async def run_pandas_async_example() -> pd.DataFrame:
         async_db = await lancedb.connect_async(
             str(Path(tempfile.mkdtemp()) / "pandas-async")
         )
@@ -1699,16 +1726,16 @@ def test_platforms_pandas_examples() -> None:
         async_table = await async_db.create_table(
             "creatures_async", data=async_df, mode="overwrite"
         )
-        async_results = await (
-            async_table.search([0.6, 0.4, 0.8])
-            .select(["text", "_distance"])
-            .limit(1)
-            .to_pandas()
-        )
+        # An async search returns its query builder from an await
+        query = await async_table.search([0.6, 0.4, 0.8])
+        async_results = await query.select(["text", "_distance"]).limit(1).to_pandas()
         print(async_results)
+        return async_results
 
-    asyncio.run(run_pandas_async_example())
+    async_results = asyncio.run(run_pandas_async_example())
     # --8<-- [end:platforms_pandas_async_example]
+    assert async_results["text"].tolist() == ["sage"]
+    assert async_results["_distance"].tolist() == [0.0]
 
 
 def test_platforms_polars_examples() -> None:

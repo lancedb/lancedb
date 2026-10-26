@@ -7,6 +7,7 @@ import logging
 from functools import cached_property, wraps
 import os
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Dict,
@@ -31,7 +32,7 @@ from lancedb._lancedb import (
     DropColumnsResult,
     FtsToken,
     IndexConfig,
-    LsmWriteSpec,
+    RTEWriteSpec,
     MergeResult,
     UpdateResult,
 )
@@ -50,6 +51,7 @@ from lancedb.table import IndexConfigType, _maybe_add_fts_error_note
 import pyarrow as pa
 
 from lancedb.common import DATA, VEC, VECTOR_COLUMN_NAME
+from lancedb._blob import validate_blob_mode
 from lancedb.merge import LanceMergeInsertBuilder
 from lancedb.embeddings import EmbeddingFunctionRegistry
 from lancedb.table import _normalize_progress
@@ -72,6 +74,10 @@ from ..table import (
 )
 from ..types import BaseTokenizerType, ScalarIndexType
 from ..util import infer_vector_column_name
+
+if TYPE_CHECKING:
+    import lance
+    import polars as pl
 
 
 def _deprecated_keyword(old_name: str, new_name: str):
@@ -253,13 +259,35 @@ class RemoteTable(Table):
         """List all versions of the table"""
         return LOOP.run(self._table.list_versions())
 
-    def to_arrow(self) -> pa.Table:
+    def to_arrow(self, *, blob_mode: BlobMode = "lazy") -> pa.Table:
         """to_arrow() is not supported for remote tables."""
-        raise NotImplementedError("to_arrow() is not supported for remote tables.")
+        validate_blob_mode(blob_mode)
+        raise NotImplementedError(
+            "to_arrow() is not supported for remote tables. "
+            "Use table.search().to_arrow() instead."
+        )
 
     def to_pandas(self, blob_mode: BlobMode = "lazy", **kwargs):
         """to_pandas() is not supported for remote tables."""
-        raise NotImplementedError("to_pandas() is not supported for remote tables.")
+        validate_blob_mode(blob_mode)
+        raise NotImplementedError(
+            "to_pandas() is not supported for remote tables. "
+            "Use table.search().to_pandas() instead."
+        )
+
+    def to_lance(self, **kwargs) -> "lance.LanceDataset":
+        """Direct Lance dataset access is not supported for remote tables.
+
+        Use ``table.search().to_arrow()`` to read query results through the server.
+        """
+        return LOOP.run(self._table.to_lance(**kwargs))
+
+    def to_polars(self, batch_size=None) -> "pl.LazyFrame":
+        """Use ``table.search().to_polars()`` to read remote query results."""
+        raise NotImplementedError(
+            "to_polars() is not supported for remote tables. "
+            "Use table.search().to_polars() instead."
+        )
 
     def checkout(self, version: Union[int, str]):
         result = LOOP.run(self._table.checkout(version))
@@ -290,8 +318,12 @@ class RemoteTable(Table):
         """Tokenize a query using the tokenizer configured on an FTS index.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata, so the same tokenizer
-        model files must exist locally.
+        rebuilt in the client process from index metadata. For remote tables,
+        this means the same tokenizer model files must also exist locally
+        (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
+        server uses. A mismatch cannot be detected: the returned tokens may
+        differ from what the server's index produces. If the model files are
+        missing, an error naming the tokenizer is raised.
         """
         return LOOP.run(
             self._table.tokenize(query, column=column, index_name=index_name)
@@ -1050,8 +1082,17 @@ class RemoteTable(Table):
         | None = None,
         *,
         computed: Dict[str, str] | None = None,
+        auto_refresh_enabled: bool | None = None,
+        auto_refresh_interval_seconds: int | None = None,
     ) -> AddColumnsResult:
-        return LOOP.run(self._table.add_columns(transforms, computed=computed))
+        return LOOP.run(
+            self._table.add_columns(
+                transforms,
+                computed=computed,
+                auto_refresh_enabled=auto_refresh_enabled,
+                auto_refresh_interval_seconds=auto_refresh_interval_seconds,
+            )
+        )
 
     def refresh_column(self, column: str):
         return LOOP.run(self._table.refresh_column(column))
@@ -1083,20 +1124,20 @@ class RemoteTable(Table):
         return LOOP.run(self._table.drop_columns(columns))
 
     def set_unenforced_primary_key(self, columns: Union[str, Iterable[str]]) -> None:
-        """Not supported for remote tables."""
+        """Set the unenforced primary key for this table to a single column."""
         return LOOP.run(self._table.set_unenforced_primary_key(columns))
 
-    def set_lsm_write_spec(self, spec: "LsmWriteSpec") -> None:
-        """Install an LsmWriteSpec."""
-        return LOOP.run(self._table.set_lsm_write_spec(spec))
+    def enable_rte(self, spec: "RTEWriteSpec") -> None:
+        """Install an RTEWriteSpec."""
+        return LOOP.run(self._table.enable_rte(spec))
 
-    def unset_lsm_write_spec(self) -> None:
-        """Remove the LsmWriteSpec."""
-        return LOOP.run(self._table.unset_lsm_write_spec())
+    def disable_rte(self) -> None:
+        """Remove the RTEWriteSpec."""
+        return LOOP.run(self._table.disable_rte())
 
-    def get_lsm_write_spec(self) -> Optional["LsmWriteSpec"]:
-        """Read the installed LsmWriteSpec, or ``None``."""
-        return LOOP.run(self._table.get_lsm_write_spec())
+    def get_rte_spec(self) -> Optional["RTEWriteSpec"]:
+        """Read the installed RTEWriteSpec, or ``None``."""
+        return LOOP.run(self._table.get_rte_spec())
 
     # WAL-PK-FUSION: delete both hooks.
     def _hybrid_pk_fusion_learned(self) -> bool:
@@ -1106,31 +1147,31 @@ class RemoteTable(Table):
     def _note_hybrid_pk_fusion(self) -> None:
         self._table._note_hybrid_pk_fusion()
 
-    def checkpoint_lsm(self) -> None:
+    def checkpoint_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.checkpoint_lsm`][lancedb.AsyncTable.checkpoint_lsm]."""
-        return LOOP.run(self._table.checkpoint_lsm())
+        [`AsyncTable.checkpoint_rte`][lancedb.AsyncTable.checkpoint_rte]."""
+        return LOOP.run(self._table.checkpoint_rte())
 
-    def flush_lsm(self) -> None:
+    def flush_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.flush_lsm`][lancedb.AsyncTable.flush_lsm]."""
-        return LOOP.run(self._table.flush_lsm())
+        [`AsyncTable.flush_rte`][lancedb.AsyncTable.flush_rte]."""
+        return LOOP.run(self._table.flush_rte())
 
-    def compact_lsm(self) -> None:
+    def compact_rte(self) -> None:
         """Synchronous version of
-        [`AsyncTable.compact_lsm`][lancedb.AsyncTable.compact_lsm]."""
-        return LOOP.run(self._table.compact_lsm())
+        [`AsyncTable.compact_rte`][lancedb.AsyncTable.compact_rte]."""
+        return LOOP.run(self._table.compact_rte())
 
-    def get_lsm_stats(self, *, include_generation_rows: bool = False) -> Optional[dict]:
+    def get_rte_stats(self, *, include_sstable_rows: bool = False) -> Optional[dict]:
         """Synchronous version of
-        [`AsyncTable.get_lsm_stats`][lancedb.AsyncTable.get_lsm_stats]."""
+        [`AsyncTable.get_rte_stats`][lancedb.AsyncTable.get_rte_stats]."""
         return LOOP.run(
-            self._table.get_lsm_stats(include_generation_rows=include_generation_rows)
+            self._table.get_rte_stats(include_sstable_rows=include_sstable_rows)
         )
 
-    def close_lsm_writers(self) -> None:
+    def close_rte_writers(self) -> None:
         """No-op for remote tables (no local shard writers)."""
-        return LOOP.run(self._table.close_lsm_writers())
+        return LOOP.run(self._table.close_rte_writers())
 
     @_deprecated_keyword("index_name", "name")
     def drop_index(self, name: str) -> None:
@@ -1191,11 +1232,21 @@ class RemoteTable(Table):
         """
         return LOOP.run(self._table.uri())
 
-    def take_offsets(self, offsets: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+    def take_offsets(
+        self, offsets: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_offsets(offsets))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
-    def take_row_ids(self, row_ids: list[int]) -> LanceTakeQueryBuilder:
-        return LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+    def take_row_ids(
+        self, row_ids: list[int], *, with_row_id: bool = False
+    ) -> LanceTakeQueryBuilder:
+        builder = LanceTakeQueryBuilder(self._table.take_row_ids(row_ids))
+        if with_row_id:
+            builder.with_row_id()
+        return builder
 
     def uses_v2_manifest_paths(self) -> bool:
         return LOOP.run(self._table.uses_v2_manifest_paths())
@@ -1207,7 +1258,9 @@ class RemoteTable(Table):
         return LOOP.run(self._table.blob_columns())
 
     def fetch_blobs(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> pa.LargeBinaryArray:
         return LOOP.run(self._table.fetch_blobs(column, row_ids))
 
@@ -1215,9 +1268,16 @@ class RemoteTable(Table):
         return LOOP.run(self._table.fetch_blob_ranges(column, list(requests)))
 
     def fetch_blob_files(
-        self, column: str, row_ids: Union[list[int], pa.Table]
+        self,
+        column: str,
+        row_ids: Union[list[int], pa.Array, pa.ChunkedArray, pa.Table],
     ) -> "list[Optional[BlobFile]]":
         return LOOP.run(self._table.fetch_blob_files(column, row_ids))
+
+    def open_blob_file(
+        self, descriptor: Union[dict, pa.StructScalar, None]
+    ) -> Optional[BlobFile]:
+        return LOOP.run(self._table.open_blob_file(descriptor))
 
     def head(self, n=5) -> pa.Table:
         """

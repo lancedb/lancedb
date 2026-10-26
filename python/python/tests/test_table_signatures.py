@@ -234,7 +234,12 @@ def test_sync_search_and_polars(tmp_path, remote_wrapper):
     fast = table.search([1.0, 1.0], fast_search=True).to_arrow()
     assert len(fast) == 0  # No vector index: fast_search excludes unindexed rows.
     assert table.search([1.0, 1.0]).to_arrow()["id"].to_pylist() == [1]
-    assert table.to_polars(batch_size=1).collect()["id"].to_list() == [1]
+    if remote_wrapper:
+        with pytest.raises(NotImplementedError, match=r"table.search\(\).to_polars"):
+            table.to_polars(batch_size=1)
+        assert table.search().to_polars()["id"].to_list() == [1]
+    else:
+        assert table.to_polars(batch_size=1).collect()["id"].to_list() == [1]
     table.delete(where="id = 1")
     assert table.count_rows() == 0
 

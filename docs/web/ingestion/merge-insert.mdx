@@ -1,19 +1,16 @@
 ---
 title: "Merge insert"
 sidebarTitle: "Merge Insert"
-description: "Reconcile incoming rows against a key: update what matches, insert what does not."
+description: "Match incoming records by key and choose which rows to update, insert or remove."
 icon: code-merge
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Merge insert is available through the SDKs in OSS and Enterprise. Use it for key-based updates and inserts.
 ---
 
-These examples use the table set up in
-[Ingesting data](/ingestion), and the connection made there.
-
 import {
-    PyMergeMatchedUpdateOnly as MergeMatchedUpdateOnly,
-    PyInsertIfNotExists as InsertIfNotExists,
-    PyMergeUpdateInsert as MergeUpdateInsert,
-    PyMergeDeleteMissingBySource as MergeDeleteMissingBySource,
-    PyMergePartialColumns as MergePartialColumns,
     TsMergeMatchedUpdateOnly,
     TsInsertIfNotExists,
     TsMergeUpdateInsert,
@@ -25,15 +22,24 @@ import {
     RsMergeDeleteMissingBySource,
     RsMergePartialColumns,
 } from '/snippets/tables.mdx';
+import {
+    PyMergeMatchedUpdateOnly as MergeMatchedUpdateOnly,
+    PyInsertIfNotExists as InsertIfNotExists,
+    PyMergeUpdateInsert as MergeUpdateInsert,
+    PyMergeDeleteMissingBySource as MergeDeleteMissingBySource,
+    PyMergePartialColumns as MergePartialColumns,
+} from '/snippets/ingestion_examples.mdx';
 
-<Note>
-Merge insert has **no SQL form** -- it needs a source relation and a per-match policy that one statement cannot express. See [DML](/sql/dml/insert#next).
-</Note>
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
+
+Use merge insert when incoming records should be compared with existing rows.
+Combine update and insert policies for an **upsert**. Use [append](/ingestion/insert)
+when every incoming row should simply be added.
 
 ## Merge incoming rows by key {#merge-incoming-rows-by-key}
 
 Merging is different from updating because it involves comparing incoming rows to existing rows by key, and then choosing what to do based on whether the key exists in the target table or not.
-The `merge_insert(""..."")` method lets you do this.
+Use `merge_insert("id")` in Python or the corresponding SDK builder.
 
 In merge operations, rows are split into three groups:
 
@@ -45,37 +51,28 @@ Conditional merge clauses can compare old and new values. Use the `target.` pref
 existing table row and `source.` for the incoming row, for example
 `target.last_update < source.last_update`.
 
-<Tip>
-**Use scalar indexes to speed up merge insert**
+Choose a key that identifies the same record in the source and target. Check
+for duplicate and null keys before merging. A primary-key declaration does not
+enforce uniqueness on ordinary writes, and append operations do not deduplicate
+records for you.
 
-The merge insert command performs a join between the input data and the target table `on` the key you provide. This requires scanning that entire column, which can be expensive for large tables. To speed up this operation, create a scalar index on the join column, which will allow LanceDB to find matches without scanning the whole table.
+A scalar index on the key can help matching. Keep it current and measure the
+actual workload rather than assuming every merge uses an index. Enterprise may
+reject a merge when the unindexed scan exceeds its configured limit; inspect
+that error and the index state before retrying.
 
-Read more about scalar indices in the [Scalar Index](/indexing/scalar-index/) guide.
-</Tip>
+## Choose a merge policy {#policies}
 
-<Info>
-If you see this HTTP 400 error from `merge_insert`: `Bad request: Merge insert cannot be performed because the number of unindexed rows exceeds the maximum of 10000`. Verify that the scalar index on the join column is up to date before retrying.
-</Info>
+| Source and target relationship | Available action |
+| --- | --- |
+| Key appears in both | Update matching target rows, optionally with a condition. |
+| Key appears only in the source | Insert it, or leave it out. |
+| Key appears only in the target | Keep it, or explicitly delete it under a synchronization policy. |
 
-<Note>
-**Rust: build merge predicates with DataFusion expressions**
-
-In the Rust SDK, you can pass a `datafusion_expr::Expr` directly instead of a SQL string by using
-`when_matched_update_all_expr` and `when_not_matched_by_source_delete_expr` on `MergeInsertBuilder`.
-This is useful when you are constructing predicates programmatically and want to avoid building a SQL string.
-
-These methods are only supported on local tables. Calling them against a remote table returns a
-`NotSupported` error — use the SQL string variants (`when_matched_update_all` /
-`when_not_matched_by_source_delete`) for remote tables.
-</Note>
-
-Like the create table and add APIs, the merge insert API will automatically compute embeddings based on the [embedding registry](/embedding/index#embedding-registry) if the table has an embedding definition in its schema.
-
-During `merge_insert`, if the input data doesn't contain the source column (i.e., the original field used to generate embeddings, such as text for a text embedding model or `image_uri` for an image model), or if a vector value is already provided, LanceDB skips embedding generation for that row. Embeddings are only auto-generated when that source field is present in the incoming data, **and** the vector field is empty.
-
-Primary keys in LanceDB are metadata used by operations such as `merge_insert`; they are not
-enforced as uniqueness constraints on ordinary writes. Keep using `merge_insert` or your own
-deduplication logic when you need key-based upsert semantics.
+The following examples are independent. Each starts from the table shown in
+its code, so the expected results do not depend on running the previous example.
+Python blocks include their own temporary connection. For a full TypeScript or
+Rust program, see [Complete write workflow](#complete-example).
 
 ### Update matched rows only {#update-matched-rows-only}
 
@@ -160,7 +157,10 @@ Expected table contents:
 
 ### Delete target rows that are missing from source {#delete-target-rows-that-are-missing-from-source}
 
-Use `when_not_matched_by_source_delete()` when you want to remove any target row that does not appear in the incoming source data.
+Use `when_not_matched_by_source_delete()` only when the incoming data is the
+complete set for the target scope you intend to synchronize. An incremental
+batch is usually not a complete source: deleting everything absent from it
+could remove unrelated target records. Inspect the unmatched target keys first.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -183,7 +183,8 @@ Expected table contents:
 | 2 | Bobby | 21 |
 | 3 | Charlie | 5 |
 
-In the example above, LanceDB matches rows by `id`. Rows with `id=2` and `id=3` exist in both the table and incoming data, so they are updated. Row `id=1` exists only in the target, so it is deleted.
+Here, IDs 2 and 3 are updated and ID 1 is deleted. This policy synchronizes
+the target to the supplied source set.
 
 ### Use partial columns in merge updates {#use-partial-columns-in-merge-updates}
 
@@ -212,3 +213,54 @@ Expected table contents:
 | 3 | Charlie | null |
 
 Note that in the example above, when `merge_insert` creates a new row, any missing columns are written as `null`. If a missing column is non-nullable in your schema, the insert will fail.
+
+## Check the merged records {#verify}
+
+Inspect the keys that should have changed, confirm that unrelated rows remain,
+and check inserted or deleted counts when the SDK returns them. Repeating a
+merge is only safe when its keys, conditions and update values produce the
+intended result on retry.
+
+### Embeddings and expression predicates {#advanced}
+
+When a table uses an [embedding definition](/embedding), behavior depends on
+which source and vector fields the incoming records provide. Do not assume a
+partial metadata update recomputes embeddings. Inspect the resulting vector
+when changing the input used to generate it.
+
+Rust's `when_matched_update_all_expr` and
+`when_not_matched_by_source_delete_expr` accept DataFusion expressions for
+local tables. Use the string predicate variants for Enterprise tables.
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

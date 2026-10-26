@@ -13,6 +13,7 @@ use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEn
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::computed_columns;
 use super::{BaseTable, NativeTable};
@@ -128,10 +129,11 @@ pub(crate) async fn execute_add_columns(
 pub(crate) async fn execute_declare(
     table: &NativeTable,
     columns: &[(String, String)],
+    options: computed_columns::ComputedColumnOptions,
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
-    // An LSM write spec keeps visible rows in tiers refresh cannot reach;
+    // An RTE write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
     computed_columns::ensure_not_function_bound(
@@ -149,7 +151,7 @@ pub(crate) async fn execute_declare(
         .list_mem_wal_latest_shard_ids()
         .await?
         .is_empty();
-    if retained_sstables || table.get_lsm_write_spec().await?.is_some() {
+    if retained_sstables || table.get_rte_spec().await?.is_some() {
         return Err(Error::NotSupported {
             message: "computed columns are not supported on a table with an LSM write \
                       spec: rows in un-compacted tiers are invisible to refresh"
@@ -157,6 +159,10 @@ pub(crate) async fn execute_declare(
         });
     }
     let transform = computed_columns::declare(table.schema().await?, columns)?;
+    let NewColumnTransform::AllNulls(schema) = transform else {
+        unreachable!("declarations are all-null")
+    };
+    let transform = NewColumnTransform::AllNulls(Arc::new(options.apply_to_schema(&schema)?));
     commit_add_columns(table, transform, None).await
 }
 

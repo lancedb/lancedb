@@ -2036,6 +2036,92 @@ def test_transform_queue_depth_bounds_cooked_rows(lance_table):
     )
 
 
+def test_raw_queue_depth_bounded_when_transform_is_the_bottleneck(tmp_path):
+    """io_queue_depth bounds raw_batches even when transform is the bottleneck.
+
+    Regression test for a bug where Stage 1 (I/O) applied no backpressure at
+    all: _fill_io only capped io_pending (in-flight fetches) at
+    io_queue_depth, but every completed fetch was drained into raw_batches
+    unconditionally (_drain_io) and immediately replaced by a new fetch
+    (_fill_io again), so I/O kept racing arbitrarily far ahead of a slow
+    transform stage -- raw_batches had no cap of its own.
+    transform_queue_depth did not help either: its admission check in
+    _try_submit_tx only counts cooked rows and in-flight transform futures
+    (`len(cooked[i]) + len(tx_pending[i]) * batch_size`); it never looks at
+    len(raw_batches[i]), so it cannot throttle Stage 1.
+
+    The fix makes _fill_io count both io_pending and raw_batches against the
+    io_queue_depth budget, so raw_queue_depth should never exceed
+    io_queue_depth * read_batch_size per split, regardless of how slow the
+    transform stage is.
+
+    I/O is forced to run synchronously (same technique as
+    test_transform_queue_depth_does_not_admit_at_capacity_minus_one) so the
+    assertion is deterministic regardless of machine load, rather than
+    relying on a real-time race between I/O and transform threads.  Only the
+    transform runs on a real background thread (with a short sleep) so the
+    consumer genuinely blocks waiting for it, letting Stage 1 attempt to run
+    ahead between blocking waits.
+    """
+    import concurrent.futures as cf
+    from concurrent.futures import ThreadPoolExecutor
+    from unittest.mock import patch
+    import pyarrow as pa
+    import time
+
+    n_rows = 200
+    read_batch_size = 10
+    io_queue_depth = 2
+    transform_queue_depth = 2
+    max_allowed = io_queue_depth * read_batch_size
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("t", pa.table({"id": list(range(n_rows))}))
+
+    def slow_transform(batch: pa.RecordBatch) -> list:
+        time.sleep(0.005)
+        return batch.column("id").to_pylist()
+
+    original_submit = ThreadPoolExecutor.submit
+
+    def synchronous_io_submit(self, fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_io_call":
+            fut = cf.Future()
+            try:
+                fut.set_result(fn(*args, **kwargs))
+            except Exception as exc:
+                fut.set_exception(exc)
+            return fut
+        return original_submit(self, fn, *args, **kwargs)
+
+    with patch.object(ThreadPoolExecutor, "submit", synchronous_io_submit):
+        ds = StreamingDataset(
+            table,
+            num_splits=1,
+            shuffle_seed=SHUFFLE_SEED,
+            read_batch_size=read_batch_size,
+            io_queue_depth=io_queue_depth,
+            transform_queue_depth=transform_queue_depth,
+            transform_parallelism=1,
+            transform=slow_transform,
+        )
+
+        peak_raw = 0
+        ids = []
+        for item in ds:
+            ids.append(item)  # slow_transform yields bare ids, not dicts
+            if ds.raw_queue_depth > peak_raw:
+                peak_raw = ds.raw_queue_depth
+
+    assert peak_raw <= max_allowed, (
+        f"raw_queue_depth peaked at {peak_raw}, expected <= {max_allowed} "
+        "(io_queue_depth * read_batch_size)"
+    )
+    # The backpressure fix must not come at the cost of dropping or
+    # duplicating rows.
+    assert sorted(ids) == list(range(n_rows))
+
+
 def test_transform_queue_depth_does_not_admit_at_capacity_minus_one(tmp_path):
     """Admission requires a full read_batch_size of free space, not just one slot.
 
@@ -3173,6 +3259,22 @@ def test_doc_example_checkpoint(lance_table):
     )
 
 
+def test_streaming_dataset_over_table_with_schema_metadata(tmp_path):
+    """StreamingDataset builds its permutation at construction; base table schema
+    metadata (e.g. Hugging Face's `source-column-name-map`) must not break it."""
+    schema = pa.schema(
+        [pa.field("id", pa.int64())],
+        metadata={b"source-column-name-map": b"{}", b"huggingface": b"{}"},
+    )
+    table = lancedb.connect(tmp_path).create_table(
+        "data", pa.table({"id": list(range(NUM_ROWS))}, schema=schema)
+    )
+
+    ds = StreamingDataset(table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+
+    assert sorted(s["id"] for s in ds) == list(range(NUM_ROWS))
+
+
 # ---------------------------------------------------------------------------
 # Remote tables (LanceDB Cloud / Enterprise)
 # ---------------------------------------------------------------------------
@@ -3195,3 +3297,230 @@ def test_streaming_dataset_over_remote_table():
     assert len(server.scans) == 1, "the permutation is built with one row-id scan"
     assert server.takes, "rows must be fetched with row-id takes"
     assert_server_safe_row_id_requests(server)
+
+
+# ---------------------------------------------------------------------------
+# split_strategy escape hatch
+# ---------------------------------------------------------------------------
+
+
+def test_split_strategy_bootstrap_sample(lance_table):
+    """split_strategy lets StreamingDataset use bootstrap_sample directly, producing
+    more rows than the base table has (sampling with replacement)."""
+    num_samples = 4 * NUM_ROWS
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            num_samples, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    ids = [row["id"] for row in ds]
+
+    assert len(ids) == num_samples
+    # 4x oversampling a small table must produce at least one repeat.
+    assert len(set(ids)) < len(ids)
+    assert set(ids).issubset(set(range(NUM_ROWS)))
+
+
+def test_split_strategy_matches_direct_permutation_builder_use(lance_table):
+    """StreamingDataset(split_strategy=...), read single-process (no DataLoader
+    workers, so this one process owns every split and round-robins across all of
+    them), must yield exactly what calling the same strategy directly on a
+    PermutationBuilder would read, interleaved one row per split per cycle.
+
+    Reads each split via __getitems__ (explicit indices), not plain iteration:
+    Permutation's sequential __iter__ returns empty for a permutation with repeated
+    row_ids (confirmed directly -- len() is correct, __getitems__ returns the right
+    rows, but `for row in perm` yields nothing). That's a pre-existing limitation of
+    Permutation's iterator, unrelated to Bootstrap sampling's correctness: it doesn't
+    affect StreamingDataset or this benchmark, since both only ever read via
+    explicit-index batched fetches (take_offsets/__getitems__), never the plain
+    iterator -- flagged separately, not fixed here (out of scope for this change).
+    """
+    from lancedb.permutation import Permutation, permutation_builder
+
+    def strategy(builder):
+        return builder.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=1)
+
+    direct_perm_tbl = strategy(permutation_builder(lance_table)).execute()
+    expected_by_split = []
+    for split in range(NUM_SPLITS):
+        perm = Permutation.from_tables(lance_table, direct_perm_tbl, split=split)
+        rows = perm.__getitems__(list(range(len(perm))))
+        expected_by_split.append([row["id"] for row in rows])
+    samples_per_split = len(expected_by_split[0])
+    expected = [
+        expected_by_split[split][cycle]
+        for cycle in range(samples_per_split)
+        for split in range(NUM_SPLITS)
+    ]
+
+    ds = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    actual = [row["id"] for row in ds]
+    assert actual == expected
+
+
+def test_split_strategy_is_reproducible_across_instances(lance_table):
+    def strategy(builder):
+        return builder.bootstrap_sample(3 * NUM_ROWS, fixed=NUM_SPLITS, seed=99)
+
+    ds1 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+    ds2 = StreamingDataset(lance_table, split_strategy=strategy, num_splits=NUM_SPLITS)
+
+    assert [row["id"] for row in ds1] == [row["id"] for row in ds2]
+
+
+def test_split_strategy_num_splits_mismatch_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose split
+    count doesn't match num_splits. `_rank_splits` assumes split ids are exactly
+    0..num_splits-1 with no gaps; a mismatch would otherwise silently drop rows
+    (split ids >= num_splits) or leave some ranks reading an empty split (missing
+    ids < num_splits)."""
+    with pytest.raises(ValueError, match="num_splits"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+            ),
+            num_splits=NUM_SPLITS + 1,  # the strategy above always builds NUM_SPLITS
+        )
+
+
+def test_split_strategy_unequal_split_sizes_raises(lance_table):
+    """StreamingDataset(split_strategy=...) must reject a strategy whose splits
+    all exist (ids 0..num_splits-1) but aren't the same size. The round-robin
+    iteration (see _iter_owned) assumes every owned split has the same row count
+    and stops as soon as any one is exhausted -- `ratios`/`counts` (unlike
+    `fixed`) can produce unequal split sizes, which would otherwise silently
+    drop rows from the larger splits."""
+    with pytest.raises(ValueError, match="unequal split sizes"):
+        StreamingDataset(
+            lance_table,
+            split_strategy=lambda b: b.bootstrap_sample(
+                100, ratios=[0.7, 0.3], seed=SHUFFLE_SEED
+            ),
+            num_splits=2,
+        )
+
+
+def test_split_strategy_permutation_mismatch_on_resume_raises(lance_table):
+    """load_state_dict must reject resuming against a different permutation than
+    the one that produced the checkpoint. num_splits/shuffle_seed alone can't catch
+    this for split_strategy, since that path ignores shuffle_seed entirely: a
+    bootstrap_sample reseeded differently resamples completely differently while
+    shuffle_seed keeps whatever value the caller passed either way, so the
+    pre-existing checks would pass despite the mismatch."""
+
+    def strategy(seed):
+        return lambda b: b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=seed)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(1),
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):  # one full cycle: every split advances uniformly
+        next(it)
+    checkpoint = ds1.state_dict()
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy(2),  # different seed -> a different permutation
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,  # unchanged -- irrelevant on this path
+    )
+    with pytest.raises(ValueError, match="permutation mismatch"):
+        ds2.load_state_dict(checkpoint)
+
+
+def test_split_strategy_resume_with_matching_permutation_succeeds(lance_table):
+    """The common case: resuming against the same split_strategy (same seed) must
+    work exactly like the non-split_strategy checkpoint/resume path, continuing
+    from exactly the same position with no gaps or repeats."""
+
+    def strategy(b):
+        return b.bootstrap_sample(2 * NUM_ROWS, fixed=NUM_SPLITS, seed=7)
+
+    ds1 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    it = iter(ds1)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds1.state_dict()
+    remaining_original = [row["id"] for row in it]
+
+    ds2 = StreamingDataset(
+        lance_table,
+        split_strategy=strategy,
+        num_splits=NUM_SPLITS,
+        shuffle_seed=SHUFFLE_SEED,
+    )
+    ds2.load_state_dict(checkpoint)  # must not raise
+    remaining_resumed = [row["id"] for row in ds2]
+
+    assert remaining_original == remaining_resumed
+
+
+def test_default_checkpoint_omits_perm_fingerprint(lance_table):
+    """split_random/split_sequential checkpoints must not carry a
+    perm_fingerprint -- see test_default_checkpoint_resumes_after_compaction for
+    why checking one on this path would be wrong, not just unnecessary."""
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    assert "perm_fingerprint" not in ds.state_dict()
+
+
+def test_split_strategy_checkpoint_includes_perm_fingerprint(lance_table):
+    ds = StreamingDataset(
+        lance_table,
+        split_strategy=lambda b: b.bootstrap_sample(
+            2 * NUM_ROWS, fixed=NUM_SPLITS, seed=SHUFFLE_SEED
+        ),
+        num_splits=NUM_SPLITS,
+    )
+    assert "perm_fingerprint" in ds.state_dict()
+
+
+def test_default_checkpoint_resumes_after_compaction(lance_table):
+    """split_random/split_sequential checkpoints must resume normally even after
+    the table is compacted between save and load. Lance row ids are not stable
+    across compaction by default (confirmed empirically: a 2-fragment table's
+    row ids differ before and after `optimize()`), so fingerprinting raw row ids
+    on this path -- instead of relying on shuffle_seed/num_splits alone, as it
+    does -- would reject this resume even though the seeded permutation itself
+    is unchanged."""
+    lance_table.add(pa.table({"id": [NUM_ROWS]}))  # a second fragment to compact
+
+    ds = StreamingDataset(lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED)
+    it = iter(ds)
+    for _ in range(NUM_SPLITS):
+        next(it)
+    checkpoint = ds.state_dict()
+    assert "perm_fingerprint" not in checkpoint
+
+    before_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    lance_table.optimize()
+    after_compaction = set(
+        lance_table.to_lance()
+        .to_table(columns=[], with_row_id=True)["_rowid"]
+        .to_pylist()
+    )
+    assert before_compaction != after_compaction, (
+        "test setup didn't actually renumber row ids -- fix the fixture, not "
+        "the assertion below"
+    )
+
+    ds_resumed = StreamingDataset(
+        lance_table, num_splits=NUM_SPLITS, shuffle_seed=SHUFFLE_SEED
+    )
+    ds_resumed.load_state_dict(checkpoint)  # must not raise

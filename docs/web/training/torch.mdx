@@ -1,47 +1,161 @@
 ---
 title: "PyTorch Integration"
 sidebarTitle: "PyTorch"
-description: Learn how to use LanceDB with PyTorch for training and inference.
+description: Use a LanceDB table as a PyTorch IterableDataset, mapped onto the `torch.utils.data` concepts you already know.
 icon: fire
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    The PyTorch integration works with local, object-storage and deployment
+    tables in the Python SDK.
 ---
 
-LanceDB provides a seamless integration with PyTorch for training and inference. This allows you to use LanceDB as a backend for your PyTorch models, and to use PyTorch for training and inference. You can use LanceDB to store your data, and PyTorch to train your models.
+`StreamingDataset` is a LanceDB table exposed as a PyTorch
+[`IterableDataset`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.IterableDataset),
+so it drops into a stock [`DataLoader`](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.DataLoader).
+It handles per-epoch shuffling, sharding across ranks and workers, prefetching, and exact resume, so you
+don't write those yourself. The shuffle is fixed when the dataset is constructed, so each epoch needs a new
+`StreamingDataset` built with that epoch's number.
 
 ## Quickstart {#quickstart}
 
-The `Table` class in LanceDB implements a contract for a PyTorch
-[Dataset](https://docs.pytorch.org/docs/stable/data.html#torch.utils.data.Dataset).
- This means you can simply use a LanceDB table in a PyTorch dataloader directly.
+```py Python icon=Python
+import lancedb, pyarrow as pa, torch
+from torch import nn
+from lancedb.streaming import StreamingDataset
 
-```py Python icon=Python 
-import lancedb
-import torch
-import pyarrow as pa
-from lancedb.util import tbl_to_tensor
+def to_samples(rb: pa.RecordBatch):
+    f = lambda c: torch.from_dlpack(rb[c].flatten()).view(len(rb), -1)
+    rows = zip(f("observation_state"), f("action"))
+    return [{"state": s, "action": a} for s, a in rows]
 
-mem_db = lancedb.connect("memory://")
-table = mem_db.create_table("test_table", pa.table({"a": range(1000)}))
+uri = "hf://datasets/lance-format/lerobot-xvla-soft-fold/data"
+db = lancedb.connect(uri, storage_options={"hf_enable_resolve_cache": "true"})
+table = db.open_table("frames")
+train = StreamingDataset(
+    table, columns=["observation_state", "action"],
+    transform=to_samples)
 
-# Any LanceDB table can be used as a PyTorch Dataset
-dataloader = torch.utils.data.DataLoader(
-    table, batch_size=1024, shuffle=True, collate_fn=tbl_to_tensor
-)
-
-for batch in dataloader:
-    print(batch)
+model = nn.Sequential(nn.Linear(96, 256), nn.ReLU(), nn.Linear(256, 14))
+opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+for batch in torch.utils.data.DataLoader(train, batch_size=256):
+    loss = nn.MSELoss()(model(batch["state"]), batch["action"])
+    opt.zero_grad()
+    loss.backward()
+    opt.step()
 ```
 
-Although the `Table` class in LanceDB implements the `torch.utils.data.Dataset` interface, you may find that using
-a table [Permutation](/training/data-loading) is more flexible.
+`StreamingDataset` is a standard PyTorch `IterableDataset`, so it works with everything built for one: a stock
+`DataLoader`, its default `collate_fn`, and worker processes. The transform returns plain tensors, so the
+model, loss and optimizer are unmodified PyTorch. Here it streams the
+[`lerobot-xvla-soft-fold`](https://huggingface.co/datasets/lance-format/lerobot-xvla-soft-fold) dataset
+straight from the Hugging Face Hub to train a policy that predicts each `action` from the robot's
+`observation_state`.
 
-```py Python icon=Python 
-from lancedb.permutation import Permutation
+## PyTorch concepts in LanceDB {#concept-map}
 
-permutation = Permutation.identity(table)
-dataloader = torch.utils.data.DataLoader(permutation)
+| In PyTorch you would write | In LanceDB you use |
+| --- | --- |
+| An `IterableDataset` that reads files in `__iter__` | `StreamingDataset(table)` |
+| `DistributedSampler`, or sharding by `get_worker_info()` in `__iter__` | `rank=` and `world_size=`. Each rank and each DataLoader worker reads its own disjoint splits |
+| Decoding in `__getitem__` or `collate_fn` | `transform=`, which receives a whole Arrow `RecordBatch` and runs in a thread pool |
+| `random_split`, `Subset`, or reading only the fields a model needs | `filter="<SQL predicate>"` and `columns=[...]`. Unselected columns are never read from storage |
+| `StatefulDataLoader` | `state_dict()` and `load_state_dict()`, plus `StreamingDataLoader` for workers |
+
+The dataset does not copy your data. At construction it computes a shuffled assignment of row IDs to
+`num_splits` fixed splits, then reads rows from the table as it iterates. It reads the table version
+that exists at construction, so rows appended later do not appear mid-epoch.
+
+## Optimizations {#optimizations}
+
+The quickstart works as written. These sections cover what to tune as training scales up: the transform that
+builds each sample, running across many GPUs, and the output format of a `Table` or `Permutation`.
+
+### Transform {#transform}
+
+A `transform` turns a batch of Arrow rows into the per-sample items your `DataLoader` collates. It receives a
+whole `pyarrow.RecordBatch` (`read_batch_size` rows, 64 by default) rather than one sample at a time, so
+vectorized code is cheap, and it must return exactly one item per row. The quickstart's transform is the
+whole pattern: columns become tensors and each row becomes a dict, which the default `collate_fn` stacks into
+a batch. Without a transform, rows arrive as plain Python dicts.
+
+Heavier per-sample work belongs in the same function, such as decoding video. Store each clip in a blob v2
+column (`lancedb.blob("video")`). A scan returns small descriptors instead of the video bytes, so reading
+other columns never pulls video in. `fetch_blob_files` opens the clips for a batch of rows as file handles,
+and torchcodec's `VideoDecoder` decodes just the frames you ask for. `ExtractFrames` samples 8 evenly spaced
+frames from each clip:
+
+```py Python icon=Python
+import functools
+from torchcodec.decoders import VideoDecoder
+
+class ExtractFrames:
+    def __init__(self, uri: str, name: str, num_frames: int = 8) -> None:
+        self.uri, self.name, self.num_frames = uri, name, num_frames
+
+    @functools.cached_property
+    def table(self) -> lancedb.table.Table:
+        return lancedb.connect(self.uri).open_table(self.name)
+
+    def __call__(self, rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+        samples = []
+        for blob in self.table.fetch_blob_files("video", rb["_rowid"]):
+            decoder = VideoDecoder(blob)
+            idx = torch.linspace(0, len(decoder) - 1, self.num_frames).long()
+            samples.append({"frames": decoder.get_frames_at(idx.tolist()).data})
+        return samples
+
+# `clips` is the table "clips" in the database at `uri`, with a blob v2 column "video"
+train = StreamingDataset(clips, columns=["_rowid"], transform=ExtractFrames(uri, "clips"))
 ```
 
-## Output Formats {#output-formats}
+Transforms run in a thread pool, one thread per CPU by default (`transform_parallelism`), overlapping with
+storage reads and your training step. NumPy, PyArrow and PyTorch release the GIL, so vectorized
+work runs in parallel. A pure-Python loop does not. If a profile shows the transform is the bottleneck, move
+it into [DataLoader workers](#using-multiple-dataloader-workers).
+
+Real data has bad rows, such as a truncated frame. Raise inside the transform and set
+`on_transform_error="skip"` (or `"warn"` to log each failure). LanceDB re-runs the failing batch one row at a
+time, drops only the rows that raise, and counts them in `dataset.rows_skipped`. When the bad rows match a SQL
+predicate, prefer `filter=`: it runs before the splits are built, so every split keeps the same length.
+
+### Distributed Training {#distributed-training}
+
+`StreamingDataset` takes the place of `DistributedSampler`. Pass the rank and world size, and each rank reads
+its own disjoint part of the table, together covering it once per epoch:
+
+```py Python icon=Python
+import torch.distributed as dist
+
+dist.init_process_group("nccl")
+train = StreamingDataset(
+    table, columns=["observation_state", "action"], transform=to_samples,
+    num_splits=48, shuffle_seed=42, epoch=epoch,
+    rank=dist.get_rank(), world_size=dist.get_world_size())
+```
+
+Everything after the dataset is standard distributed PyTorch. Wrap the model in `DistributedDataParallel`
+and pass `batch_size` to the `DataLoader` per GPU, so the global batch is `batch_size * world_size`. Nothing
+in the data path changes.
+
+Three arguments matter in distributed runs:
+
+- **`num_splits`** is how many fixed streams the table is divided into. It must be divisible by `world_size`,
+  and by `world_size * num_workers` when you use DataLoader workers. Choose a number with many divisors, such
+  as 48, and runs on 8, 4 or 2 GPUs see the same data at every step, provided the global batch size is a multiple of
+  `num_splits`.
+- **`shuffle_seed` and `epoch`** must be identical on every rank. Pass a fixed `shuffle_seed` and increase
+  `epoch` each epoch. `shuffle_seed=None` draws a different random seed in each process, so ranks would read
+  overlapping rows and miss others.
+- **`rank` and `world_size`** come from your launcher, for example `torchrun`.
+
+To resume after a failure, save `train.state_dict()` next to the model. It records progress per split, so the
+resumed run continues from the same row even on a different number of GPUs. See
+[Parallelism & Elasticity](/training/data-loading#parallelism-&-elasticity) and
+[Checkpointing](/training/data-loading#checkpointing) for the batch-size rules and the multi-worker case.
+
+### Output Formats {#output-formats}
 
 By default, a `Table` data loader will emit Arrow data. `collate_fn` is PyTorch's batching hook: PyTorch calls it to
 turn the fetched items into one batch. PyTorch's default collate function only knows how to combine tensors, NumPy
@@ -61,14 +175,14 @@ the Arrow data in different ways.  The `arrow` and `polars` formats will always 
 `pandas`, and `torch_col` formats will also avoid data copies in most cases.  The `python`, `python_col`, and
 `torch` formats will all require at least one full copy of the data and are the slowest options.
 
-### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
+#### Using the torch column format with a torch data loader {#using-the-torch-column-format-with-a-torch-data-loader}
 
 The `torch_col` format is the most efficient way to convert from Arrow to a `torch.Tensor`.  It will convert the
 entire Arrow batch to a _column-major_ `torch.Tensor`.  In other words, given C columns and R rows, the resulting
 Tensor will have shape `(C, R)`.  However, this format generates an error if you are using a
 `torch.utils.data.DataLoader` with the default collation function:
 
-```py Python icon=Python 
+```text
 TypeError: stack(): argument 'tensors' (position 1) must be tuple of Tensors, not Tensor
 ```
 
@@ -93,25 +207,45 @@ a subset of columns, you can significantly reduce your I/O requirements by selec
 `Permutation` class provides a `select_columns` method that provides this functionality.
 
 ```py Python icon=Python 
+import lancedb
+import pyarrow as pa
+import torch
 from lancedb.permutation import Permutation
 
-permutation = Permutation.identity(table).select_columns(["id", "prompt"])
+db = lancedb.connect("memory://")
+prompts = db.create_table(
+    "prompts",
+    pa.table(
+        {
+            "id": range(4),
+            "prompt": ["north", "south", "east", "west"],
+            "embedding": [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6], [0.7, 0.8]],
+        }
+    ),
+)
+
+permutation = Permutation.identity(prompts).select_columns(["id", "prompt"])
 dataloader = torch.utils.data.DataLoader(
     permutation, batch_size=1024, shuffle=True
 )
 
 for batch in dataloader:
-    print(batch.schema)
+    print(sorted(batch))  # ['id', 'prompt']: the embedding is never read
 ```
+
+Each batch is a dict of the selected columns, the default `Permutation` format
+described above.
 
 ## Using multiple DataLoader workers {#using-multiple-dataloader-workers}
 
-Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. LanceDB tables and `Permutation` objects are picklable, so each worker reopens the table after it starts.
+Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. `Permutation` objects and tables in LanceDB Enterprise are picklable, so each worker reopens the table after it starts. A local table is not, so wrap it in a `Permutation`, as below, to read it from several workers.
 
-Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and it is set to become the Python default. See [the performance guide](/search#performance) for more multiprocessing guidance.
+Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and became the default on Linux and other supported POSIX platforms in Python
+3.14. macOS and Windows default to `spawn`. See
+[Python's start-method documentation](https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods). See [the performance guide](/search#performance) for more multiprocessing guidance.
 
 <Note>
-`forkserver` is only available on POSIX systems (Linux and macOS). On Windows, use `spawn` instead — it is the only start method available there.
+`forkserver` is only available on POSIX systems (Linux and macOS). On Windows, use `spawn`, the only available start method.
 </Note>
 
 ```py Python icon=Python 
@@ -131,7 +265,7 @@ dataloader = torch.utils.data.DataLoader(
 
 ### Remote tables in DataLoader workers {#remote-tables-in-dataloader-workers}
 
-Remote LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state.
+Remote LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state. Replace the URI, API key, region and endpoint below with your deployment details. In application code, load credentials from environment variables or a secrets manager.
 
 ```py Python icon=Python 
 import lancedb
@@ -140,8 +274,9 @@ from lancedb.util import tbl_to_tensor
 
 db = lancedb.connect(
     "db://my-database",
-    api_key="sk-...",
+    api_key="your-api-key",
     region="us-east-1",
+    host_override="https://your-endpoint",
 )
 table = db.open_table("my_table")
 
@@ -162,6 +297,14 @@ This sends the connection state, including the API key, to each worker. Use a co
 
 `Permutation.with_connection_factory` lets each worker reopen the base table with custom logic. The factory takes the table name, returns a LanceDB table, and must be picklable.
 
+This example loads the API key inside each worker. Set it in the shell before
+starting the Python program, then replace the database URI, region and endpoint
+in the factory with your deployment details:
+
+```shell
+export LANCEDB_API_KEY="your-api-key"
+```
+
 ```py Python icon=Python 
 import os
 import lancedb
@@ -173,6 +316,7 @@ def open_table(name: str):
         "db://my-database",
         api_key=os.environ["LANCEDB_API_KEY"],
         region="us-east-1",
+        host_override="https://your-endpoint",
     )
     return db.open_table(name)
 

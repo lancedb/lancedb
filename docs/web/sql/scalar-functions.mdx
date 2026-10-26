@@ -6,7 +6,7 @@ icon: calculator
 keywords: ["scalar functions", "string functions", "math functions", "regex", "array functions", "json"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Functions that take a value and return a value, one row at a time. The set is
 based on DataFusion's registration plus Lance and deployment-specific
@@ -118,8 +118,7 @@ arrow_cast  arrow_try_cast  arrow_typeof  arrow_field  arrow_metadata
 with_metadata  version
 ```
 
-`arrow_typeof` is the fastest way to answer "what is this column, really" when a
-result does not have the shape you expected:
+Use `arrow_typeof` to inspect the Arrow data type of a column or expression:
 
 ```sql
 SELECT arrow_typeof(vector) FROM documents LIMIT 1
@@ -144,7 +143,7 @@ punctuation. Equivalent to an `fts()` match query with fuzziness off, `AND`
 semantics and the simple tokenizer.
 
 **Index-accelerated.** When the column has a full-text index that suits the
-query, the planner uses it instead of scanning — which is the reason to prefer
+query, the planner uses it instead of scanning, which is the reason to prefer
 it over `LIKE` for keyword tests.
 
 ### JSON accessors {#json}
@@ -156,17 +155,26 @@ it over `LIKE` for keyword tests.
 | `json_get_int(col, key)` | `Int64` |
 | `json_get_float(col, key)` | `Float64` |
 | `json_get_bool(col, key)` | `Boolean` |
-| `json_extract(col, path)` | `Utf8`, by path |
-| `json_extract_with_type(col, path, type)` | the requested type |
+| `json_extract(col, path)` | `Utf8`: the value as JSON text, by path |
+| `json_extract_with_type(col, path)` | a struct of the value as JSON and a type tag, by path |
 | `json_exists(col, path)` | `Boolean` |
 | `json_array_contains(col, value)` | `Boolean` |
 | `json_array_length(col)` | length |
 
-`json_get` returns JSON, so accessors nest:
+`json_get` returns JSON, so a typed accessor can read a field inside it:
 
 ```sql
 SELECT * FROM events
-WHERE json_get_string(json_get(json_get(data, 'user'), 'profile'), 'name') = 'Alice'
+WHERE json_get_string(json_get(data, 'user'), 'name') = 'Alice'
+```
+
+That works one level down. A `json_get` nested inside another `json_get` is
+refused, so reach a deeper value with `json_extract` and a JSONPath instead. It
+returns JSON text, so a string compares with its quotes:
+
+```sql
+SELECT * FROM events
+WHERE json_extract(data, '$.user.profile.name') = '"Alice"'
 ```
 
 **`json_get`, its typed variants, and `json_extract` are index-accelerated** by a
@@ -181,10 +189,10 @@ feature rather than an unknown-function error, and the spatial index is gated
 the same way.
 </Warning>
 
-## Reaching a function not listed here {#escape-hatch}
+## Additional scalar functions {#escape-hatch}
 
-Nothing wraps or restricts the set — a query reaches any registered function by
-writing it. When a name is not recognised, check it against
+SQL queries can call functions registered with the server, including functions
+not listed on this page. Consult
 [DataFusion's scalar function reference](https://datafusion.apache.org/user-guide/sql/scalar_functions.html)
-for version 54 before assuming it is unsupported; functions are added in most
-DataFusion releases, and a function documented on `main` may not exist here yet.
+for version 54. Functions documented for a newer DataFusion release may not be
+available in your LanceDB Enterprise version.
