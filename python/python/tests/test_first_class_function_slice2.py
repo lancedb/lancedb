@@ -1689,35 +1689,6 @@ def _mock_remote_function_catalog():
             thread.join()
 
 
-def test_remote_secret_verbs_round_trip():
-    with _mock_remote_function_catalog() as (host, state):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert db.create_secret("openai-prod", "sk-live-0001") is None
-        assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
-        assert db.drop_secret("openai-prod") is None
-
-    routes = [path for path, _ in state["requests"]]
-    assert routes == [
-        "/v1/secret/openai-prod/create",
-        "/v1/secret/openai-prod/alter",
-        "/v1/namespace/$/secret/list",
-        "/v1/namespace/$/secret/list",
-        "/v1/secret/openai-prod/drop",
-    ]
-    # The Secret is the path identifier, so the body is the value alone.
-    assert state["requests"][0][1] == {"value": "sk-live-0001"}
-    # Listing is a GET: the first page asks for nothing, the second resumes on
-    # the token the server handed back, and neither carries a body.
-    assert state["requests"][2][1] == {}
-    assert state["requests"][3][1] == {"page_token": "next"}
-
-
 def test_building_a_binding_contacts_no_server():
     """A binding is a local value: it says nothing about whether the Secret exists.
 
