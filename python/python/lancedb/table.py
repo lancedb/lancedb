@@ -265,10 +265,8 @@ if TYPE_CHECKING:
         OnBadVectorsType,
         AddMode,
         CreateMode,
-        VectorIndexType,
         ScalarIndexType,
         BaseTokenizerType,
-        DistanceType,
     )
 
 # Type alias for index configuration objects
@@ -1489,11 +1487,17 @@ class Table(ABC):
         """
         raise NotImplementedError("to_lance is not supported for this table type")
 
-    def to_polars(self, **kwargs) -> "pl.LazyFrame":
+    def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
 
         For remote tables, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
+
+        Parameters
+        ----------
+        batch_size: int, optional
+            Passed to Polars as the maximum row count for scanned PyArrow
+            record batches.
 
         Note
         ----
@@ -1506,6 +1510,193 @@ class Table(ABC):
         polars.LazyFrame
         """
         raise NotImplementedError("to_polars is not supported for this table type")
+
+    def _is_legacy_create_index_call(
+        self,
+        first_arg: str,
+        config: Optional[IndexConfigType],
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        vector_column_name: str,
+        accelerator: Optional[str],
+        index_cache_size: Optional[int],
+    ) -> bool:
+        """Detect if this is a legacy create_index call."""
+        # If config is provided, it's definitely the new API
+        if config is not None:
+            return False
+
+        # If old-style parameters were explicitly set, it's legacy
+        if any(
+            x is not None
+            for x in (num_partitions, num_sub_vectors, accelerator, index_cache_size)
+        ):
+            return True
+
+        # If vector_column_name differs from default, it's legacy
+        if vector_column_name != VECTOR_COLUMN_NAME:
+            return True
+
+        # If first arg is a known metric, assume legacy
+        if first_arg.lower() in KNOWN_METRICS:
+            return True
+
+        # Otherwise assume new API
+        return False
+
+    def _build_vector_config_from_legacy_params(
+        self,
+        metric: str,
+        index_type: str,
+        num_partitions: Optional[int],
+        num_sub_vectors: Optional[int],
+        num_bits: int,
+        max_iterations: int,
+        sample_rate: int,
+        m: int,
+        ef_construction: int,
+        target_partition_size: Optional[int],
+        accelerator: Optional[str],
+    ) -> IndexConfigType:
+        """Build an index config object from legacy parameters."""
+        if index_type == "IVF_FLAT":
+            return IvfFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_SQ":
+            return IvfSq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_PQ":
+            return IvfPq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_RQ":
+            return IvfRq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_HNSW_PQ":
+            return HnswPq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                num_sub_vectors=num_sub_vectors,
+                num_bits=num_bits,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_HNSW_SQ":
+            return HnswSq(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
+                accelerator=accelerator,
+            )
+        elif index_type == "IVF_HNSW_FLAT":
+            return HnswFlat(
+                distance_type=metric,
+                num_partitions=num_partitions,
+                max_iterations=max_iterations,
+                sample_rate=sample_rate,
+                m=m,
+                ef_construction=ef_construction,
+                target_partition_size=target_partition_size,
+            )
+        else:
+            raise ValueError(f"Unknown index type {index_type}")
+
+    @staticmethod
+    def infer_tokenizer_configs(tokenizer_name: str) -> dict:
+        if tokenizer_name == "default":
+            return {
+                "base_tokenizer": "simple",
+                "language": "English",
+                "max_token_length": 40,
+                "lower_case": True,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
+            }
+        elif tokenizer_name == "raw":
+            return {
+                "base_tokenizer": "raw",
+                "language": "English",
+                "max_token_length": None,
+                "lower_case": False,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
+            }
+        elif tokenizer_name == "whitespace":
+            return {
+                "base_tokenizer": "whitespace",
+                "language": "English",
+                "max_token_length": None,
+                "lower_case": False,
+                "stem": False,
+                "remove_stop_words": False,
+                "ascii_folding": False,
+                "ngram_min_length": 3,
+                "ngram_max_length": 3,
+                "prefix_only": False,
+            }
+
+        # or it's with language stemming with pattern like "en_stem"
+        if len(tokenizer_name) != 7:
+            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
+        lang = tokenizer_name[:2]
+        if tokenizer_name[-5:] != "_stem":
+            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
+        if lang not in lang_mapping:
+            raise ValueError(f"Invalid language code {lang}")
+        return {
+            "base_tokenizer": "simple",
+            "language": lang_mapping[lang],
+            "max_token_length": 40,
+            "lower_case": True,
+            "stem": True,
+            "remove_stop_words": False,
+            "ascii_folding": False,
+            "ngram_min_length": 3,
+            "ngram_max_length": 3,
+            "prefix_only": False,
+        }
 
     # New unified API overload
     @overload
@@ -1532,14 +1723,16 @@ class Table(ABC):
         replace: bool = ...,
         accelerator: Optional[str] = ...,
         index_cache_size: Optional[int] = ...,
-        *,
-        index_type: VectorIndexType = ...,
-        wait_timeout: Optional[timedelta] = ...,
         num_bits: int = ...,
+        index_type: Literal[
+            "IVF_FLAT", "IVF_SQ", "IVF_PQ", "IVF_RQ", "IVF_HNSW_SQ", "IVF_HNSW_PQ"
+        ] = ...,
         max_iterations: int = ...,
         sample_rate: int = ...,
         m: int = ...,
         ef_construction: int = ...,
+        *,
+        wait_timeout: Optional[timedelta] = ...,
         name: Optional[str] = ...,
         train: bool = ...,
         target_partition_size: Optional[int] = ...,
@@ -1547,22 +1740,30 @@ class Table(ABC):
 
     def create_index(
         self,
-        metric: DistanceType = "l2",
+        metric: str = "l2",
         num_partitions: Optional[int] = None,
         num_sub_vectors: Optional[int] = None,
         vector_column_name: str = VECTOR_COLUMN_NAME,
         replace: bool = True,
         accelerator: Optional[str] = None,
         index_cache_size: Optional[int] = None,
-        *,
-        index_type: VectorIndexType = "IVF_PQ",
-        wait_timeout: Optional[timedelta] = None,
         num_bits: int = 8,
+        index_type: Literal[
+            "IVF_FLAT",
+            "IVF_SQ",
+            "IVF_PQ",
+            "IVF_RQ",
+            "IVF_HNSW_SQ",
+            "IVF_HNSW_PQ",
+            "IVF_HNSW_FLAT",
+        ] = "IVF_PQ",
         max_iterations: int = 50,
         sample_rate: int = 256,
         m: int = 20,
         ef_construction: int = 300,
+        *,
         config: Optional[IndexConfigType] = None,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
         train: bool = True,
         target_partition_size: Optional[int] = None,
@@ -2019,6 +2220,7 @@ class Table(ABC):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -3816,130 +4018,6 @@ class LanceTable(Table):
             )
         )
 
-    def _is_legacy_create_index_call(
-        self,
-        first_arg: str,
-        config: Optional[IndexConfigType],
-        num_partitions: Optional[int],
-        num_sub_vectors: Optional[int],
-        vector_column_name: str,
-        accelerator: Optional[str],
-        index_cache_size: Optional[int],
-    ) -> bool:
-        """Detect if this is a legacy create_index call."""
-        # If config is provided, it's definitely the new API
-        if config is not None:
-            return False
-
-        # If old-style parameters were explicitly set, it's legacy
-        if any(
-            x is not None
-            for x in (num_partitions, num_sub_vectors, accelerator, index_cache_size)
-        ):
-            return True
-
-        # If vector_column_name differs from default, it's legacy
-        if vector_column_name != VECTOR_COLUMN_NAME:
-            return True
-
-        # If first arg is a known metric, assume legacy
-        if first_arg.lower() in KNOWN_METRICS:
-            return True
-
-        # Otherwise assume new API
-        return False
-
-    def _build_vector_config_from_legacy_params(
-        self,
-        metric: str,
-        index_type: str,
-        num_partitions: Optional[int],
-        num_sub_vectors: Optional[int],
-        num_bits: int,
-        max_iterations: int,
-        sample_rate: int,
-        m: int,
-        ef_construction: int,
-        target_partition_size: Optional[int],
-        accelerator: Optional[str],
-    ) -> IndexConfigType:
-        """Build an index config object from legacy parameters."""
-        if index_type == "IVF_FLAT":
-            return IvfFlat(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_SQ":
-            return IvfSq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_PQ":
-            return IvfPq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                num_sub_vectors=num_sub_vectors,
-                num_bits=num_bits,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_RQ":
-            return IvfRq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                num_bits=num_bits,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_HNSW_PQ":
-            return HnswPq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                num_sub_vectors=num_sub_vectors,
-                num_bits=num_bits,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                m=m,
-                ef_construction=ef_construction,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_HNSW_SQ":
-            return HnswSq(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                m=m,
-                ef_construction=ef_construction,
-                target_partition_size=target_partition_size,
-                accelerator=accelerator,
-            )
-        elif index_type == "IVF_HNSW_FLAT":
-            return HnswFlat(
-                distance_type=metric,
-                num_partitions=num_partitions,
-                max_iterations=max_iterations,
-                sample_rate=sample_rate,
-                m=m,
-                ef_construction=ef_construction,
-                target_partition_size=target_partition_size,
-            )
-        else:
-            raise ValueError(f"Unknown index type {index_type}")
-
     def drop_index(self, name: str) -> None:
         """
         Drops an index from the table
@@ -4050,6 +4128,7 @@ class LanceTable(Table):
         *,
         replace: bool = True,
         index_type: ScalarIndexType = "BTREE",
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         """Create a scalar index on a column.
@@ -4058,6 +4137,13 @@ class LanceTable(Table):
             Use :meth:`create_index` with a BTree, Bitmap, or LabelList config instead.
             Example: ``table.create_index("column", config=BTree())``
         """
+        if index_type == "scalar":
+            warnings.warn(
+                'index_type="scalar" is deprecated; use "BTREE" instead',
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            index_type = "BTREE"
         if index_type == "BTREE":
             config = BTree()
         elif index_type == "BITMAP":
@@ -4067,7 +4153,13 @@ class LanceTable(Table):
         else:
             raise ValueError(f"Unknown index type {index_type}")
         return LOOP.run(
-            self._table.create_index(column, replace=replace, config=config, name=name)
+            self._table.create_index(
+                column,
+                replace=replace,
+                config=config,
+                wait_timeout=wait_timeout,
+                name=name,
+            )
         )
 
     @deprecation.deprecated(
@@ -4099,6 +4191,7 @@ class LanceTable(Table):
         prefix_only: bool = False,
         block_size: int = 128,
         document_granularity: DocumentGranularity = DocumentGranularity.ROW,
+        wait_timeout: Optional[timedelta] = None,
         name: Optional[str] = None,
     ):
         """Create a full-text search index on a column.
@@ -4163,6 +4256,7 @@ class LanceTable(Table):
                     replace=replace,
                     config=config,
                     name=name,
+                    wait_timeout=wait_timeout,
                 )
             )
         except (ValueError, RuntimeError) as e:
@@ -4172,69 +4266,6 @@ class LanceTable(Table):
                 language=config.language,
             )
             raise e
-
-    @staticmethod
-    def infer_tokenizer_configs(tokenizer_name: str) -> dict:
-        if tokenizer_name == "default":
-            return {
-                "base_tokenizer": "simple",
-                "language": "English",
-                "max_token_length": 40,
-                "lower_case": True,
-                "stem": False,
-                "remove_stop_words": False,
-                "ascii_folding": False,
-                "ngram_min_length": 3,
-                "ngram_max_length": 3,
-                "prefix_only": False,
-            }
-        elif tokenizer_name == "raw":
-            return {
-                "base_tokenizer": "raw",
-                "language": "English",
-                "max_token_length": None,
-                "lower_case": False,
-                "stem": False,
-                "remove_stop_words": False,
-                "ascii_folding": False,
-                "ngram_min_length": 3,
-                "ngram_max_length": 3,
-                "prefix_only": False,
-            }
-        elif tokenizer_name == "whitespace":
-            return {
-                "base_tokenizer": "whitespace",
-                "language": "English",
-                "max_token_length": None,
-                "lower_case": False,
-                "stem": False,
-                "remove_stop_words": False,
-                "ascii_folding": False,
-                "ngram_min_length": 3,
-                "ngram_max_length": 3,
-                "prefix_only": False,
-            }
-
-        # or it's with language stemming with pattern like "en_stem"
-        if len(tokenizer_name) != 7:
-            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
-        lang = tokenizer_name[:2]
-        if tokenizer_name[-5:] != "_stem":
-            raise ValueError(f"Invalid tokenizer name {tokenizer_name}")
-        if lang not in lang_mapping:
-            raise ValueError(f"Invalid language code {lang}")
-        return {
-            "base_tokenizer": "simple",
-            "language": lang_mapping[lang],
-            "max_token_length": 40,
-            "lower_case": True,
-            "stem": True,
-            "remove_stop_words": False,
-            "ascii_folding": False,
-            "ngram_min_length": 3,
-            "ngram_max_length": 3,
-            "prefix_only": False,
-        }
 
     def add(
         self,
@@ -4386,6 +4417,7 @@ class LanceTable(Table):
         query_type: Literal["vector"] = "vector",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceVectorQueryBuilder: ...
 
     @overload
@@ -4396,6 +4428,7 @@ class LanceTable(Table):
         query_type: Literal["fts"] = "fts",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceFtsQueryBuilder: ...
 
     @overload
@@ -4408,6 +4441,7 @@ class LanceTable(Table):
         query_type: Literal["hybrid"] = "hybrid",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceHybridQueryBuilder: ...
 
     @overload
@@ -4418,6 +4452,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceEmptyQueryBuilder: ...
 
     def search(
@@ -4429,6 +4464,7 @@ class LanceTable(Table):
         query_type: QueryType = "auto",
         ordering_field_name: Optional[str] = None,
         fts_columns: Optional[Union[str, List[str]]] = None,
+        fast_search: Optional[bool] = None,
     ) -> LanceQueryBuilder:
         """Create a search query to find the nearest neighbors
         of the given query vector. We currently support [vector search](https://lancedb.com/docs/search/vector-search/)
@@ -4513,6 +4549,7 @@ class LanceTable(Table):
             vector_column_name=vector_column_name,
             ordering_field_name=ordering_field_name,
             fts_columns=fts_columns or [],
+            fast_search=fast_search,
         )
 
     @classmethod
