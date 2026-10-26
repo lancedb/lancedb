@@ -151,6 +151,10 @@ jobs:
       - uses: ./.github/workflows/build_linux_wheel
         with:
           args: --profile ci
+      - name: Install CPU-only PyTorch
+        if: ${{ matrix.python-minor-version == '10' }}
+        run: |
+          python -m pip install 'torch>=2.0.0' --index-url https://download.pytorch.org/whl/cpu
       - uses: ./.github/workflows/run_tests
         with:
           integration: true
