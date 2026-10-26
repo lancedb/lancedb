@@ -223,44 +223,39 @@ def test_bindings_may_not_collide_with_plain_configuration():
 
 
 _SECRET_DEBUG_LOG_SOURCE = """
-import http.server
-import json
-import threading
+import pyarrow as pa
+import pyarrow.flight as flight
 
 import lancedb
 
 
-class Handler(http.server.BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
+class SecretServer(flight.FlightServerBase):
+    def __init__(self):
+        super().__init__("grpc://127.0.0.1:0")
 
-    def do_POST(self):
-        self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        payload = json.dumps({}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(payload)))
-        self.end_headers()
-        self.wfile.write(payload)
+    def do_exchange(self, context, descriptor, reader, writer):
+        assert b"SECRET_VALUE_SENTINEL" not in descriptor.command
+        parameters = reader.read_all()
+        assert parameters.column(0).to_pylist() == ["SECRET_VALUE_SENTINEL"]
+        result = pa.table({"status": ["created"]})
+        writer.begin(result.schema)
+        writer.write_table(result)
+        writer.close()
 
 
-server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
-try:
+with SecretServer() as server:
     db = lancedb.connect(
         "db://dev",
         api_key="API_KEY_SENTINEL",
-        host_override="http://localhost:%d" % server.server_address[1],
-        client_config={"retry_config": {"retries": 0}},
+        host_override="http://localhost:10024",
+        sql_host_override=f"grpc://127.0.0.1:{server.port}",
     )
     db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
-finally:
-    server.shutdown()
 """
 
 
 def test_a_credential_never_reaches_a_debug_log(tmp_path):
-    """The logger sees the serialized body, so no value-side redaction reaches it.
+    """Credential parameters and authentication stay out of Flight debug logs.
 
     Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
     import.
@@ -278,7 +273,7 @@ def test_a_credential_never_reaches_a_debug_log(tmp_path):
     output = result.stdout + result.stderr
 
     # Without this the test passes when debug logging is simply off.
-    assert "Sending request_id=" in output, output
+    assert "Created client for host:" in output, output
     assert "SECRET_VALUE_SENTINEL" not in output
     assert "API_KEY_SENTINEL" not in output
 
