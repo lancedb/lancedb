@@ -1,77 +1,110 @@
 ---
 title: "Delete rows"
 sidebarTitle: "Delete"
-description: "Remove rows by predicate, and reclaim their space."
+description: "Select and delete records, verify the remaining rows, and understand storage retention."
 icon: trash
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Delete rows through the SDKs in OSS and Enterprise. Storage reclamation follows compaction and retention policy.
 ---
 
-These examples use the table set up in
-[Ingesting data](/ingestion), and the connection made there.
+import { RsExample as RsDeleteRows } from '/snippets/ingestion_delete.mdx';
+import { TsDeleteRowsBody, TsDeleteRowsTail } from '/snippets/ingestion_examples.mdx';
+import { PyDeleteRows } from '/snippets/ingestion_examples.mdx';
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
 
-import {
-    PyDeleteOperation as DeleteOperation,
-    PyUpdateOptimizeCleanup as UpdateOptimizeCleanup,
-    TsDeleteOperation,
-    TsUpdateOptimizeCleanup,
-    RsDeleteOperation,
-    RsUpdateOptimizeCleanup,
-} from '/snippets/tables.mdx';
+Deleting rows removes matching records from the current table contents. It
+keeps the table and schema so you can continue reading and writing. To remove
+the table itself, see [Drop a table](/ingestion/create-table#drop-a-table).
 
-<Note>
-In SQL this is [`DELETE`](/sql/dml/delete).
-</Note>
+## Inspect the rows you intend to delete {#select-rows}
 
-## Delete rows {#delete-rows}
+Use the same predicate for inspection and deletion. The example below creates
+Alice, Bob and Charlie, prints Charlie's row, and deletes it by `id = 3`.
+Inspection and deletion are separate operations; concurrent writes can change
+which rows match between them.
 
-Delete operations **soft delete** rows that match a given condition.
-The underlying data is not immediately removed, but is marked
-for deletion (in the [deletion files](https://lance.org/format/table/#deletion-files) at the Lance format level) and excluded from query results.
+## Delete matching records {#delete-rows}
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {DeleteOperation}
-    </CodeBlock>
+Each program creates Alice, Bob and Charlie in a temporary local database,
+deletes Charlie, and prints the remaining rows: **Alice and Bob**. The temporary
+database is removed when the program finishes.
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsDeleteOperation}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsDeleteOperation}
-    </CodeBlock>
-</CodeGroup>
-
-Expected table contents:
-
-| id | name | login_count |
-| --- | --- | --- |
-| 1 | Alice | 10 |
-| 2 | Bob | 20 |
-
-
-<Warning>
-**Deleting rows removes them from the index**
-
-When rows are deleted, those rows are also excluded from the index segments, so indexed queries will not return them either. If ALL the rows are deleted (i.e., the table is emptied), ensure that you recreate the index after ingesting new data.
-</Warning>
-
-To permanently remove deleted rows, you can optimize the table, which will run compaction and cleans up the soft-deleted rows, which frees up storage space.
-
-- In LanceDB OSS, compaction and cleanup are manual. Run `table.optimize()` regularly to free up disk space.
-- In LanceDB Enterprise, files aren't cleaned up by default. You can configure automatic compaction and cleanup behavior at cluster setup time to suit your organization's retention policy.
-
-By default, table cleanup removes data up to 7 days ago. If you need to reclaim space from deleted rows more aggressively, manually call `table.optimize()` use a shorter retention window as follows:
+- **Python:** install `lancedb`, save the code as `delete_rows.py`, and run
+  `python delete_rows.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `delete_rows.mts`,
+  and run `node delete_rows.mts` with Node.js 22.18 or later.
+- **Rust:** download the [Rust examples](/static/code/ingestion-feedback-rust.zip),
+  extract the project, and run `cargo run --locked --bin delete`.
 
 <CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateOptimizeCleanup}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateOptimizeCleanup}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateOptimizeCleanup}
-    </CodeBlock>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyDeleteRows}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsDeleteRowsBody}
+{TsDeleteRowsTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsDeleteRows}
+</CodeBlock>
 </CodeGroup>
+
+Enterprise also supports [`DELETE`](/sql/dml/delete).
+
+## Verify that the rows are absent {#verify}
+
+Query the same predicate after deletion and check the remaining row count.
+A reader still using an older snapshot may see the earlier contents; see
+[Consistency](/tables/consistency).
+
+Deleted rows are excluded from current query results, including indexed
+searches. Deletion does not imply immediate physical erasure of every stored
+copy of the data.
+
+## Understand storage reclamation {#storage}
+
+Compaction rewrites the live data layout; cleanup removes eligible retained
+versions and files. Retained history can continue to reference data that no
+longer appears in the latest table version.
+
+In OSS, `optimize()` provides maintenance operations. In Enterprise, managed
+maintenance and retention follow the service configuration. Choose retention
+according to the history you need, rather than shortening it as part of a
+routine delete example. See [Compaction](/maintenance/compaction) and
+[Cleanup](/maintenance/cleanup) for the separate maintenance workflow.
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

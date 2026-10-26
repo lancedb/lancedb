@@ -15,6 +15,7 @@ on:
       - .github/workflows/build_linux_wheel/**
       - .github/workflows/build_mac_wheel/**
       - .github/workflows/build_windows_wheel/**
+      - .github/actions/setup-protoc/**
       - .github/workflows/run_tests/**
 
 permissions:

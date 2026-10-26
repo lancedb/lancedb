@@ -80,6 +80,67 @@ class TestExprConstruction:
         e = lit(d)
         assert isinstance(e, Expr)
 
+    @pytest.mark.parametrize(
+        "value, decimal_type",
+        [
+            ("1E-7", pa.decimal128(12, 7)),
+            ("-1.23E-7", pa.decimal128(12, 9)),
+            ("1E+3", pa.decimal128(12, 0)),
+            ("-1.23E+5", pa.decimal128(12, 0)),
+            ("0E-7", pa.decimal128(12, 7)),
+            ("-0E+3", pa.decimal128(12, 0)),
+            ("1E-38", pa.decimal128(38, 38)),
+            ("1E+37", pa.decimal128(38, 0)),
+            ("1.234567890123456789012345678901234567E+37", pa.decimal128(38, 0)),
+            ("0E+128", pa.decimal128(1, 0)),
+        ],
+    )
+    def test_lit_decimal_exponent_query(self, tmp_path, value, decimal_type):
+        expected = Decimal(value)
+        table = lancedb.connect(tmp_path).create_table(
+            "decimals",
+            pa.table(
+                {
+                    "id": [1, 2],
+                    # Arrow's Python ingestion rejects 0E+128 even though its
+                    # numeric value is representable. Store canonical zero to
+                    # exercise the expression literal independently of ingestion.
+                    "price": pa.array(
+                        [Decimal(0) if expected.is_zero() else expected, None],
+                        type=decimal_type,
+                    ),
+                }
+            ),
+        )
+        predicate = col("price") == lit(expected)
+        result = table.search().where(predicate).to_arrow()
+        assert result["id"].to_pylist() == [1]
+        assert result["price"].to_pylist() == [expected]
+        # Exercise the SQL serializer and parser as well as the typed query path.
+        sql_result = table.search().where(predicate.to_sql()).to_arrow()
+        assert sql_result["id"].to_pylist() == [1]
+        assert sql_result["price"].to_pylist() == [expected]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "NaN",
+            "sNaN",
+            "Infinity",
+            "-Infinity",
+            "1E-39",
+            "1E+38",
+            "1E+129",
+            "1E+1000000000",
+            "0E+129",
+            "12345678901234567890123456789012345678E+1",
+            "9" * 39,
+        ],
+    )
+    def test_lit_decimal_unrepresentable_raises(self, value):
+        with pytest.raises(ValueError):
+            lit(Decimal(value))
+
 
 class TestExprOperators:
     def test_eq_operator(self):

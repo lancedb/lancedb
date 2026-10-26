@@ -1,54 +1,125 @@
 ---
 title: "Data curation"
 sidebarTitle: "Overview"
-description: "Shaping a dataset before you train on it: profiling, sampling, joining, and ranking."
+description: "Prepare datasets for search, evaluation and training by profiling, selecting and combining records."
 icon: filter
 keywords: ["curation", "dataset", "training set", "sampling", "deduplication", "class balance"]
 ---
 
-Curation is the work between having data and having a *dataset*: finding out
-what you actually have, drawing a subset you can afford to train on, attaching
-labels that live elsewhere, and picking one row per thing when you have several.
+Data curation turns a collection of records into a dataset suited to a task.
+You might select labeled examples for training, prepare a fixed evaluation
+set, or remove duplicate documents from a search corpus.
 
-These pages are task-oriented. Each shows the operation in the context you would
-reach for it, and links to the [SQL reference](/sql) for the complete syntax.
+Start with the result you need. Then inspect the source data, choose which
+records belong, and save the selected data or the rules used to produce it.
 
-<Note>
-Most curation is analytical -- grouping, joining, ranking -- which the query
-builders do not do. It is therefore SQL, and SQL needs a deployment. See
-[SQL](/basics/sql#sql-is-remote).
-</Note>
+## Choose a curation task {#questions}
 
-## The four questions {#questions}
-
-| | |
+| Task | What it helps you decide |
 | --- | --- |
-| [What do I have?](/curation/aggregate) | counts, class balance, null coverage, distinct values |
-| [What can I afford?](/curation/sampling) | a random subset, reproducible when you need it fixed |
-| [What else do I know?](/curation/join) | labels, metadata and scores that live in another table |
-| [Which one do I keep?](/curation/windowing) | one row per key, ranking within a group, splits |
+| [Profile a dataset](/curation/aggregate) | Whether coverage, missing values and class balance suit the task. |
+| [Sample records](/curation/sampling) | Which subset to inspect or use for an experiment. |
+| [Join datasets](/curation/join) | How to attach labels, metadata or scores stored elsewhere. |
+| [Rank and deduplicate](/curation/windowing) | Which records to keep when several describe the same item. |
 
-## A worked shape {#shape}
+The analytical examples in this section use **Enterprise SQL**. Connect with
+the [SQL guide](/basics/sql). For sampling through the Python SDK in OSS or
+Enterprise, see [Sample without SQL](/curation/sampling#training).
 
-The four compose into the same pipeline most curation ends up being:
+## Prepare a labeled document dataset {#shape}
+
+Suppose you need one labeled record per document for a training experiment.
+Inspect the source records, choose the latest version of each document, then
+join its label. Finally, check the class balance of the selected records.
+
+### Example data {#example-data}
+
+Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
+document table and a separate label table. Expand the setup below to create them.
+
+<Accordion title="Create the example tables">
+
+`curation_documents` has six records describing four documents.
+`curation_labels` has one label for each of three documents. `row_id` identifies
+a record; `doc_id` identifies the document it describes.
+
+Run each statement separately in a scratch database or namespace. Create these
+tables once for the whole section, using fresh names if they already exist.
+
+```sql
+CREATE TABLE curation_documents (
+    row_id BIGINT, doc_id BIGINT, version BIGINT,
+    source VARCHAR, caption VARCHAR, score DOUBLE
+);
+INSERT INTO curation_documents VALUES
+    (1, 10, 1, 'web', NULL, 0.80),
+    (2, 10, 2, 'web', 'A cat on a chair', 0.95),
+    (3, 20, 1, 'books', 'A dog in a field', 0.90),
+    (4, 30, 1, 'web', NULL, 0.70),
+    (5, 30, 1, 'web', 'A cat by a window', 0.85),
+    (6, 40, 1, 'books', 'A bird in a tree', 0.60);
+
+CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
+INSERT INTO curation_labels VALUES
+    (10, 'cat'), (20, 'dog'), (30, 'cat');
+```
+
+`score` is a sample quality score, not a search result score. Document 10 has
+two versions. Document 30 has two records at the same version. Document 40
+has no label. These cases let you check the effect of each operation.
+
+</Accordion>
+
+The following query chooses the latest record for each document, then keeps
+only documents with a label:
 
 ```sql
 WITH ranked AS (
-    SELECT d.*, c.label,
-           row_number() OVER (PARTITION BY d.doc_id ORDER BY d.version DESC) AS rn
-    FROM documents AS d
-    JOIN labels AS c ON c.doc_id = d.doc_id
+    SELECT *, row_number() OVER (
+        PARTITION BY doc_id ORDER BY version DESC, row_id DESC
+    ) AS rn
+    FROM curation_documents
 )
-SELECT * FROM ranked WHERE rn = 1
+SELECT d.row_id, d.doc_id, d.caption, l.label
+FROM ranked AS d
+JOIN curation_labels AS l ON l.doc_id = d.doc_id
+WHERE d.rn = 1
+ORDER BY d.doc_id;
 ```
 
-Join to bring in what you know, window to pick one row per document, filter to
-keep it. Add [`TABLESAMPLE`](/curation/sampling) when the result is still larger
-than you want, and [aggregate](/curation/aggregate) to check the balance of what
-you ended up with.
+The result contains documents **10, 20 and 30**, with labels **cat, dog and
+cat**. Document 40 is excluded because this particular task requires a label.
+The `row_id` tie-breaker makes the choice for document 30 deterministic;
+choose a tie-breaker that fits your own data.
 
-## Then what {#next}
+The example assumes one label per document. Duplicate keys in the label table
+would multiply the result rows. The [joining guide](/curation/join#labels)
+shows how to check that assumption.
 
-A curated result you want to keep is a
-[materialized view](/management/materialized-view) -- stored, refreshed, and
-readable by a [data loader](/training/data-loading) like any other table.
+## Check the selected dataset {#check-result}
+
+Compare the result with the task's requirements: are the expected documents
+present, are required fields populated, and is the class distribution suitable?
+This example has two cats and one dog. That distribution may be appropriate
+for exploration, but it does not establish a representative evaluation set.
+
+[Profiling](/curation/aggregate) provides the counts to inspect.
+[Sampling](/curation/sampling) and [ranking](/curation/windowing) help you
+adjust the selection without changing the original records.
+
+## Save and reuse the result {#next}
+
+Choose the output according to how you will use it:
+
+- **A fixed dataset:** save the query result in a new table with
+  [`CREATE TABLE AS SELECT`](/sql/ddl/table#create). Keep that output unchanged
+  when comparing experiments.
+- **A reusable selection:** save the query as a [view](/management/view).
+  A view stores the query definition, so it is not a frozen evaluation set.
+- **Stored results that you refresh:** use a
+  [materialized view](/management/materialized-view) when its supported query
+  and refresh behavior fit the workflow.
+
+Record the source versions and selection rules alongside the output. Continue
+with [data loading](/training/data-loading) to use the curated data in a
+training pipeline.

@@ -1,28 +1,103 @@
 ---
 title: "Metadata Filtering in LanceDB"
 sidebarTitle: Filtering
-description: Filter search results in LanceDB based on metadata fields.
+description: "Use predicates to select rows and control when filters apply to search."
 icon: "filter"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Metadata filtering is available in OSS and Enterprise.
 ---
 
-LanceDB supports filtering features of query results based on metadata fields. 
-While joint vector and metadata search at scale presents a significant challenge, 
-LanceDB achieves sub-100ms latency at thousands of QPS, enabling efficient vector search 
-with filtering capabilities even on datasets containing billions of records. 
+import { PyFilterSearch, TsFilterSearchBody, TsFilterSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsFilterSearchBody, RsExampleTail as RsFilterSearchTail } from '/snippets/search_filter_search.mdx';
 
-**Pre-filtering** means LanceDB applies the metadata `where(...)` condition before running vector search, so the search only considers rows that already match the filter. **Post-filtering** means LanceDB runs vector search first and only then filters the returned candidates. Pre-filtering is enabled by default. In practice, pre-filtering is better when the filter is part of the result contract; post-filtering can be lower-latency for expensive or non-indexable filters, but it can return fewer than `limit` rows, or even zero, if the nearest neighbors do not pass the filter.
+A filter restricts results to rows that satisfy a condition. Use it on its
+own to select records, or combine it with vector, full-text or hybrid search.
+For example, search for similar documents only within a particular category.
 
-On hybrid queries, the same `where(...)` filter is applied to both the vector and full-text halves of the query. The prefilter or postfilter choice controls whether that happens before each subquery scores candidates or after the subquery top-k is produced.
+<span id="search-within-matching-rows"></span>
 
-<Note>
-The same predicates work in SQL -- see [SELECT](/sql/dql/select#filtering) and [Operators](/sql/operators).
-</Note>
+<Accordion title="Run a complete filtering example">
 
-## Chaining `where` clauses {#chaining-where-clauses}
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
 
-In more recent LanceDB SDK versions (see the callout box below for the exact version numbers), you can call `where(...)` (Python and TypeScript) or `only_if(...)` (Rust) more than once on the same query builder. Each additional filter is combined with the previous one using logical `AND`, so `where("a > 0").where("b < 10")` is equivalent to `where("(a > 0) AND (b < 10)")`.
+- **Python:** Install with `pip install lancedb`, save as `filtered_search.py`, then run `python filtered_search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `filtered_search.mts`, then run `node filtered_search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin filter_search` from the extracted directory.
 
-For a fixed predicate, writing one `where(...)` clause with `AND` is just as valid and often clearer. Chaining is mainly useful when code composes filters incrementally, such as applying a shared base predicate in a helper and then adding a per-call predicate at the query site.
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFilterSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsFilterSearchBody + "\n" + TsFilterSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsFilterSearchBody + "\n" + RsFilterSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+The query vector is closest to the gardening record, but the filter excludes
+that category. The results contain only the two animal records.
+
+</Accordion>
+
+## Prefiltering and postfiltering {#choose-when-the-filter-runs}
+
+- **Prefiltering**, the default, limits the rows eligible for retrieval before
+  search chooses its candidates.
+- **Postfiltering** removes nonmatching rows after candidates are selected.
+  It can return fewer than `limit` rows, including zero, even when matching
+  records exist elsewhere in the table.
+
+Both modes exclude rows that fail the predicate. They differ in which matching
+rows the search can find. On hybrid queries, the filter applies to both the
+vector and full-text searches.
+
+SDK filters use SQL expressions without requiring a SQL connection. For
+Enterprise SQL queries, see [SELECT](/sql/dql/select#filtering).
+
+## Filtering examples by language {#example-metadata-filtering}
+
+The following excerpts use a connected `db` handle. Create this sample table
+before running the queries beneath it; each query uses the same four records.
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    {"vector": [10.2, 100.8], "item": "baz", "price": 30.0},
+    {"vector": [1.4, 9.5], "item": "fred", "price": 40.0},
+]
+table = db.create_table("metadata_filter_example", data=data, mode="overwrite")
+```
+
+```typescript TypeScript icon="square-js"
+const data = [
+  { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+  { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+  { vector: [10.2, 100.8], item: "baz", price: 30.0 },
+  { vector: [1.4, 9.5], item: "fred", price: 40.0 },
+];
+
+const tableName = "metadata_filter_example";
+const table = await db.createTable(tableName, data, {
+  mode: "overwrite",
+});
+```
+</CodeGroup>
+
+## Combine predicates {#chaining-where-clauses}
+
+Repeated filter calls combine predicates with logical `AND`. For example, `where("a > 0").where("b < 10")` is equivalent to `where("(a > 0) AND (b < 10)")`.
+
+Use a single expression for a fixed filter. Chain calls when your application
+builds the filter incrementally.
 
 <CodeGroup>
 ```python Python icon="python"
@@ -51,36 +126,6 @@ const result = await table
 In Python SDK versions before `0.34.0` and Rust/TypeScript SDK versions before `0.31.0`, a second `where(...)` or `only_if(...)` call replaced the first filter, so only the last predicate was applied. If your code needs to run on those older versions, write a single predicate with `AND` instead of chaining calls. When upgrading to the latest SDKs, review any existing chained filters and drop earlier calls you no longer want to apply.
 </Warning>
 
-## Example: Metadata Filtering {#example-metadata-filtering}
-
-To illustrate filtering capabilities, let's try four data points with combinations of vectors and metadata:
-
-<CodeGroup>
-```python Python icon="python"
-data = [
-    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
-    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
-    {"vector": [10.2, 100.8], "item": "baz", "price": 30.0},
-    {"vector": [1.4, 9.5], "item": "fred", "price": 40.0},
-]
-table = db.create_table("metadata_filter_example", data=data, mode="overwrite")
-```
-
-```typescript TypeScript icon="square-js"
-const data = [
-  { vector: [3.1, 4.1], item: "foo", price: 10.0 },
-  { vector: [5.9, 26.5], item: "bar", price: 20.0 },
-  { vector: [10.2, 100.8], item: "baz", price: 30.0 },
-  { vector: [1.4, 9.5], item: "fred", price: 40.0 },
-];
-
-const tableName = "metadata_filter_example";
-const table = await db.createTable(tableName, data, {
-  mode: "overwrite",
-});
-```
-</CodeGroup>
-
 ### Filtering Without Vector Search {#filtering-without-vector-search}
 
 You can always filter your data without search. This is useful when you need to query based on metadata:
@@ -104,9 +149,8 @@ const filteredResult = await table
 ```
 </CodeGroup>
 
-<Warning>
-If your table is large, this could potentially return a very large amount of data. Please be sure to use a `limit` clause unless you're sure you want to return the whole result set.
-</Warning>
+Set `limit()` explicitly to control how many matching records your application
+receives.
 
 ### Pre-Filtering with Vector Search {#pre-filtering-with-vector-search}
 
@@ -124,6 +168,7 @@ filtered_result = (
 const results = await table
   .search([100, 102])
   .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+  .limit(3)
   .toArray();
 ```
 </CodeGroup>
@@ -141,7 +186,7 @@ post_filtered_result = (
 ```
 
 ```typescript TypeScript icon="square-js"
-const postFilteredResult = await (table.search([100, 102]) as VectorQuery)
+const postFilteredResult = await table.vectorSearch([100, 102])
   .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
   .postfilter()
   .limit(3)
@@ -149,14 +194,13 @@ const postFilteredResult = await (table.search([100, 102]) as VectorQuery)
 ```
 </CodeGroup>
 
-<Warning>
-When querying large tables, omitting a `limit` clause may overwhelm resources and return excessive data. It's always recommended
-to be mindful of the potential impact on performance and costs when working with really large tables.
-</Warning>
+Postfiltering can return fewer than the requested number of records because
+the predicate removes candidates after search.
 
-## Filtering with SQL {#filtering-with-sql}
+## Write SQL predicates {#filtering-with-sql}
 
-Because it's built on top of DataFusion, LanceDB embraces the utilization of standard SQL expressions as predicates for filtering operations. SQL can be used during vector search,  update, and deletion operations.
+Pass a SQL expression as the filter string. These expressions also select rows
+for SDK update and delete operations; they are not standalone SQL statements.
 
 LanceDB supports a growing list of SQL expressions:
 
@@ -178,7 +222,7 @@ For example, the following filter string is acceptable:
 
 <CodeGroup>
 ```python Python icon="python"
-tbl.search([100, 102]).where(
+table.search([100, 102]).where(
     "(item IN ('foo', 'baz')) AND (price > 20.0)"
 ).to_arrow()
 ```
@@ -202,9 +246,10 @@ path must be wrapped in backticks.
 AND `nested with space`.`inner with space` < 2
 ```
 
-<Warning>
-Field names containing periods (.) are NOT supported.
-</Warning>
+<Note>
+Periods separate nested fields. LanceDB does not allow a literal period in a
+top-level column name; backticks do not remove that restriction.
+</Note>
 
 ### Dates, Timestamps, Decimals {#dates-timestamps-decimals}
 
@@ -231,7 +276,8 @@ parameter. Microsecond precision (6) is the default.
 
 ## Apache Arrow Mapping {#apache-arrow-mapping}
 
-LanceDB internally stores data in [Apache Arrow](https://arrow.apache.org/) format.
+LanceDB uses Arrow types for schemas and in-memory data. On disk, tables use
+the [Lance format](/basics/lance).
 The mapping from SQL types to Arrow types is:
 
 | SQL type                                                  | Arrow type         |
@@ -245,26 +291,27 @@ The mapping from SQL types to Arrow types is:
 | `double`                                                  | `Float64`          |
 | `decimal(precision, scale)`                               | `Decimal128`       |
 | `date`                                                    | `Date32`           |
-| `timestamp`                                               | `Timestamp` [^1]   |
+| `timestamp`                                               | `Timestamp`        |
 | `string`                                                  | `Utf8`             |
 | `binary`                                                  | `Binary`           |
 
 
-## Best Practices {#best-practices}
+## Speed up frequently used filters {#best-practices}
 
-**Scalar Indexes**: We strongly recommend creating scalar indices on columns used for filtering, whether combined with a search operation or applied independently (e.g., for updates or deletions).
+Consider a [scalar index](/indexing/scalar-index) on frequently filtered columns.
+Use the query plan to check whether a predicate uses that index. Functions or
+casts applied to a column can change which optimizations are available.
+For list columns, a label-list index supports membership filters such as
+`array_has_any` and `array_has_all`.
 
-For best performance with large tables or high query volumes:
+## Understand missing matches {#limitations}
 
-- Build a scalar index on frequently filtered columns
-- Use exact column names in filters (e.g., `user_id` instead of `USER_ID`)
-- Avoid complex transformations in filter expressions (keep them simple)
-- When running concurrent queries, use connection pooling for better throughput
+A restrictive predicate can legitimately leave fewer rows than the requested
+limit. Approximate vector search can also miss qualifying neighbors, and
+postfiltering can discard candidates without retrieving replacements.
 
-For a column of type LIST(T), you can use `LABEL_LIST` to create a scalar index. Then you should leverage DataFusion's [array functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html#array-functions) like `array_has_any` or `array_has_all` for optimized filtering.
-
-## Limitations {#limitations}
-
-Both **pre-filtering** and **post-filtering** can yield false positives. For pre-filtering, if the filter is too selective, it might eliminate relevant items that the vector search would have otherwise identified as a good match. In this case, increasing `nprobes` parameter will help reduce such false positives. It is recommended to call `bypass_vector_index()` if you know that the filter is highly selective.
-
-Similarly, a highly selective post-filter can lead to false positives. Increasing both `nprobes` and `refine_factor` can mitigate this issue. When deciding between pre-filtering and post-filtering, pre-filtering is generally the safer choice if you're uncertain.
+For a recall comparison, run the same query and predicate while bypassing the
+vector index on a suitably sized test table. Then compare the indexed query's
+results and latency while changing probe or refinement settings. Increasing
+those settings does not guarantee a full result set. See
+[vector search](/search/vector-search) and [query plans](/search/explain).

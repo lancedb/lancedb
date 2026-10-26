@@ -37,7 +37,7 @@ You can then sort your samples by similarity or use this information to find pot
 
 We'll be doing the following : 
 
-1. **Create Index** - In order to run similarity queries against our media, we need to **index** the data. We can do this via the `compute_similarity()` function. 
+1. **Create Index** - To run similarity queries against our media, we need to **index** the data. We can do this via the `compute_similarity()` function.
   -  In the function, specify the **model** you want to use to generate the embedding vectors, and what **vector search engine** you want to use on the **backend** (here LanceDB). 
   <Tip>
   You can also give the similarity index a name(`brain_key`), which is useful if you want to run vector searches against multiple indexes.

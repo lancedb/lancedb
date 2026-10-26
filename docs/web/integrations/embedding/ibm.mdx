@@ -3,7 +3,7 @@ title: IBM watsonx
 sidebarTitle: IBM WatsonX
 ---
 
-import { PyEmbeddingIbmUsage } from '/snippets/integrations.mdx';
+import { PyEmbeddingIbmUsage } from '/snippets/provider_examples.mdx';
 
 Generate text embeddings using IBM's watsonx.ai platform.
 
@@ -54,8 +54,12 @@ Optionally set environment variables (if not passing credentials to `create` dir
 export WATSONX_API_KEY="YOUR_WATSONX_API_KEY"
 # Provide exactly one of the following:
 export WATSONX_PROJECT_ID="YOUR_WATSONX_PROJECT_ID"
-export WATSONX_SPACE_ID="YOUR_WATSONX_SPACE_ID"
+# export WATSONX_SPACE_ID="YOUR_WATSONX_SPACE_ID"
 ```
+
+Replace the credential placeholders with your provider credentials. The registry
+variable keeps the API key out of stored embedding configuration. In application
+code, load its value from environment variables or a secrets manager.
 
 <CodeGroup>
   <CodeBlock filename="Python" language="Python" icon="python">

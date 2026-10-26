@@ -54,6 +54,7 @@
 //! - `/path/to/database` - local database on file system.
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
 //! - `db://dbname` - Lance Cloud
+//! - `db://` with a host override - remote tables in the storage root
 //!
 //! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
@@ -167,7 +168,7 @@
 //! # }
 //! ```
 
-// The MemWAL LSM read path (`table::query::lsm`) deepens the `create_plan` future's
+// The RTE read path (`table::query::lsm`) deepens the `create_plan` future's
 // type graph enough to overflow the default trait-recursion limit while evaluating
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]

@@ -15,7 +15,7 @@ from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
-from ._lancedb import LsmWriteSpec
+from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -24,6 +24,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
+from ._blob_reader import BlobReader as BlobReader
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -610,7 +611,7 @@ __all__ = [
     "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
-    "LsmWriteSpec",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

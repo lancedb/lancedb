@@ -26,13 +26,16 @@ is also an [asynchronous API client](#connections-asynchronous).
 
 ::: lancedb.db.DBConnection
 
-Resource listings (`list_secrets`, `list_views`, `list_jobs`, `list_functions`, and
-`list_materialized_views`) return lazy iterators. Use `list(db.list_views())` to
-collect synchronous results, or `[name async for name in db.list_views()]` with
-an asynchronous connection. `page_limit` controls each request, and `page_token`
-resumes a listing. Drain the iterator's cached results before saving its token.
+Resource listings return iterators. Use `list(db.list_tables())` to collect all
+table names. `db.list_tables().tables` is a list of the first page; `limit`
+controls its page size and `page_token` resumes at a saved token. The same
+patterns apply to `list_namespaces()`. Other resource listings use `page_limit`.
 
 ::: lancedb.listing.Listing
+
+::: lancedb.listing.TableListing
+
+::: lancedb.listing.NamespaceListing
 
 ::: lancedb.Session
 
@@ -218,10 +221,19 @@ The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
 reader as soon as its initial result stream is available. `execute_query_async`
-returns a query handle immediately; use it to inspect progress, open a reader,
+returns a query handle once submission is accepted; use it to inspect progress, open a reader,
 or cancel the query. The SQL client is initialized by the first query and
 retained for the lifetime of the remote connection. Query ids are random,
-connection-scoped references rather than encoded SQL or durable resume tokens:
+connection-scoped references rather than encoded SQL or durable resume tokens.
+
+Both APIs start with one Flight call. The server can stream results on that
+call or return a polling continuation that the SDK follows automatically.
+This behavior is the same with and without parameters. Open the reader directly;
+a directly streamed query needs its reader to make progress. Dropping an unread
+handle or its reader stops direct streaming. Deferred execution continues until
+explicitly cancelled.
+
+For example:
 
 ```python
 import lancedb
@@ -297,9 +309,17 @@ listing a storage directory.
 
 ::: lancedb.table.Branches
 
-::: lancedb.LsmWriteSpec
+::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
+
+Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
+with `bytes` to materialize its contents before the Function runs. Reader
+inputs infer the Blob V2 type without an explicit input schema. Readers are
+scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
+`size`, and cursor-independent `read_range`.
+
+::: lancedb.BlobReader
 
 ::: lancedb.functions.FunctionArtifact
 
@@ -376,6 +396,22 @@ listing a storage directory.
 ::: lancedb.sql.QueryParameters
 
 ## Materialized Views (Synchronous)
+
+On Cloud and Enterprise, creation accepts `auto_refresh_enabled` and
+`auto_refresh_interval_seconds`:
+
+```python
+view = db.create_materialized_view(
+    "recent_orders",
+    "orders",
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+Omit `auto_refresh_interval_seconds` to let the server determine when to refresh.
+These options also apply to asynchronous creation and creation jobs. Embedded
+connections support manual refresh and reject automatic scheduling requests.
 
 ::: lancedb.materialized_view.MaterializedView
 
@@ -502,11 +538,67 @@ instead of being materialized with the rest of the row.
 
 `lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
 pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
-still work. Queries return descriptors. Call
+still work. Native table queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
+
+Remote SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+return an openable reference instead, then use
+[`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
+[`open_blob_files`][lancedb.table.Table.open_blob_files]:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+This example uses a remote SQL connection that produces source-bearing
+descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
+`blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
+`branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
+the source table and commit and reads the captured version without changing
+the table handle's checkout. Raw native storage descriptors omit `source`;
+use `fetch_blob_files(column, row_ids)` for those query results.
+
+The singular API accepts a dictionary or Arrow struct scalar. The iterable
+accepts Arrow arrays/chunked arrays or another iterable, opens handles as
+iteration advances, and preserves order, duplicates, and nulls as `None`.
+Close each non-null handle after use. Async tables provide
+`await table.open_blob_file(...)` and
+`async for file in table.open_blob_files(...)`.
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+For an async table, the iterable is consumed with `async for`:
+
+```python
+async for video in async_videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            payload = await video.aread()
+```
+
+Payload bytes load on reads. Opening an external blob with unspecified size
+can issue a metadata-only HEAD request. Remote reads use authenticated range
+requests that validate the captured URI and commit timestamp.
+
+Blobs inside lists can be written and queried as descriptors. They are omitted
+from `blob_columns()` because row ids do not identify individual list elements,
+so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.blob
 
@@ -610,6 +702,16 @@ can be used to create, list, or open tables.
 ::: lancedb.db.AsyncConnection
 
 ::: lancedb.listing.AsyncListing
+
+`async for name in db.list_tables()` loads pages as needed. To inspect the
+first page, use `page = await db.list_tables()` and then `page.tables`. Reading
+the page list does not consume the iterator. `page.page_token` is the token for
+the next request; drain cached results before using it to resume in a new
+listing. The same behavior applies to namespaces.
+
+::: lancedb.listing.AsyncTableListing
+
+::: lancedb.listing.AsyncNamespaceListing
 
 ## Namespaces (Asynchronous)
 

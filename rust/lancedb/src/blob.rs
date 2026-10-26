@@ -20,10 +20,119 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
-use lance_io::object_store::ObjectStore;
+use lance_io::object_store::{ObjectStore, uri_to_url};
 use object_store::path::Path;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+/// A stored Blob V2 descriptor with the source needed to reopen its snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlobDescriptor {
+    /// Canonical Blob V2 storage kind (0 through 5).
+    pub kind: u8,
+    /// Stored offset within the backing object.
+    pub position: u64,
+    /// Stored length; zero on an external blob can mean unspecified.
+    pub size: u64,
+    /// Stored sidecar or base identifier.
+    pub blob_id: u32,
+    /// Stored external URI or managed path.
+    pub blob_uri: String,
+    /// Source identity captured by the query.
+    pub source: BlobDescriptorSource,
+}
+
+/// The pinned source of a descriptor returned by SQL.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlobDescriptorSource {
+    /// URI of the dataset on the source branch.
+    pub uri: String,
+    /// Exact table version read by the query.
+    pub version: u64,
+    /// Commit timestamp in microseconds, distinguishing recreated tables.
+    pub committed_at_micros: u64,
+    /// Source branch; `None` identifies main.
+    pub branch: Option<String>,
+    /// Blob column path in the source table.
+    pub column: String,
+    /// Row ID or row address, as specified by `row_is_address`.
+    pub row_reference: u64,
+    /// Whether the row reference is a physical address.
+    pub row_is_address: bool,
+}
+
+impl BlobDescriptor {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.kind > 5
+            || self.source.version == 0
+            || self.source.uri.is_empty()
+            || self.source.column.is_empty()
+        {
+            return Err(Error::InvalidInput {
+                message: "invalid stored blob descriptor or missing pinned source".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn open_native_blob_file(
+    dataset: &Dataset,
+    descriptor: &BlobDescriptor,
+) -> Result<BlobFile> {
+    descriptor.validate()?;
+    let source = &descriptor.source;
+    let expected_uri = dataset
+        .branch_location()
+        .find_branch(source.branch.as_deref())?
+        .uri;
+    if uri_to_url(&expected_uri)? != uri_to_url(&source.uri)? {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor belongs to a different table".into(),
+        });
+    }
+    let dataset = Arc::new(
+        dataset
+            .checkout_version(lance::dataset::refs::Ref::Version(
+                source.branch.clone(),
+                Some(source.version),
+            ))
+            .await?,
+    );
+    if uri_to_url(dataset.uri())? != uri_to_url(&source.uri)? {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor belongs to a different table".into(),
+        });
+    }
+    if dataset.manifest().timestamp_nanos / 1_000 != u128::from(source.committed_at_micros) {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor source snapshot has been replaced".into(),
+        });
+    }
+    ensure_blob_v2_column(dataset.schema(), &source.column)?;
+    let mut files = if source.row_is_address {
+        dataset
+            .take_blobs_by_addresses(&[source.row_reference], &source.column)
+            .await?
+    } else {
+        dataset
+            .take_blobs(&[source.row_reference], &source.column)
+            .await?
+    };
+    if files.len() != 1 {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor does not resolve to one stored value".into(),
+        });
+    }
+    files
+        .pop()
+        .flatten()
+        .map(Into::into)
+        .ok_or_else(|| Error::InvalidInput {
+            message: "non-null blob descriptor resolved to a null value".into(),
+        })
+}
 
 /// Seekable handle for one blob value, backed by local storage or a remote
 /// HTTP byte-range endpoint.
@@ -244,11 +353,39 @@ impl BlobRangeRequest {
 
 /// Creates an Arrow field for a Lance blob v2 column.
 ///
-/// `Struct<data, uri>` with the `lance.blob.v2` marker. Same layout Lance
-/// expects on write.
+/// `Struct<data, uri, position, size>` with nullable children and the
+/// `lance.blob.v2` marker. Set both range fields to read a byte range from a
+/// URI, or leave both null for a whole file. Inline bytes are also supported.
 ///
-/// A blob column may be top-level or nested inside a struct or list. Nested
-/// blobs are addressed by a dotted path (e.g. `info.blob`) in the read APIs.
+/// # Migration
+///
+/// This helper previously returned only `data` and `uri`. Rust callers building
+/// a `StructArray` from this field must now supply four children: append typed
+/// null UInt64 arrays for `position` and `size` when no range is needed:
+///
+/// ```
+/// use std::sync::Arc;
+/// use arrow_array::{ArrayRef, LargeBinaryArray, StringArray, StructArray, UInt64Array};
+/// use arrow_schema::DataType;
+/// let field = lancedb::blob("image", true);
+/// let DataType::Struct(children) = field.data_type() else { unreachable!() };
+/// let image = StructArray::new(children.clone(), vec![
+///     Arc::new(LargeBinaryArray::from(vec![Some(b"image".as_slice())])) as ArrayRef,
+///     Arc::new(StringArray::from(vec![None::<&str>])),
+///     Arc::new(UInt64Array::new_null(1)),
+///     Arc::new(UInt64Array::new_null(1)),
+/// ], None);
+/// ```
+///
+/// Existing two-field tables remain writable: append and merge-insert fill
+/// missing range fields or drop all-null range fields to match the table.
+/// Non-null ranges cannot be written to a two-field table. Overwrite replaces
+/// the table schema with the input schema rather than normalizing its layout.
+///
+/// A blob column may be top-level or nested inside a struct or list. Blobs
+/// nested inside structs use dotted paths (e.g. `info.blob`) in the read APIs.
+/// Blobs inside lists can be written and queried as descriptors, but cannot
+/// currently be fetched by row id.
 ///
 /// ```
 /// use arrow_schema::{DataType, Field, Schema};
@@ -259,8 +396,20 @@ impl BlobRangeRequest {
 /// ]);
 /// ```
 pub fn blob(name: impl AsRef<str>, nullable: bool) -> Field {
-    lance::blob::blob_field(name.as_ref(), nullable)
+    blob_with_options(name, nullable, BlobOptions::default())
 }
+
+static BLOB_STORAGE_TYPE: std::sync::LazyLock<DataType> = std::sync::LazyLock::new(|| {
+    DataType::Struct(
+        vec![
+            Field::new("data", DataType::LargeBinary, true),
+            Field::new("uri", DataType::Utf8, true),
+            Field::new("position", DataType::UInt64, true),
+            Field::new("size", DataType::UInt64, true),
+        ]
+        .into(),
+    )
+});
 
 /// Options for creating a blob v2 column field with tier thresholds.
 ///
@@ -291,6 +440,7 @@ pub use lance::blob::BlobFieldOptions as BlobOptions;
 /// ```
 pub fn blob_with_options(name: impl AsRef<str>, nullable: bool, options: BlobOptions) -> Field {
     lance::blob::blob_field_with_options(name.as_ref(), nullable, options)
+        .with_data_type(BLOB_STORAGE_TYPE.clone())
 }
 
 /// Returns true if `field` is a blob v2 column.
@@ -304,7 +454,7 @@ pub fn is_blob(field: &Field) -> bool {
 }
 
 /// Returns true if `field`, or any field nested under it, is a blob v2 column.
-fn field_tree_has_blob_v2(field: &Field) -> bool {
+pub(crate) fn field_tree_has_blob_v2(field: &Field) -> bool {
     if field.is_blob_v2() {
         return true;
     }
@@ -317,7 +467,7 @@ fn field_tree_has_blob_v2(field: &Field) -> bool {
     }
 }
 
-/// Collects the dotted paths of blob v2 columns under `field`, into `paths`.
+/// Collects the dotted paths of row-addressable blob v2 columns under `field`.
 fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
     let path = if prefix.is_empty() {
         field.name().clone()
@@ -328,17 +478,48 @@ fn collect_blob_paths(field: &Field, prefix: &str, paths: &mut Vec<String>) {
         paths.push(path);
         return;
     }
-    match field.data_type() {
-        DataType::Struct(children) => {
-            for child in children {
-                collect_blob_paths(child, &path, paths);
-            }
+    if let DataType::Struct(children) = field.data_type() {
+        for child in children {
+            collect_blob_paths(child, &path, paths);
         }
-        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
-            collect_blob_paths(child, &path, paths)
-        }
-        _ => {}
     }
+}
+
+fn is_list_blob_path(field: &Field, prefix: &str, column: &str, inside_list: bool) -> bool {
+    let path = if prefix.is_empty() {
+        field.name().clone()
+    } else {
+        format!("{prefix}.{}", field.name())
+    };
+    if field.is_blob_v2() {
+        return inside_list && column == path;
+    }
+    match field.data_type() {
+        DataType::Struct(children) => children
+            .iter()
+            .any(|child| is_list_blob_path(child, &path, column, inside_list)),
+        DataType::List(child) | DataType::LargeList(child) | DataType::FixedSizeList(child, _) => {
+            (column == path && field_tree_has_blob_v2(child))
+                || is_list_blob_path(child, &path, column, true)
+        }
+        _ => false,
+    }
+}
+
+/// Give list blob paths a useful error before they reach the row-based reader.
+pub(crate) fn reject_list_blob_column(schema: &Schema, column: &str) -> Result<()> {
+    if schema
+        .fields()
+        .iter()
+        .any(|field| is_list_blob_path(field, "", column, false))
+    {
+        return Err(Error::InvalidInput {
+            message: format!(
+                "column '{column}' contains a blob inside a list; blobs inside lists cannot be fetched by row id yet"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Returns true if `schema` declares any blob v2 column, including nested ones.
@@ -346,8 +527,9 @@ pub(crate) fn has_blob_columns(schema: &Schema) -> bool {
     schema.fields().iter().any(|f| field_tree_has_blob_v2(f))
 }
 
-/// Blob v2 column paths in `schema`, declaration order preserved. Nested blobs
-/// are dotted paths (e.g. `info.blob`).
+/// Row-addressable blob v2 column paths in `schema`, in declaration order.
+/// Struct-nested blobs use dotted paths (e.g. `info.blob`); list-nested blobs
+/// are omitted because a row id cannot identify an individual list element.
 pub(crate) fn blob_column_names(schema: &Schema) -> Vec<String> {
     let mut paths = Vec::new();
     for field in schema.fields() {
@@ -382,6 +564,11 @@ pub(crate) fn ensure_blob_v2_column(
     schema: &lance_core::datatypes::Schema,
     column: &str,
 ) -> Result<()> {
+    // A top-level blob cannot have a list ancestor. Keep the common read path
+    // from converting the entire schema just to validate that condition.
+    if column.contains('.') || schema.field(column).is_none_or(|field| !field.is_blob_v2()) {
+        reject_list_blob_column(&Schema::from(schema), column)?;
+    }
     match schema.field(column) {
         Some(field) if field.is_blob_v2() => Ok(()),
         Some(field) if field.is_blob() => Err(Error::InvalidInput {
@@ -634,7 +821,21 @@ mod tests {
             field.metadata().get(ARROW_EXT_NAME_KEY).map(String::as_str),
             Some("lance.blob.v2")
         );
-        assert!(matches!(field.data_type(), DataType::Struct(_)));
+        let DataType::Struct(children) = field.data_type() else {
+            panic!("expected struct")
+        };
+        assert_eq!(
+            children
+                .iter()
+                .map(|f| (f.name().as_str(), f.data_type(), f.is_nullable()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("data", &DataType::LargeBinary, true),
+                ("uri", &DataType::Utf8, true),
+                ("position", &DataType::UInt64, true),
+                ("size", &DataType::UInt64, true),
+            ]
+        );
     }
 
     #[test]
@@ -765,6 +966,54 @@ mod tests {
         );
         let schema = Schema::new(vec![Field::new("id", DataType::Int64, false), info]);
         assert_eq!(blob_column_names(&schema), vec!["info.blob"]);
+    }
+
+    #[test]
+    fn list_blob_paths_are_not_row_addressable() {
+        let schema = Schema::new(vec![
+            blob("image", true),
+            Field::new(
+                "info",
+                DataType::Struct(vec![blob("thumbnail", true)].into()),
+                true,
+            ),
+            Field::new("images", DataType::List(Arc::new(blob("item", true))), true),
+            Field::new(
+                "groups",
+                DataType::LargeList(Arc::new(Field::new(
+                    "group",
+                    DataType::Struct(vec![blob("photo", true)].into()),
+                    true,
+                ))),
+                true,
+            ),
+            Field::new(
+                "frames",
+                DataType::FixedSizeList(Arc::new(blob("frame", true)), 2),
+                true,
+            ),
+        ]);
+        assert!(has_blob_columns(&schema));
+        assert_eq!(blob_column_names(&schema), vec!["image", "info.thumbnail"]);
+
+        for column in [
+            "images",
+            "images.item",
+            "groups",
+            "groups.group.photo",
+            "frames",
+            "frames.frame",
+        ] {
+            let err = reject_list_blob_column(&schema, column).unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }));
+            assert!(
+                err.to_string()
+                    .contains("blobs inside lists cannot be fetched")
+            );
+        }
+        for column in ["image", "info.thumbnail", "info"] {
+            reject_list_blob_column(&schema, column).unwrap();
+        }
     }
 
     #[test]
