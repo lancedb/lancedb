@@ -176,12 +176,6 @@ pub struct RemoteDatabaseOptionsBuilder {
 }
 
 impl RemoteDatabaseOptionsBuilder {
-    fn sql_client(&self) -> Result<&SqlClient> {
-        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
-            message: "SQL is unavailable for this remote database client".into(),
-        })
-    }
-
     pub fn new() -> Self {
         Self {
             options: RemoteDatabaseOptions::default(),
@@ -471,6 +465,12 @@ impl<S: HttpSend> RemoteDatabase<S> {
                 }
             }
         }
+    }
+
+    fn sql_client(&self) -> Result<&SqlClient> {
+        self.sql_client.as_ref().ok_or_else(|| Error::NotSupported {
+            message: "SQL is unavailable for this remote database client".into(),
+        })
     }
 
     async fn submit_drop_table(
