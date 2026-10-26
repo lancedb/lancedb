@@ -260,6 +260,7 @@ def test_a_credential_never_reaches_a_debug_log(tmp_path):
     Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
     import.
     """
+    pytest.importorskip("pyarrow.flight")
     script = tmp_path / "write_secret.py"
     script.write_text(_SECRET_DEBUG_LOG_SOURCE)
 
