@@ -32,18 +32,24 @@ if sys.version_info >= (3, 12):
 else:
     from overrides import EnforceOverrides, override  # type: ignore
 
-from lancedb.listing import AsyncListing, Listing
+from lancedb.listing import (
+    AsyncListing,
+    AsyncNamespaceListing,
+    AsyncTableListing,
+    Listing,
+    NamespaceListing,
+    TableListing,
+    validate_page_limit,
+)
 from lancedb.embeddings.registry import EmbeddingFunctionRegistry
 
 from lancedb.common import data_to_reader, sanitize_uri, validate_schema
 from lancedb.background_loop import LOOP
 from lance_namespace import (
     LanceNamespace,
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
     connect as namespace_connect,
 )
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
@@ -171,7 +177,7 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -187,12 +193,12 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return ListNamespacesResponse(namespaces=[], page_token=None)
+        return NamespaceListing(AsyncNamespaceListing(None, empty=True))
 
     def create_namespace(
         self,
@@ -317,8 +323,8 @@ class DBConnection(EnforceOverrides):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -334,7 +340,7 @@ class DBConnection(EnforceOverrides):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         raise NotImplementedError(
@@ -545,7 +551,9 @@ class DBConnection(EnforceOverrides):
         LanceTable(name='table4', ...)
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_table is not supported for this connection type"
+        )
 
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
@@ -600,7 +608,9 @@ class DBConnection(EnforceOverrides):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "open_table is not supported for this connection type"
+        )
 
     def create_materialized_view(
         self,
@@ -667,10 +677,11 @@ class DBConnection(EnforceOverrides):
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
-        The job may already be complete for a local database. On LanceDB
-        Cloud and Enterprise, its ``id`` is the server job identifier from
-        the ``202 Accepted`` create response. Wait for the job before opening
-        or querying the view.
+        The job may already be complete for a local database. Remote creation
+        submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
+        ``job_type == "query"`` and ``id`` identifies the connection-scoped
+        query. Registry event history is unavailable.
+        Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -740,13 +751,17 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table is not supported for this connection type"
+        )
 
     def drop_table_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job:
         """Start dropping a table and return its cleanup job."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table_async is not supported for this connection type"
+        )
 
     def rename_table(
         self,
@@ -774,18 +789,25 @@ class DBConnection(EnforceOverrides):
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "rename_table is not supported for this connection type"
+        )
 
     def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_database is not supported for this connection type"
+        )
 
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """
         Drop all tables from the database
+
+        Remote connections do not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
 
         Parameters
         ----------
@@ -795,7 +817,9 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_all_tables is not supported for this connection type"
+        )
 
     @property
     def uri(self) -> str:
@@ -1233,18 +1257,19 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. A
-        parameterized query runs on the call that returns its rows:
-        cancelling it, or dropping its handle before reading, stops it on the
-        server. Its status follows that stream as well: ``describe()``
-        reports ``running`` until the reader has received every row, so open
-        ``reader()`` directly rather than waiting for ``finished``.
+        Parameters are supported in queries, not in DDL or DML. With or
+        without parameters, the server chooses whether to stream rows on the
+        initial call or return a polling continuation. The reader follows
+        either path transparently. Dropping an unread handle or its reader
+        stops a directly streamed query; deferred execution requires explicit
+        cancellation. Open ``reader()`` directly: a streamed query needs its
+        reader to make progress and reports ``running`` until the stream ends.
 
         Local connections do not support SQL.
         """
         raise NotImplementedError("SQL is not supported for this connection type")
 
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
@@ -1439,7 +1464,7 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> NamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -1455,16 +1480,14 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListNamespacesResponse
+        NamespaceListing
             Response containing namespace names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return NamespaceListing(
             self._conn.list_namespaces(
-                namespace_path=namespace_path,
-                page_token=page_token,
-                limit=limit,
+                namespace_path=namespace_path, page_token=page_token, limit=limit
             )
         )
 
@@ -1515,8 +1538,8 @@ class LanceDBConnection(DBConnection):
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> TableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -1532,12 +1555,12 @@ class LanceDBConnection(DBConnection):
 
         Returns
         -------
-        ListTablesResponse
+        TableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        return LOOP.run(
+        return TableListing(
             self._conn.list_tables(
                 namespace_path=namespace_path, page_token=page_token, limit=limit
             )
@@ -2289,12 +2312,12 @@ class AsyncConnection(object):
         else:
             return None
 
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse:
+    ) -> AsyncNamespaceListing:
         """List immediate child namespace names in the given namespace.
 
         Parameters
@@ -2309,15 +2332,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListNamespacesResponse
+        AsyncNamespaceListing
             Response containing namespace names and optional pagination token
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_namespaces(
+        validate_page_limit(limit)
+        inner = self._inner.list_namespaces(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListNamespacesResponse(**result)
+        if limit == 0:
+            return AsyncNamespaceListing(None, empty=True)
+        return AsyncNamespaceListing(inner, page_token)
 
     async def create_namespace(
         self,
@@ -2396,13 +2422,13 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse:
-        """List a page of tables in this database.
+    ) -> AsyncTableListing:
+        """List tables in this database, one page at a time.
 
         Parameters
         ----------
@@ -2418,15 +2444,18 @@ class AsyncConnection(object):
 
         Returns
         -------
-        ListTablesResponse
+        AsyncTableListing
             Response containing table names and optional page_token for pagination.
         """
         if namespace_path is None:
             namespace_path = []
-        result = await self._inner.list_tables(
+        validate_page_limit(limit)
+        inner = self._inner.list_tables(
             namespace_path=namespace_path, page_token=page_token, limit=limit
         )
-        return ListTablesResponse(**result)
+        if limit == 0:
+            return AsyncTableListing(None, empty=True)
+        return AsyncTableListing(inner, page_token)
 
     async def table_names(
         self,
@@ -2847,7 +2876,9 @@ class AsyncConnection(object):
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
-        Wait for the returned job before opening or querying the view.
+        Wait for the returned job before opening or querying the view. Remote
+        creation uses SQL; ``job_type`` is ``"query"`` and ``id``
+        identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
             source, select, where, limit
@@ -3387,8 +3418,14 @@ class AsyncConnection(object):
             )
         )
 
-    async def describe_query(self, query_id: UUID) -> QueryDescription:
-        """Describe a submitted SQL query by its connection-scoped id."""
+    async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
+        """Describe a submitted SQL query by its UUID or string ID.
+
+        For a handle with ``job_type == "query"``, pass its ``id`` on the
+        connection that submitted it. Registry job IDs are not query IDs.
+        """
+        if isinstance(query_id, str):
+            query_id = UUID(query_id)
         return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:

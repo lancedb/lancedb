@@ -2230,9 +2230,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.2"
+version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d5515a3834141de9eafb9717ad39eea8247b5674e6066c404e8c4b365d2a29e"
+checksum = "12218662ccac37d9714f2191252553d67585b97df8c839cbe49e0bde278dc865"
 dependencies = [
  "cmov",
 ]
@@ -5700,7 +5700,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "ahash",
  "anyhow",
@@ -5798,7 +5798,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-nodejs"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -5823,7 +5823,7 @@ dependencies = [
 
 [[package]]
 name = "lancedb-python"
-version = "0.41.0-beta.13"
+version = "0.41.0-beta.14"
 dependencies = [
  "arc-swap",
  "arrow",
@@ -10446,9 +10446,9 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",

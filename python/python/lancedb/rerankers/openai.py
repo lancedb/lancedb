@@ -21,7 +21,7 @@ class OpenaiReranker(Reranker):
 
     Parameters
     ----------
-    model_name : str, default "gpt-4-turbo-preview"
+    model_name : str, default "gpt-5.6-sol"
         The name of the cross encoder model to use.
     column : str, default "text"
         The name of the column to use as input to the cross encoder model.
@@ -33,7 +33,7 @@ class OpenaiReranker(Reranker):
 
     def __init__(
         self,
-        model_name: str = "gpt-4-turbo-preview",
+        model_name: str = "gpt-5.6-sol",
         column: str = "text",
         return_score="relevance",
         api_key: Optional[str] = None,
@@ -54,7 +54,6 @@ class OpenaiReranker(Reranker):
         response = self._client.chat.completions.create(
             model=self.model_name,
             response_format={"type": "json_object"},
-            temperature=0,
             messages=[
                 {
                     "role": "system",
@@ -132,4 +131,4 @@ class OpenaiReranker(Reranker):
                 "OPENAI_API_KEY not set. Either set it in your environment or \
                 pass it as `api_key` argument to the CohereReranker."
             )
-        return openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY") or self.api_key)
+        return openai.OpenAI(api_key=self.api_key or os.environ.get("OPENAI_API_KEY"))

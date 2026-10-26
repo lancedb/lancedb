@@ -19,11 +19,9 @@ from .index import (
     FTS,
 )
 from lance_namespace import (
-    ListNamespacesResponse,
     CreateNamespaceResponse,
     DropNamespaceResponse,
     DescribeNamespaceResponse,
-    ListTablesResponse,
 )
 from .remote import ClientConfig
 from .types import BaseTokenizerType
@@ -114,12 +112,12 @@ class Connection(object):
     uri: str
     async def is_open(self): ...
     async def close(self): ...
-    async def list_namespaces(
+    def list_namespaces(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListNamespacesResponse: ...
+    ) -> NameListing: ...
     async def create_namespace(
         self,
         namespace_path: List[str],
@@ -136,12 +134,12 @@ class Connection(object):
         self,
         namespace_path: List[str],
     ) -> DescribeNamespaceResponse: ...
-    async def list_tables(
+    def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
         page_token: Optional[str] = None,
         limit: Optional[int] = None,
-    ) -> ListTablesResponse: ...
+    ) -> NameListing: ...
     async def table_names(
         self,
         namespace_path: Optional[List[str]],
@@ -321,6 +319,8 @@ class BlobFile:
 class Job:
     @property
     def id(self) -> Optional[str]: ...
+    @property
+    def job_type(self) -> Optional[str]: ...
     @property
     def _state(self) -> Optional[str]: ...
     @property
@@ -580,6 +580,7 @@ class Table:
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]
     ) -> list[Optional[BlobFile]]: ...
+    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -1010,6 +1011,7 @@ async def connect_catalog(
 class NameListing:
     def num_page_results(self) -> int: ...
     def page_token(self) -> Optional[str]: ...
+    async def next_page(self) -> Optional[dict[str, Any]]: ...
     def __aiter__(self) -> NameListing: ...
     async def __anext__(self) -> str: ...
 

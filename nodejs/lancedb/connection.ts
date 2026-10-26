@@ -30,16 +30,12 @@ import type {
   DescribeNamespaceResponse,
   DropNamespaceResponse,
   JobInfo,
-  ListNamespacesResponse,
-  ListTablesResponse,
 } from "./native";
 import { ViewDescription, viewDescriptionFromNative } from "./view";
 export type {
   CreateNamespaceResponse,
   DescribeNamespaceResponse,
   DropNamespaceResponse,
-  ListNamespacesResponse,
-  ListTablesResponse,
 };
 import { sanitizeTable } from "./sanitize";
 import { LocalTable, Table } from "./table";
@@ -141,7 +137,7 @@ export interface OpenTableOptions {
 }
 
 /**
- * @deprecated Use {@link ListTablesOptions} with {@link Connection.listTables}
+ * @deprecated Use {@link ListingOptions} with {@link Connection.listTables}
  * instead.
  */
 export interface TableNamesOptions {
@@ -154,32 +150,6 @@ export interface TableNamesOptions {
    */
   startAfter?: string;
   /** The maximum number of names to return. Omitted returns all names; zero returns none. */
-  limit?: number;
-}
-
-export interface ListTablesOptions {
-  /**
-   * Token from a previous response, to resume listing where it left off.
-   *
-   * The token is opaque: it carries whatever the database needs to resume, and
-   * callers should not construct or interpret one.
-   */
-  pageToken?: string;
-  /**
-   * An upper bound on how many tables to return.
-   * Defaults to 100. Zero returns an empty page without a continuation token.
-   *
-   * A page may hold fewer than this and still not be the last one, so keep
-   * going while the response carries a page token rather than while pages are
-   * full.
-   */
-  limit?: number;
-}
-
-export interface ListNamespacesOptions {
-  /** Token from a previous response for pagination. */
-  pageToken?: string;
-  /** An optional limit to the number of results to return. */
   limit?: number;
 }
 
@@ -278,45 +248,18 @@ export abstract class Connection {
     options?: Partial<TableNamesOptions>,
   ): Promise<string[]>;
 
-  /**
-   * List a page of the tables in this database.
-   *
-   * To retrieve the tables after the page, pass the `pageToken` the response
-   * carries back in. A page can be shorter than `limit` without being the last
-   * one, so walk until a response carries no page token:
-   *
+  /** Lazily list tables in a namespace, requesting 100 per page by default.
+   * @example
    * ```ts
-   * const names = [];
-   * let pageToken = undefined;
-   * do {
-   *   const page = await conn.listTables({ pageToken, limit: 100 });
-   *   names.push(...page.tables);
-   *   pageToken = page.pageToken;
-   * } while (pageToken);
+   * for await (const name of conn.listTables([], { pageLimit: 20 })) {
+   *   console.log(name);
+   * }
    * ```
-   *
-   * @param {Partial<ListTablesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListTablesResponse>} A page of table names and an
-   *   optional token for the tables after it.
-   */
-  abstract listTables(
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse>;
-  /**
-   * List a page of the tables in this database.
-   *
-   * @param {string[]} namespacePath - The namespace path to list tables from
-   *   (defaults to root namespace)
-   * @param {Partial<ListTablesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListTablesResponse>} A page of table names and an
-   *   optional token for the tables after it.
    */
   abstract listTables(
     namespacePath?: string[],
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse>;
+    options?: ListingOptions,
+  ): Listing<string>;
 
   /**
    * Open a table in the database.
@@ -542,23 +485,11 @@ export abstract class Connection {
     namespacePath: string[],
   ): Promise<DescribeNamespaceResponse>;
 
-  /**
-   * List the immediate child namespaces under the given parent.
-   *
-   * Results may be paginated. To retrieve subsequent pages, pass the
-   * `pageToken` returned by a previous call.
-   *
-   * @param {string[]} namespacePath - The parent namespace path. Defaults
-   *   to the root namespace if omitted.
-   * @param {Partial<ListNamespacesOptions>} options - Pagination options
-   *   (`pageToken`, `limit`).
-   * @returns {Promise<ListNamespacesResponse>} Child namespace names and
-   *   an optional token for fetching the next page.
-   */
+  /** Lazily list immediate child namespaces, 100 per page by default. */
   abstract listNamespaces(
     namespacePath?: string[],
-    options?: Partial<ListNamespacesOptions>,
-  ): Promise<ListNamespacesResponse>;
+    options?: ListingOptions,
+  ): Listing<string>;
 
   /**
    * Create a new namespace at the given path.
@@ -821,22 +752,17 @@ export class LocalConnection extends Connection {
     );
   }
 
-  async listTables(
-    namespacePathOrOptions?: string[] | Partial<ListTablesOptions>,
-    options?: Partial<ListTablesOptions>,
-  ): Promise<ListTablesResponse> {
-    // Detect if first argument is namespacePath array or options object
-    const namespacePath = Array.isArray(namespacePathOrOptions)
-      ? namespacePathOrOptions
-      : undefined;
-    const listTablesOptions = Array.isArray(namespacePathOrOptions)
-      ? options
-      : (namespacePathOrOptions ?? options);
-
-    return this.inner.listTables(
-      namespacePath ?? [],
-      listTablesOptions?.pageToken,
-      normalizeTableListingLimit(listTablesOptions?.limit),
+  listTables(
+    namespacePath?: string[],
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listTables(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
     );
   }
 
@@ -1039,12 +965,15 @@ export class LocalConnection extends Connection {
 
   listNamespaces(
     namespacePath?: string[],
-    options?: Partial<ListNamespacesOptions>,
-  ): Promise<ListNamespacesResponse> {
-    return this.inner.listNamespaces(
-      namespacePath ?? [],
-      options?.pageToken,
-      options?.limit,
+    options: ListingOptions = {},
+  ): Listing<string> {
+    validateListingOptions(options);
+    return new Listing(
+      this.inner.listNamespaces(
+        namespacePath ?? [],
+        options.pageToken,
+        options.pageLimit,
+      ),
     );
   }
 
