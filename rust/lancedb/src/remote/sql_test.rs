@@ -2277,3 +2277,74 @@ async fn secret_description_uses_the_sql_metadata_projection() {
     assert_eq!(info.updated_at_millis, 2);
     shutdown.send(()).unwrap();
 }
+
+#[tokio::test]
+async fn view_create_and_describe_return_metadata_through_sql() {
+    let definition = r#"{"name":"adults","namespace":["team"],"query":"SELECT name FROM people","default_database":"db","default_namespace":["team"],"schema":{"fields":[{"name":"name","nullable":true,"type":{"type":"utf8"}}]}}"#;
+    for defer in [false, true] {
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![definition])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request");
+        })
+        .with_sql_client(client);
+        let created = db
+            .create_view("adults", "SELECT name FROM people", &["team".into()])
+            .await
+            .unwrap();
+        let described = db.describe_view("adults", &["team".into()]).await.unwrap();
+        assert_eq!(created, described);
+        assert_eq!(created.schema.fields()[0].name(), "name");
+        assert_eq!(created.default_namespace_path, ["team"]);
+        assert_eq!(
+            statements.lock().unwrap().as_slice(),
+            [
+                "CREATE VIEW \"adults\" AS SELECT name FROM people",
+                "DESCRIBE VIEW \"adults\""
+            ]
+        );
+        shutdown.send(()).unwrap();
+    }
+}
+#[tokio::test]
+async fn view_drop_uses_a_repeatable_query_job() {
+    let service = TestSqlService {
+        adaptive: true,
+        defer: true,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+    let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+        panic!("unexpected REST request");
+    })
+    .with_sql_client(client.clone());
+    let job = db
+        .drop_view_async("adults", &["team".into()])
+        .await
+        .unwrap();
+    assert_eq!(job.job_type().as_deref(), Some("query"));
+    let id = Uuid::parse_str(job.id().unwrap()).unwrap();
+    job.wait().await.unwrap();
+    job.wait().await.unwrap();
+    assert_eq!(
+        client.describe(id).await.unwrap().status,
+        QueryStatus::Finished
+    );
+    assert_eq!(
+        statements.lock().unwrap().as_slice(),
+        ["DROP VIEW \"adults\""]
+    );
+    shutdown.send(()).unwrap();
+}

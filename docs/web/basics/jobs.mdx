@@ -84,6 +84,11 @@ the credential as a parameter to `CREATE SECRET name AS $1` or
 completion status or Secret metadata, including rotation history from SQL
 `DESCRIBE SECRET`; they never return credential values.
 
+Remote view creation, description, listing, and drop also use SQL. Creation
+returns the stored definition and schema from the same SQL execution.
+`drop_view_async()` returns a query job: waiting confirms catalog removal while
+physical cleanup continues in the background.
+
 The existing `job.job_type` identifies query-backed handles as `"query"` from
 submission, and `job.id` contains the connection-scoped SQL query UUID string.
 Use `describe_query(job.id)` on the submitting connection to inspect the query.
