@@ -3062,7 +3062,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if columns:
             self._vector_query.select(columns)
             self._fts_query.select(columns)
-        if self._where:
+        # An Expr has no truth value (it raises on bool()), so test for it
+        # explicitly instead of relying on truthiness; an empty SQL string is
+        # still skipped.
+        if isinstance(self._where, Expr) or self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
         # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
