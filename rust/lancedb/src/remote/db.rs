@@ -3758,4 +3758,23 @@ mod tests {
         assert_eq!(job.status().await.unwrap(), "finished");
         assert!(polls.load(Ordering::SeqCst) >= 4);
     }
+    #[tokio::test]
+    async fn test_create_materialized_view_validates_before_submission() {
+        let db = super::RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("materialized-view creation must not send REST requests")
+        });
+        for seconds in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let result = db
+                .create_materialized_view_async(CreateMaterializedViewRequest {
+                    name: "adults".into(),
+                    namespace_path: vec![],
+                    query: "SELECT * FROM people".into(),
+                    with_no_data: false,
+                    auto_refresh_enabled: None,
+                    auto_refresh_interval_seconds: Some(seconds),
+                })
+                .await;
+            assert!(matches!(result, Err(Error::InvalidInput { .. })));
+        }
+    }
 }
