@@ -987,9 +987,7 @@ class DBConnection(EnforceOverrides):
 
         The boolean reports catalog removal. The job has type ``query`` and its
         ID is the SQL query UUID. Repeated waits confirm that completion;
-        physical cleanup continues in the background. When
-        the server deletes inline, or when nothing was bound, the returned job
-        is already finished and has no id. Local connections raise
+        physical cleanup continues in the background. Local connections raise
         NotImplementedError.
         """
         raise NotImplementedError(
