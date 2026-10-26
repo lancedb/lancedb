@@ -2,10 +2,12 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import contextlib
+import faulthandler
 import functools
 import http.server
 import json
 import multiprocessing as mp
+import os
 import pickle
 import sys
 import threading
@@ -314,7 +316,16 @@ def test_permutation_with_builder_is_picklable(tmp_db):
     assert restored.__getitems__(indices) == expected
 
 
+def _fork_dataloader_diagnostics(worker_id=None):
+    faulthandler.enable(all_threads=True)
+    faulthandler.dump_traceback_later(20)
+    print(
+        f"DataLoader pid={os.getpid()} worker={worker_id}", file=sys.stderr, flush=True
+    )
+
+
 def _multiworker_dataloader_target(db_uri: str, result_queue):
+    _fork_dataloader_diagnostics()
     import lancedb
     from lancedb.permutation import Permutation
 
@@ -327,6 +338,7 @@ def _multiworker_dataloader_target(db_uri: str, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
+        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
@@ -356,6 +368,7 @@ class _LazyPermutationDataset(torch.utils.data.Dataset):
 
 
 def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
+    _fork_dataloader_diagnostics()
     table = lancedb.connect(db_uri).open_table("test_table")
     dataset = _LazyPermutationDataset(table)
     dataloader = torch.utils.data.DataLoader(
@@ -363,6 +376,7 @@ def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
+        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
@@ -372,6 +386,7 @@ def _lazy_multiworker_dataloader_target(db_uri: str, result_queue):
 
 
 def _remote_multiworker_dataloader_target(port: int, result_queue):
+    _fork_dataloader_diagnostics()
     import lancedb
     from lancedb.permutation import Permutation
 
@@ -392,6 +407,7 @@ def _remote_multiworker_dataloader_target(port: int, result_queue):
         batch_size=10,
         num_workers=2,
         multiprocessing_context="fork",
+        worker_init_fn=_fork_dataloader_diagnostics,
     )
     count = 0
     for batch in dataloader:
