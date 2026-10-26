@@ -67,6 +67,7 @@ def test_connect_enterprise_quickstart(monkeypatch):
         "api_key": "your-api-key",
         "region": "us-east-1",
         "host_override": "https://your-endpoint",
+        "sql_host_override": "grpc+tls://your-sql-endpoint:10026",
     }
 
 
@@ -199,6 +200,7 @@ def test_connect_enterprise_placeholders(monkeypatch):
         api_key="your-api-key",
         region="us-east-1",
         host_override="https://your-endpoint",
+        sql_host_override="grpc+tls://your-sql-endpoint:10026",
     )
     # --8<-- [end:connect_enterprise_placeholders]
     assert db is not None
@@ -207,4 +209,5 @@ def test_connect_enterprise_placeholders(monkeypatch):
         "api_key": "your-api-key",
         "region": "us-east-1",
         "host_override": "https://your-endpoint",
+        "sql_host_override": "grpc+tls://your-sql-endpoint:10026",
     }
