@@ -885,6 +885,49 @@ pub async fn record_freshness(
     inputs: &InputFields,
     computed: SignatureMap,
 ) -> Result<FreshnessRecord> {
+    let Some(prepared) =
+        prepare_freshness(latest, pinned, column, definition_version, inputs, computed).await?
+    else {
+        return Ok(FreshnessRecord::default());
+    };
+    latest
+        .update_field_metadata()
+        .update(column, prepared.metadata)?
+        .await?;
+    Ok(FreshnessRecord {
+        version: Some(latest.version().version),
+        recorded: prepared.recorded,
+        moved: prepared.moved,
+    })
+}
+
+/// A freshness stamp prepared against one immutable dataset snapshot.
+///
+/// Its sidecar is already durable; `metadata` must be committed together on
+/// the named column using that snapshot as the transaction's read version.
+/// Preparation does not publish freshness. Abandoning it leaves an unreferenced
+/// sidecar for the existing sidecar pruning path.
+#[derive(Debug)]
+pub struct PreparedFreshness {
+    /// Complete field metadata update, including the durable sidecar reference.
+    pub metadata: HashMap<String, String>,
+    /// Computed fragments whose input identity still matches this snapshot.
+    pub recorded: usize,
+    /// Computed fragments excluded because their input identity changed.
+    pub moved: usize,
+}
+
+/// Prepare the same stamp as [`record_freshness`] without its metadata commit.
+/// Callers can combine related field metadata in one transaction. They must
+/// preserve the snapshot's version and the complete returned metadata map.
+pub async fn prepare_freshness(
+    latest: &Dataset,
+    pinned: Option<(&Dataset, &StalenessPlan)>,
+    column: &str,
+    definition_version: &str,
+    inputs: &InputFields,
+    computed: SignatureMap,
+) -> Result<Option<PreparedFreshness>> {
     let absent = matches!(
         stored_signatures(latest, column).await,
         StoredSignatures::Absent
@@ -904,7 +947,7 @@ pub async fn record_freshness(
     }
     entries.extend(computed);
     if entries.is_empty() && !absent {
-        return Ok(FreshnessRecord::default());
+        return Ok(None);
     }
     let fragments: Vec<u32> = entries.keys().copied().collect();
     let current = signatures_for(latest, &fragments, inputs)?;
@@ -913,12 +956,12 @@ pub async fn record_freshness(
         .filter(|(fragment_id, signature)| current.get(fragment_id) == Some(signature))
         .collect();
     let recorded = verified.len();
-    let version = write_signatures(latest, column, definition_version, verified).await?;
-    Ok(FreshnessRecord {
-        version: Some(version),
+    let metadata = prepare_signatures(latest, column, definition_version, verified).await?;
+    Ok(Some(PreparedFreshness {
+        metadata,
         recorded,
         moved: fragments.len() - recorded,
-    })
+    }))
 }
 
 /// Merge `entries` into the column's stored map and stamp the definition and
@@ -933,6 +976,20 @@ pub async fn write_signatures(
     definition_version: &str,
     entries: SignatureMap,
 ) -> Result<u64> {
+    let metadata = prepare_signatures(dataset, column, definition_version, entries).await?;
+    dataset
+        .update_field_metadata()
+        .update(column, metadata)?
+        .await?;
+    Ok(dataset.version().version)
+}
+
+async fn prepare_signatures(
+    dataset: &Dataset,
+    column: &str,
+    definition_version: &str,
+    entries: SignatureMap,
+) -> Result<HashMap<String, String>> {
     let live: HashSet<u32> = dataset
         .get_fragments()
         .iter()
@@ -953,25 +1010,17 @@ pub async fn write_signatures(
     } else {
         write_sidecar(dataset, &merged).await?
     };
-    let describes = dataset.version().version;
-    dataset
-        .update_field_metadata()
-        .update(
-            column,
-            [
-                (SOURCE_SIGNATURE_META_KEY.to_string(), encoded),
-                (
-                    DEFINITION_VERSION_META_KEY.to_string(),
-                    definition_version.to_string(),
-                ),
-                (
-                    RECORDED_AT_VERSION_META_KEY.to_string(),
-                    describes.to_string(),
-                ),
-            ],
-        )?
-        .await?;
-    Ok(dataset.version().version)
+    Ok(HashMap::from([
+        (SOURCE_SIGNATURE_META_KEY.to_string(), encoded),
+        (
+            DEFINITION_VERSION_META_KEY.to_string(),
+            definition_version.to_string(),
+        ),
+        (
+            RECORDED_AT_VERSION_META_KEY.to_string(),
+            dataset.version().version.to_string(),
+        ),
+    ]))
 }
 
 #[cfg(test)]
@@ -1048,6 +1097,49 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    #[tokio::test]
+    async fn prepared_freshness_is_invisible_until_the_combined_metadata_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dataset = table(dir.path().to_str().unwrap()).await;
+        let version = dataset.version().version;
+        let inputs = inputs(&dataset);
+        let entries = signatures_for(&dataset, &[0, 1], &inputs).unwrap();
+        let prepared = prepare_freshness(
+            &dataset,
+            None,
+            COLUMN,
+            &definition_version(EXPRESSION),
+            &inputs,
+            entries,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(prepared.recorded, 2);
+        assert_eq!(prepared.moved, 0);
+        let before = Dataset::open(dataset.uri()).await.unwrap();
+        assert_eq!(before.version().version, version);
+        assert_eq!(plan(&before).await.dirty.len(), 2);
+        dataset
+            .update_field_metadata()
+            .update(COLUMN, prepared.metadata)
+            .unwrap()
+            .update(
+                "value",
+                [("publication".to_string(), "complete".to_string())],
+            )
+            .unwrap()
+            .await
+            .unwrap();
+        let after = Dataset::open(dataset.uri()).await.unwrap();
+        assert_eq!(after.version().version, version + 1);
+        assert!(plan(&after).await.dirty.is_empty());
+        assert_eq!(
+            after.schema().field("value").unwrap().metadata["publication"],
+            "complete"
+        );
     }
 
     async fn stamp_all(dataset: &mut Dataset) {
