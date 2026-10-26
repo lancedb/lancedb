@@ -9,16 +9,19 @@ import inspect
 import sys
 import types
 from abc import ABC, abstractmethod
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from enum import Enum
 from typing import (
     TYPE_CHECKING,
     Any,
     List,
+    Literal,
     Type,
     Union,
     _GenericAlias,
     GenericAlias,
+    get_args,
+    get_origin,
 )
 
 import pyarrow as pa
@@ -247,6 +250,19 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
     elif py_type is datetime:
         tz = get_extras(field, "tz")
         return pa.timestamp("us", tz=tz)
+    elif py_type is time:
+        return pa.time64("us")
+    elif py_type is timedelta:
+        return pa.duration("us")
+    elif get_origin(py_type) is Literal:
+        # Store a Literal as the type of its values, e.g. Literal["a", "b"] as utf8.
+        value_types = {type(value) for value in get_args(py_type)}
+        if len(value_types) != 1:
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. All values of a Literal must have the same type."
+            )
+        return _pydantic_type_to_arrow_type(value_types.pop(), field)
     elif getattr(py_type, "__origin__", None) in (list, tuple):
         # A bare, unparameterised ``typing.List`` / ``typing.Tuple`` matches this
         # branch (its ``__origin__`` is ``list`` / ``tuple``) but has no
