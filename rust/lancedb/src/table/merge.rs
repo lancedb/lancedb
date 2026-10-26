@@ -2592,6 +2592,11 @@ mod lsm_tests {
         table.close_rte_writers().await.unwrap();
         let sstables = published_sstables(&table).await;
         assert_eq!(sstables.len(), 1, "expected one published SSTable");
+        assert_eq!(
+            sstables[0].count_rows(None).await.unwrap(),
+            N + 1,
+            "published SSTable must contain the complete replacement fixture"
+        );
 
         // The public query sets no explicit refine factor. Because the upsert
         // rewrote every base id, a newer generation exists, so the engine must
@@ -2644,8 +2649,8 @@ mod lsm_tests {
             .unwrap();
         let (published_id, published_distance) = first_result(&published);
         assert!(
-            base_rows.iter().any(|(id, _)| *id == published_id),
-            "SSTable result id {published_id} must belong to the replacement dataset"
+            (0_i64..=N as i64).contains(&published_id),
+            "SSTable result id {published_id} must belong to the complete 0..={N} replacement fixture"
         );
 
         // The maintained ANN index may rank near-tied rows differently than
