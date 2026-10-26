@@ -6,9 +6,56 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 import lancedb
+from lancedb.table import Table
 import pytest
 
 from test_remote_db import mock_lancedb_connection
+
+
+@pytest.fixture
+def legacy_table():
+    """Implement the pre-existing abstract API without the two new members."""
+
+    def unsupported(self, *args, **kwargs):
+        raise NotImplementedError
+
+    def update_field_metadata(self, updates):
+        self.metadata_updates.append(updates)
+        return object()  # The deprecated wrapper must not expose this result.
+
+    # Supply concrete implementations through normal ABC class creation. Leave
+    # namespace and replace_field_metadata inherited, as an old subclass would.
+    implementations = {
+        name: unsupported
+        for name in Table.__abstractmethods__
+        if name not in {"namespace", "replace_field_metadata"}
+    }
+    implementations.update(
+        name=property(lambda self: "legacy"),
+        update_field_metadata=update_field_metadata,
+    )
+    legacy_class = type("LegacyTable", (Table,), implementations)
+    table = legacy_class()
+    table.metadata_updates = []
+    return table
+
+
+def test_legacy_table_namespace_and_id(legacy_table):
+    assert legacy_table.namespace == []
+    assert legacy_table.id == "legacy"
+    namespace = legacy_table.namespace
+    namespace.append("changed")
+    assert legacy_table.namespace == []
+    assert legacy_table.id == "legacy"
+
+
+def test_legacy_table_replace_field_metadata(legacy_table):
+    with pytest.warns(DeprecationWarning, match="update_field_metadata"):
+        result = legacy_table.replace_field_metadata("nested.field", {"a": "b"})
+    assert result is None
+    assert legacy_table.metadata_updates == [
+        {"path": "nested.field", "metadata": {"a": "b"}, "replace": True}
+    ]
 
 
 def respond(request, body):

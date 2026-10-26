@@ -1361,10 +1361,9 @@ class Table(ABC):
         raise NotImplementedError("name is not supported for this table type")
 
     @property
-    @abstractmethod
     def namespace(self) -> List[str]:
         """Return the namespace path of the table (empty for the root namespace)."""
-        raise NotImplementedError
+        return []
 
     @property
     def id(self) -> str:
@@ -3122,7 +3121,6 @@ class Table(ABC):
         current_version=__version__,
         details="Use update_field_metadata() instead.",
     )
-    @abstractmethod
     def replace_field_metadata(self, field_name: str, new_metadata: Dict[str, str]):
         """Replace all metadata of a field in the schema.
 
@@ -3137,7 +3135,9 @@ class Table(ABC):
         new_metadata: dict
             The new metadata, replacing all existing keys.
         """
-        raise NotImplementedError
+        self.update_field_metadata(
+            {"path": field_name, "metadata": new_metadata, "replace": True}
+        )
 
     @abstractmethod
     def drop_columns(self, columns: Iterable[str]) -> DropColumnsResult:
