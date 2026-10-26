@@ -1487,41 +1487,22 @@ class Table(ABC):
         raise NotImplementedError("to_lance is not supported for this table type")
 
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
-        """Return the table as a polars LazyFrame.
-
-        Parameters
-        ----------
-        batch_size: int, optional
-            Passed to polars. This is the maximum row count for
-            scanned pyarrow record batches
+        """Return the table as a Polars LazyFrame.
 
         For remote tables, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
         Note
         ----
-        1. This requires polars to be installed separately
-        2. Currently we've disabled push-down of the filters from polars
-           because polars pushdown into pyarrow uses pyarrow compute
-           expressions rather than SQl strings (which LanceDB supports)
-        3. The Polars streaming engine is not supported because it does not
-           currently implement Python PyArrow dataset scans. Use the default
-           engine when collecting this LazyFrame.
+        The Polars streaming engine is not supported because it does not currently
+        implement Python PyArrow dataset scans. Use the default engine when collecting
+        this LazyFrame.
 
         Returns
         -------
-        pl.LazyFrame
+        polars.LazyFrame
         """
-        from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
-
-        dataset = PyarrowDatasetAdapter(self)
-        # Polars 1.32's non-PyArrow callback path passes batch_size twice.  Keep
-        # the compatible PyArrow path, but block predicates because this adapter
-        # cannot translate PyArrow expressions into LanceDB filters.
-        return pl.scan_pyarrow_dataset(dataset, batch_size=batch_size).map_batches(
-            _polars_predicate_pushdown_barrier,
-            predicate_pushdown=False,
-        )
+        raise NotImplementedError("to_polars is not supported for this table type")
 
     def _is_legacy_create_index_call(
         self,
@@ -3736,6 +3717,40 @@ class LanceTable(Table):
             return self._execute_query(Query()).read_all()
 
         return LOOP.run(self._table.to_arrow())
+
+    def to_polars(self, batch_size=None) -> "pl.LazyFrame":
+        """Return the table as a polars LazyFrame.
+
+        Parameters
+        ----------
+        batch_size: int, optional
+            Passed to polars. This is the maximum row count for
+            scanned pyarrow record batches
+
+        Note
+        ----
+        1. This requires polars to be installed separately
+        2. Currently we've disabled push-down of the filters from polars
+           because polars pushdown into pyarrow uses pyarrow compute
+           expressions rather than SQl strings (which LanceDB supports)
+        3. The Polars streaming engine is not supported because it does not
+           currently implement Python PyArrow dataset scans. Use the default
+           engine when collecting this LazyFrame.
+
+        Returns
+        -------
+        pl.LazyFrame
+        """
+        from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
+
+        dataset = PyarrowDatasetAdapter(self)
+        # Polars 1.32's non-PyArrow callback path passes batch_size twice.  Keep
+        # the compatible PyArrow path, but block predicates because this adapter
+        # cannot translate PyArrow expressions into LanceDB filters.
+        return pl.scan_pyarrow_dataset(dataset, batch_size=batch_size).map_batches(
+            _polars_predicate_pushdown_barrier,
+            predicate_pushdown=False,
+        )
 
     # New unified API overload
     @overload
