@@ -1492,6 +1492,12 @@ class Table(ABC):
         For remote tables, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
+        Parameters
+        ----------
+        batch_size: int, optional
+            Passed to Polars as the maximum row count for scanned PyArrow
+            record batches.
+
         Note
         ----
         The Polars streaming engine is not supported because it does not currently
