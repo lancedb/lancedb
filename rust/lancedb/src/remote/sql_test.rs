@@ -2107,3 +2107,90 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
         shutdown.send(()).unwrap();
     }
 }
+
+#[tokio::test]
+async fn function_creation_and_description_use_sql_query_handles() {
+    const VERSION: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+    );
+    const REQUEST: &str = include_str!(
+        "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
+    );
+    for defer in [false, true] {
+        let result = RecordBatch::try_from_iter(vec![(
+            "definition",
+            Arc::new(StringArray::from(vec![VERSION])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer,
+            result,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!("unexpected REST request: {}", request.url().path());
+        })
+        .with_sql_client(client.clone());
+        let job = db
+            .create_function_async(
+                crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap(),
+                &["team".into()],
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        let id = Uuid::parse_str(job.id().unwrap()).unwrap();
+        assert_eq!(job.wait().await.unwrap().name(), "embed");
+        assert_eq!(job.wait().await.unwrap().version(), "1");
+        assert_eq!(
+            client.describe(id).await.unwrap().status,
+            QueryStatus::Finished
+        );
+        assert_eq!(
+            db.get_function("embed", "1", &["team".into()])
+                .await
+                .unwrap()
+                .name(),
+            "embed"
+        );
+        let seen = statements.lock().unwrap();
+        assert!(seen[0].starts_with("CREATE FUNCTION \"normalize_score\" FROM '"));
+        assert_eq!(seen[1], "DESCRIBE FUNCTION \"embed\" WITH (version = '1')");
+        shutdown.send(()).unwrap();
+    }
+}
+#[tokio::test]
+async fn function_drop_keeps_the_query_id_and_reports_catalog_removal() {
+    for (status, expected) in [("dropped", true), ("not_found", false)] {
+        let result = RecordBatch::try_from_iter(vec![(
+            "status",
+            Arc::new(StringArray::from(vec![status])) as ArrayRef,
+        )])
+        .unwrap();
+        let service = TestSqlService {
+            adaptive: true,
+            defer: true,
+            result,
+            ..Default::default()
+        };
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let db = RemoteDatabase::new_mock(|_| -> http::Response<String> {
+            panic!("unexpected REST request");
+        })
+        .with_sql_client(client.clone());
+        let (dropped, job) = db.drop_function_async("embed", "1", &[]).await.unwrap();
+        assert_eq!(dropped, expected);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        let id = Uuid::parse_str(job.id().unwrap()).unwrap();
+        job.wait().await.unwrap();
+        job.wait().await.unwrap();
+        assert_eq!(
+            client.describe(id).await.unwrap().status,
+            QueryStatus::Finished
+        );
+        shutdown.send(()).unwrap();
+    }
+}

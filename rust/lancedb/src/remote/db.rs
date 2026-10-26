@@ -24,21 +24,17 @@ use crate::database::{
     ExecuteQueryRequest, JobInfo, OpenTableRequest, ReadConsistency, TableNamesRequest,
 };
 use crate::error::Result;
-use crate::function::{
-    FunctionArtifactRequest, FunctionRegistrationRequest, FunctionSignature, FunctionVersion,
-    PythonRuntimeSpec,
-};
+use crate::function::{FunctionRegistrationRequest, FunctionVersion};
 use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::remote::job::{PauseJobResponse, RemoteJob, ResumeJobResponse, job_state_to_client};
 use crate::remote::util::stream_as_body;
-use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
 use crate::utils::{
-    validate_database_name, validate_function_name, validate_namespace, validate_secret_name,
-    validate_table_name, validate_view_name,
+    validate_database_name, validate_namespace, validate_secret_name, validate_table_name,
+    validate_view_name,
 };
 use crate::view::ViewDescription;
 
@@ -665,14 +661,6 @@ fn build_namespace_identifier(namespace: &[String]) -> Result<String> {
     }
 }
 
-/// Build a full path to a function. Note that we do not need to percent-encode
-/// this when using it in a URL because the validation functions ensure that
-/// only URL-safe characters are present.
-fn build_function_identifier(name: &str, namespace: &[String]) -> Result<String> {
-    validate_function_name(name)?;
-    build_compound_identifier(name, namespace)
-}
-
 /// Build a full path to a secret. Note that we do not need to percent-encode
 /// this when using it in a URL because the validation functions ensure that
 /// only URL-safe characters are present.
@@ -731,49 +719,6 @@ struct RemoteListJobsResponse {
     jobs: Vec<RemoteListJobRow>,
     #[serde(default)]
     page_token: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListedFunctionVersion {
-    definition: FunctionVersion,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteListFunctionsResponse {
-    #[serde(default)]
-    functions: Vec<RemoteListedFunctionVersion>,
-    #[serde(default)]
-    page_token: Option<String>,
-}
-
-#[derive(serde::Deserialize)]
-struct RemoteDropFunctionResponse {
-    dropped: bool,
-}
-
-/// The create body: every field of [`FunctionRegistrationRequest`] except the
-/// name, which is the path identifier.
-///
-/// A struct rather than a literal listing the fields, so that the compiler
-/// decides what reaches the service. A field the registration request grows is
-/// a build error here until it is handled; a literal would simply not send it.
-#[derive(serde::Serialize)]
-struct RemoteCreateFunctionRequest<'a> {
-    artifact: &'a FunctionArtifactRequest,
-    signature: &'a FunctionSignature,
-    runtime: &'a PythonRuntimeSpec,
-    /// Absent when the Function binds nothing, so such a client sends what a
-    /// client without bindings sends.
-    ///
-    /// A service that does not know the field ignores it: registration
-    /// succeeds, the returned version carries no bindings, and the Function
-    /// fails at execution with the variable unset. [`ServerVersion`] is how
-    /// this codebase refuses a feature the service is too old for; it is held
-    /// per table, so gating a database-level call is follow-up work.
-    ///
-    /// [`ServerVersion`]: super::db::ServerVersion
-    #[serde(skip_serializing_if = "<[SecretBinding]>::is_empty")]
-    secret_bindings: &'a [SecretBinding],
 }
 
 /// Create a Secret under a name the database does not yet hold.
@@ -971,134 +916,45 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         request: FunctionRegistrationRequest,
         namespace_path: &[String],
     ) -> Result<Job<FunctionVersion>> {
-        let function_id = build_function_identifier(&request.name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/function/{function_id}/create"))
-            .json(&RemoteCreateFunctionRequest {
-                artifact: &request.artifact,
-                signature: &request.signature,
-                runtime: &request.runtime,
-                secret_bindings: &request.secret_bindings,
-            });
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-            source: "Function registration response did not contain a valid job_id".into(),
-            request_id,
-            status_code: Some(status),
-        })?;
-        Ok(Job::new_typed(Box::new(RemoteJob::new(
-            self.client.clone(),
-            job_id,
-        ))))
+        self.sql.register_function(request, namespace_path).await
     }
-
     async fn get_function(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<FunctionVersion> {
-        let function_id = build_function_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/function/{function_id}/describe"))
-            .json(&serde_json::json!({
-                "version": version,
-            }));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        response.json().await.err_to_http(request_id)
+        self.sql
+            .describe_function(name, version, namespace_path)
+            .await
     }
-
     async fn list_functions(
         &self,
         namespace_path: &[String],
         options: ListingOptions,
-    ) -> Result<ListingPage<crate::function::FunctionVersion>> {
-        let namespace_id = build_namespace_identifier(namespace_path)?;
-        let path = format!("/v1/namespace/{namespace_id}/function/list");
-        let mut req = self.client.get(&path);
-        if let Some(token) = options.page_token {
-            req = req.query(&[("page_token", token)]);
-        }
-        if let Some(limit) = options.page_limit {
-            req = req.query(&[("limit", limit)]);
-        }
-        req = req.query(&[("include_definition", true)]);
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let response: RemoteListFunctionsResponse =
-            response.json().await.err_to_http(request_id)?;
-        let items = response
-            .functions
-            .into_iter()
-            .map(|listed| listed.definition)
-            .collect();
-        Ok(ListingPage {
-            items,
-            page_token: response.page_token,
-        })
+    ) -> Result<ListingPage<FunctionVersion>> {
+        self.sql.list_functions(namespace_path, options).await
     }
-
     async fn drop_function(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<bool> {
-        Ok(self
-            .drop_function_async(name, version, namespace_path)
-            .await?
-            .0)
+        let (dropped, job) = self
+            .sql
+            .drop_function(name, version, namespace_path)
+            .await?;
+        job.wait().await?;
+        Ok(dropped)
     }
-
     async fn drop_function_async(
         &self,
         name: &str,
         version: &str,
         namespace_path: &[String],
     ) -> Result<(bool, Job)> {
-        let function_id = build_function_identifier(name, namespace_path)?;
-        let req = self
-            .client
-            .post(&format!("/v1/function/{function_id}/drop"))
-            .json(&serde_json::json!({
-                "version": version,
-            }));
-        let (request_id, response) = self.client.send(req).await?;
-        let response = self.client.check_response(&request_id, response).await?;
-        let status = response.status();
-        let body = response.text().await.err_to_http(request_id.clone())?;
-        let dropped: RemoteDropFunctionResponse =
-            serde_json::from_str(&body).map_err(|source| Error::Http {
-                source: Box::new(source),
-                request_id: request_id.clone(),
-                status_code: Some(status),
-            })?;
-        let job = match status {
-            StatusCode::OK => Job::new_done(),
-            StatusCode::ACCEPTED => {
-                let job_id = extract_job_id(&body).ok_or_else(|| Error::Http {
-                    source: "asynchronous Function drop response did not contain a valid job_id"
-                        .into(),
-                    request_id,
-                    status_code: Some(status),
-                })?;
-                Job::new(Box::new(RemoteJob::new(self.client.clone(), job_id)))
-            }
-            _ => {
-                return Err(Error::Http {
-                    source: "Function drop must return 200 OK or 202 Accepted".into(),
-                    request_id,
-                    status_code: Some(status),
-                });
-            }
-        };
-        Ok((dropped.dropped, job))
+        self.sql.drop_function(name, version, namespace_path).await
     }
 
     async fn create_secret(
@@ -2012,56 +1868,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_drop_function_async_returns_job() {
-        let db = super::RemoteDatabase::new_mock(|request| {
-            assert_eq!(request.method(), "POST");
-            assert_eq!(request.url().path(), "/v1/function/embed/drop");
-            http::Response::builder()
-                .status(202)
-                .body(serde_json::json!({"dropped": true, "job_id": "j1-fn-drop"}).to_string())
-                .unwrap()
-        });
-        let (dropped, job) = db.drop_function_async("embed", "1", &[]).await.unwrap();
-        assert!(dropped);
-        assert_eq!(job.id(), Some("j1-fn-drop"));
-    }
-
     /// An unbound name and an inline deletion both answer `200`: the name is gone and
     /// nothing is left to wait for, so the job is already finished.
-    #[tokio::test]
-    async fn test_drop_function_async_completed_inline() {
-        let db = super::RemoteDatabase::new_mock(|_| {
-            http::Response::builder()
-                .status(200)
-                .body(serde_json::json!({"dropped": false}).to_string())
-                .unwrap()
-        });
-        let (dropped, job) = db.drop_function_async("embed", "1", &[]).await.unwrap();
-        assert!(!dropped);
-        assert_eq!(job.id(), None);
-        assert_eq!(job.status().await.unwrap(), "finished");
-        job.wait().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_drop_function_async_rejects_incomplete_acceptance() {
-        for body in [
-            r#"{"dropped":true}"#,
-            r#"{"dropped":true,"job_id":""}"#,
-            r#"{"dropped":true,"job_id":null}"#,
-        ] {
-            let db = super::RemoteDatabase::new_mock(move |_| {
-                http::Response::builder().status(202).body(body).unwrap()
-            });
-            let error = db
-                .drop_function_async("embed", "1", &[])
-                .await
-                .err()
-                .unwrap();
-            assert!(error.to_string().contains("valid job_id"));
-        }
-    }
 
     #[tokio::test]
     async fn test_retries() {
@@ -4141,24 +3949,6 @@ mod tests {
 
     /// Reject relative segments and their encoded forms before sending a request,
     /// so a function name cannot change the route through URL normalization.
-    #[tokio::test]
-    async fn test_a_relative_segment_function_name_is_refused() {
-        use std::sync::{Arc, Mutex};
-        for name in [".", "..", "%2E%2E"] {
-            let reached = Arc::new(Mutex::new(false));
-            let flag = reached.clone();
-            let conn = Connection::new_with_handler(move |_| {
-                *flag.lock().unwrap() = true;
-                http::Response::builder().status(200).body("{}").unwrap()
-            });
-            let error = conn
-                .drop_function(name, "fv_1", &[])
-                .await
-                .expect_err("a dot-only Function name must be refused");
-            assert!(matches!(error, Error::InvalidInput { .. }), "{error}");
-            assert!(!*reached.lock().unwrap(), "{name:?} reached the transport");
-        }
-    }
 
     /// Only `.` and `..` are relative segments. `...` and longer runs are
     /// ordinary and address perfectly well, so refusing them would make an
@@ -4542,280 +4332,13 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_create_function_async_sends_canonical_request_and_decodes_typed_job() {
-        const REQUEST: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
-        );
-        const FUNCTION_JOB: &str =
-            include_str!("../../tests/fixtures/first_class_functions/v1/remote_function_job.json");
-        let mut expected: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
-        expected.as_object_mut().unwrap().remove("name");
-        let conn = Connection::new_with_handler(move |request| match request.url().path() {
-            "/v1/function/normalize_score/create" => {
-                assert_eq!(request.method(), &reqwest::Method::POST);
-                let body: serde_json::Value =
-                    serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-                assert_eq!(body, expected);
-                http::Response::builder()
-                    .status(202)
-                    .body(r#"{"job_id":"job-function-1"}"#)
-                    .unwrap()
-            }
-            "/v1/jobs/describe" => http::Response::builder()
-                .status(200)
-                .body(FUNCTION_JOB)
-                .unwrap(),
-            path => panic!("unexpected path: {path}"),
-        });
-        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
-        let job = conn.create_function_async(request, &[]).await.unwrap();
-        assert_eq!(job.id(), Some("job-function-1"));
-        let version = job.wait().await.unwrap();
-        assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "1");
-    }
-
-    #[tokio::test]
-    async fn test_get_function_requires_and_sends_exact_version() {
-        const VERSION: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
-        );
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/function/embed/describe");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body, serde_json::json!({"version": "1"}));
-            http::Response::builder().status(200).body(VERSION).unwrap()
-        });
-        let version = conn.get_function("embed", "1", &[]).await.unwrap();
-        assert_eq!(version.name(), "embed");
-        assert_eq!(version.version(), "1");
-    }
-
-    #[tokio::test]
-    async fn test_list_functions_requests_definitions_and_paginates() {
-        const VERSION: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
-        );
-        let version: serde_json::Value = serde_json::from_str(VERSION).unwrap();
-        let page = Arc::new(AtomicUsize::new(0));
-        let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
-            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
-            assert_eq!(query.get("include_definition").unwrap(), "true");
-            match page.fetch_add(1, Ordering::SeqCst) {
-                0 => {
-                    assert!(!query.contains_key("page_token"));
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"functions": [], "page_token": "next"}"#.to_string())
-                        .unwrap()
-                }
-                _ => {
-                    assert_eq!(query.get("page_token").unwrap(), "next");
-                    http::Response::builder()
-                        .status(200)
-                        .body(
-                            serde_json::json!({
-                                "functions": [{
-                                    "name": "embed",
-                                    "version": "1",
-                                    "definition": version.clone(),
-                                }],
-                            })
-                            .to_string(),
-                        )
-                        .unwrap()
-                }
-            }
-        });
-        let functions = conn
-            .list_functions(&[], Default::default())
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        assert_eq!(functions.len(), 1);
-        assert_eq!(functions[0].name(), "embed");
-        assert_eq!(functions[0].version(), "1");
-    }
-
-    #[tokio::test]
-    async fn test_list_functions_stops_on_an_empty_page_token() {
-        let requests = Arc::new(AtomicUsize::new(0));
-        let seen = requests.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            seen.fetch_add(1, Ordering::SeqCst);
-            assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
-            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
-            assert_eq!(query.get("include_definition").unwrap(), "true");
-            assert!(!query.contains_key("page_token"));
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"functions": [], "page_token": ""}"#)
-                .unwrap()
-        });
-
-        let functions = conn
-            .list_functions(&[], Default::default())
-            .try_collect::<Vec<_>>()
-            .await
-            .unwrap();
-        assert!(functions.is_empty());
-        assert_eq!(requests.load(Ordering::SeqCst), 1);
-    }
-
-    #[tokio::test]
-    async fn test_list_functions_rejects_a_page_token_cycle() {
-        let page = Arc::new(AtomicUsize::new(0));
-        let requests = page.clone();
-        let conn = Connection::new_with_handler(move |request| {
-            assert_eq!(request.method(), &reqwest::Method::GET);
-            assert_eq!(request.url().path(), "/v1/namespace/$/function/list");
-            let query = request.url().query_pairs().collect::<HashMap<_, _>>();
-            assert_eq!(query.get("include_definition").unwrap(), "true");
-            let next_page_token = match page.fetch_add(1, Ordering::SeqCst) {
-                0 => {
-                    assert!(!query.contains_key("page_token"));
-                    "one"
-                }
-                1 => {
-                    assert_eq!(query.get("page_token").unwrap(), "one");
-                    "two"
-                }
-                2 => {
-                    assert_eq!(query.get("page_token").unwrap(), "two");
-                    "one"
-                }
-                page => panic!("unexpected page: {page}"),
-            };
-            http::Response::builder()
-                .status(200)
-                .body(
-                    serde_json::json!({
-                        "functions": [],
-                        "page_token": next_page_token,
-                    })
-                    .to_string(),
-                )
-                .unwrap()
-        });
-
-        let mut items = conn.list_functions(&[], Default::default());
-        let error = (&mut items).try_collect::<Vec<_>>().await.unwrap_err();
-        assert!(
-            matches!(&error, Error::Runtime { message } if message.contains("repeated a page_token")),
-            "got {error:?}"
-        );
-        assert!(items.page_token().is_some());
-        assert!(items.try_next().await.unwrap().is_none());
-        assert_eq!(requests.load(Ordering::SeqCst), 3);
-    }
-
-    #[tokio::test]
-    async fn test_drop_function_sends_exact_version_and_decodes_replay() {
-        let conn = Connection::new_with_handler(|request| {
-            assert_eq!(request.method(), &reqwest::Method::POST);
-            assert_eq!(request.url().path(), "/v1/function/embed/drop");
-            let body: serde_json::Value =
-                serde_json::from_slice(request.body().unwrap().as_bytes().unwrap()).unwrap();
-            assert_eq!(body, serde_json::json!({"version": "1"}));
-            http::Response::builder()
-                .status(200)
-                .body(r#"{"dropped":false}"#)
-                .unwrap()
-        });
-        assert!(!conn.drop_function("embed", "1", &[]).await.unwrap());
-    }
-
     /// A Function's namespace is addressed in the path the way a Secret's is:
     /// every route takes the joined identifier and no body carries the
     /// namespace, so a namespaced request differs from a root one only in its
     /// path.
-    #[tokio::test]
-    async fn test_a_function_namespace_path_is_addressed_in_the_path() {
-        const REQUEST: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_registration_request.json"
-        );
-        const VERSION: &str = include_str!(
-            "../../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
-        );
-        let namespace = ["analytics".to_string(), "features".to_string()];
-        let mut expected_create: serde_json::Value = serde_json::from_str(REQUEST).unwrap();
-        expected_create.as_object_mut().unwrap().remove("name");
-        let conn = Connection::new_with_handler(move |request| {
-            let body = request
-                .body()
-                .and_then(|body| body.as_bytes())
-                .map(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).unwrap());
-            match request.url().path() {
-                "/v1/function/analytics$features$normalize_score/create" => {
-                    assert_eq!(body.unwrap(), expected_create);
-                    http::Response::builder()
-                        .status(202)
-                        .body(r#"{"job_id":"job-function-1"}"#.to_string())
-                        .unwrap()
-                }
-                "/v1/function/analytics$features$embed/describe" => {
-                    assert_eq!(body.unwrap(), serde_json::json!({"version": "1"}));
-                    http::Response::builder()
-                        .status(200)
-                        .body(VERSION.to_string())
-                        .unwrap()
-                }
-                "/v1/function/analytics$features$embed/drop" => {
-                    assert_eq!(body.unwrap(), serde_json::json!({"version": "1"}));
-                    http::Response::builder()
-                        .status(200)
-                        .body(r#"{"dropped":true}"#.to_string())
-                        .unwrap()
-                }
-                // Listing is namespace-scoped, so the namespace is the whole
-                // identifier.
-                "/v1/namespace/analytics$features/function/list" => http::Response::builder()
-                    .status(200)
-                    .body(r#"{"functions":[]}"#.to_string())
-                    .unwrap(),
-                path => panic!("unexpected path: {path}"),
-            }
-        });
-        let request = crate::function::FunctionRegistrationRequest::from_json(REQUEST).unwrap();
-        let job = conn
-            .create_function_async(request, &namespace)
-            .await
-            .unwrap();
-        assert_eq!(job.id(), Some("job-function-1"));
-        conn.get_function("embed", "1", &namespace).await.unwrap();
-        assert!(
-            conn.list_functions(&namespace, Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .unwrap()
-                .is_empty()
-        );
-        assert!(conn.drop_function("embed", "1", &namespace).await.unwrap());
-    }
 
     /// Each namespace segment is checked before a request is built, so an
     /// empty segment cannot collapse the identifier onto the parent namespace.
-    #[tokio::test]
-    async fn test_an_unaddressable_function_namespace_segment_is_refused() {
-        let conn = Connection::new_with_handler(|request| -> http::Response<String> {
-            panic!("reached the transport: {}", request.url().path())
-        });
-        let namespace = ["analytics".to_string(), String::new()];
-        assert!(conn.get_function("embed", "1", &namespace).await.is_err());
-        assert!(
-            conn.list_functions(&namespace, Default::default())
-                .try_collect::<Vec<_>>()
-                .await
-                .is_err()
-        );
-        assert!(conn.drop_function("embed", "1", &namespace).await.is_err());
-    }
 
     #[tokio::test]
     async fn test_conn_job_waits_to_done() {
