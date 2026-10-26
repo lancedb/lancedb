@@ -221,10 +221,19 @@ The connected database and `default_namespace_path=["public"]` are used for
 unqualified tables. Fully qualified references can still query other databases
 and namespaces available to the same deployment. `execute_query` returns a
 reader as soon as its initial result stream is available. `execute_query_async`
-returns a query handle immediately; use it to inspect progress, open a reader,
+returns a query handle once submission is accepted; use it to inspect progress, open a reader,
 or cancel the query. The SQL client is initialized by the first query and
 retained for the lifetime of the remote connection. Query ids are random,
-connection-scoped references rather than encoded SQL or durable resume tokens:
+connection-scoped references rather than encoded SQL or durable resume tokens.
+
+Both APIs start with one Flight call. The server can stream results on that
+call or return a polling continuation that the SDK follows automatically.
+This behavior is the same with and without parameters. Open the reader directly;
+a directly streamed query needs its reader to make progress. Dropping an unread
+handle or its reader stops direct streaming. Deferred execution continues until
+explicitly cancelled.
+
+For example:
 
 ```python
 import lancedb
@@ -288,6 +297,25 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
+Local and remote tables use the same arguments for index creation, deletion,
+index statistics, and search. For example, `table.delete(where="id = 1")`,
+`table.create_index("cosine", 2)` (the deprecated vector API), and
+`table.search([1.0, 1.0], fast_search=True)` work with either backend.
+`fast_search=True` excludes rows that have not been indexed.
+
+`create_scalar_index` defaults to `replace=True` on both backends. Both scalar
+and full-text index creation accept `wait_timeout`. Remote maintenance methods
+accept the local options: cleanup and compaction warn that they are no-ops,
+while `optimize` reports an unsupported operation. Removed Tantivy options
+produce the same explanatory errors on both backends.
+
+The old remote keyword names `predicate` for `delete`, `index_name` for
+`drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
+remain available with deprecation warnings. Use `where`, `name`, `index_name`,
+and `field_names`, respectively. For positional calls, use the argument order
+documented by `Table` below; specify index options by keyword when migrating
+code that used the former remote-only argument order.
+
 ::: lancedb.table.Table
 
 ::: lancedb.table.FragmentStatistics
@@ -303,6 +331,14 @@ listing a storage directory.
 ::: lancedb.RTEWriteSpec
 
 ## Functions and Jobs
+
+Annotate a blob input with `lancedb.BlobReader` for lazy, seekable access, or
+with `bytes` to materialize its contents before the Function runs. Reader
+inputs infer the Blob V2 type without an explicit input schema. Readers are
+scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
+`size`, and cursor-independent `read_range`.
+
+::: lancedb.BlobReader
 
 ::: lancedb.functions.FunctionArtifact
 
@@ -521,11 +557,63 @@ instead of being materialized with the rest of the row.
 
 `lancedb.BlobType` is `lance.blob.BlobType` when pylance is installed. Without
 pylance, LanceDB uses a matching `lance.blob.v2` extension type so blob columns
-still work. Queries return descriptors. Call
+still work. Native table queries return descriptors. Call
 [`fetch_blob_files`][lancedb.table.Table.fetch_blob_files] for lazy reads or
 [`fetch_blobs`][lancedb.table.Table.fetch_blobs] for eager bytes.
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
+
+Remote SQL returns blob bytes by default. Select `blob_descriptor(video)` to
+return an openable reference instead, then use
+[`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
+[`open_blob_files`][lancedb.table.Table.open_blob_files]:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+This example uses a remote SQL connection that produces source-bearing
+descriptors. The descriptor contains `kind`, `position`, `size`, `blob_id`,
+`blob_uri`, and a `source` struct with `uri`, `version`, `committed_at_micros`,
+`branch`, `column`, `row_reference`, and `row_is_address`. The opener verifies
+the source table and commit and reads the captured version without changing
+the table handle's checkout. Raw native storage descriptors omit `source`;
+use `fetch_blob_files(column, row_ids)` for those query results.
+
+The singular API accepts a dictionary or Arrow struct scalar. The iterable
+accepts Arrow arrays/chunked arrays or another iterable, opens handles as
+iteration advances, and preserves order, duplicates, and nulls as `None`.
+Close each non-null handle after use. Async tables provide
+`await table.open_blob_file(...)` and
+`async for file in table.open_blob_files(...)`.
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+For an async table, the iterable is consumed with `async for`:
+
+```python
+async for video in async_videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            payload = await video.aread()
+```
+
+Payload bytes load on reads. Opening an external blob with unspecified size
+can issue a metadata-only HEAD request. Remote reads use authenticated range
+requests that validate the captured URI and commit timestamp.
 
 Blobs inside lists can be written and queried as descriptors. They are omitted
 from `blob_columns()` because row ids do not identify individual list elements,

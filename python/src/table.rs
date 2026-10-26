@@ -24,7 +24,7 @@ use arrow::{
     ffi_stream::ArrowArrayStreamReader,
     pyarrow::{FromPyArrow, PyArrowType, ToPyArrow},
 };
-use lancedb::blob::{BlobFile, BlobRangeRequest};
+use lancedb::blob::{BlobDescriptor, BlobFile, BlobRangeRequest};
 use lancedb::index::scalar::FtsIndexBuilder;
 use lancedb::table::{
     AddDataMode, ColumnAlteration, Duration, FieldMetadataUpdate, FtsToken as LanceDbFtsToken,
@@ -1548,6 +1548,23 @@ impl Table {
                     })
                 })
                 .collect::<Vec<_>>())
+        })
+    }
+
+    #[pyo3(signature = (descriptor))]
+    pub fn open_blob_file<'py>(
+        self_: PyRef<'py, Self>,
+        descriptor: &str,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let descriptor: BlobDescriptor = serde_json::from_str(descriptor)
+            .map_err(|error| PyValueError::new_err(format!("invalid blob descriptor: {error}")))?;
+        let inner = self_.inner_ref()?.clone();
+        future_into_py(self_.py(), async move {
+            let file = inner.open_blob_file(&descriptor).await.infer_error()?;
+            Ok(PyBlobFile {
+                inner: Arc::new(file),
+                closed: AtomicBool::new(false),
+            })
         })
     }
 

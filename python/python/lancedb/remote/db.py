@@ -586,10 +586,10 @@ class RemoteDBConnection(DBConnection):
         name: str,
         data: DATA = None,
         schema: Optional[Union[pa.Schema, LanceModel]] = None,
-        on_bad_vectors: str = "error",
-        fill_value: float = 0.0,
         mode: Optional[str] = None,
         exist_ok: bool = False,
+        on_bad_vectors: str = "error",
+        fill_value: float = 0.0,
         embedding_functions: Optional[List[EmbeddingFunctionConfig]] = None,
         *,
         namespace_path: Optional[List[str]] = None,
@@ -857,6 +857,20 @@ class RemoteDBConnection(DBConnection):
             namespace_path = []
         job = LOOP.run(self._conn.drop_table_async(name, namespace_path=namespace_path))
         return Job(job if isinstance(job, AsyncJob) else AsyncJob(job))
+
+    @override
+    def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
+        """Drop all tables from the database.
+
+        The remote API does not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
+        """
+        LOOP.run(self._conn.drop_all_tables(namespace_path=namespace_path))
+
+    @override
+    def drop_database(self):
+        """Deprecated alias for ``drop_all_tables()``."""
+        LOOP.run(self._conn.drop_database())
 
     @override
     def rename_table(
@@ -1137,7 +1151,7 @@ class RemoteDBConnection(DBConnection):
         )
 
     @override
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         return LOOP.run(
             self._conn.describe_query(
