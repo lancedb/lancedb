@@ -328,6 +328,10 @@ def _fork_dataloader_diagnostics(worker_id=None):
     faulthandler.disable()
     faulthandler.enable(all_threads=True)
     faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
+    if worker_id is not None and (core_root := os.environ.get("PR3851_CORE_DIRECTORY")):
+        core_directory = Path(core_root) / str(os.getpid())
+        core_directory.mkdir()
+        os.chdir(core_directory)
 
 
 def _join_fork_dataloader(proc):
