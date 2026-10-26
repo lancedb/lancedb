@@ -92,6 +92,13 @@ manages background maintenance.
   [background maintenance](/maintenance/background-jobs) rather than calling
   the embedded table's `optimize()` method.
 
+{/* Draft for the remote option validation release.
+- **Remove local storage and cache settings.** `db://` connections reject local
+  sessions, table cache settings, and per-table storage and write options. Omit
+  these options so Enterprise manages storage and caching. Connection-level
+  storage options supported by your Enterprise deployment remain available.
+*/}
+
 For SQL connection details, see [SQL](/basics/sql). For the operating model and
 deployment options, see [LanceDB Enterprise](/enterprise).
 

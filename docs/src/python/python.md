@@ -20,6 +20,17 @@ pip install lancedb
 The following methods describe the synchronous API client. There
 is also an [asynchronous API client](#connections-asynchronous).
 
+Connections to `db://` databases reject local-only options with
+`NotImplementedError`. These include `session` and `manifest_enabled=True` on
+connect, per-table storage and write options on create, and `index_cache_size`,
+`storage_options`, or `location` on open (where the method accepts them).
+Omit these options to use server-managed storage and caching. Connection-level
+`storage_options` supported by an Enterprise deployment remain available.
+
+The synchronous remote `create_table` uses the same positional order as the
+local API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
+embedding_functions`. Prefer keyword arguments for optional parameters.
+
 ## Connections (Synchronous)
 
 ::: lancedb.connect
