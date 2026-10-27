@@ -947,12 +947,15 @@ async fn fetch_blobs_rejects_unknown_column() -> Result<()> {
     Ok(())
 }
 
+#[rstest::rstest]
+#[case("2.0")]
+#[case("2.1")]
 #[tokio::test]
-async fn fetch_blobs_rejects_legacy_v1_blob_column() -> Result<()> {
+async fn fetch_blob_apis_read_legacy_v1_blob_column(#[case] storage_version: &str) -> Result<()> {
     let tmp = tempdir().unwrap();
     // Legacy v1 blob columns are only writable at file version <= 2.1.
     let db = connect(tmp.path().to_str().unwrap())
-        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, "2.1")])
+        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, storage_version)])
         .execute()
         .await?;
     let legacy = Field::new("image", DataType::LargeBinary, true).with_metadata(
@@ -963,9 +966,62 @@ async fn fetch_blobs_rejects_legacy_v1_blob_column() -> Result<()> {
         legacy,
     ]));
     let table = db.create_empty_table("t", schema).execute().await?;
+    table
+        .add(binary_input_batch(
+            &[1, 2, 3, 4],
+            &[Some(b"abcdef"), None, Some(b""), Some(b"uvwxyz")],
+        ))
+        .execute()
+        .await?;
 
-    let err = table.fetch_blobs("image", &[0]).await.unwrap_err();
-    assert!(err.to_string().contains("legacy blob column"));
+    assert!(!supports_blob_v2(storage_format_version(&table).await));
+    assert_eq!(table.blob_columns().await?, vec!["image"]);
+
+    let pairs = collect_id_rowid(&table).await?;
+    let by_id = |want: i64| pairs.iter().find(|(id, _)| *id == want).unwrap().1;
+    let row_ids = [by_id(4), by_id(2), by_id(1), by_id(3), by_id(4)];
+    let expected: [Option<&[u8]>; 5] = [
+        Some(b"uvwxyz"),
+        None,
+        Some(b"abcdef"),
+        Some(b""),
+        Some(b"uvwxyz"),
+    ];
+    let bytes = table.fetch_blobs("image", &row_ids).await?;
+    assert_eq!(bytes.iter().collect::<Vec<_>>(), expected);
+
+    let files = table.fetch_blob_files("image", &row_ids).await?;
+    assert_eq!(files.len(), expected.len());
+    for (file, payload) in files.iter().zip(expected) {
+        match payload {
+            Some(payload) => {
+                let file = file.as_ref().unwrap();
+                assert_eq!(file.size(), payload.len() as u64);
+                assert_eq!(file.read().await?.as_ref(), payload);
+            }
+            None => assert!(file.is_none()),
+        }
+    }
+    assert_eq!(
+        files[2].as_ref().unwrap().read_range(1..4).await?.as_ref(),
+        b"bcd"
+    );
+
+    let ranges = table
+        .fetch_blob_ranges(
+            "image",
+            [
+                BlobRangeRequest::new(by_id(4), 1, 3),
+                BlobRangeRequest::new(by_id(2), 0, 0),
+                BlobRangeRequest::new(by_id(1), 2, 3),
+                BlobRangeRequest::new(by_id(3), 0, 0),
+                BlobRangeRequest::new(by_id(4), 0, 2),
+            ],
+        )
+        .await?;
+    let expected_ranges: [Option<&[u8]>; 5] =
+        [Some(b"vwx"), None, Some(b"cde"), Some(b""), Some(b"uv")];
+    assert_eq!(ranges.iter().collect::<Vec<_>>(), expected_ranges);
     Ok(())
 }
 
@@ -1406,7 +1462,7 @@ async fn v1_blob_descriptors(table: &Table) -> Result<Vec<(i64, Option<(u64, u64
 }
 
 /// Payload bytes of every live row of a legacy v1 blob column, keyed by `id`.
-/// [`Table::fetch_blobs`] rejects v1 columns, so read them through lance.
+/// Read through Lance directly to verify storage independently of LanceDB's blob APIs.
 async fn v1_blob_payloads(dataset_uri: &str, table: &Table) -> Result<Vec<(i64, Option<Vec<u8>>)>> {
     let pairs = sorted_id_rowid(table).await?;
     let row_ids: Vec<u64> = pairs.iter().map(|(_, row_id)| *row_id).collect();

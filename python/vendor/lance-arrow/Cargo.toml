@@ -1,6 +1,6 @@
 [package]
 name = "lance-arrow"
-version = "15.0.0-beta.1"
+version = "15.0.0-beta.2"
 edition = "2024"
 authors = ["Lance Devs <dev@lance.org>"]
 license = "Apache-2.0"
@@ -9,9 +9,6 @@ readme = "README.md"
 description = "Arrow Extension for Lance"
 keywords = ["data-format", "data-science", "machine-learning", "apache-arrow", "data-analytics"]
 categories = ["database-implementations"]
-
-[lib]
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 arrow-array.workspace = true
