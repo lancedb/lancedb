@@ -30,6 +30,12 @@ mod session;
 mod table;
 mod util;
 
+/// Whether this native binding was built with local experimental Functions.
+#[napi]
+pub fn experimental_functions_enabled() -> bool {
+    cfg!(feature = "experimental-functions")
+}
+
 #[napi(object)]
 #[derive(Debug)]
 pub struct ConnectionOptions {
