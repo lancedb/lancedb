@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from decimal import Decimal, localcontext
 from time import sleep
-from typing import List
+from typing import Any, List
 from unittest.mock import MagicMock, patch
 
 import lancedb
@@ -5015,6 +5015,134 @@ async def test_optimize(mem_db_async: AsyncConnection):
 
 
 @pytest.mark.asyncio
+async def test_optimize_compaction_options(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 1,
+            "batch_size": 1,
+            "num_threads": 1,
+        }
+    )
+    assert stats.compaction.fragments_removed == 0
+    assert stats.compaction.fragments_added == 0
+
+    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    assert stats.compaction.fragments_removed == 2
+    assert stats.compaction.fragments_added == 1
+
+    with pytest.raises(ValueError, match="Invalid compaction option: unknown"):
+        await table.optimize(compaction_options={"unknown": 1})
+
+
+def test_optimize_compaction_options_sync(mem_db: DBConnection):
+    table = mem_db.create_table("test", data=[{"x": 1}])
+    with pytest.raises(ValueError, match="target_rows_per_fragment must be between"):
+        table.optimize(compaction_options={"target_rows_per_fragment": 0})
+
+
+@pytest.mark.parametrize("option", ["max_source_rows", "max_source_bytes"])
+@pytest.mark.asyncio
+async def test_optimize_compaction_source_limits(
+    mem_db_async: AsyncConnection, option: str
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            option: 1,
+        }
+    )
+    assert stats.compaction.fragments_removed == 0
+    assert stats.compaction.fragments_added == 0
+
+
+@pytest.mark.asyncio
+async def test_optimize_compaction_data_storage_version(
+    mem_db_async: AsyncConnection,
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            "data_storage_version": "2.2",
+        }
+    )
+    assert stats.compaction.fragments_removed == 2
+    assert stats.compaction.fragments_added == 1
+
+    table = await mem_db_async.create_table("cross_family", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+    with pytest.raises(ValueError, match="V1 and V2 storage versions cannot be mixed"):
+        await table.optimize(
+            compaction_options={
+                "target_rows_per_fragment": 3,
+                "data_storage_version": "legacy",
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_optimize_compaction_excluded_fragments(mem_db_async: AsyncConnection):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    await table.add([{"x": 2}])
+
+    stats = await table.optimize(
+        compaction_options={
+            "target_rows_per_fragment": 3,
+            "excluded_fragment_ids": [0],
+        }
+    )
+    assert stats.compaction.fragments_removed == 0
+    assert stats.compaction.fragments_added == 0
+
+    stats = await table.optimize(compaction_options={"target_rows_per_fragment": 3})
+    assert stats.compaction.fragments_removed == 2
+    assert stats.compaction.fragments_added == 1
+
+
+@pytest.mark.parametrize(
+    ("option", "value", "message"),
+    [
+        ("target_rows_per_fragment", 0, "must be between 1 and 4294967295"),
+        ("max_rows_per_group", 0, "must be between 1 and 4294967295"),
+        ("batch_size", 0, "must be between 1 and 4294967295"),
+        ("num_threads", 0, "must be greater than 0"),
+        ("target_rows_per_fragment", 2**32, "must be between 1 and 4294967295"),
+        ("max_rows_per_group", 2**32, "must be between 1 and 4294967295"),
+        ("batch_size", 2**32, "must be between 1 and 4294967295"),
+        ("io_buffer_size", 2**63, "must be at most 9223372036854775807"),
+        ("max_source_rows", 0, "must be greater than 0"),
+        ("max_source_bytes", 0, "must be greater than 0"),
+        ("data_storage_version", "invalid", "Unknown Lance storage version: invalid"),
+        (
+            "excluded_fragment_ids",
+            [-1],
+            "must contain values between 0 and 4294967295",
+        ),
+        (
+            "excluded_fragment_ids",
+            [2**32],
+            "must contain values between 0 and 4294967295",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_optimize_compaction_options_validation(
+    mem_db_async: AsyncConnection, option: str, value: Any, message: str
+):
+    table = await mem_db_async.create_table("test", data=[{"x": 1}])
+    with pytest.raises(ValueError, match=message):
+        await table.optimize(compaction_options={option: value})
+
+
+@pytest.mark.asyncio
 async def test_optimize_delete_unverified(tmp_db_async: AsyncConnection, tmp_path):
     table = await tmp_db_async.create_table(
         "test",
@@ -5361,6 +5489,7 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     )
 
 
+@pytest.mark.experimental_functions
 def test_computed_column_declare_and_refresh(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed", [{"x": 1}, {"x": 2}])
@@ -5384,6 +5513,7 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
 
 
+@pytest.mark.experimental_functions
 def test_computed_column_blob_projection_inherits_semantics(tmp_path):
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     db = lancedb.connect(tmp_path)
@@ -5407,6 +5537,7 @@ def test_computed_column_blob_projection_inherits_semantics(tmp_path):
     assert copied.to_pylist() == [b"hello", b"", None]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_computed_column_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -5425,6 +5556,7 @@ def test_function_errors_are_remote_only(tmp_path):
         table.function_errors()
 
 
+@pytest.mark.experimental_functions
 def test_refresh_column_async_returns_job(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
@@ -5453,6 +5585,7 @@ def test_refresh_column_async_returns_job(tmp_path):
         table.refresh_column_async("x")
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_refresh_column_async_job_async_table(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -5469,6 +5602,7 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.parametrize("interval", [None, 300])
 def test_computed_auto_refresh_options(tmp_path, interval):
     db = lancedb.connect(tmp_path)
@@ -5507,6 +5641,7 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     db = await lancedb.connect_async(tmp_path)

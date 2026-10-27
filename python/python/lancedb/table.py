@@ -25,6 +25,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    TypedDict,
     Union,
     overload,
 )
@@ -284,6 +285,91 @@ IndexConfigType = Union[
     Fm,
     FTS,
 ]
+
+
+class CompactionOptions(TypedDict, total=False):
+    """Options that control file compaction during table optimization.
+
+    Unspecified options use Lance's defaults.
+
+    Compaction planning is row based. Lowering ``target_rows_per_fragment``
+    based on the expected row size can bound later compaction passes once
+    oversized fragments have been rewritten. It does not split an existing
+    fragment, so the first pass over an oversized fragment is not subject to
+    that bound. ``max_bytes_per_file`` limits output file size, not compaction
+    memory. Source budgets keep whole planned tasks; if the first task exceeds
+    a budget, that run performs no compaction work.
+
+    Examples
+    --------
+    Derive a steady-state row target from the expected row size:
+
+    >>> desired_fragment_bytes = 750 * 1024 * 1024
+    >>> average_row_bytes = 1_500_000
+    >>> options: CompactionOptions = {
+    ...     "target_rows_per_fragment": max(
+    ...         1, desired_fragment_bytes // average_row_bytes
+    ...     ),
+    ... }
+    >>> await table.optimize(compaction_options=options)  # doctest: +SKIP
+    """
+
+    target_rows_per_fragment: int
+    """Target rows per fragment; existing oversized fragments are not split."""
+
+    max_rows_per_group: int
+    """Maximum number of rows per row group (default: 1,024)."""
+
+    max_bytes_per_file: Optional[int]
+    """Maximum output data-file size; this does not bound compaction memory."""
+
+    materialize_deletions: bool
+    """Whether to rewrite fragments containing deleted rows (default: True)."""
+
+    materialize_deletions_threshold: float
+    """Minimum deleted-row fraction that makes a fragment eligible (default: 0.1)."""
+
+    num_threads: Optional[int]
+    """Number of compaction tasks to run in parallel."""
+
+    batch_size: Optional[int]
+    """Number of rows per input scan batch."""
+
+    io_buffer_size: Optional[int]
+    """Maximum number of bytes queued in the input scan I/O buffer."""
+
+    defer_index_remap: bool
+    """Whether to defer index remapping during compaction (default: False)."""
+
+    index_remap_mode: Literal["direct", "compact"]
+    """How to construct the old-to-new row-address mapping."""
+
+    compaction_mode: Optional[
+        Literal["reencode", "try_binary_copy", "force_binary_copy"]
+    ]
+    """Whether compaction re-encodes data or uses binary copying."""
+
+    binary_copy_read_batch_bytes: Optional[int]
+    """Number of bytes read per batch during binary-copy compaction."""
+
+    max_source_fragments: Optional[int]
+    """Maximum number of source fragments compacted in one run."""
+
+    max_source_rows: Optional[int]
+    """Maximum live source rows per run, applied to whole planned tasks."""
+
+    max_source_bytes: Optional[int]
+    """Maximum source bytes per run, applied to whole planned tasks."""
+
+    excluded_fragment_ids: List[int]
+    """Fragment IDs to leave unchanged and use as planning boundaries."""
+
+    max_overlays_per_fragment: Optional[int]
+    """Maximum overlays before a fragment is fully compacted."""
+
+    data_storage_version: str
+    """Data-file version or release selector for compacted output."""
+
 
 # Known distance metrics for legacy API detection
 KNOWN_METRICS = {"l2", "cosine", "dot", "hamming"}
@@ -2767,6 +2853,7 @@ class Table(ABC):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -2806,6 +2893,11 @@ class Table(ABC):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -2896,6 +2988,10 @@ class Table(ABC):
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
+            Local declaration and refresh require a source build with the
+            ``experimental-functions`` Cargo feature, which published packages
+            do not enable. Remote Cloud/Enterprise operations remain available.
+
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
             field inherits Blob v2 semantics; other expressions derive their
@@ -2937,11 +3033,11 @@ class Table(ABC):
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
-        >>> table.add_columns(computed={"doubled": "x * 2"})
+        >>> table.add_columns(computed={"doubled": "x * 2"})  # doctest: +SKIP
         AddColumnsResult(version=2)
-        >>> table.refresh_column("doubled")
+        >>> table.refresh_column("doubled")  # doctest: +SKIP
         RefreshColumnResult(rows_filled=2, version=4)
-        >>> table.to_arrow().sort_by("x").to_pandas()
+        >>> table.to_arrow().sort_by("x").to_pandas()  # doctest: +SKIP
            x  doubled
         0  1        2
         1  2        4
@@ -2951,6 +3047,9 @@ class Table(ABC):
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
+
+        Local refresh requires the ``experimental-functions`` Cargo feature
+        in a source build. Published packages leave it disabled.
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
@@ -2978,6 +3077,9 @@ class Table(ABC):
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote Cloud/Enterprise jobs do not require this feature.
+
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
@@ -2995,13 +3097,13 @@ class Table(ABC):
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("computed_job_demo", [{"x": 1}, {"x": 2}])
-        >>> table.add_columns(computed={"doubled": "x * 2"})
+        >>> table.add_columns(computed={"doubled": "x * 2"})  # doctest: +SKIP
         AddColumnsResult(version=2)
-        >>> job = table.refresh_column_async("doubled")
-        >>> result = job.wait()
-        >>> result.rows_assigned
+        >>> job = table.refresh_column_async("doubled")  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        >>> result.rows_assigned  # doctest: +SKIP
         2
-        >>> job.status()
+        >>> job.status()  # doctest: +SKIP
         'finished'
         """
 
@@ -4893,6 +4995,7 @@ class LanceTable(Table):
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain: bool = False,
+        compaction_options: Optional[CompactionOptions] = None,
     ):
         """
         Optimize the on-disk data and indices for better performance.
@@ -4932,6 +5035,11 @@ class LanceTable(Table):
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -4945,6 +5053,7 @@ class LanceTable(Table):
             self._table._do_optimize(
                 _optimize_cleanup_since_ms(cleanup_older_than, retrain),
                 delete_unverified,
+                compaction_options,
             )
         )
 
@@ -7096,6 +7205,10 @@ class AsyncTable:
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
+            Local declaration and refresh require a source build with the
+            ``experimental-functions`` Cargo feature, which published packages
+            do not enable. Remote Cloud/Enterprise operations remain available.
+
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
             field inherits Blob v2 semantics; other expressions derive their
@@ -7215,6 +7328,9 @@ class AsyncTable:
         """
         Fill the rows of a computed column that hold no value yet.
 
+        Local refresh requires the ``experimental-functions`` Cargo feature
+        in a source build. Published packages leave it disabled.
+
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
         by the next one, and rows whose inputs changed since they were computed
@@ -7285,6 +7401,9 @@ class AsyncTable:
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote Cloud/Enterprise jobs do not require this feature.
+
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
@@ -7310,7 +7429,7 @@ class AsyncTable:
         ...     result = await job.wait()
         ...     assert result.rows_assigned == 1
         ...     return await job.status()
-        >>> asyncio.run(refresh_in_background())
+        >>> asyncio.run(refresh_in_background())  # doctest: +SKIP
         'finished'
         """
         return _typed_job(
@@ -7620,6 +7739,7 @@ class AsyncTable:
         cleanup_older_than: Optional[timedelta] = None,
         delete_unverified: bool = False,
         retrain=False,
+        compaction_options: Optional[CompactionOptions] = None,
     ) -> OptimizeStats:
         """
         Optimize the on-disk data and indices for better performance.
@@ -7659,6 +7779,11 @@ class AsyncTable:
 
         retrain: bool, default False
             This parameter is no longer used and is deprecated.
+        compaction_options: CompactionOptions, optional
+            Options that control file compaction. For large rows, derive a lower
+            ``target_rows_per_fragment`` from the expected row size to bound later
+            passes. This does not cap the first pass over an existing oversized
+            fragment; see [CompactionOptions][lancedb.table.CompactionOptions].
 
         Notes
         -----
@@ -7671,14 +7796,19 @@ class AsyncTable:
         return await self._do_optimize(
             _optimize_cleanup_since_ms(cleanup_older_than, retrain),
             delete_unverified,
+            compaction_options,
         )
 
     async def _do_optimize(
-        self, cleanup_since_ms: Optional[int], delete_unverified: bool
+        self,
+        cleanup_since_ms: Optional[int],
+        delete_unverified: bool,
+        compaction_options: Optional[CompactionOptions] = None,
     ) -> OptimizeStats:
         return await self._inner.optimize(
             cleanup_since_ms=cleanup_since_ms,
             delete_unverified=delete_unverified,
+            compaction_options=compaction_options,
         )
 
     async def list_indices(self) -> Iterable[IndexConfig]:

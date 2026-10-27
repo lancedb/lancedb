@@ -329,6 +329,8 @@ code that used the former remote-only argument order.
 
 ::: lancedb.table.Table
 
+::: lancedb.table.CompactionOptions
+
 ::: lancedb.table.FragmentStatistics
 
 ::: lancedb.table.FragmentSummaryStats
@@ -427,6 +429,13 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ## Materialized Views (Synchronous)
 
+In the 0.41 SDK release, local materialized-view creation and refresh require a
+source build with the `experimental-functions` Cargo feature. Published Python
+packages leave it disabled. Opening, reading, listing and dropping existing views
+remain available, as do remote Cloud and Enterprise operations. The same feature
+requirement applies to local SQL computed-column declaration and refresh; ordinary
+eager `add_columns` transforms remain available.
+
 On Cloud and Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
@@ -441,7 +450,8 @@ view = db.create_materialized_view(
 
 Omit `auto_refresh_interval_seconds` to let the server determine when to refresh.
 These options also apply to asynchronous creation and creation jobs. Embedded
-connections support manual refresh and reject automatic scheduling requests.
+connections built with `experimental-functions` support manual refresh and reject
+automatic scheduling requests.
 
 ::: lancedb.materialized_view.MaterializedView
 
