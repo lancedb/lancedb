@@ -591,8 +591,8 @@ class PhraseQuery(FullTextQuery):
     ----------
     query : str
         The query string to match against.
-    column : str
-        The name of the column to match against.
+    column : str, optional
+        The column to match against. None leaves column selection to query planning.
     slop : int, default 0
         The maximum number of intervening positions permitted in the phrase.
     document_granularity : DocumentGranularity, optional
@@ -602,7 +602,7 @@ class PhraseQuery(FullTextQuery):
     """
 
     query: str
-    column: str
+    column: Optional[str] = None
     slop: int = pydantic.Field(0, kw_only=True)
     document_granularity: Optional[DocumentGranularity] = pydantic.Field(
         None, kw_only=True
