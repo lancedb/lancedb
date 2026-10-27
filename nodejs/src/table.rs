@@ -470,11 +470,12 @@ impl Table {
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
+        full: Option<bool>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh();
+        let mut builder = view.refresh().full(full.unwrap_or(false));
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -1615,22 +1616,24 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild".
-    pub mode: String,
-    pub rows_written: i64,
-    pub source_version: i64,
+    /// How the view was brought up to date: "rebuild", or absent for remote SQL refreshes.
+    pub mode: Option<String>,
+    /// Rows written by this refresh, or absent for remote SQL refreshes.
+    pub rows_written: Option<i64>,
+    /// Source version refreshed to, or absent for remote SQL refreshes.
+    pub source_version: Option<i64>,
     pub version: i64,
 }
 
 impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
-        let mode = match value.mode {
+        let mode = value.mode.map(|mode| match mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-        };
+        });
         Self {
-            mode: mode.to_string(),
-            rows_written: value.rows_written as i64,
-            source_version: value.source_version as i64,
+            mode: mode.map(str::to_string),
+            rows_written: value.rows_written.map(|rows| rows as i64),
+            source_version: value.source_version.map(|version| version as i64),
             version: value.version as i64,
         }
     }

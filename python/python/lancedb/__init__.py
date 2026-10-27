@@ -22,6 +22,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
+from ._blob_reader import BlobReader as BlobReader
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -46,7 +47,7 @@ from .materialized_view import (
     MaterializedViewDefinition,
 )
 from .view import ViewDescription as ViewDescription
-from .table import AsyncTable, Table
+from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -278,6 +279,21 @@ def connect(
             "uri is required when not connecting through a namespace client"
         )
     if isinstance(uri, str) and uri.startswith("db://"):
+        # Preserve the deprecated remote timeout options, but validate all other
+        # unknown keywords just as the local connection does.
+        unknown_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in ("connection_timeout", "read_timeout")
+        }
+        if unknown_kwargs:
+            raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
+        if session is not None:
+            raise NotImplementedError("session is not supported for remote connections")
+        if manifest_enabled:
+            raise NotImplementedError(
+                "manifest_enabled is not supported for remote connections"
+            )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
@@ -592,6 +608,7 @@ __all__ = [
     "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "CompactionOptions",
     "FtsToken",
     "col",
     "Expr",

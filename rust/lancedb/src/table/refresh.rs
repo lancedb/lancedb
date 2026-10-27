@@ -77,6 +77,7 @@ pub(crate) async fn execute_refresh_column(
     table: &NativeTable,
     column: &str,
 ) -> Result<RefreshColumnResult> {
+    crate::require_experimental_functions()?;
     Ok(execute_refresh_column_with_source(table, column)
         .await?
         .result)
@@ -300,6 +301,7 @@ pub(crate) async fn execute_refresh_column_async(
     table: &NativeTable,
     column: &str,
 ) -> Result<Job<crate::function::RefreshColumnResult>> {
+    crate::require_experimental_functions()?;
     // Validate before spawning so bad input is reported by this call rather
     // than only by the job.
     table.dataset.ensure_mutable()?;
@@ -731,6 +733,10 @@ mod tests {
     /// must not bake zeros from `a`'s placeholder null. It is refused, and
     /// names the input, until `a` is filled -- after every append too.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dependent_refresh_refuses_an_unfilled_input() {
         let table = table_with("dependent_refresh_order", vec![1, 2, 3]).await;
         table
@@ -766,6 +772,10 @@ mod tests {
     /// declaration metadata and the dependency check: the recorded inputs
     /// are matched by name, never re-parsed as SQL.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dependent_refresh_handles_awkward_column_names() {
         use arrow_array::{Int32Array, StructArray};
         use arrow_schema::{DataType, Field, Fields};
@@ -820,6 +830,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_a_declared_column() {
         let table = table_with("refresh_fills", vec![1, 2, 3]).await;
         let declared = declare_doubled(&table).await.unwrap();
@@ -848,6 +862,10 @@ mod tests {
 
     /// Values written after the last refresh must be reachable by another one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_rows_appended_since_the_last_refresh() {
         let table = table_with("refresh_appended", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -868,6 +886,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_with_nothing_to_fill() {
         let table = table_with("refresh_noop", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -884,6 +906,10 @@ mod tests {
     /// A branch inherits the freshness main recorded: its first refresh
     /// fills nothing, and only its own appends after that.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_branch_inherits_freshness() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -919,6 +945,10 @@ mod tests {
 
     /// A shallow clone inherits the freshness its source recorded.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_shallow_clone_inherits_freshness() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -953,6 +983,10 @@ mod tests {
     /// settles at once instead of re-selecting the same rows forever: the
     /// second refresh finds the fragment signed and moves nothing.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_converges_on_a_null_result() {
         let table = table_with("refresh_null_result", vec![1, 2, 3]).await;
         let declared = table
@@ -976,6 +1010,10 @@ mod tests {
     /// A filled row whose input moved is recomputed: the update rewrites
     /// the row into a fragment the stamp never signed, and only that one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_recomputes_a_row_whose_input_moved() {
         let table = table_with("refresh_mutation", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1009,6 +1047,10 @@ mod tests {
     /// Each stamp is a sidecar under `_computed/`; pruning old versions
     /// removes the sidecars only they referenced, and keeps the current one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_pruning_drops_the_sidecars_of_pruned_versions() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -1050,6 +1092,10 @@ mod tests {
     /// Absolute timestamp pruning applies the same computed-column sidecar
     /// cleanup as duration-based pruning.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_absolute_pruning_drops_the_sidecars_of_pruned_versions() {
         let dir = tempfile::tempdir().unwrap();
         let conn = connect(dir.path().to_str().unwrap())
@@ -1087,6 +1133,10 @@ mod tests {
     /// A deleted row is never computed and the rows that stay keep their
     /// values: a delete recomputes nothing and stamps nothing.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_delete_recomputes_nothing() {
         let table = table_with("refresh_delete", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -1106,6 +1156,10 @@ mod tests {
     /// signed ones is fresh: the refresh recomputes nothing and only records
     /// the new fragment.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_of_signed_fragments_recomputes_nothing() {
         let table = table_with("refresh_compact_signed", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1136,6 +1190,10 @@ mod tests {
     /// refresh keeps the null-fill contract and enrolls what it read from;
     /// from then on a moved input is recomputed like any other.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_an_unsigned_column_is_enrolled_by_its_first_refresh() {
         let table = table_with("refresh_legacy", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1188,6 +1246,10 @@ mod tests {
     /// column as null behind a covering data file. Those rows are still
     /// unfilled and a later refresh has to reach them.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_update_before_the_first_refresh() {
         let table = table_with("refresh_update_first", vec![1]).await;
         declare_doubled(&table).await.unwrap();
@@ -1203,6 +1265,10 @@ mod tests {
     /// for any of its rows: every live row is recomputed, the moved one
     /// included.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_of_an_unsigned_fragment_recomputes_it() {
         let table = table_with("refresh_mixed", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1236,6 +1302,10 @@ mod tests {
     /// computed column. Compaction cannot certify it, so the product is
     /// recomputed and the supplied value replaced.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_raw_append_values_are_not_trusted_after_compaction() {
         use arrow_array::RecordBatchIterator;
         use lance::Dataset;
@@ -1288,6 +1358,10 @@ mod tests {
     /// An appended fragment holds no values, so compacting it into a signed
     /// one leaves the product fresh: only the appended rows are filled.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_compaction_with_an_appended_fragment_fills_only_its_rows() {
         let table = table_with("refresh_preserves", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1311,6 +1385,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_leaves_deleted_rows_alone() {
         let table = table_with("refresh_deleted", vec![1, 2, 3, 4]).await;
         declare_doubled(&table).await.unwrap();
@@ -1325,6 +1403,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_constant_expression() {
         let table = table_with("refresh_constant", vec![1, 2, 3]).await;
         table
@@ -1341,6 +1423,10 @@ mod tests {
     /// A name needing quotes reaches the evaluator intact: it is carried as a
     /// projection alias, never spliced into SQL text.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_column_whose_name_needs_quoting() {
         let table = table_with("refresh_quoted", vec![1, 2, 3]).await;
         table
@@ -1362,6 +1448,10 @@ mod tests {
     /// the probe buffers only until the first gained value and the rest flows
     /// through write_columns a batch at a time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_streams_a_multi_batch_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
         let table = table_with("refresh_multi_batch", values.clone()).await;
@@ -1381,6 +1471,10 @@ mod tests {
     /// The gate's reproducer: the commit must reuse the configured session,
     /// or registrations and caches vanish from the handle after a refresh.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_preserves_the_configured_session() {
         let session = Arc::new(lance::session::Session::default());
         let conn = crate::connect("memory://")
@@ -1404,6 +1498,10 @@ mod tests {
     /// The async form's job settles with the fill visible, like
     /// create_index's execute_async.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_job_waits_for_the_fill() {
         let table = table_with("refresh_async", vec![1, 2, 3]).await;
         declare_doubled(&table).await.unwrap();
@@ -1426,6 +1524,10 @@ mod tests {
 
     /// Bad input is reported by the call, not by the job.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_rejects_bad_input_before_spawning() {
         let table = table_with("refresh_async_bad", vec![1, 2, 3]).await;
 
@@ -1437,6 +1539,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_async_job_reports_success_to_every_waiter() {
         let table = table_with("refresh_async_waiters", vec![1, 2]).await;
         declare_doubled(&table).await.unwrap();
@@ -1449,6 +1555,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_a_plain_column() {
         let table = table_with("refresh_plain", vec![1, 2, 3]).await;
         let err = table.refresh_column("x").await.unwrap_err();
@@ -1456,6 +1566,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_an_unknown_column() {
         let table = table_with("refresh_missing", vec![1, 2, 3]).await;
         let err = table.refresh_column("nope").await.unwrap_err();
@@ -1465,6 +1579,10 @@ mod tests {
     /// The gate's reproducer: a poison value in a deleted row must not
     /// abort filling the live rows, since nobody can read it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_deleted_rows_value_is_never_evaluated() {
         let table = table_with("refresh_deleted_poison", vec![1, 0]).await;
         table
@@ -1484,6 +1602,10 @@ mod tests {
     /// input did not move is not: the untouched fragment is never read, so
     /// its poison input is never reached.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_only_a_moved_rows_value_is_re_evaluated() {
         let table = table_with("refresh_filled_poison", vec![1, 0]).await;
         table
@@ -1515,6 +1637,10 @@ mod tests {
     /// The gate's reproducer: the old internal projection alias is an
     /// ordinary column name; a computed column may use it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_a_column_named_like_the_old_alias() {
         let table = table_with("refresh_alias_name", vec![1, 2]).await;
         table
@@ -1537,6 +1663,10 @@ mod tests {
     /// this pins behaviorally; the memory bound is structural -- the fill
     /// stream retains no batches at all.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_fills_a_late_gain_fragment() {
         let values: Vec<i32> = (0..20_000).collect();
         let table = table_with("refresh_late_gain", values).await;
@@ -1562,6 +1692,10 @@ mod tests {
     /// The gate's reproducer: a nested input declares, refreshes, and guards
     /// its root against invalidating schema changes.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_nested_input_declares_and_refreshes() {
         use arrow_array::{Int32Array, StructArray};
         use arrow_schema::{DataType, Field, Fields};
@@ -1636,6 +1770,10 @@ mod tests {
     /// schema_evolution tests); refresh's own check covers a dataset another
     /// writer left in that state.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_refuses_a_foreign_lsm_state() {
         use crate::table::RTEWriteSpec;
 
@@ -1669,6 +1807,10 @@ mod tests {
     /// After catch-up activation and unset, no spec remains but the catch-up
     /// flag still marks retained SSTable rows; refresh refuses on the flag.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_refuses_retained_catchup_state() {
         use crate::table::RTEWriteSpec;
 
@@ -1719,6 +1861,10 @@ mod tests {
     /// A declaration of a kind this version cannot evaluate is refused by
     /// name, rather than mistaken for a plain column or fed to the SQL path.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_rejects_a_kind_it_cannot_evaluate() {
         let table = table_with("refresh_foreign", vec![1, 2, 3]).await;
         super::super::computed_columns::add_foreign_kind(&table, "embedding", "udf").await;
@@ -1754,6 +1900,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_and_publishes_blob_output() {
         use arrow_array::UInt64Array;
         use lance_arrow::{
@@ -1887,6 +2037,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_nested_struct_blob_input() {
         use arrow_array::{Int32Array, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field, Fields, Schema};
@@ -1952,6 +2106,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_preserves_list_shape_when_materializing_blob_input() {
         use arrow_array::{Int32Array, ListArray};
         use arrow_buffer::{OffsetBuffer, ScalarBuffer};
@@ -2013,6 +2171,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_refresh_inherits_external_blob_input() {
         use arrow_array::{Int32Array, StringArray, UInt64Array};
         use arrow_schema::{DataType, Field, Schema};

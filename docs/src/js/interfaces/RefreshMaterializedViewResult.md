@@ -8,29 +8,33 @@
 
 ## Properties
 
-### mode
+### mode?
 
 ```ts
-mode: string;
+optional mode: string;
 ```
 
-How the view was brought up to date: "rebuild".
+How the view was brought up to date: "rebuild", or absent for remote SQL refreshes.
 
 ***
 
-### rowsWritten
+### rowsWritten?
 
 ```ts
-rowsWritten: number;
+optional rowsWritten: number;
 ```
+
+Rows written by this refresh, or absent for remote SQL refreshes.
 
 ***
 
-### sourceVersion
+### sourceVersion?
 
 ```ts
-sourceVersion: number;
+optional sourceVersion: number;
 ```
+
+Source version refreshed to, or absent for remote SQL refreshes.
 
 ***
 

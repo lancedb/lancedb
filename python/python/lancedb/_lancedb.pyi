@@ -26,6 +26,8 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+_experimental_functions_enabled: bool
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
@@ -321,6 +323,8 @@ class Job:
     @property
     def id(self) -> Optional[str]: ...
     @property
+    def job_type(self) -> Optional[str]: ...
+    @property
     def _state(self) -> Optional[str]: ...
     @property
     def _description(self) -> Optional[JobDescription]: ...
@@ -525,10 +529,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -543,6 +547,7 @@ class Table:
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
+        compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
@@ -579,6 +584,7 @@ class Table:
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]
     ) -> list[Optional[BlobFile]]: ...
+    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:
@@ -916,9 +922,9 @@ class FunctionErrors:
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
-    mode: str
-    rows_written: int
-    source_version: int
+    mode: Optional[str]
+    rows_written: Optional[int]
+    source_version: Optional[int]
     version: int
 
 class AlterColumnsResult:
