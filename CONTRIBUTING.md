@@ -72,7 +72,7 @@ are wrappers around the Rust library.
 * `node`: **Deprecated** Typescript package source code
 * `java`: Java package source code
 * `docs/src`: SDK reference, built with mkdocs
-* `docs/web`: shared guides and OSS documentation for [docs.lancedb.com](https://docs.lancedb.com)
+* `docs/web`: website guides for LanceDB OSS and the APIs used by both OSS and Enterprise
 * `docs/web-tests`: the tests the documentation's code examples are extracted from
 
 ## Documentation
@@ -83,21 +83,20 @@ it is ready for readers.
 
 ### Choose the right place
 
-- `docs/web/` holds the website guides: shared APIs, OSS behavior and examples.
+- `docs/web/` holds website guides for LanceDB OSS and the APIs used by both
+  OSS and Enterprise.
 - `docs/src/` holds the SDK reference. See [docs/README.md](docs/README.md) for
   its build and API-generation instructions.
 - `docs/web-tests/` and `rust/lancedb/tests/` hold tests used to generate the
   website's code examples.
 
-A public API can be documented here even when only Enterprise implements it.
-Say which operations work in OSS and Enterprise; an SDK method's existence is
-not evidence that both support it. For Enterprise-specific implementation,
-operation or deployment guidance, coordinate with the feature owner.
+Document SDK APIs here, and explain which operations work in OSS and Enterprise.
+Put Enterprise-specific deployment and operating instructions in the Enterprise
+documentation.
 
-Some pages here are placeholders for Enterprise guides. The assembled site
-replaces those pages in full. Don't put shared guidance in a placeholder if it
-needs to appear on the site; keep it in a separate shared page and link to it.
-Sections are not merged by heading.
+Some pages are placeholders that the website build replaces with an Enterprise
+page. Changes to a placeholder won't appear on the combined site. Put
+instructions that both products need on a separate page and link to it.
 
 ### Preview and check your change
 
