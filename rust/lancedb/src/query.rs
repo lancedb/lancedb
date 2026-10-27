@@ -3361,13 +3361,18 @@ mod tests {
     #[cfg(feature = "geo")]
     #[tokio::test]
     async fn test_st_dwithin_filter_on_rte_base_and_active_memtable() {
-        use crate::index::vector::IvfPqIndexBuilder;
+        use crate::index::vector::IvfFlatIndexBuilder;
 
         let tmp_dir = tempdir().unwrap();
         let table = make_geo_query_table(&tmp_dir).await;
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .create_index(&["vector"], Index::IvfPq(IvfPqIndexBuilder::default()))
+            .create_index(
+                &["vector"],
+                // Keep this three-row fixture exact so the assertions exercise
+                // filter routing rather than ANN recall.
+                Index::IvfFlat(IvfFlatIndexBuilder::default().num_partitions(1)),
+            )
             .execute()
             .await
             .unwrap();
