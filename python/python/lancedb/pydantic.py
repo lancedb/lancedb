@@ -428,6 +428,15 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     pyarrow.Schema
         The Arrow Schema
 
+    Raises
+    ------
+    TypeError
+        If a field has a type with no Arrow equivalent. A ``Tuple`` field becomes
+        an Arrow list, so all its elements must have the same type, as in
+        ``Tuple[int, int]`` or ``Tuple[float, ...]``; for a fixed set of fields
+        with different types, such as ``Tuple[int, str]``, use a nested
+        ``LanceModel`` (an Arrow struct) instead.
+
     Examples
     --------
 
