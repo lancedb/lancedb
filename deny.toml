@@ -121,19 +121,16 @@ ignore = [
     { id = "RUSTSEC-2026-0387", reason = "crypto-bigint via aws-sigv4 (sigv4a); no fixed upstream aws-sigv4 release yet" },
 
     # zstd: arrow-ipc 58.x pins zstd ^0.13, while the patches require zstd
-    # >=0.14.3, zstd-safe >=8.2.0, and zstd-sys >=2.1.2. Arrow 59+ updates the
-    # dependency, but it cannot be used until DataFusion and Lance move to the
-    # matching Arrow line. LanceDB uses zstd::bulk through arrow-ipc and does
-    # not use the affected with_context, seekable, or decompress_stream APIs.
-    # The zstd-sys advisory is wasm32-only, and wasm32 is not a shipped target.
+    # >=0.14.3 and zstd-safe >=8.2.0. Arrow 59+ updates the dependency, but it
+    # cannot be used until DataFusion and Lance move to the matching Arrow line.
+    # LanceDB uses zstd::bulk through arrow-ipc and does not use the affected
+    # with_context, seekable, or decompress_stream APIs.
     # https://rustsec.org/advisories/RUSTSEC-2026-0391
     # https://rustsec.org/advisories/RUSTSEC-2026-0398
     # https://rustsec.org/advisories/RUSTSEC-2026-0403
-    # https://rustsec.org/advisories/RUSTSEC-2026-0410
     { id = "RUSTSEC-2026-0391", reason = "zstd 0.13 via arrow-ipc 58; affected with_context API is unused" },
     { id = "RUSTSEC-2026-0398", reason = "zstd-safe 7 via arrow-ipc 58; affected seekable API is not enabled" },
     { id = "RUSTSEC-2026-0403", reason = "zstd-safe 7 via arrow-ipc 58; affected streaming decoder API is unused" },
-    { id = "RUSTSEC-2026-0410", reason = "zstd-sys via arrow-ipc 58; advisory is wasm32-only and wasm32 is not a shipped target" },
 ]
 
 
