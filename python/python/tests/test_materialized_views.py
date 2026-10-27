@@ -124,8 +124,22 @@ async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
             "RefreshMaterializedViewResult(mode=None, rows_written=None, "
             "source_version=None, version=42)"
         )
-        describe, refresh = server.commands
-        assert b'DESCRIBE MATERIALIZED VIEW "view"' in describe
+        describes = [
+            command
+            for command in server.commands
+            if b"DESCRIBE MATERIALIZED VIEW" in command
+        ]
+        refreshes = [
+            command
+            for command in server.commands
+            if b"REFRESH MATERIALIZED VIEW" in command
+        ]
+        assert len(describes) == 2
+        assert len(refreshes) == 1
+        assert all(
+            b'DESCRIBE MATERIALIZED VIEW "view"' in command for command in describes
+        )
+        (refresh,) = refreshes
         assert b'REFRESH MATERIALIZED VIEW "view"' in refresh
         assert (b"WITH (full = true)" in refresh) is full
         assert not any("count_rows" in path for path in requests)
