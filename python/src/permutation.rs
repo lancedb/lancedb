@@ -178,6 +178,50 @@ impl PyAsyncPermutationBuilder {
         })
     }
 
+    #[pyo3(signature = (num_samples, *, ratios=None, counts=None, fixed=None, seed=None, split_names=None))]
+    pub fn bootstrap_sample(
+        slf: PyRefMut<'_, Self>,
+        num_samples: u64,
+        ratios: Option<Vec<f64>>,
+        counts: Option<Vec<u64>>,
+        fixed: Option<u64>,
+        seed: Option<u64>,
+        split_names: Option<Vec<String>>,
+    ) -> PyResult<Self> {
+        // Check that exactly one split type is provided
+        let split_args_count = [ratios.is_some(), counts.is_some(), fixed.is_some()]
+            .iter()
+            .filter(|&&x| x)
+            .count();
+
+        if split_args_count != 1 {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "Exactly one of 'ratios', 'counts', or 'fixed' must be provided",
+            ));
+        }
+
+        let sizes = if let Some(ratios) = ratios {
+            SplitSizes::Percentages(ratios)
+        } else if let Some(counts) = counts {
+            SplitSizes::Counts(counts)
+        } else if let Some(fixed) = fixed {
+            SplitSizes::Fixed(fixed)
+        } else {
+            unreachable!("One of the split arguments must be provided");
+        };
+
+        slf.modify(|builder| {
+            builder.with_split_strategy(
+                SplitStrategy::Bootstrap {
+                    num_samples,
+                    sizes,
+                    seed,
+                },
+                split_names,
+            )
+        })
+    }
+
     pub fn split_calculated(
         slf: PyRefMut<'_, Self>,
         calculation: String,
@@ -268,7 +312,9 @@ impl PyPermutationReader {
                     .await
                     .infer_error()?
             } else {
-                PermutationReader::identity(base_table).await
+                PermutationReader::identity(base_table)
+                    .await
+                    .infer_error()?
             };
             Ok(Self::from_reader(reader))
         })

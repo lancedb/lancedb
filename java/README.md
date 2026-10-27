@@ -29,7 +29,54 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .build();
 ```
 
+## RTE write path
+
+Most table operations reach LanceDB through the `LanceNamespace` above, which is
+generated from the Lance Namespace specification. The RTE LSM routes are not part
+of that specification, so they are issued through a separate client:
+
+```java
+import com.lancedb.LanceDbRestClient;
+import com.lancedb.LanceDbTableRTE;
+import com.lancedb.RTEWriteSpec;
+
+LanceDbRestClient client = LanceDbNamespaceClientBuilder.newBuilder()
+    .apiKey("your_lancedb_cloud_api_key")
+    .database("your_database_name")
+    .buildRestClient();
+
+LanceDbTableRTE rte = new LanceDbTableRTE(client, "my_table");
+
+// Route future merge_insert upserts through the RTE, hash-bucketed by `id`.
+rte.enableRTE(RTEWriteSpec.bucket("id", 16));
+
+// ... merge_insert traffic ...
+
+// Converge the fresh tier into the base table.
+rte.checkpointRTE();
+
+// Inspect live per-table-shard state.
+rte.getRTEStats().ifPresent(stats -> stats.tableShards().forEach(tableShard ->
+    System.out.println(tableShard.shardId() + ": " + tableShard.sstables().size() + " SSTables")));
+
+client.close();
+```
+
+`maintainedIndexes` is tri-state, and the null default is the opposite of what a Java
+reader usually expects:
+
+| Value | Meaning |
+| --- | --- |
+| unset (null) | Maintain **every** index the table has, including ones created later |
+| `Collections.emptyList()` | Maintain **none** |
+| `Arrays.asList("id_idx")` | Maintain exactly those |
+
 ## Development
+
+The parent POM includes `https://maven.lance.org` to resolve Lance beta and RC
+dependencies. Use an explicit `lance-core.version`; numbered beta and RC versions
+are Maven releases, not snapshots. Maven Central remains available for stable
+and historical versions, as well as other dependencies.
 
 Build:
 

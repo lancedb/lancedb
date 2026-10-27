@@ -10,6 +10,22 @@ Options for adding data to a table.
 
 ## Properties
 
+### allowExternalBlobOutsideBases?
+
+```ts
+optional allowExternalBlobOutsideBases: boolean;
+```
+
+Whether blob URIs outside registered external bases may be written.
+
+Defaults to `false`. This option is supported only for local/native
+tables; remote tables return an error when it is enabled. An enabled write
+stores the absolute URI reference without registering a base or copying
+the external object into the database. The object must remain accessible
+when the blob is read later.
+
+***
+
 ### mode
 
 ```ts

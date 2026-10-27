@@ -21,6 +21,12 @@ import type { BaseTokenizer } from "./indices";
 import type { FtsToken } from "./table";
 
 // Re-export native header provider for use with connectWithHeaderProvider
+export {
+  MaterializedView,
+  MaterializedViewDefinition,
+  MaterializedViewSelect,
+} from "./materialized_view";
+export { ViewDescription } from "./view";
 export { JsHeaderProvider as NativeJsHeaderProvider } from "./native.js";
 
 // OpenTelemetry metrics bridge. Only the high-level entry point is public; the
@@ -50,6 +56,12 @@ export {
   MergeResult,
   AddResult,
   AddColumnsResult,
+  RefreshColumnResult,
+  FunctionErrors,
+  FunctionErrorsOptions,
+  FunctionErrorRecord,
+  FunctionErrorFragment,
+  RefreshMaterializedViewResult,
   AlterColumnsResult,
   UpdateFieldMetadataResult,
   DeleteResult,
@@ -65,41 +77,48 @@ export {
 
 export {
   makeArrowTable,
+  makeJsonField,
   MakeArrowTableOptions,
   Data,
   VectorColumnOptions,
 } from "./arrow";
+
+export { blob, isBlobField, BlobFile } from "./blob";
+export type {
+  BlobData,
+  BlobInput,
+  BlobOptions,
+  BlobRange,
+  BlobReadOptions,
+  BlobUri,
+} from "./blob";
 
 export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
   OpenTableOptions,
-  ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
-  ListNamespacesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
   RenameTableOptions,
 } from "./connection";
 
-export {
-  Job,
-  JobDescription,
-  JobFailureInfo,
-  JobInfo,
-  Session,
-} from "./native.js";
+export { JobFailureInfo, JobInfo, Session } from "./native.js";
+
+export { Job, JobEventsOptions } from "./job";
 
 export {
+  AutoQuery,
   ExecutableQuery,
   Query,
   QueryBase,
   VectorQuery,
   TakeQuery,
   AnalyzePlanDistributedMetrics,
+  BlobMode,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,
@@ -134,10 +153,10 @@ export {
   BranchColumnChange,
   BranchIndexSummary,
   BranchRowCountSummary,
-  MergeBlocker,
+  CherryPickError,
   BranchDiff,
-  MergePreview,
-  MergeBranchResult,
+  CherryPickPreview,
+  CherryPickResult,
   AddDataOptions,
   UpdateOptions,
   OptimizeOptions,
@@ -145,7 +164,11 @@ export {
   WriteProgress,
   FtsToken,
   TokenizeTableOptions,
-  LsmWriteSpec,
+  RTEWriteSpec,
+  RTEStats,
+  TableShardStats,
+  SsTableStats,
+  MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
 } from "./table";
@@ -157,7 +180,15 @@ export {
   TokenResponse,
 } from "./header";
 
-export { OAuthConfig, OAuthFlowType } from "./oauth";
+export {
+  ClientAuthMethod,
+  OAuthConfig,
+  OAuthFlowType,
+  OAuthSession,
+  SessionLogout,
+  SessionStatus,
+  TokenCacheOptions,
+} from "./oauth";
 
 export { MergeInsertBuilder, WriteExecutionOptions } from "./merge";
 
@@ -168,6 +199,7 @@ export * as rerankers from "./rerankers";
 export {
   SchemaLike,
   TableLike,
+  DataTypeLike,
   FieldLike,
   RecordBatchLike,
   DataLike,
@@ -384,10 +416,10 @@ export async function connect(
     throw new Error("uri is required");
   }
 
-  finalOptions = (finalOptions as ConnectionOptions) ?? {};
-  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>finalOptions).storageOptions,
-  );
+  finalOptions = {
+    ...finalOptions,
+    storageOptions: cleanseStorageOptions(finalOptions.storageOptions),
+  };
 
   // Create native header provider if one was provided
   let nativeProvider: NativeJsHeaderProvider | undefined;
@@ -594,11 +626,10 @@ export async function connectNamespace(
     properties = configOrProperties as Record<string, string>;
   }
 
-  const finalOptions: ConnectNamespaceOptions = (options ??
-    {}) as ConnectNamespaceOptions;
-  finalOptions.storageOptions = cleanseStorageOptions(
-    finalOptions.storageOptions,
-  );
+  const finalOptions: ConnectNamespaceOptions = {
+    ...options,
+    storageOptions: cleanseStorageOptions(options?.storageOptions),
+  };
 
   const nativeConn = await LanceDbConnection.newWithNamespace(
     implName,
@@ -607,3 +638,12 @@ export async function connectNamespace(
   );
   return new LocalConnection(nativeConn);
 }
+
+export {
+  Catalog,
+  CatalogOptions,
+  DatabaseNames,
+  connectCatalog,
+} from "./catalog";
+
+export { Listing, ListingOptions } from "./listing";

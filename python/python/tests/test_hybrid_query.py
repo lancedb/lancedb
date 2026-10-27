@@ -12,7 +12,7 @@ import pyarrow.compute as pc
 import pytest
 import pytest_asyncio
 
-from lancedb.index import FTS
+from lancedb.index import BTree, FTS, IvfPq
 from lancedb.table import AsyncTable, Table
 
 
@@ -100,6 +100,86 @@ async def test_async_hybrid_query_filters(table: AsyncTable):
 
 
 @pytest.mark.asyncio
+async def test_hybrid_query_with_stale_fixed_size_binary_prefilter(
+    tmpdir_factory,
+):
+    tmp_path = str(tmpdir_factory.mktemp("stale_scalar_prefilter"))
+    db = await lancedb.connect_async(tmp_path)
+
+    def fixed_size_binary(value: int) -> bytes:
+        return value.to_bytes(16, byteorder="big")
+
+    num_rows = 1000
+    data = pa.table(
+        {
+            "space_id": pa.array(
+                [fixed_size_binary(i) for i in range(num_rows)],
+                type=pa.binary(16),
+            ),
+            "text": ["book"] * num_rows,
+            "vector": pa.array(
+                [[float(i), float(i)] for i in range(num_rows)],
+                type=pa.list_(pa.float32(), 2),
+            ),
+        }
+    )
+    table = await db.create_table("test", data)
+    await table.create_index(
+        "vector", config=IvfPq(num_partitions=4, num_sub_vectors=2)
+    )
+    await table.create_index("space_id", config=BTree())
+    await table.create_index("text", config=FTS(with_position=False))
+
+    # Advance the search indices without advancing the scalar index. This is the
+    # state that previously let hybrid search use an incomplete scalar prefilter.
+    await table.add(data)
+    lance_dataset = await table.to_lance()
+    lance_dataset.optimize.optimize_indices(index_names=["vector_idx", "text_idx"])
+    await table.checkout_latest()
+
+    scalar_stats = await table.index_stats("space_id_idx")
+    assert scalar_stats is not None
+    assert scalar_stats.num_indexed_rows == num_rows
+    assert scalar_stats.num_unindexed_rows == num_rows
+
+    for index_name in ["vector_idx", "text_idx"]:
+        search_stats = await table.index_stats(index_name)
+        assert search_stats is not None
+        assert search_stats.num_indexed_rows == num_rows * 2
+        assert search_stats.num_unindexed_rows == 0
+
+    matching_ids = [5, 10, 15, 20, 25, 30]
+    literals = [
+        f"arrow_cast(0x{fixed_size_binary(i).hex()}, 'FixedSizeBinary(16)')"
+        for i in matching_ids
+    ]
+    predicate = f"space_id IN ({', '.join(literals)})"
+    expected_ids = sorted(fixed_size_binary(i) for i in matching_ids for _ in range(2))
+
+    vector_query = (
+        table.query().where(predicate).nearest_to([5.0, 5.0]).limit(num_rows * 2)
+    )
+    vector_results = await vector_query.to_arrow()
+    assert sorted(vector_results["space_id"].to_pylist()) == expected_ids
+
+    fts_query = (
+        table.query().where(predicate).nearest_to_text("book").limit(num_rows * 2)
+    )
+    fts_results = await fts_query.to_arrow()
+    assert sorted(fts_results["space_id"].to_pylist()) == expected_ids
+
+    hybrid_results = await (
+        table.query()
+        .where(predicate)
+        .nearest_to([5.0, 5.0])
+        .nearest_to_text("book")
+        .limit(num_rows * 2)
+        .to_arrow()
+    )
+    assert sorted(hybrid_results["space_id"].to_pylist()) == expected_ids
+
+
+@pytest.mark.asyncio
 async def test_async_hybrid_query_default_limit(table: AsyncTable):
     # add 10 new rows
     new_rows = []
@@ -123,6 +203,145 @@ async def test_async_hybrid_query_default_limit(table: AsyncTable):
     assert texts.count("a") == 1
 
 
+@pytest.mark.asyncio
+async def test_async_hybrid_query_offset(table: AsyncTable):
+    # The offset window of a hybrid query must be a suffix of the same query
+    # run without an offset. Skipping the first rows of each sub-query instead
+    # of the first rows of the fused result silently changes which rows land in
+    # the window.
+    full = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(4)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert len(full) == 4
+
+    second_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .offset(2)
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    assert second_page["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+    first_page = await (
+        table.query()
+        .nearest_to([0.0, 0.4])
+        .nearest_to_text("dog")
+        .limit(2)
+        .with_row_id()
+        .to_arrow()
+    )
+    # Paging through the result must visit every row exactly once: no row
+    # repeated from the previous page and none dropped between the two.
+    paged = first_page["_rowid"].to_pylist() + second_page["_rowid"].to_pylist()
+    assert sorted(paged) == sorted(full["_rowid"].to_pylist())
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_fts_first_default_limit(table: AsyncTable):
+    # nearest_to() and nearest_to_text() build their new sibling sub-query from
+    # scratch, and that is the sub-query the default limit ends up on. So the
+    # side that carries the limit depends on the order the hybrid query was
+    # built in, and looking at only one side loses the limit for half the ways
+    # a hybrid query can be written. Without a limit the combined results are
+    # not truncated at all and the whole union of both candidate lists is
+    # returned.
+    await table.add([{"text": "dog", "vector": [50.0 + i, 50.0]} for i in range(10)])
+
+    result = await (
+        table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).to_arrow()
+    )
+    assert len(result) == 10
+
+    offset_result = await (
+        table.query().nearest_to_text("dog").nearest_to([0.1, 0.1]).offset(2).to_arrow()
+    )
+    assert len(offset_result) == 10
+
+
+@pytest.mark.asyncio
+async def test_async_hybrid_query_explain_plan_matches_execution(table: AsyncTable):
+    # Paging rewrites the sub-queries: each one fetches limit + offset rows with
+    # no offset of its own, and the window is sliced out after fusion. The plans
+    # have to be built from those rewritten sub-queries, otherwise explain_plan
+    # and analyze_plan describe a query that is never run.
+    query = (
+        table.query().nearest_to([0.0, 0.4]).nearest_to_text("dog").offset(2).limit(2)
+    )
+    await query.to_arrow()
+
+    plan = await query.explain_plan()
+    assert [
+        line.strip() for line in plan.splitlines() if "GlobalLimitExec" in line
+    ] == [
+        "GlobalLimitExec: skip=0, fetch=4",
+        "GlobalLimitExec: skip=0, fetch=4",
+    ]
+
+    analyzed = await query.analyze_plan()
+    assert analyzed.count("skip=0, fetch=4") == 2
+    assert "skip=2" not in analyzed
+
+
+def test_hybrid_query_offset(sync_table: Table):
+    # The offset window of a hybrid query must be a suffix of the same query
+    # run without an offset -- it must not be silently ignored.
+    full = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .limit(4)
+        .with_row_id(True)
+        .to_arrow()
+    )
+    assert len(full) == 4
+
+    offset_result = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .offset(2)
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+    assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
+
+
+def test_hybrid_query_default_limit(sync_table: Table):
+    # The vector and FTS legs match disjoint rows, so fusing their results
+    # yields more rows than the default limit.
+    new_rows = []
+    for i in range(20):
+        new_rows.append({"text": "close_vec", "vector": [0.1, 0.1]})
+        new_rows.append({"text": "dog", "vector": [50.0 + i, 50.0 + i]})
+    sync_table.add(new_rows)
+
+    def query():
+        return (
+            sync_table.search(query_type="hybrid")
+            .vector([0.1, 0.1])
+            .text("dog")
+            .with_row_id(True)
+        )
+
+    # Like the async hybrid query, the default limit is 10.
+    result = query().to_arrow()
+    assert len(result) == 10
+
+    # The offset window is taken after the default limit is applied.
+    full = query().limit(15).to_arrow()
+    offset_result = query().offset(5).to_arrow()
+    assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[5:]
+
+
 def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
     # minimum_nprobes(0) must raise the same validation error a plain vector
     # query raises, not silently no-op because 0 is falsy.
@@ -134,6 +353,20 @@ def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
             .minimum_nprobes(0)
             .to_arrow()
         )
+
+
+def test_hybrid_query_nprobes_remains_independent(sync_table: Table):
+    query = sync_table.search(query_type="hybrid").nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes is None
+    assert query._maximum_nprobes is None
+
+    query = query.minimum_nprobes(5).nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes == 5
+    assert query._maximum_nprobes is None
 
 
 def test_hybrid_query_distance_range(sync_table: Table):
@@ -303,3 +536,15 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
+    # Pins the full message: the space between "hybrid search." and "But" is
+    # load-bearing (see the _validate_query literal concatenation).
+    with pytest.raises(ValueError) as excinfo:
+        sync_table.search("dog", query_type="hybrid").vector([0.5, -0.5]).to_arrow()
+    assert str(excinfo.value) == (
+        "You can either provide a string query in search() method "
+        "or set `vector()` and `text()` explicitly for hybrid search. "
+        "But not both."
+    )

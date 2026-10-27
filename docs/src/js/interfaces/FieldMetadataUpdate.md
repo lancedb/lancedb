@@ -17,7 +17,8 @@ metadata: Record<string, null | string>;
 ```
 
 Metadata key/value pairs. Merged into the field's existing metadata by
-default; a value of `null` deletes that key.
+default; a value of `null` deletes that key. See
+[Table.updateFieldMetadata](../classes/Table.md#updatefieldmetadata) for the conventional `lancedb:*` keys.
 
 ***
 

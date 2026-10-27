@@ -45,6 +45,9 @@ impl CreateTableBuilder {
     }
 
     /// Apply the given write options when writing the initial data
+    ///
+    /// Remote connections reject explicit Lance write parameters with
+    /// [`Error::NotSupported`] instead of silently using server defaults.
     pub fn write_options(mut self, write_options: WriteOptions) -> Self {
         self.request.write_options = write_options;
         self
@@ -69,6 +72,8 @@ impl CreateTableBuilder {
     }
 
     /// Set multiple options for the storage layer.
+    ///
+    /// Table-level storage options are not supported by remote connections.
     ///
     /// Options already set on the connection will be inherited by the table,
     /// but can be overridden here.
@@ -200,6 +205,17 @@ mod tests {
         let table = db.open_table("name").execute().await.unwrap();
         assert_eq!(table.schema().await.unwrap(), schema);
         assert_eq!(table.count_rows(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn create_table_in_named_memory_database() {
+        let db = connect("memory://foo").execute().await.unwrap();
+        let batch = record_batch!(("id", Int64, [1, 2, 3])).unwrap();
+
+        let table = db.create_table("my_table", batch).execute().await.unwrap();
+
+        assert_eq!(table.uri().await.unwrap(), "memory://foo/my_table.lance");
+        assert_eq!(table.count_rows(None).await.unwrap(), 3);
     }
 
     async fn test_create_table_with_data<T>(data: T)
@@ -427,10 +443,9 @@ mod tests {
             .await
             .unwrap()
             .data_storage_format
-            .lance_file_version()
-            .unwrap();
+            .lance_file_format();
         // Compare resolved versions since Stable/Next are aliases that resolve at storage time
-        assert_eq!(storage_format.resolve(), data_storage_version.resolve());
+        assert_eq!(storage_format, data_storage_version.resolve());
     }
 
     #[tokio::test]
