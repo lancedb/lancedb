@@ -687,6 +687,8 @@ async fn map_blob_take_error(
     let message = err.to_string();
     let missing_row_id = message.contains("must not target deleted rows")
         || message.contains("belongs to non-existent fragment")
+        || (message.contains("Unknown fragment id ")
+            && message.contains("in fragment filter; not part of the current dataset version"))
         || (message.contains("Invalid read params ") && message.contains("addressable rows"))
         || message.contains("Could not resolve all requested row IDs");
 
