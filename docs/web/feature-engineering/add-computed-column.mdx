@@ -8,12 +8,19 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Both offerings support computed columns. Enterprise requires the deployment to enable them; the embedded library evaluates them in your process.
+    Local computed columns require a source build with the experimental-functions Cargo feature. Enterprise requires the deployment to enable them.
 ---
 
 A computed column is declared with an expression and starts with no values.
 Declaring it is cheap on any table size, because nothing is evaluated until
 [a refresh](/feature-engineering/refresh-column) asks for it.
+
+<Note>
+In the 0.41 SDK release, local computed-column declaration and refresh require a
+source build with the `experimental-functions` Cargo feature. Published Python
+and TypeScript packages leave it disabled. Remote Cloud and Enterprise operations
+do not require this feature. Ordinary eager `add_columns` transforms remain available.
+</Note>
 
 ## Add a computed column {#declare}
 

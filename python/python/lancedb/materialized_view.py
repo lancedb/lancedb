@@ -2,7 +2,12 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Materialized views: tables defined by a query over a source table and
-maintained by refresh. See ``DBConnection.create_materialized_view``."""
+maintained by refresh. See ``DBConnection.create_materialized_view``.
+
+Local creation and refresh require the ``experimental-functions`` Cargo feature
+in a source build. Published packages disable it. Opening, reading, listing and
+dropping existing views and remote Cloud/Enterprise operations remain available.
+"""
 
 from __future__ import annotations
 

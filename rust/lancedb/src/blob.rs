@@ -22,10 +22,119 @@ use arrow_schema::{DataType, Field, Schema};
 use lance::dataset::{BlobRangeRequest as LanceBlobRangeRequest, Dataset, WriteParams};
 use lance_arrow::FieldExt;
 use lance_file::version::{ConcreteFileVersion, LanceFileVersion};
-use lance_io::object_store::ObjectStore;
+use lance_io::object_store::{ObjectStore, uri_to_url};
 use object_store::path::Path;
+use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+
+/// A stored Blob V2 descriptor with the source needed to reopen its snapshot.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlobDescriptor {
+    /// Canonical Blob V2 storage kind (0 through 5).
+    pub kind: u8,
+    /// Stored offset within the backing object.
+    pub position: u64,
+    /// Stored length; zero on an external blob can mean unspecified.
+    pub size: u64,
+    /// Stored sidecar or base identifier.
+    pub blob_id: u32,
+    /// Stored external URI or managed path.
+    pub blob_uri: String,
+    /// Source identity captured by the query.
+    pub source: BlobDescriptorSource,
+}
+
+/// The pinned source of a descriptor returned by SQL.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct BlobDescriptorSource {
+    /// URI of the dataset on the source branch.
+    pub uri: String,
+    /// Exact table version read by the query.
+    pub version: u64,
+    /// Commit timestamp in microseconds, distinguishing recreated tables.
+    pub committed_at_micros: u64,
+    /// Source branch; `None` identifies main.
+    pub branch: Option<String>,
+    /// Blob column path in the source table.
+    pub column: String,
+    /// Row ID or row address, as specified by `row_is_address`.
+    pub row_reference: u64,
+    /// Whether the row reference is a physical address.
+    pub row_is_address: bool,
+}
+
+impl BlobDescriptor {
+    pub(crate) fn validate(&self) -> Result<()> {
+        if self.kind > 5
+            || self.source.version == 0
+            || self.source.uri.is_empty()
+            || self.source.column.is_empty()
+        {
+            return Err(Error::InvalidInput {
+                message: "invalid stored blob descriptor or missing pinned source".into(),
+            });
+        }
+        Ok(())
+    }
+}
+
+pub(crate) async fn open_native_blob_file(
+    dataset: &Dataset,
+    descriptor: &BlobDescriptor,
+) -> Result<BlobFile> {
+    descriptor.validate()?;
+    let source = &descriptor.source;
+    let expected_uri = dataset
+        .branch_location()
+        .find_branch(source.branch.as_deref())?
+        .uri;
+    if uri_to_url(&expected_uri)? != uri_to_url(&source.uri)? {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor belongs to a different table".into(),
+        });
+    }
+    let dataset = Arc::new(
+        dataset
+            .checkout_version(lance::dataset::refs::Ref::Version(
+                source.branch.clone(),
+                Some(source.version),
+            ))
+            .await?,
+    );
+    if uri_to_url(dataset.uri())? != uri_to_url(&source.uri)? {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor belongs to a different table".into(),
+        });
+    }
+    if dataset.manifest().timestamp_nanos / 1_000 != u128::from(source.committed_at_micros) {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor source snapshot has been replaced".into(),
+        });
+    }
+    ensure_blob_v2_column(dataset.schema(), &source.column)?;
+    let mut files = if source.row_is_address {
+        dataset
+            .take_blobs_by_addresses(&[source.row_reference], &source.column)
+            .await?
+    } else {
+        dataset
+            .take_blobs(&[source.row_reference], &source.column)
+            .await?
+    };
+    if files.len() != 1 {
+        return Err(Error::InvalidInput {
+            message: "blob descriptor does not resolve to one stored value".into(),
+        });
+    }
+    files
+        .pop()
+        .flatten()
+        .map(Into::into)
+        .ok_or_else(|| Error::InvalidInput {
+            message: "non-null blob descriptor resolved to a null value".into(),
+        })
+}
 
 /// Seekable handle for one blob value, backed by local storage or a remote
 /// HTTP byte-range endpoint.
@@ -589,6 +698,8 @@ async fn map_blob_take_error(
     let message = err.to_string();
     let missing_row_id = message.contains("must not target deleted rows")
         || message.contains("belongs to non-existent fragment")
+        || (message.contains("Unknown fragment id ")
+            && message.contains("in fragment filter; not part of the current dataset version"))
         || (message.contains("Invalid read params ") && message.contains("addressable rows"))
         || message.contains("Could not resolve all requested row IDs");
 

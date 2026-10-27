@@ -591,8 +591,8 @@ class PhraseQuery(FullTextQuery):
     ----------
     query : str
         The query string to match against.
-    column : str
-        The name of the column to match against.
+    column : str, optional
+        The column to match against. None leaves column selection to query planning.
     slop : int, default 0
         The maximum number of intervening positions permitted in the phrase.
     document_granularity : DocumentGranularity, optional
@@ -602,7 +602,7 @@ class PhraseQuery(FullTextQuery):
     """
 
     query: str
-    column: str
+    column: Optional[str] = None
     slop: int = pydantic.Field(0, kw_only=True)
     document_granularity: Optional[DocumentGranularity] = pydantic.Field(
         None, kw_only=True
@@ -910,6 +910,8 @@ class Query(pydantic.BaseModel):
         query.filter = req.filter
         query.full_text_query = req.full_text_search
         query.columns = req.select
+        # Keep the unset value for this opt-in flag, as in the sync builders.
+        query.fast_search = req.fast_search or None
         query.with_row_id = req.with_row_id
         # use_rte is a genuine tri-state (None / True / False); preserve it as-is
         # so a round-tripped query keeps an explicit False.
@@ -1561,9 +1563,10 @@ class LanceQueryBuilder(ABC):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -1619,8 +1622,8 @@ class LanceQueryBuilder(ABC):
               GlobalLimitExec: elapsed=..., skip=0, fetch=10,
               metrics=[output_rows=..., elapsed_compute=..., output_bytes=...]
                 FilterExec: elapsed=..., _distance@2 IS NOT NULL, metrics=[...]
-                  SortExec: elapsed=..., TopK(fetch=10), expr=[...],
-                  preserve_partitioning=[...],
+                  SortExec: elapsed=..., TopK(fetch=1), expr=[...],
+                  preserve_partitioning=[...], filter=[...],
                   metrics=[output_rows=..., elapsed_compute=...,
                   output_bytes=..., row_replacements=...]
                     KNNVectorDistance: elapsed=..., metric=l2,
@@ -1633,6 +1636,7 @@ class LanceQueryBuilder(ABC):
                       metrics=[output_rows=..., elapsed_compute=..., output_bytes=...,
                       fragments_scanned=..., ranges_scanned=1, rows_scanned=1,
                       bytes_read=..., iops=..., requests=..., task_wait_time=...]
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -2959,9 +2963,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
 
         Parameters
         ----------
@@ -3059,7 +3064,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if columns:
             self._vector_query.select(columns)
             self._fts_query.select(columns)
-        if self._where:
+        # An Expr has no truth value (it raises on bool()), so test for it
+        # explicitly instead of relying on truthiness; an empty SQL string is
+        # still skipped.
+        if isinstance(self._where, Expr) or self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
         # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
@@ -3601,9 +3609,10 @@ class AsyncQueryBase(object):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
         <BLANKLINE>
 
         Parameters
@@ -4521,9 +4530,9 @@ class AsyncHybridQuery(AsyncStandardQuery, AsyncVectorQueryBase):
               LanceRead: uri=..., projection=[text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
                   FilterExec: _distance@2 IS NOT NULL
-                    SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+                    SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                       KNNVectorDistance: metric=l2
-                        LanceRead: uri=..., projection=[vector], ...
+                        LanceRead: uri=..., projection=[vector], num_fragments=..., ...
             ProjectionExec: expr=[vector@2 as vector, text@3 as text, _score@1 as _score, _rowid@0 as _rowid]
               LanceRead: uri=..., projection=[vector, text], source=stream(_rowid)
                 GlobalLimitExec: skip=0, fetch=10
@@ -4877,9 +4886,10 @@ class BaseQueryBuilder(object):
         ProjectionExec: expr=[vector@0 as vector, _distance@2 as _distance]
           GlobalLimitExec: skip=0, fetch=10
             FilterExec: _distance@2 IS NOT NULL
-              SortExec: TopK(fetch=10), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
+              SortExec: TopK(fetch=1), expr=[_distance@2 ASC NULLS LAST, _rowid@1 ASC NULLS LAST], preserve_partitioning=[false]
                 KNNVectorDistance: metric=l2
-                  LanceRead: uri=..., projection=[vector], ...
+                  LanceRead: uri=..., projection=[vector], num_fragments=..., ...
+        <BLANKLINE>
         <BLANKLINE>
 
         Parameters

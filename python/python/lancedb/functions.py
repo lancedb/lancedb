@@ -33,6 +33,7 @@ from typing import (
     Annotated,
     Any,
     Callable,
+    Literal,
     Optional,
     Union,
     get_args,
@@ -52,7 +53,9 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
+from ._blob_reader import BlobReader
 from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
@@ -213,6 +216,7 @@ class FunctionParameter(_RemoteValue):
     name: str
     arrow_type: str
     nullable: bool
+    blob_access: Optional[Literal["bytes", "reader"]] = None
 
 
 class FunctionResultField(_OpenRemoteValue):
@@ -1096,6 +1100,43 @@ def _infer_signature(
     if (input_schema is None) != (output_schema is None):
         raise ValueError("input_schema and output_schema must be provided together")
 
+    try:
+        annotations = get_type_hints(function, include_extras=True)
+    except Exception as error:
+        raise TypeError(f"failed to resolve Function annotations: {error}") from error
+
+    def input_parameter(field):
+        annotation = annotations.get(field.name)
+        if get_origin(annotation) in (Union, types.UnionType):
+            choices = [
+                value for value in get_args(annotation) if value is not type(None)
+            ]
+            if len(choices) == 1:
+                annotation = choices[0]
+        arrow_type = _canonical_arrow_field(field)
+        if annotation is BlobReader:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE:
+                raise TypeError(
+                    f"BlobReader input '{field.name}' requires a Blob V2 field"
+                )
+            access = "reader"
+        elif annotation is bytes:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE and not (
+                pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type)
+            ):
+                raise TypeError(
+                    f"bytes input '{field.name}' requires binary or Blob V2"
+                )
+            access = "bytes"
+        else:
+            access = "bytes" if arrow_type == _FUNCTION_BLOB_V2_TYPE else None
+        return FunctionParameter(
+            name=field.name,
+            arrow_type=arrow_type,
+            nullable=field.nullable,
+            blob_access=access,
+        )
+
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
@@ -1110,20 +1151,9 @@ def _infer_signature(
                 "input_schema fields must exactly match callable parameters in order: "
                 f"expected {expected!r}, got {actual!r}"
             )
-        inputs = tuple(
-            FunctionParameter(
-                name=field.name,
-                arrow_type=_canonical_arrow_field(field),
-                nullable=field.nullable,
-            )
-            for field in input_schema
-        )
+        inputs = tuple(input_parameter(field) for field in input_schema)
         return FunctionSignature(inputs=inputs, output=_function_output(output_schema))
 
-    try:
-        annotations = get_type_hints(function, include_extras=True)
-    except Exception as error:
-        raise TypeError(f"failed to resolve Function annotations: {error}") from error
     missing = [
         parameter.name for parameter in parameters if parameter.name not in annotations
     ]
@@ -1132,15 +1162,21 @@ def _infer_signature(
         raise TypeError(f"missing Function annotations: {names!r}")
     inputs = []
     for parameter in parameters:
-        data_type, nullable = _annotation_type(annotations[parameter.name])
-        inputs.append(
-            FunctionParameter(
-                name=parameter.name,
-                arrow_type=_canonical_arrow_field(
-                    pa.field(parameter.name, data_type, nullable=nullable)
-                ),
-                nullable=nullable,
+        annotation = annotations[parameter.name]
+        base = annotation
+        nullable = False
+        if get_origin(base) in (Union, types.UnionType):
+            choices = [value for value in get_args(base) if value is not type(None)]
+            if len(choices) == 1:
+                base, nullable = choices[0], True
+        if base is BlobReader:
+            inputs.append(
+                input_parameter(_blob_field(parameter.name, nullable=nullable))
             )
+            continue
+        data_type, nullable = _annotation_type(annotation)
+        inputs.append(
+            input_parameter(pa.field(parameter.name, data_type, nullable=nullable))
         )
     output_type, output_nullable = _annotation_type(annotations["return"])
     if output_nullable:
@@ -1239,7 +1275,7 @@ _PYTHON_CALLABLE_ARTIFACT = "python_callable"
 _PYTHON_BUNDLE_ARTIFACT = "python_bundle"
 # Modules the Function image places beside user code.
 _RESERVED_SOURCE_MODULES = frozenset(
-    {"user_function", "lance_source", "lance_callable"}
+    {"user_function", "lance_source", "lance_callable", "lance_blob"}
 )
 # The service accepts bundle paths made of these components only.
 _SOURCE_PATH_COMPONENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1499,6 +1535,8 @@ class _SourcePackager:
         """One module-level line that rebinds `name` to `value` in the artifact:
         an import for modules and importable classes/functions, a literal
         otherwise."""
+        if value is BlobReader:
+            return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise ValueError(
