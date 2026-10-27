@@ -597,6 +597,32 @@ pub(crate) fn ensure_blob_column(
     }
 }
 
+/// Validate a blob v2 descriptor source column.
+///
+/// Stored SQL descriptors only describe blob v2 layouts. Keep legacy v1
+/// support on the row-id fetch APIs instead of broadening descriptor
+/// reopening to a storage format it cannot encode.
+fn ensure_blob_v2_column(schema: &lance_core::datatypes::Schema, column: &str) -> Result<()> {
+    if column.contains('.') || schema.field(column).is_none_or(|field| !field.is_blob_v2()) {
+        reject_list_blob_column(&Schema::from(schema), column)?;
+    }
+    match schema.field(column) {
+        Some(field) if field.is_blob_v2() => Ok(()),
+        Some(field) if field.is_blob() => Err(Error::InvalidInput {
+            message: format!(
+                "column '{column}' is a legacy blob column; blob APIs require blob v2 columns \
+                 (ARROW:extension:name = \"lance.blob.v2\")"
+            ),
+        }),
+        Some(_) => Err(Error::InvalidInput {
+            message: format!("column '{column}' is not a blob column"),
+        }),
+        None => Err(Error::InvalidInput {
+            message: format!("no column named '{column}' in this table"),
+        }),
+    }
+}
+
 fn missing_blob_row_ids_error(column: &str, requested: usize, missing: &[u64]) -> Error {
     let detail = if missing.is_empty() {
         String::new()
