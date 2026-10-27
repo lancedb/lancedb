@@ -428,6 +428,38 @@ def test_rrf_multivector_ranks_each_result_list():
     assert result["_rowid"].to_pylist() == [2, 1, 3]
 
 
+@pytest.mark.parametrize("reranker_cls", [RRFReranker, MRRReranker])
+def test_rank_fusion_return_score_all_keeps_both_scores(reranker_cls):
+    # A row found by both searches must keep its vector `_distance` and its FTS
+    # `_score` when the reranker is asked to return all scores.
+    vector_results = pa.table(
+        {
+            "_rowid": pa.array([1, 2], type=pa.uint64()),
+            "text": ["a", "b"],
+            "_distance": pa.array([0.1, 0.2], type=pa.float32()),
+        }
+    )
+    fts_results = pa.table(
+        {
+            "_rowid": pa.array([2, 3], type=pa.uint64()),
+            "text": ["b", "c"],
+            "_score": pa.array([5.0, 4.0], type=pa.float32()),
+        }
+    )
+
+    result = reranker_cls(return_score="all").rerank_hybrid(
+        "query", vector_results, fts_results
+    )
+    rows = {row["_rowid"]: row for row in result.to_pylist()}
+
+    assert rows[1]["_distance"] == pytest.approx(0.1)
+    assert rows[1]["_score"] is None
+    assert rows[2]["_distance"] == pytest.approx(0.2)
+    assert rows[2]["_score"] == pytest.approx(5.0)
+    assert rows[3]["_distance"] is None
+    assert rows[3]["_score"] == pytest.approx(4.0)
+
+
 def test_rrf_reranker_distance():
     data = pa.table(
         {
