@@ -5489,6 +5489,7 @@ async def test_async_search_runs_embedding_on_dedicated_executor(
     )
 
 
+@pytest.mark.experimental_functions
 def test_computed_column_declare_and_refresh(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed", [{"x": 1}, {"x": 2}])
@@ -5512,6 +5513,7 @@ def test_computed_column_rejects_transforms_and_computed_together(tmp_path):
         table.add_columns({"a": "x + 1"}, computed={"b": "x * 2"})
 
 
+@pytest.mark.experimental_functions
 def test_computed_column_blob_projection_inherits_semantics(tmp_path):
     schema = pa.schema([pa.field("id", pa.int64()), lancedb.blob("image")])
     db = lancedb.connect(tmp_path)
@@ -5535,6 +5537,7 @@ def test_computed_column_blob_projection_inherits_semantics(tmp_path):
     assert copied.to_pylist() == [b"hello", b"", None]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_computed_column_async(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -5553,6 +5556,7 @@ def test_function_errors_are_remote_only(tmp_path):
         table.function_errors()
 
 
+@pytest.mark.experimental_functions
 def test_refresh_column_async_returns_job(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("computed_job", [{"x": 1}, {"x": 2}])
@@ -5581,6 +5585,7 @@ def test_refresh_column_async_returns_job(tmp_path):
         table.refresh_column_async("x")
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_refresh_column_async_job_async_table(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -5597,6 +5602,7 @@ async def test_refresh_column_async_job_async_table(tmp_path):
     assert (await table.to_arrow())["tripled"].to_pylist() == [9]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.parametrize("interval", [None, 300])
 def test_computed_auto_refresh_options(tmp_path, interval):
     db = lancedb.connect(tmp_path)
@@ -5635,6 +5641,7 @@ def test_auto_refresh_options_require_computed_columns(tmp_path):
         table.add_columns({"doubled": "x * 2"}, auto_refresh_enabled=True)
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_computed_auto_refresh_uses_server_interval(tmp_path):
     db = await lancedb.connect_async(tmp_path)

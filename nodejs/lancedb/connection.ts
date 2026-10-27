@@ -270,6 +270,10 @@ export abstract class Connection {
   /**
    * Define a materialized view named `name` over the table `source`.
    *
+   * Local creation and refresh require a source build with the
+   * `experimental-functions` Cargo feature, disabled in published packages.
+   * Remote Cloud/Enterprise operations do not require this feature.
+   *
    * The view is populated before creation returns. Set `withNoData` to create
    * only its definition and empty backing table. The view is a normal table:
    * it can be queried, indexed and searched, and it appears in `tableNames`.

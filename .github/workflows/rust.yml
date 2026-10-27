@@ -261,6 +261,8 @@ jobs:
           sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
       - uses: rui314/setup-mold@v1
+      - name: Test the default local Functions gate
+        run: cargo test --profile ci -p lancedb --features remote --test experimental_functions --locked
       - name: Run remote tests
         run: CARGO_ARGS="--profile ci" make -C ./lancedb remote-tests
 

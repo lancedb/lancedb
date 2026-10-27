@@ -26,6 +26,8 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+_experimental_functions_enabled: bool
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
