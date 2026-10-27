@@ -2224,6 +2224,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn refresh_materialized_view_async(
         &self,
         source_version: Option<u64>,
+        full: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
         self.check_mutable().await?;
         if source_version.is_some() {
@@ -2236,8 +2237,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
         let statement = format!(
-            "REFRESH MATERIALIZED VIEW {}",
-            quote_sql_identifier(&self.name)
+            "REFRESH MATERIALIZED VIEW {}{}",
+            quote_sql_identifier(&self.name),
+            if full { " WITH (full = true)" } else { "" },
         );
         let namespace = self.namespace.clone();
         let client = self.client.clone();
@@ -2247,8 +2249,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
         let job_sql_client = sql_client.clone();
-        Ok(
-            sql_client.submit_as_job(statement, namespace.clone(), move || async move {
+        sql_client
+            .submit_as_job(statement, namespace.clone(), move || async move {
                 let table = Self::new_with_sql_client(
                     client,
                     name,
@@ -2259,19 +2261,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 );
                 table.checkout_latest().await?;
                 let version = table.version().await?;
-                let rows_written =
-                    u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
-                        message: "materialized-view row count exceeds u64".to_string(),
-                    })?;
                 freshness_request.observe_version(&freshness, version);
                 Ok(RefreshMaterializedViewResult {
-                    mode: crate::materialized_view::RefreshMode::Rebuild,
-                    rows_written,
-                    source_version: 0,
+                    // The SQL job adapter does not expose refresh metrics. Table
+                    // metadata cannot tell us what this refresh actually did.
+                    mode: None,
+                    rows_written: None,
+                    source_version: None,
                     version,
                 })
-            }),
-        )
+            })
+            .await
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
@@ -2925,6 +2925,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
         self.fetch_blob_files_impl(column, row_ids).await
+    }
+
+    async fn open_blob_file(&self, descriptor: &crate::blob::BlobDescriptor) -> Result<BlobFile> {
+        self.open_blob_file_impl(descriptor).await
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
@@ -5681,6 +5685,252 @@ mod tests {
             crate::blob("thumbnail", true),
         ]);
         schema_describe_response(&schema)
+    }
+
+    #[tokio::test]
+    async fn test_adapter_construction_only_describes_blob_schema() {
+        use datafusion_catalog::TableProvider;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            blob_describe_response()
+        });
+
+        let adapter =
+            crate::table::datafusion::BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let schema = adapter.schema();
+        let DataType::Struct(fields) = schema.field_with_name("image").unwrap().data_type() else {
+            panic!("expected a blob descriptor");
+        };
+        assert!(fields.find("size").unwrap().1.is_nullable());
+        assert!(fields.find("data").is_none());
+    }
+
+    #[tokio::test]
+    async fn test_adapter_blob_read_schema_matches_remote_scan() {
+        use datafusion::prelude::SessionContext;
+        use datafusion_catalog::TableProvider;
+        use lance_core::datatypes::Projection;
+
+        let write_schema = Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            crate::blob("image", true),
+        ]);
+        let read_schema = Arc::new(
+            Projection::full(Arc::new(LanceSchema::try_from(&write_schema).unwrap()))
+                .to_arrow_schema(),
+        );
+        let descriptor = arrow_array::new_null_array(read_schema.field(1).data_type(), 2);
+        let response = RecordBatch::try_new(
+            read_schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2])), descriptor],
+        )
+        .unwrap();
+        let table =
+            Table::new_with_handler("my_table", move |request| match request.url().path() {
+                "/v1/table/my_table/describe/" => {
+                    schema_describe_response(&write_schema).map(String::into_bytes)
+                }
+                "/v1/table/my_table/query/" => {
+                    let body: serde_json::Value =
+                        serde_json::from_slice(request.body().unwrap().as_bytes().unwrap())
+                            .unwrap();
+                    let columns = body["columns"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|column| {
+                            response
+                                .schema()
+                                .index_of(column.as_str().unwrap())
+                                .unwrap()
+                        })
+                        .collect::<Vec<_>>();
+                    http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(write_ipc_file(&response.project(&columns).unwrap()))
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+        let adapter =
+            crate::table::datafusion::BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+        let ctx = SessionContext::new();
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
+        let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.schema() == adapter.schema())
+        );
+        let adapter = adapter.with_blob_schema(crate::table::datafusion::BlobSchema::Write);
+        let plan = adapter
+            .scan(&ctx.state(), Some(&vec![0]), &[], None)
+            .await
+            .unwrap();
+        let expected = Arc::new(adapter.schema().project(&[0]).unwrap());
+        assert_eq!(plan.schema(), expected);
+        let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        assert!(batches.iter().all(|batch| batch.schema() == expected));
+    }
+
+    #[tokio::test]
+    async fn test_adapter_write_scan_checks_metadata_and_nullability() {
+        use crate::table::datafusion::{BaseTableAdapter, BlobSchema};
+        use datafusion::prelude::SessionContext;
+        use datafusion_catalog::TableProvider;
+
+        let declared = Field::new("id", DataType::Int64, false)
+            .with_metadata(HashMap::from([("meaning".into(), "identifier".into())]));
+        for returned in [
+            declared.clone(),
+            declared.clone().with_nullable(true),
+            declared.clone().with_metadata(HashMap::new()),
+        ] {
+            let matches = returned == declared;
+            let write_schema = Schema::new(vec![declared.clone()]);
+            let response = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![returned])),
+                vec![Arc::new(Int64Array::from(vec![1]))],
+            )
+            .unwrap();
+            let table =
+                Table::new_with_handler("my_table", move |request| match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        schema_describe_response(&write_schema).map(String::into_bytes)
+                    }
+                    "/v1/table/my_table/query/" => http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(write_ipc_file(&response))
+                        .unwrap(),
+                    path => panic!("unexpected request: {path}"),
+                });
+            let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap()
+                .with_blob_schema(BlobSchema::Write);
+            let ctx = SessionContext::new();
+            let result = adapter.scan(&ctx.state(), None, &[], None).await;
+            if matches {
+                let plan = result.unwrap();
+                assert_eq!(plan.schema(), adapter.schema());
+                let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+                    .await
+                    .unwrap();
+                assert_eq!(batches[0].schema(), adapter.schema());
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("Scan schema mismatch"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_adapter_blob_write_sql_remote_payload_round_trip() {
+        use crate::table::datafusion::{BaseTableAdapter, BlobSchema};
+        use datafusion::prelude::SessionContext;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            crate::blob("image", true),
+        ]));
+        let described_schema = schema.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let table =
+            Table::new_with_handler("my_table", move |mut request| match request.url().path() {
+                "/v1/table/my_table/describe/" => schema_describe_response(&described_schema),
+                "/v1/table/my_table/insert/" => {
+                    let body = request.body_mut().take().unwrap();
+                    sender.send(body).unwrap();
+                    http::Response::builder()
+                        .status(200)
+                        .body(r#"{"version": 2}"#.to_string())
+                        .unwrap()
+                }
+                path => panic!("unexpected request: {path}"),
+            });
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_blob_schema(BlobSchema::Write);
+        let ctx = SessionContext::new();
+        ctx.register_table("docs", Arc::new(adapter)).unwrap();
+
+        // Persist the exact Arrow stream sent to the mocked remote endpoint to
+        // a real native sink, then check storage bytes independently of schemas.
+        let tmp = tempfile::tempdir().unwrap();
+        let db = crate::connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let sink = db
+            .create_empty_table("sink", schema)
+            .execute()
+            .await
+            .unwrap();
+        for query in [
+            "INSERT INTO docs SELECT 1, named_struct('data', X'6869', 'uri', NULL)",
+            "INSERT INTO docs VALUES (2, NULL)",
+            "INSERT INTO docs (id) VALUES (3)",
+            "INSERT INTO docs SELECT 4, named_struct('data', X'', 'uri', NULL)",
+        ] {
+            ctx.sql(query).await.unwrap().collect().await.unwrap();
+            let body = collect_body(receiver.recv().unwrap()).await;
+            let reader = StreamReader::try_new(Cursor::new(body), None).unwrap();
+            for batch in reader {
+                sink.add(batch.unwrap()).execute().await.unwrap();
+            }
+        }
+        let batches = sink
+            .query()
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let row_ids = batches
+            .iter()
+            .flat_map(|batch| {
+                batch
+                    .column_by_name("_rowid")
+                    .unwrap()
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .values()
+                    .iter()
+                    .copied()
+            })
+            .collect::<Vec<_>>();
+        let actual = sink.fetch_blobs("image", &row_ids).await.unwrap();
+        assert_eq!(
+            actual,
+            LargeBinaryArray::from(vec![
+                Some(b"hi".as_slice()),
+                None,
+                None,
+                Some(b"".as_slice())
+            ])
+        );
     }
 
     #[rstest]
