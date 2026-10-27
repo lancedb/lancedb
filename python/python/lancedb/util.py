@@ -9,7 +9,7 @@ import math
 import os
 import pathlib
 import warnings
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
@@ -423,6 +423,19 @@ def _(value: datetime):
 @value_to_sql.register(date)
 def _(value: date):
     return f"'{value.isoformat()}'"
+
+
+@value_to_sql.register(time)
+def _(value: time):
+    # A plain string literal can be assigned to a time column but not compared with one.
+    return f"arrow_cast('{value.isoformat()}', 'Time64(Microsecond)')"
+
+
+@value_to_sql.register(timedelta)
+def _(value: timedelta):
+    # Lance does not accept INTERVAL literals, so cast the exact microsecond count.
+    microseconds = value // timedelta(microseconds=1)
+    return f"arrow_cast({microseconds}, 'Duration(Microsecond)')"
 
 
 @value_to_sql.register(list)

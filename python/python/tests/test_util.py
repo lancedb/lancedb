@@ -4,6 +4,7 @@
 
 import os
 import pathlib
+from datetime import time, timedelta
 from decimal import Decimal, localcontext
 from typing import Optional
 
@@ -215,6 +216,60 @@ def test_value_to_sql_decimal_non_finite(value):
         ValueError, match="^Non-finite Decimal values cannot be converted to SQL$"
     ):
         value_to_sql(Decimal(value))
+
+
+def test_value_to_sql_time_and_timedelta(tmp_path):
+    assert (
+        value_to_sql(time(9, 30, 0, 250))
+        == "arrow_cast('09:30:00.000250', 'Time64(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(days=1, microseconds=5))
+        == "arrow_cast(86400000005, 'Duration(Microsecond)')"
+    )
+    assert (
+        value_to_sql(timedelta(seconds=-1))
+        == "arrow_cast(-1000000, 'Duration(Microsecond)')"
+    )
+
+    # Round trip through update and a filter, including columns whose unit is not
+    # microseconds.
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "starts": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("us")),
+                "starts_ns": pa.array([time(1, 2, 3), time(4, 5, 6)], pa.time64("ns")),
+                "duration": pa.array([timedelta(0), timedelta(0)], pa.duration("us")),
+                "duration_s": pa.array([timedelta(0), timedelta(0)], pa.duration("s")),
+            }
+        ),
+    )
+    table.update(
+        where="id = 1",
+        values={
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        },
+    )
+    assert table.to_arrow().sort_by("id").slice(0, 1).to_pylist() == [
+        {
+            "id": 1,
+            "starts": time(9, 30, 0, 250),
+            "starts_ns": time(9, 30, 0, 250),
+            "duration": timedelta(minutes=45, microseconds=5),
+            "duration_s": timedelta(hours=2),
+        }
+    ]
+    for where in (
+        f"starts = {value_to_sql(time(9, 30, 0, 250))}",
+        f"duration = {value_to_sql(timedelta(minutes=45, microseconds=5))}",
+    ):
+        assert table.search().where(where).to_arrow()["id"].to_pylist() == [1]
 
 
 def test_value_to_sql_dict():
