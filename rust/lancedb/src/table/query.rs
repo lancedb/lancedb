@@ -162,7 +162,13 @@ pub async fn create_plan(
     query: &AnyQuery,
     options: QueryExecutionOptions,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let query = query.canonicalized()?;
+    let mut query = query.canonicalized()?;
+    // Remote and namespace queries retain their original SQL. Native execution
+    // lowers ST_DWithin after canonicalization, before take/RTE routing clones
+    // or consumes the query.
+    if let Some(QueryFilter::Sql(predicate)) = &mut query.base_mut().filter {
+        *predicate = crate::query::sql::rewrite_st_dwithin(predicate);
+    }
     if let AnyQuery::Query(request) = &query
         && let Some(offsets) = &request.take_offsets
     {

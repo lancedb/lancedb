@@ -48,8 +48,8 @@ use crate::{
 };
 
 mod hybrid;
-pub(crate) mod wal_fusion; // WAL-PK-FUSION: delete with the module.
 pub(crate) mod sql;
+pub(crate) mod wal_fusion; // WAL-PK-FUSION: delete with the module.
 
 pub(crate) const DEFAULT_TOP_K: usize = 10;
 
@@ -582,8 +582,8 @@ impl<T: HasQuery> QueryBase for T {
     }
 
     fn only_if(mut self, filter: impl AsRef<str>) -> Self {
-        let filter = sql::rewrite_st_dwithin(filter.as_ref());
-        self.mut_query().add_filter(QueryFilter::Sql(filter));
+        self.mut_query()
+            .add_filter(QueryFilter::Sql(filter.as_ref().to_string()));
         self
     }
 
@@ -2403,9 +2403,11 @@ mod tests {
         compute::concat_batches,
         datatypes::{Int32Type, UInt8Type},
     };
+    #[cfg(feature = "geo")]
+    use arrow_array::Float64Array;
     use arrow_array::{
-        FixedSizeListArray, Float32Array, Float64Array, Int32Array, RecordBatch,
-        RecordBatchIterator, StringArray, cast::AsArray, types::Float32Type,
+        FixedSizeListArray, Float32Array, Int32Array, RecordBatch, RecordBatchIterator,
+        StringArray, cast::AsArray, types::Float32Type,
     };
     use arrow_schema::{DataType, Field as ArrowField, Schema as ArrowSchema};
     use datafusion_physical_plan::display::DisplayableExecutionPlan;
@@ -3208,6 +3210,7 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[cfg(feature = "geo")]
     #[tokio::test]
     async fn test_st_dwithin_filter() {
         let tmp_dir = tempdir().unwrap();

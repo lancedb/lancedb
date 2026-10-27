@@ -41,7 +41,7 @@ impl Dialect for LanceDialect {
 /// GeoDataFusion does not currently expose `ST_DWithin`, but its definition is
 /// exactly this distance comparison. Invalid SQL and unsupported function
 /// shapes are left untouched so the query planner can report the usual error.
-pub(super) fn rewrite_st_dwithin(filter: &str) -> String {
+pub(crate) fn rewrite_st_dwithin(filter: &str) -> String {
     if !filter.to_ascii_lowercase().contains("st_dwithin") {
         return filter.to_string();
     }
@@ -111,11 +111,20 @@ fn parse_filter(filter: &str) -> Option<Expr> {
         tokens.push(std::mem::replace(&mut previous, next));
     }
     tokens.push(previous);
+    // A predicate must parse as one complete expression. Do not let a rewrite
+    // silently discard anything after a statement delimiter.
+    if tokens.iter().any(|token| matches!(token, Token::SemiColon)) {
+        return None;
+    }
 
-    let statement = Parser::new(&dialect)
+    let mut statements = Parser::new(&dialect)
         .with_tokens(tokens)
-        .parse_statement()
+        .parse_statements()
         .ok()?;
+    if statements.len() != 1 {
+        return None;
+    }
+    let statement = statements.pop()?;
     if let Statement::Query(query) = statement
         && let SetExpr::Select(select) = *query.body
         && let Some(expr) = select.selection
