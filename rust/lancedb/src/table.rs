@@ -2003,8 +2003,6 @@ impl Table {
     /// - `lancedb:description`: for a human-readable description of a field.
     /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
     ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-    ///   `feature_v2` might be in the same logical column.
     /// - `lancedb:status`: for status options (`production`, `candidate`,
     ///   `deprecated`, `archived`) to designate the current life cycle state of
     ///   this column.
