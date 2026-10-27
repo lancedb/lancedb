@@ -31,6 +31,11 @@
 //! - `gcs` - Enable Google Cloud Storage object store support.
 //! - `oss` - Enable Alibaba Cloud OSS object store support.
 //! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `experimental-functions` - Opt in to local SQL computed-column declarations
+//!   and refresh, and local materialized-view creation and refresh. Disabled by
+//!   default, including in published Python and TypeScript packages. Remote
+//!   Cloud/Enterprise operations, reading existing data, metadata protections,
+//!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //! - `metrics` - Publish LanceDB's internal metrics through the
@@ -228,6 +233,19 @@ pub use materialized_view::{
 #[cfg(feature = "metrics")]
 pub use metrics;
 pub use table::{FtsToken, Table};
+
+/// Gate local execution without hiding client types or metadata protections.
+pub(crate) fn require_experimental_functions() -> Result<()> {
+    if !cfg!(feature = "experimental-functions") {
+        return Err(Error::NotSupported {
+            message: "local computed columns and materialized-view creation/refresh require \
+                      building LanceDB with the 'experimental-functions' Cargo feature; \
+                      official Python and TypeScript packages do not enable it"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 /// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
 ///

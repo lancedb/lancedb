@@ -101,3 +101,52 @@ print(results)
 ### Development
 
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for information on how to contribute to LanceDB.
+
+### Opening SQL blob descriptors
+
+A SQL `blob_descriptor(video)` result keeps the Blob V2 storage metadata and a
+`source` struct containing its table URI, version, commit timestamp, branch,
+column and row identity. This example uses a remote SQL connection whose SQL
+service produces those source-bearing descriptors. Open the reference on the
+source table to read incrementally:
+
+```python
+rows = db.execute_query("""
+    SELECT f.timestamp, blob_descriptor(v.video) AS video
+    FROM videos v JOIN frames f ON v.id = f.video_id
+""").read_all()
+
+videos = db.open_table("videos")
+for row in rows.to_pylist():
+    if row["video"] is not None:
+        with videos.open_blob_file(row["video"]) as video:
+            frame = extract_frame(video, row["timestamp"])
+```
+
+`open_blob_file` accepts the dictionary or an Arrow struct scalar directly. It
+keeps the query's version and branch without changing the table handle's checkout.
+Payload bytes load on reads. An external blob with an unspecified size may need a
+metadata-only HEAD request to open.
+
+`videos.open_blob_files(rows["video"])` returns an iterator over the same handles,
+preserving order, duplicates and nulls (`None`). It accepts Arrow arrays/chunked
+arrays or another iterable and opens each handle as iteration advances. Close each
+non-null handle after use. Async tables offer `await videos.open_blob_file(...)`
+and `async for video in videos.open_blob_files(...)`.
+
+```python
+for video in videos.open_blob_files(rows["video"]):
+    if video is not None:
+        with video:
+            header = video.read(4096)
+```
+
+To extract a frame while retaining each row's timestamp, iterate over the
+handles and rows together:
+
+```python
+for row, video in zip(rows.to_pylist(), videos.open_blob_files(rows["video"])):
+    if video is not None:
+        with video:
+            frame = extract_frame(video, row["timestamp"])
+```

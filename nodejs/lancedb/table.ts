@@ -594,6 +594,10 @@ export abstract class Table {
   /**
    * Add new columns with defined values.
    *
+   * Local computed-column declaration and refresh require a source build with
+   * the `experimental-functions` Cargo feature. Published packages disable it;
+   * remote Cloud/Enterprise operations remain available.
+   *
    * The `{ computed }` form stores the expression rather than evaluating it
    * now: the column is committed with no values, and rows get them from
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
@@ -632,6 +636,7 @@ export abstract class Table {
 
   /**
    * Fill the rows of a computed column that hold no value yet.
+   * Local refresh requires a source build with `experimental-functions`.
    *
    * Rows appended since the last refresh are filled by the next one, and
    * rows whose inputs changed since they were computed are recomputed;
@@ -646,6 +651,8 @@ export abstract class Table {
   /**
    * Like {@link Table#refreshColumn}, but returns a handle to the refresh
    * job instead of blocking until it completes.
+   * Local refresh requires a source build with `experimental-functions`.
+   * Remote Cloud/Enterprise jobs do not require this feature.
    *
    * The job may already be complete when returned; callers must not assume
    * the column is filled until {@link Job.wait} resolves. Invalid input --
@@ -692,6 +699,7 @@ export abstract class Table {
    */
   abstract refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -1435,8 +1443,9 @@ export class LocalTable extends Table {
 
   async refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion);
+    return await this.inner.refreshMaterializedView(sourceVersion, full);
   }
 
   async materializedViewDefinition(): Promise<string> {
