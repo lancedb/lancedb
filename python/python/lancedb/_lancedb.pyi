@@ -26,10 +26,13 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+_experimental_functions_enabled: bool
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+__version__: str
 
 class MetricPoint:
     name: str
@@ -526,10 +529,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -544,6 +547,7 @@ class Table:
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
+        compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
@@ -918,9 +922,9 @@ class FunctionErrors:
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
-    mode: str
-    rows_written: int
-    source_version: int
+    mode: Optional[str]
+    rows_written: Optional[int]
+    source_version: Optional[int]
     version: int
 
 class AlterColumnsResult:

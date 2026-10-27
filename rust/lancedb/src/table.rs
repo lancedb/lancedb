@@ -107,7 +107,9 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
-pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use optimize::{
+    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+};
 pub use refresh::RefreshColumnResult;
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
@@ -583,6 +585,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn refresh_materialized_view_async(
         &self,
         _source_version: Option<u64>,
+        _full: bool,
     ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
         Err(Error::NotSupported {
             message: "remote materialized-view refresh is not supported on this table type".into(),
@@ -764,7 +767,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     async fn close_rte_writers(&self) -> Result<()> {
         Ok(())
     }
-    /// Names of the blob v2 columns in this table, in declaration order.
+    /// Names of the blob v1 and v2 columns in this table, in declaration order.
     async fn blob_columns(&self) -> Result<Vec<String>> {
         Err(Error::NotSupported {
             message: "blob_columns is not supported on this table type".into(),
@@ -1249,7 +1252,7 @@ impl Table {
         self.inner.count_rows(filter).await
     }
 
-    /// Names of the row-addressable blob v2 columns, in declaration order.
+    /// Names of the row-addressable blob v1 and v2 columns, in declaration order.
     ///
     /// Blobs nested in structs use dotted paths (e.g. `info.blob`). Blobs
     /// inside lists are omitted because row ids cannot identify their elements.
@@ -1260,6 +1263,7 @@ impl Table {
 
     /// Materialize blob bytes for the given row ids.
     ///
+    /// Native tables support both legacy blob v1 and blob v2 columns.
     /// Output matches `row_ids` in length and order. Null blobs are null;
     /// valid empty blobs contain empty byte strings. Cloud limits individual
     /// requests to 1024 row ids and 64 MiB of blob bytes; the remote client
@@ -1295,7 +1299,7 @@ impl Table {
     ///
     /// Blobs inside lists cannot be fetched by row id. Returns
     /// [`Error::InvalidInput`] for those paths, when the column does not exist,
-    /// or when it is not a blob v2 column. Returns [`Error::NotSupported`] on
+    /// or when it is not a blob column. Returns [`Error::NotSupported`] on
     /// table types without blob support.
     pub async fn fetch_blobs(
         &self,
@@ -1305,8 +1309,9 @@ impl Table {
         self.inner.fetch_blobs(column.as_ref(), row_ids).await
     }
 
-    /// Materialize row-specific ranges from a blob v2 column.
+    /// Materialize row-specific ranges from a blob column.
     ///
+    /// Native tables support both legacy blob v1 and blob v2 columns.
     /// Each request contains a row id and a blob-local offset and length.
     /// Requests may be duplicated or reordered, including multiple
     /// ranges for the same blob. The output has the same length and order as
@@ -1339,7 +1344,7 @@ impl Table {
     /// ```
     ///
     /// Returns an error when a range is invalid, a requested row id does not
-    /// exist, or the column is not a blob v2 column. Returns
+    /// exist, or the column is not a blob column. Returns
     /// [`Error::NotSupported`] on table types without blob support.
     pub async fn fetch_blob_ranges(
         &self,
@@ -1354,6 +1359,7 @@ impl Table {
 
     /// Open lazy [`BlobFile`] handles for the given row ids.
     ///
+    /// Native tables support both legacy blob v1 and blob v2 columns.
     /// Same length and order as `row_ids`. Null rows are `None`. Bytes are not
     /// read from disk until a call to [`BlobFile::read`].
     /// Remote blob requests share a connection-wide concurrency limit. Set
@@ -1997,8 +2003,6 @@ impl Table {
     /// - `lancedb:description`: for a human-readable description of a field.
     /// - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
     ///   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-    /// - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-    ///   `feature_v2` might be in the same logical column.
     /// - `lancedb:status`: for status options (`production`, `candidate`,
     ///   `deprecated`, `archived`) to designate the current life cycle state of
     ///   this column.

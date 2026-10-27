@@ -1021,14 +1021,30 @@ async fn rejected_job_cancellation_does_not_abort_sql_completion() {
 }
 
 #[tokio::test]
-async fn remote_refresh_twice_keeps_latest_selector() {
+async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let incoming = futures::stream::try_unfold(listener, |listener| async {
         let (socket, _) = listener.accept().await?;
         Ok::<_, std::io::Error>(Some((socket, listener)))
     });
-    let service = TestSqlService::default();
+    let result = RecordBatch::try_from_iter(vec![
+        (
+            "name",
+            Arc::new(StringArray::from(vec!["view"])) as ArrayRef,
+        ),
+        (
+            "query",
+            Arc::new(StringArray::from(vec!["SELECT * FROM source"])) as ArrayRef,
+        ),
+    ])
+    .unwrap();
+    let service = TestSqlService {
+        result,
+        ..Default::default()
+    };
+    let statements = service.statements.clone();
+    let headers = service.headers.clone();
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
         tonic::transport::Server::builder()
@@ -1052,11 +1068,10 @@ async fn remote_refresh_twice_keeps_latest_selector() {
             .body()
             .and_then(reqwest::Body::as_bytes)
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(bytes).ok())
-            .unwrap();
+            .unwrap_or_default();
         captured.lock().unwrap().push(body["version"].clone());
         let text = match request.url().path() {
             "/v1/table/ns$view/describe/" => r#"{"version": 42, "schema": {"fields": []}}"#,
-            "/v1/table/ns$view/count_rows/" => "2",
             other => panic!("unexpected REST request: {other}"),
         };
         http::Response::builder()
@@ -1072,24 +1087,55 @@ async fn remote_refresh_twice_keeps_latest_selector() {
         Default::default(),
         Some(sql_client),
     );
+    let database = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+        panic!("unexpected database request: {}", request.url());
+    });
+    let view =
+        crate::MaterializedView::from_table(crate::Table::new(Arc::new(table), Arc::new(database)))
+            .await
+            .unwrap();
 
-    let first = table
-        .refresh_materialized_view_async(None)
+    let first = view.refresh().execute().await.unwrap();
+    let second = view
+        .refresh()
+        .full(true)
+        .execute_async()
         .await
         .unwrap()
         .wait()
         .await
         .unwrap();
-    let second = table
-        .refresh_materialized_view_async(None)
-        .await
-        .unwrap()
-        .wait()
-        .await
-        .unwrap();
 
-    assert_eq!(first.version, 42);
-    assert_eq!(second.version, 42);
+    for result in [first, second] {
+        assert_eq!(result.mode, None);
+        assert_eq!(result.rows_written, None);
+        assert_eq!(result.source_version, None);
+        assert_eq!(result.version, 42);
+        // Query-backed jobs serialize their typed result before returning it.
+        let json = serde_json::to_value(result).unwrap();
+        assert!(json["mode"].is_null());
+        assert!(json["rows_written"].is_null());
+        assert!(json["source_version"].is_null());
+    }
+    assert!(matches!(
+        view.refresh().source_version(7).execute_async().await,
+        Err(Error::NotSupported { .. })
+    ));
+    assert_eq!(
+        *statements.lock().unwrap(),
+        [
+            "DESCRIBE MATERIALIZED VIEW \"view\"",
+            "REFRESH MATERIALIZED VIEW \"view\"",
+            "REFRESH MATERIALIZED VIEW \"view\" WITH (full = true)",
+        ]
+    );
+    assert!(
+        headers
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|h| h.namespace_path == "ns")
+    );
     assert!(
         selectors
             .lock()
@@ -1147,7 +1193,10 @@ async fn cancelling_remote_refresh_cancels_sql_query() {
         Default::default(),
         Some(sql_client),
     );
-    let job = table.refresh_materialized_view_async(None).await.unwrap();
+    let job = table
+        .refresh_materialized_view_async(None, false)
+        .await
+        .unwrap();
     tokio::time::timeout(Duration::from_secs(10), async {
         while do_get_count.load(Ordering::SeqCst) == 0 {
             tokio::task::yield_now().await;
