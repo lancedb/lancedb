@@ -23,6 +23,24 @@ three; a deployment handles them in the background and does not support
 Run optimization as regular table maintenance, particularly after many small
 writes or a large ingest.
 
+{/*
+Draft for the OSS compaction SQ partition check release. Keep this section
+unpublished until that behavior ships.
+
+### Recover from an oversized SQ partition {#oversized-sq-partition}
+
+Compacting a table with an IVF scalar-quantized (SQ) vector index can stop
+before rewriting files if an affected partition is too large to remap. The
+error identifies the index, segment, partition size, and vector dimension
+instead of letting the remap fail at Arrow's fixed-size-list `u32`
+child-array limit.
+
+Rebuild the affected vector index with enough IVF partitions to keep each
+partition at or below `floor(u32::MAX / dimension)` vectors, then retry the
+optimize. Rebuilding with the default IVF partitioning can also choose enough
+partitions.
+*/}
+
 ## Optimize a table {#what-it-does}
 
 ```python
