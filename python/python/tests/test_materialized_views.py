@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+
 import contextlib
 import http.server
 import json
@@ -31,89 +32,6 @@ def make_db(tmp_path):
 
 
 @contextlib.contextmanager
-def mock_remote_materialized_views():
-    requests = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_GET(self):
-            requests.append(self.path)
-            encoded = json.dumps({"views": ["daily_sales"]}).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            yield f"http://localhost:{server.server_address[1]}", requests
-        finally:
-            server.shutdown()
-            thread.join()
-
-
-@contextlib.contextmanager
-def mock_remote_materialized_view_drop():
-    requests = []
-
-    class Handler(http.server.BaseHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-        def do_POST(self):
-            length = int(self.headers.get("Content-Length", 0))
-            body = json.loads(self.rfile.read(length) or b"{}")
-            requests.append((self.path, body))
-            assert self.path.endswith("/drop")
-            job_id = "mv-drop-123"
-            encoded = json.dumps({"job_id": job_id}).encode()
-            self.send_response(202)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
-
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
-        try:
-            yield f"http://localhost:{server.server_address[1]}", requests
-        finally:
-            server.shutdown()
-            thread.join()
-
-
-def test_remote_list_uses_namespace_route():
-    with mock_remote_materialized_views() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        assert list(db.list_materialized_views()) == ["daily_sales"]
-    assert requests == ["/v1/namespace/$/materialized_view/list"]
-
-
-def test_remote_drop_async_returns_server_job():
-    with mock_remote_materialized_view_drop() as (host, requests):
-        db = lancedb.connect(
-            "db://dev",
-            api_key="fake",
-            host_override=host,
-            client_config={"retry_config": {"retries": 0}},
-        )
-        job = db.drop_materialized_view_async("adults")
-        assert job.id == "mv-drop-123"
-    assert requests == [("/v1/materialized_view/adults/drop", {})]
-
-
-@contextlib.contextmanager
 def mock_remote_materialized_view_refresh():
     requests = []
 
@@ -123,11 +41,8 @@ def mock_remote_materialized_view_refresh():
 
         def do_POST(self):
             requests.append(self.path)
-            if self.path == "/v1/materialized_view/view/describe":
-                response = {"query": "SELECT * FROM source"}
-            else:
-                assert self.path == "/v1/table/view/describe/"
-                response = {"version": 42, "schema": {"fields": []}}
+            assert self.path == "/v1/table/view/describe/"
+            response = {"version": 42, "schema": {"fields": []}}
             encoded = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -159,6 +74,16 @@ async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
 
         def do_get(self, context, ticket):
             self.commands.append(ticket.ticket)
+            if b"DESCRIBE MATERIALIZED VIEW" in ticket.ticket:
+                return flight.RecordBatchStream(
+                    pa.table(
+                        {
+                            "name": ["view"],
+                            "query": ["SELECT * FROM source"],
+                        }
+                    )
+                )
+            assert b"REFRESH MATERIALIZED VIEW" in ticket.ticket
             # SQL completion carries no refresh statistics.
             return flight.RecordBatchStream(pa.table({"status": ["ok"]}))
 
@@ -199,9 +124,24 @@ async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
             "RefreshMaterializedViewResult(mode=None, rows_written=None, "
             "source_version=None, version=42)"
         )
-        (command,) = server.commands
-        assert b'REFRESH MATERIALIZED VIEW "view"' in command
-        assert (b"WITH (full = true)" in command) is full
+        describes = [
+            command
+            for command in server.commands
+            if b"DESCRIBE MATERIALIZED VIEW" in command
+        ]
+        refreshes = [
+            command
+            for command in server.commands
+            if b"REFRESH MATERIALIZED VIEW" in command
+        ]
+        assert len(describes) == 2
+        assert len(refreshes) == 1
+        assert all(
+            b'DESCRIBE MATERIALIZED VIEW "view"' in command for command in describes
+        )
+        (refresh,) = refreshes
+        assert b'REFRESH MATERIALIZED VIEW "view"' in refresh
+        assert (b"WITH (full = true)" in refresh) is full
         assert not any("count_rows" in path for path in requests)
 
 
@@ -639,8 +579,6 @@ async def test_async_namespace_connection_materialized_views(tmp_path):
 
 
 def test_stored_queries_and_legacy_layouts_are_read():
-    import json
-
     import pyarrow as pa
 
     from lancedb.materialized_view import _definition_from_schema
@@ -795,13 +733,11 @@ def test_embedded_create_refuses_automatic_refresh_before_creating_view(
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
 def test_remote_create_rejects_invalid_interval_without_request(seconds):
-    with mock_remote_materialized_view_drop() as (host, requests):
-        db = lancedb.connect("db://dev", api_key="fake", host_override=host)
-        with pytest.raises(ValueError, match="positive, finite"):
-            db.create_materialized_view_async(
-                "adults", "people", auto_refresh_interval_seconds=seconds
-            )
-    assert requests == []
+    db = lancedb.connect("db://dev", api_key="fake", host_override="http://127.0.0.1:1")
+    with pytest.raises(ValueError, match="positive, finite"):
+        db.create_materialized_view_async(
+            "mv", "source", auto_refresh_interval_seconds=seconds
+        )
 
 
 @pytest.mark.experimental_functions

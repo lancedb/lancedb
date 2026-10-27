@@ -72,10 +72,12 @@ SQL-backed job handles follow the query lifecycle described below.
 
 ### SQL-backed job handles
 
-Remote materialized-view CREATE and REFRESH use the SQL query backend. Python's
-`create_materialized_view_async()` and `mv.refresh_async()` still return job
-handles with `status()`, `wait()` and `cancel()`. Synchronous creation and refresh
-wait on the same SQL execution before returning.
+Remote materialized-view CREATE, REFRESH, and DROP use the SQL query backend.
+Python's `create_materialized_view_async()`, `mv.refresh_async()`, and
+`drop_materialized_view_async()` return job handles with `status()`, `wait()`,
+and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL
+execution before returning. A completed DROP means the catalog binding has been
+removed; physical cleanup continues in the background.
 
 The existing `job.job_type` identifies query-backed handles as `"query"` from
 submission, and `job.id` contains the connection-scoped SQL query UUID string.

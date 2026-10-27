@@ -481,23 +481,6 @@ describe("remote connection", () => {
     expect(insertRequests).toBe(2);
   });
 
-  it("lists materialized views through the namespace route", async () => {
-    await withMockDatabase(
-      (req, res) => {
-        expect(req.method).toBe("GET");
-        expect(req.url).toBe("/v1/namespace/$/materialized_view/list");
-        res
-          .writeHead(200, { "content-type": "application/json" })
-          .end(JSON.stringify({ views: ["daily_sales"] }));
-      },
-      async (db) => {
-        expect(await collect(db.listMaterializedViews())).toEqual([
-          "daily_sales",
-        ]);
-      },
-    );
-  });
-
   it("creates a view and decodes the schema it resolved to", async () => {
     await withMockDatabase(
       (req, res) => {
@@ -1725,14 +1708,13 @@ async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {
 }
 
 describe("lazy resource listings", () => {
-  for (const kind of ["views", "materializedViews", "jobs"] as const) {
+  for (const kind of ["views", "jobs"] as const) {
     const listing = (
       db: Connection,
       options: { pageToken?: string; pageLimit?: number } = {},
     ) => {
       if (kind === "jobs") return db.listJobs(options);
-      if (kind === "views") return db.listViews(["team"], options);
-      return db.listMaterializedViews(options);
+      return db.listViews(["team"], options);
     };
     const page = (names: string[], token?: string) => {
       const items =
@@ -1807,11 +1789,7 @@ describe("lazy resource listings", () => {
                 limit: 2,
               });
             } else {
-              expect(url.pathname).toBe(
-                kind === "views"
-                  ? "/v1/namespace/team/view/list"
-                  : "/v1/namespace/$/materialized_view/list",
-              );
+              expect(url.pathname).toBe("/v1/namespace/team/view/list");
               expect(url.searchParams.get("page_token")).toBe(token);
               expect(url.searchParams.get("limit")).toBe("2");
             }

@@ -1987,8 +1987,8 @@ impl Connection {
     /// Drop a materialized view.
     ///
     /// The view may become unavailable before its physical data is removed.
-    /// Use [`Connection::drop_materialized_view_async`] to retain the cleanup
-    /// job and wait for it explicitly.
+    /// Remote drops wait for the SQL command to remove the catalog binding;
+    /// physical cleanup proceeds in the background.
     pub async fn drop_materialized_view(
         &self,
         name: impl AsRef<str>,
@@ -1999,8 +1999,9 @@ impl Connection {
             return self
                 .database()
                 .drop_materialized_view_async(name, namespace_path)
-                .await
-                .map(|_| ());
+                .await?
+                .wait()
+                .await;
         }
         let table = self
             .open_table(name)
@@ -2011,12 +2012,12 @@ impl Connection {
         self.drop_table(name, namespace_path).await
     }
 
-    /// Start dropping a materialized view and return its cleanup job.
+    /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. Call [`Job::wait`] before assuming physical
-    /// cleanup has finished. When the backend performs cleanup inline, the
-    /// returned job is already finished and has no job ID.
+    /// than an ordinary table. For remote connections the job has type `query`
+    /// and its ID identifies the SQL query. Waiting completes once the catalog
+    /// binding is removed; physical cleanup continues in the background.
     ///
     /// ```no_run
     /// # use lancedb::Connection;
