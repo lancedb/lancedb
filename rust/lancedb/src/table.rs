@@ -107,7 +107,9 @@ use futures::future::join_all;
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
-pub use optimize::{CompactionOptions, OptimizeAction, OptimizeStats};
+pub use optimize::{
+    CompactionMode, CompactionOptions, IndexRemapMode, OptimizeAction, OptimizeStats,
+};
 pub use refresh::RefreshColumnResult;
 pub use rte_stats::{MemtableStats, RTEStats, SsTableStats, TableShardStats};
 pub use schema_evolution::{
