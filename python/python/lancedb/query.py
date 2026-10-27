@@ -1655,12 +1655,12 @@ class LanceQueryBuilder(ABC):
             self.to_query_object(), distributed_metrics=distributed_metrics
         )
 
-    def vector(self, vector: Union[np.ndarray, list]) -> Self:
+    def vector(self, vector: Union[VEC, Tuple]) -> Self:
         """Set the vector to search for.
 
         Parameters
         ----------
-        vector: np.ndarray or list
+        vector: list, tuple, np.ndarray, pa.Array, or pa.ChunkedArray
             The vector to search for.
 
         Returns
@@ -2931,7 +2931,19 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         self._refine_factor = refine_factor
         return self
 
-    def vector(self, vector: Union[np.ndarray, list]) -> LanceHybridQueryBuilder:
+    def vector(self, vector: Union[VEC, Tuple]) -> LanceHybridQueryBuilder:
+        """Set the vector to search for.
+
+        Parameters
+        ----------
+        vector: list, tuple, np.ndarray, pa.Array, or pa.ChunkedArray
+            The vector to search for.
+
+        Returns
+        -------
+        LanceHybridQueryBuilder
+            The LanceHybridQueryBuilder object.
+        """
         self._vector = vector
         return self
 
