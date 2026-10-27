@@ -882,8 +882,12 @@ class IvfRq:
     num_partitions: int, default sqrt(num_rows)
         Number of IVF partitions to create.
 
-    num_bits: int, default 1
+    num_bits: int, optional
         Number of bits to encode each dimension in the RabitQ codebook.
+        If None, uses Lance's default (currently 5), matching Rust and Node.
+        Set to 1 to retain the previous Python default and maximum compression.
+        Five-bit vector codes use roughly five times the storage of one-bit codes,
+        in addition to other index overhead.
 
     max_iterations: int, default 50
         Max iterations to train kmeans when computing IVF partitions.
@@ -897,7 +901,7 @@ class IvfRq:
 
     distance_type: Literal["l2", "cosine", "dot"] = "l2"
     num_partitions: Optional[int] = None
-    num_bits: int = 1
+    num_bits: Optional[int] = None
     max_iterations: int = 50
     sample_rate: int = 256
     target_partition_size: Optional[int] = None

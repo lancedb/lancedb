@@ -2224,6 +2224,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn refresh_materialized_view_async(
         &self,
         source_version: Option<u64>,
+        full: bool,
     ) -> Result<Job<RefreshMaterializedViewResult>> {
         self.check_mutable().await?;
         if source_version.is_some() {
@@ -2236,8 +2237,9 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             message: "SQL is unavailable for this remote table client".to_string(),
         })?;
         let statement = format!(
-            "REFRESH MATERIALIZED VIEW {}",
-            quote_sql_identifier(&self.name)
+            "REFRESH MATERIALIZED VIEW {}{}",
+            quote_sql_identifier(&self.name),
+            if full { " WITH (full = true)" } else { "" },
         );
         let namespace = self.namespace.clone();
         let client = self.client.clone();
@@ -2247,8 +2249,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
         let job_sql_client = sql_client.clone();
-        Ok(
-            sql_client.submit_as_job(statement, namespace.clone(), move || async move {
+        sql_client
+            .submit_as_job(statement, namespace.clone(), move || async move {
                 let table = Self::new_with_sql_client(
                     client,
                     name,
@@ -2259,19 +2261,17 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                 );
                 table.checkout_latest().await?;
                 let version = table.version().await?;
-                let rows_written =
-                    u64::try_from(table.count_rows(None).await?).map_err(|_| Error::Runtime {
-                        message: "materialized-view row count exceeds u64".to_string(),
-                    })?;
                 freshness_request.observe_version(&freshness, version);
                 Ok(RefreshMaterializedViewResult {
-                    mode: crate::materialized_view::RefreshMode::Rebuild,
-                    rows_written,
-                    source_version: 0,
+                    // The SQL job adapter does not expose refresh metrics. Table
+                    // metadata cannot tell us what this refresh actually did.
+                    mode: None,
+                    rows_written: None,
+                    source_version: None,
                     version,
                 })
-            }),
-        )
+            })
+            .await
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
@@ -2925,6 +2925,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
         self.fetch_blob_files_impl(column, row_ids).await
+    }
+
+    async fn open_blob_file(&self, descriptor: &crate::blob::BlobDescriptor) -> Result<BlobFile> {
+        self.open_blob_file_impl(descriptor).await
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
@@ -5681,6 +5685,31 @@ mod tests {
             crate::blob("thumbnail", true),
         ]);
         schema_describe_response(&schema)
+    }
+
+    #[tokio::test]
+    async fn test_adapter_construction_only_describes_blob_schema() {
+        use datafusion_catalog::TableProvider;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            blob_describe_response()
+        });
+
+        let adapter =
+            crate::table::datafusion::BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let schema = adapter.schema();
+        let DataType::Struct(fields) = schema.field_with_name("image").unwrap().data_type() else {
+            panic!("expected a blob descriptor");
+        };
+        assert!(fields.find("size").unwrap().1.is_nullable());
+        assert!(fields.find("data").is_none());
     }
 
     #[rstest]

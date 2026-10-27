@@ -174,6 +174,8 @@ impl OpenTableBuilder {
 
     /// Advanced parameters that can be used to customize table reads
     ///
+    /// Remote connections reject these parameters with [`Error::NotSupported`].
+    ///
     /// If set, these will take precedence over any overlapping `OpenTableOptions` options
     pub fn lance_read_params(mut self, params: ReadParams) -> Self {
         self.request.lance_read_params = Some(params);
@@ -372,12 +374,10 @@ impl ExecuteQueryAsyncBuilder {
     /// Do not follow a named placeholder directly with `$`: `$a$` starts a
     /// dollar-quoted string.
     ///
-    /// A parameterized statement runs on the call that returns its rows rather
-    /// than detached from it: cancelling the query, or dropping its handle
-    /// before reading it, stops the statement on the server. Its status follows
-    /// that stream too -- it reports `Running` until the reader has received
-    /// every row -- so open the reader directly rather than waiting for
-    /// `Finished`.
+    /// With or without parameters, the server may stream rows on the initial
+    /// call or return a polling continuation. The reader follows either path
+    /// transparently. Open it directly instead of waiting for `Finished`:
+    /// directly streamed queries need their reader to make progress.
     ///
     /// # Example
     ///
@@ -1532,6 +1532,7 @@ impl ConnectBuilder {
 
     /// Enable or disable manifest-backed directory namespace mode for local
     /// native connections.
+    /// Remote connections reject enabling this option with [`Error::NotSupported`].
     ///
     /// When enabled, the connection uses the directory namespace database
     /// directly for all table operations and forces
@@ -1567,6 +1568,7 @@ impl ConnectBuilder {
     }
 
     /// Set a custom session for object stores and caching.
+    /// Remote connections reject this option with [`Error::NotSupported`].
     ///
     /// By default, a new session with default configuration will be created.
     /// This method allows you to provide a custom session with your own
@@ -1597,6 +1599,21 @@ impl ConnectBuilder {
     #[cfg(feature = "remote")]
     fn execute_remote(self) -> Result<Connection> {
         use crate::remote::db::RemoteDatabaseOptions;
+
+        for (option, provided) in [
+            ("session", self.request.session.is_some()),
+            ("manifest_enabled", self.request.manifest_enabled),
+            (
+                "namespace_client_properties",
+                !self.request.namespace_client_properties.is_empty(),
+            ),
+        ] {
+            if provided {
+                return Err(Error::NotSupported {
+                    message: format!("{option} is not supported for remote connections"),
+                });
+            }
+        }
 
         let mut merged_options = self.request.options.clone();
         Self::apply_env_defaults(&ENV_VARS_TO_STORAGE_OPTS, &mut merged_options);
