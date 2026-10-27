@@ -1,5 +1,5 @@
-This directory contains `rust/lance-arrow` from Lance tag `v15.0.0-beta.2`
-(commit `f50a157269d925ad5708c7b0f7ec6c87b0fd08dd`), licensed under Apache-2.0.
+This directory contains `rust/lance-arrow` from Lance tag `v15.0.0-beta.3`
+(commit `2e22bb984d6cc6f5990f188cabb0b586b7bb51bc`), licensed under Apache-2.0.
 
 LanceDB carries a local fix in `src/lib.rs` for sliced child validity bitmaps
 until a Lance release includes the fix. The patch is selected in the root
