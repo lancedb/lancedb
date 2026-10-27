@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 #![cfg(not(feature = "experimental-functions"))]
+#![recursion_limit = "256"]
 
 use std::collections::HashMap;
 
