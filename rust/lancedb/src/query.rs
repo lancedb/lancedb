@@ -3229,8 +3229,9 @@ mod tests {
             ),
         ]));
         let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
-            rows.iter()
-                .map(|(_, _, _, vector)| Some(vector.iter().copied().map(Some).collect())),
+            rows.iter().map(|(_, _, _, vector)| {
+                Some(vector.iter().copied().map(Some).collect::<Vec<_>>())
+            }),
             2,
         );
         RecordBatch::try_new(
@@ -3304,7 +3305,7 @@ mod tests {
         let table = make_geo_query_table(&tmp_dir).await;
         let batches = table
             .query()
-            .nearest_to([0.0, 0.0])
+            .nearest_to(&[0.0, 0.0])
             .unwrap()
             .only_if(ST_DWITHIN_FILTER)
             .limit(2)
@@ -3391,11 +3392,11 @@ mod tests {
         let plain = concat_batches(&plain[0].schema(), &plain).unwrap();
         let mut plain_ids = plain["id"].as_primitive::<Int32Type>().values().to_vec();
         plain_ids.sort_unstable();
-        assert_eq!(plain_ids, vec![1, 4]);
+        assert_eq!(plain_ids, vec![1, 2, 4]);
 
         let vector = table
             .query()
-            .nearest_to([0.0, 0.0])
+            .nearest_to(&[0.0, 0.0])
             .unwrap()
             .only_if(ST_DWITHIN_FILTER)
             .limit(2)

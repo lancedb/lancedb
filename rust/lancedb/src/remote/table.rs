@@ -5703,7 +5703,7 @@ mod tests {
 
         let batches = table
             .query()
-            .nearest_to([0.0, 0.0])
+            .nearest_to(&[0.0, 0.0])
             .unwrap()
             .only_if(FILTER)
             .limit(2)
