@@ -272,6 +272,39 @@ def test_value_to_sql_time_and_timedelta(tmp_path):
         assert table.search().where(where).to_arrow()["id"].to_pylist() == [1]
 
 
+def test_value_to_sql_keeps_nanoseconds(tmp_path):
+    # Arrow scalars and pandas.Timedelta values can hold nanoseconds, which a
+    # Python timedelta or time would round to microseconds.
+    assert (
+        value_to_sql(pd.Timedelta(1001, "ns"))
+        == "arrow_cast(1001, 'Duration(Nanosecond)')"
+    )
+    assert value_to_sql(pa.scalar(None, pa.duration("ns"))) == "NULL"
+
+    db = lancedb.connect(tmp_path)
+    table = db.create_table(
+        "test",
+        pa.table(
+            {
+                "id": [1, 2],
+                "duration": pa.array([0, 1001], pa.duration("ns")),
+                "starts": pa.array([0, 34_200_000_000_250], pa.time64("ns")),
+            }
+        ),
+    )
+    source = table.to_arrow().sort_by("id")
+    table.update(
+        where="id = 1",
+        values={"duration": source["duration"][1], "starts": source["starts"][1]},
+    )
+    updated = table.to_arrow().sort_by("id")
+    assert updated["duration"].cast(pa.int64()).to_pylist() == [1001, 1001]
+    assert updated["starts"].cast(pa.int64()).to_pylist() == [
+        34_200_000_000_250,
+        34_200_000_000_250,
+    ]
+
+
 def test_value_to_sql_dict():
     # Simple flat struct
     assert value_to_sql({"a": 1, "b": "hello"}) == "named_struct('a', 1, 'b', 'hello')"
