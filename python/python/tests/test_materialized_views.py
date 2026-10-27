@@ -8,6 +8,7 @@ import threading
 
 import lancedb
 import pytest
+from lancedb.db import AsyncConnection
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
 
@@ -56,7 +57,7 @@ def mock_remote_materialized_views():
 
 
 @contextlib.contextmanager
-def mock_remote_materialized_view_create():
+def mock_remote_materialized_view_drop():
     requests = []
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -67,7 +68,8 @@ def mock_remote_materialized_view_create():
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
             requests.append((self.path, body))
-            job_id = "mv-drop-123" if self.path.endswith("/drop") else "mv-create-123"
+            assert self.path.endswith("/drop")
+            job_id = "mv-drop-123"
             encoded = json.dumps({"job_id": job_id}).encode()
             self.send_response(202)
             self.send_header("Content-Type", "application/json")
@@ -98,7 +100,7 @@ def test_remote_list_uses_namespace_route():
 
 
 def test_remote_drop_async_returns_server_job():
-    with mock_remote_materialized_view_create() as (host, requests):
+    with mock_remote_materialized_view_drop() as (host, requests):
         db = lancedb.connect(
             "db://dev",
             api_key="fake",
@@ -171,6 +173,7 @@ def test_sync_remote_create_uses_public_async_connection():
     assert calls[-1] == ("drop", "adults", ["analytics"])
 
 
+@pytest.mark.experimental_functions
 def test_create_refresh_and_query(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view(
@@ -186,17 +189,20 @@ def test_create_refresh_and_query(tmp_path):
     assert sorted(row["shout"] for row in rows) == ["ADA", "GRACE"]
 
 
+@pytest.mark.experimental_functions
 def test_create_and_refresh_jobs(tmp_path):
     db = make_db(tmp_path)
     create_job = db.create_materialized_view_async(
         "adults", "people", where="age >= 18", with_no_data=True
     )
     assert create_job.id is None
+    assert create_job.job_type is None
     assert create_job.wait() is None
 
     view = db.open_materialized_view("adults")
     refresh_job = view.refresh_async()
     assert refresh_job.id is None
+    assert refresh_job.job_type is None
     result = refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 2
@@ -208,6 +214,7 @@ def test_create_and_refresh_jobs(tmp_path):
     assert "adults" not in list(db.list_materialized_views())
 
 
+@pytest.mark.experimental_functions
 def test_definition_round_trips(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")
@@ -218,6 +225,7 @@ def test_definition_round_trips(tmp_path):
     )
 
 
+@pytest.mark.experimental_functions
 def test_full_refresh_after_append(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
@@ -232,6 +240,7 @@ def test_full_refresh_after_append(tmp_path):
     assert view.refresh().mode == "rebuild"
 
 
+@pytest.mark.experimental_functions
 def test_full_refresh_after_update(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
@@ -245,6 +254,7 @@ def test_full_refresh_after_update(tmp_path):
     assert sorted(row["age"] for row in rows) == [8, 36, 85]
 
 
+@pytest.mark.experimental_functions
 def test_legacy_storage_source_update_rebuilds(tmp_path):
     db = lancedb.connect(
         tmp_path,
@@ -261,6 +271,7 @@ def test_legacy_storage_source_update_rebuilds(tmp_path):
     assert sorted(row["age"] for row in rows) == [8, 36]
 
 
+@pytest.mark.experimental_functions
 def test_direct_writes_to_a_view_are_refused(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people")
@@ -286,6 +297,7 @@ def test_direct_writes_to_a_view_are_refused(tmp_path):
     assert view.refresh().rows_written == 4
 
 
+@pytest.mark.experimental_functions
 def test_list_and_not_a_view(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("adults", "people", where="age >= 18")
@@ -300,6 +312,7 @@ def test_list_and_not_a_view(tmp_path):
     assert list(db.list_materialized_views()) == []
 
 
+@pytest.mark.experimental_functions
 def test_invalid_expression_fails_at_create(tmp_path):
     db = make_db(tmp_path)
     with pytest.raises(Exception, match="missing"):
@@ -307,6 +320,7 @@ def test_invalid_expression_fails_at_create(tmp_path):
     assert "bad" not in db.list_tables().tables
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_create_refresh_and_open(tmp_path):
     db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
@@ -328,6 +342,7 @@ async def test_async_create_refresh_and_open(tmp_path):
     assert [item async for item in db.list_materialized_views()] == ["shouts"]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_create_and_refresh_jobs(tmp_path):
     db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
@@ -337,11 +352,13 @@ async def test_async_create_and_refresh_jobs(tmp_path):
         "adults", "people", with_no_data=True
     )
     assert create_job.id is None
+    assert create_job.job_type is None
     assert await create_job.wait() is None
 
     view = await db.open_materialized_view("adults")
     refresh_job = await view.refresh_async()
     assert refresh_job.id is None
+    assert refresh_job.job_type is None
     result = await refresh_job.wait()
     assert result.mode == "rebuild"
     assert result.rows_written == 1
@@ -352,6 +369,7 @@ async def test_async_create_and_refresh_jobs(tmp_path):
     assert "adults" not in [item async for item in db.list_materialized_views()]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_refresh_rebuilds(tmp_path):
     db = await lancedb.connect_async(tmp_path)
@@ -366,6 +384,7 @@ async def test_async_refresh_rebuilds(tmp_path):
     assert result.rows_written == 2
 
 
+@pytest.mark.experimental_functions
 def test_source_does_not_require_stable_row_ids(tmp_path):
     db = lancedb.connect(tmp_path)
     db.create_table("plain", [{"x": 1}])
@@ -373,6 +392,7 @@ def test_source_does_not_require_stable_row_ids(tmp_path):
     assert view.table.count_rows() == 1
 
 
+@pytest.mark.experimental_functions
 def test_bare_select_names_are_quoted(tmp_path):
     db = lancedb.connect(tmp_path, storage_options=STABLE_ROW_IDS)
     db.create_table("odd_names", [{"order item": "widget", "select": 2}])
@@ -390,6 +410,7 @@ def test_bare_select_names_are_quoted(tmp_path):
     assert rows[0]["select"] == 2
 
 
+@pytest.mark.experimental_functions
 def test_scalar_select_is_one_column(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("just_name", "people", select="name")
@@ -399,6 +420,7 @@ def test_scalar_select_is_one_column(tmp_path):
     assert sorted(row["name"] for row in rows) == ["ada", "grace", "kid"]
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_scalar_select_is_one_column(tmp_path):
     db = await lancedb.connect_async(tmp_path, storage_options=STABLE_ROW_IDS)
@@ -409,6 +431,7 @@ async def test_async_scalar_select_is_one_column(tmp_path):
     assert set(rows[0]) == {"name"}
 
 
+@pytest.mark.experimental_functions
 def test_limit_above_i64_max_is_refused(tmp_path):
     db = make_db(tmp_path)
     with pytest.raises(ValueError, match="exceeds the maximum"):
@@ -428,6 +451,7 @@ def _namespace_db(tmp_path):
     )
 
 
+@pytest.mark.experimental_functions
 def test_namespace_connection_materialized_views(tmp_path):
     db = _namespace_db(tmp_path)
     db.create_table(
@@ -458,6 +482,7 @@ def test_namespace_connection_materialized_views(tmp_path):
     assert list(db.list_materialized_views()) == []
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_namespace_connection_materialized_views(tmp_path):
     db = lancedb.connect_namespace_async(
@@ -551,6 +576,7 @@ def test_stored_queries_and_legacy_layouts_are_read():
             read(newer)
 
 
+@pytest.mark.experimental_functions
 def test_local_materialized_view_listing_pages_and_resume(tmp_path):
     db = make_db(tmp_path)
     db.create_materialized_view("a_view", "people", with_no_data=True)
@@ -567,6 +593,27 @@ def test_local_materialized_view_listing_pages_and_resume(tmp_path):
     assert list(resumed) == []
 
 
+class QueryBackedCreateJob:
+    id = "0198f1b2-c3d4-7e5f-8123-456789abcdef"
+
+    job_type = "query"
+
+    async def wait(self):
+        return None
+
+    async def status(self):
+        return "finished"
+
+
+class CapturingCreateConnection:
+    def __init__(self):
+        self.calls = []
+
+    async def create_materialized_view_async(self, name, source, **options):
+        self.calls.append((name, source, options))
+        return QueryBackedCreateJob()
+
+
 @pytest.mark.parametrize(
     "options",
     [
@@ -576,16 +623,28 @@ def test_local_materialized_view_listing_pages_and_resume(tmp_path):
     ],
 )
 def test_remote_create_forwards_refresh_options_without_interval_default(options):
-    with mock_remote_materialized_view_create() as (host, requests):
-        db = lancedb.connect("db://dev", api_key="fake", host_override=host)
-        job = db.create_materialized_view_async("adults", "people", **options)
-        assert job.id == "mv-create-123"
-    assert requests == [
+    native = CapturingCreateConnection()
+    db = RemoteDBConnection.__new__(RemoteDBConnection)
+    db._conn = AsyncConnection(native)
+    job = db.create_materialized_view_async("adults", "people", **options)
+    assert job.id == QueryBackedCreateJob.id
+    assert job.job_type == "query"
+    assert not hasattr(job, "query_id")
+    assert job.wait() is None
+    assert job.status() == "finished"
+    assert native.calls == [
         (
-            "/v1/materialized_view/adults/create",
+            "adults",
+            "people",
             {
-                "query": 'SELECT * FROM "people"',
-                **options,
+                "projections": None,
+                "filter": None,
+                "limit": None,
+                "with_no_data": False,
+                "auto_refresh_enabled": options.get("auto_refresh_enabled"),
+                "auto_refresh_interval_seconds": options.get(
+                    "auto_refresh_interval_seconds"
+                ),
             },
         )
     ]
@@ -593,20 +652,21 @@ def test_remote_create_forwards_refresh_options_without_interval_default(options
 
 @pytest.mark.asyncio
 async def test_async_remote_create_keeps_interval_unspecified():
-    with mock_remote_materialized_view_create() as (host, requests):
-        db = await lancedb.connect_async("db://dev", api_key="fake", host_override=host)
-        job = await db.create_materialized_view_async(
-            "adults",
-            "people",
-            auto_refresh_enabled=True,
-        )
-        assert job.id == "mv-create-123"
-    assert requests[0][1] == {
-        "query": 'SELECT * FROM "people"',
-        "auto_refresh_enabled": True,
-    }
+    native = CapturingCreateConnection()
+    db = AsyncConnection(native)
+    job = await db.create_materialized_view_async(
+        "adults", "people", auto_refresh_enabled=True
+    )
+    assert job.id == QueryBackedCreateJob.id
+    assert job.job_type == "query"
+    assert not hasattr(job, "query_id")
+    assert await job.wait() is None
+    assert await job.status() == "finished"
+    assert native.calls[0][2]["auto_refresh_enabled"] is True
+    assert native.calls[0][2]["auto_refresh_interval_seconds"] is None
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.parametrize(
     "options",
     [
@@ -625,7 +685,7 @@ def test_embedded_create_refuses_automatic_refresh_before_creating_view(
 
 @pytest.mark.parametrize("seconds", [0, -1, float("nan"), float("inf")])
 def test_remote_create_rejects_invalid_interval_without_request(seconds):
-    with mock_remote_materialized_view_create() as (host, requests):
+    with mock_remote_materialized_view_drop() as (host, requests):
         db = lancedb.connect("db://dev", api_key="fake", host_override=host)
         with pytest.raises(ValueError, match="positive, finite"):
             db.create_materialized_view_async(
@@ -634,12 +694,14 @@ def test_remote_create_rejects_invalid_interval_without_request(seconds):
     assert requests == []
 
 
+@pytest.mark.experimental_functions
 def test_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace("dir", {"root": str(tmp_path)})
     with pytest.raises(NotImplementedError, match="Cloud or Enterprise"):
         db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 
+@pytest.mark.experimental_functions
 @pytest.mark.asyncio
 async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
     db = lancedb.connect_namespace_async("dir", {"root": str(tmp_path)})
@@ -647,6 +709,7 @@ async def test_async_namespace_forwards_automatic_refresh_request(tmp_path):
         await db.create_materialized_view("mv", "source", auto_refresh_enabled=True)
 
 
+@pytest.mark.experimental_functions
 def test_embedded_explicitly_disabled_refresh_is_supported(tmp_path):
     db = make_db(tmp_path)
     view = db.create_materialized_view("mv", "people", auto_refresh_enabled=False)

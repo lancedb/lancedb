@@ -2247,8 +2247,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let freshness = self.freshness.clone();
         let freshness_request = self.snapshot_freshness_headers();
         let job_sql_client = sql_client.clone();
-        Ok(
-            sql_client.submit_as_job(statement, namespace.clone(), move || async move {
+        sql_client
+            .submit_as_job(statement, namespace.clone(), move || async move {
                 let table = Self::new_with_sql_client(
                     client,
                     name,
@@ -2270,8 +2270,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
                     source_version: 0,
                     version,
                 })
-            }),
-        )
+            })
+            .await
     }
     async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
         let description = self.describe().await?;
@@ -2925,6 +2925,10 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         row_ids: &[u64],
     ) -> Result<Vec<Option<BlobFile>>> {
         self.fetch_blob_files_impl(column, row_ids).await
+    }
+
+    async fn open_blob_file(&self, descriptor: &crate::blob::BlobDescriptor) -> Result<BlobFile> {
+        self.open_blob_file_impl(descriptor).await
     }
 
     async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
@@ -5681,6 +5685,31 @@ mod tests {
             crate::blob("thumbnail", true),
         ]);
         schema_describe_response(&schema)
+    }
+
+    #[tokio::test]
+    async fn test_adapter_construction_only_describes_blob_schema() {
+        use datafusion_catalog::TableProvider;
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = requests.clone();
+        let table = Table::new_with_handler("my_table", move |request| {
+            observed.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(request.url().path(), "/v1/table/my_table/describe/");
+            blob_describe_response()
+        });
+
+        let adapter =
+            crate::table::datafusion::BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        let schema = adapter.schema();
+        let DataType::Struct(fields) = schema.field_with_name("image").unwrap().data_type() else {
+            panic!("expected a blob descriptor");
+        };
+        assert!(fields.find("size").unwrap().1.is_nullable());
+        assert!(fields.find("data").is_none());
     }
 
     #[rstest]
