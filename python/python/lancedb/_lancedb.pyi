@@ -26,6 +26,8 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+_experimental_functions_enabled: bool
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
@@ -320,6 +322,8 @@ class Job:
     @property
     def id(self) -> Optional[str]: ...
     @property
+    def job_type(self) -> Optional[str]: ...
+    @property
     def _state(self) -> Optional[str]: ...
     @property
     def _description(self) -> Optional[JobDescription]: ...
@@ -542,6 +546,7 @@ class Table:
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
+        compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
@@ -578,6 +583,7 @@ class Table:
     async def fetch_blob_files(
         self, column: str, row_ids: list[int]
     ) -> list[Optional[BlobFile]]: ...
+    async def open_blob_file(self, descriptor: str) -> BlobFile: ...
     def vector_search(self) -> VectorQuery: ...
 
 class Tags:

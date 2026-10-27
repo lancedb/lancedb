@@ -15,6 +15,9 @@ on:
       - ci/check_cargo_lock.py
       - ci/check_sdist.py
       - python/pyproject.toml
+      - python/Cargo.toml
+      - python/vendor/**
+      - rust/lancedb/Cargo.toml
       - Cargo.toml # Change in dependency frequently breaks builds
       - Cargo.lock
 

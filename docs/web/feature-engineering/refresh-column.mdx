@@ -8,12 +8,19 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Both offerings support column refresh. The embedded library runs it in your process; Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
+    Local column refresh requires a source build with the experimental-functions Cargo feature. Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
 ---
 
 Refresh a [computed column](/feature-engineering/add-computed-column) to fill
 new rows and recompute values whose inputs changed. The example below continues
 with the `doubled` column from the computed-column guide.
+
+<Note>
+In the 0.41 SDK release, local declaration and refresh require a source build
+with the `experimental-functions` Cargo feature. Published Python and TypeScript
+packages leave it disabled. Remote Cloud and Enterprise operations do not require
+this feature; existing computed-column data remains readable in default builds.
+</Note>
 
 <CodeGroup>
 ```python Python icon="python"
