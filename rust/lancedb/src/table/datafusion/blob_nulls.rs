@@ -24,7 +24,7 @@ use datafusion_physical_plan::{ExecutionPlan, projection::ProjectionExec};
 use lance_arrow::FieldExt;
 use lance_core::datatypes::BlobV2Layout;
 
-fn is_descriptor(field: &Field) -> bool {
+pub(super) fn is_descriptor(field: &Field) -> bool {
     field.is_blob()
         && matches!(field.data_type(), DataType::Struct(fields)
             if BlobV2Layout::classify(fields) == Some(BlobV2Layout::Descriptor))

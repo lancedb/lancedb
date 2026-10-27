@@ -166,10 +166,40 @@ impl ExecutionPlan for MetadataEraserExec {
     }
 }
 
+/// The blob schema exposed by a [`BaseTableAdapter`].
+///
+/// DataFusion uses one provider schema for both scans and INSERT coercion.
+/// Blob descriptors and blob write inputs have different types, so applications
+/// that need both can register separate read and write adapters for one table.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BlobSchema {
+    /// Expose Blob v2 descriptors (`kind`, `position`, `size`, `blob_id`, `blob_uri`)
+    /// and legacy v1 descriptors (`position`, `size`). Scans support all blob fields;
+    /// SQL INSERT into Blob v2 tables is unsupported.
+    #[default]
+    Read,
+    /// Expose Blob v2 write inputs (`data`, `uri`, `position`, `size`) and legacy
+    /// v1 `LargeBinary` inputs for SQL INSERT. Scans must match the projected
+    /// provider schema exactly; use [`Self::Read`] to scan blob descriptors or
+    /// scalar siblings whose projected parent contains a blob.
+    Write,
+}
+
+/// A DataFusion provider for a LanceDB table.
+///
+/// Defaults to [`BlobSchema::Read`], matching the descriptor schema produced by
+/// scans without fetching blob bytes. Use [`Self::with_blob_schema`] to enable
+/// SQL INSERT into blob columns. Legacy v1 blobs expose descriptors in read mode
+/// and `LargeBinary` inputs in write mode; write-mode descriptor scans fail with
+/// a schema mismatch. Tables without blob columns behave the same in both modes.
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
+    // Only the read schema includes opted-in system/FTS columns.
     schema: Arc<ArrowSchema>,
+    write_schema: Arc<ArrowSchema>,
+    blob_schema: BlobSchema,
     fts_query: Option<FullTextSearchQuery>,
     use_rte: Option<bool>,
 }
@@ -183,13 +213,57 @@ impl BaseTableAdapter {
         let schema = Projection::full(Arc::new(LanceSchema::try_from(write_schema.as_ref())?))
             .to_arrow_schema();
         let schema = blob_nulls::read_schema(&schema).with_metadata(HashMap::default());
+        let write_schema = Arc::new(
+            write_schema
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::default()),
+        );
 
         Ok(Self {
             table,
             schema: Arc::new(schema),
+            write_schema,
+            blob_schema: BlobSchema::Read,
             fts_query: None,
             use_rte: None,
         })
+    }
+
+    /// Choose the schema used by DataFusion for blob columns.
+    ///
+    /// [`BlobSchema::Write`] enables INSERT with blob write structs, NULLs, and
+    /// omitted nullable blobs. Scans requiring blobs fail with
+    /// "Blob v2 scans require BlobSchema::Read" before execution. Legacy v1 blobs
+    /// expose `LargeBinary` write inputs, so their descriptor scans fail with a
+    /// schema mismatch. Write-mode scans are accepted only when the actual schema
+    /// exactly matches the projected provider schema, including metadata and
+    /// nullability. No blob payloads are fetched to emulate reads.
+    ///
+    /// Scalar projections that exclude blob fields, `COUNT(*)`, and scalar filters
+    /// remain supported. DataFusion projects whole top-level fields, so selecting
+    /// `extra.note` also requests its parent `extra`. If that struct contains a blob,
+    /// even this scalar projection requires [`BlobSchema::Read`], as do computed
+    /// scalar and window queries that project the same parent.
+    ///
+    /// Register a separate read adapter for blob descriptor queries and scalar
+    /// queries rejected in write mode. A self-insert whose SELECT accesses blobs
+    /// also fails before writing any rows.
+    /// Other adapter builders preserve the selected mode. Generated `_rowid`,
+    /// `_rowaddr`, and `_score` columns are exposed only in read mode.
+    ///
+    /// ```
+    /// use lancedb::table::datafusion::{BaseTableAdapter, BlobSchema};
+    ///
+    /// # async fn adapter(table: &lancedb::Table) -> lancedb::Result<BaseTableAdapter> {
+    /// Ok(BaseTableAdapter::try_new(table.base_table().clone())
+    ///     .await?
+    ///     .with_blob_schema(BlobSchema::Write))
+    /// # }
+    /// ```
+    pub fn with_blob_schema(mut self, blob_schema: BlobSchema) -> Self {
+        self.blob_schema = blob_schema;
+        self
     }
 
     /// Expose the requested Lance system columns to DataFusion.
@@ -199,7 +273,8 @@ impl BaseTableAdapter {
     /// already exposed by this adapter. Other names return [`Error::InvalidInput`].
     ///
     /// System columns are hidden by default so existing `SELECT *` queries keep
-    /// their data-only schema. After opting in, `SELECT *` includes these columns.
+    /// their data-only schema. After opting in, `SELECT *` includes these columns
+    /// in [`BlobSchema::Read`] mode. The write schema remains data-only for INSERT.
     ///
     /// ```
     /// use lance_core::{ROW_ADDR, ROW_ID};
@@ -239,6 +314,8 @@ impl BaseTableAdapter {
     }
 
     /// Create a new adapter with an FTS query applied.
+    ///
+    /// The generated `_score` column is exposed only in [`BlobSchema::Read`] mode.
     pub fn with_fts_query(&self, fts_query: FullTextSearchQuery) -> Self {
         // Add _score column to the schema
         let score_field = Field::new("_score", DataType::Float32, true);
@@ -249,16 +326,28 @@ impl BaseTableAdapter {
         Self {
             table: self.table.clone(),
             schema,
+            write_schema: self.write_schema.clone(),
+            blob_schema: self.blob_schema,
             fts_query: Some(fts_query),
             use_rte: self.use_rte,
         }
     }
 }
 
+fn blob_scan_error() -> DataFusionError {
+    DataFusionError::Plan(
+        "Blob v2 scans require BlobSchema::Read; use a separate read adapter for blob fields"
+            .into(),
+    )
+}
+
 #[async_trait]
 impl TableProvider for BaseTableAdapter {
     fn schema(&self) -> Arc<ArrowSchema> {
-        self.schema.clone()
+        match self.blob_schema {
+            BlobSchema::Read => self.schema.clone(),
+            BlobSchema::Write => self.write_schema.clone(),
+        }
     }
 
     fn table_type(&self) -> TableType {
@@ -272,8 +361,18 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
-        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+        // Check directly supplied filters too, not just optimizer pushdown calls.
+        if self.blob_schema == BlobSchema::Write {
+            for filter in filters {
+                if blob_nulls::references_descriptor(filter, &self.schema)? {
+                    return Err(blob_scan_error());
+                }
+            }
+        }
+        // The writer never advertises _score. For readers, an explicit projection
+        // controls whether it is included, rather than FTS auto-projection.
+        let disable_scoring = self.fts_query.is_some()
+            && (projection.is_some() || self.blob_schema == BlobSchema::Write);
 
         let mut query = QueryRequest {
             full_text_search: self.fts_query.clone(),
@@ -282,16 +381,17 @@ impl TableProvider for BaseTableAdapter {
             ..Default::default()
         };
 
+        let provider_schema = self.schema();
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()
-                .map(|i| self.schema.field(*i).name().clone())
+                .map(|i| provider_schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
         } else {
             // Select::All excludes system columns, which may be part of our schema.
             query.select = Select::Columns(
-                self.schema
+                provider_schema
                     .fields()
                     .iter()
                     .map(|field| field.name().clone())
@@ -323,7 +423,32 @@ impl TableProvider for BaseTableAdapter {
             .map_err(|err| DataFusionError::External(err.into()))
             .await?;
         let plan = blob_nulls::mask_plan(plan)?;
-        Ok(Arc::new(MetadataEraserExec::new(plan)))
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(MetadataEraserExec::new(plan));
+        if self.blob_schema == BlobSchema::Write {
+            let schema = match projection {
+                Some(projection) => Arc::new(provider_schema.project(projection)?),
+                None => provider_schema,
+            };
+            // Compare the full schemas, including field metadata and nullability.
+            // A scan must satisfy its advertised contract before it is returned
+            // to DataFusion; later projections cannot repair a mismatched scan.
+            if plan.schema() != schema {
+                if plan
+                    .schema()
+                    .fields()
+                    .iter()
+                    .any(|field| blob_nulls::has_descriptor(field))
+                {
+                    return Err(blob_scan_error());
+                }
+                return Err(arrow_schema::ArrowError::SchemaError(format!(
+                    "Scan schema mismatch: expected {schema:?}, got {:?}",
+                    plan.schema()
+                ))
+                .into());
+            }
+        }
+        Ok(plan)
     }
 
     fn supports_filters_pushdown(
@@ -338,6 +463,9 @@ impl TableProvider for BaseTableAdapter {
             .map(|filter| {
                 Ok(
                     if blob_nulls::references_descriptor(filter, &self.schema)? {
+                        if self.blob_schema == BlobSchema::Write {
+                            return Err(blob_scan_error());
+                        }
                         TableProviderFilterPushDown::Unsupported
                     } else {
                         TableProviderFilterPushDown::Exact
@@ -358,6 +486,17 @@ impl TableProvider for BaseTableAdapter {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if self.blob_schema == BlobSchema::Read
+            && self
+                .schema
+                .fields()
+                .iter()
+                .any(|field| blob_nulls::has_descriptor(field))
+        {
+            return Err(DataFusionError::NotImplemented(
+                "SQL INSERT into Blob v2 tables requires BlobSchema::Write".into(),
+            ));
+        }
         let mode = match insert_op {
             InsertOp::Append => WriteMode::Append,
             InsertOp::Overwrite => WriteMode::Overwrite,
@@ -601,6 +740,70 @@ pub mod tests {
             ],
             nulls,
         ))
+    }
+
+    #[tokio::test]
+    async fn test_blob_schema_builders_preserve_modes_and_system_columns() {
+        use super::BlobSchema;
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db
+            .create_empty_table(
+                "docs",
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    crate::blob("payload", true),
+                ])),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_blob_schema(BlobSchema::Write)
+            .with_system_columns(&[ROW_ID])
+            .unwrap()
+            .with_use_rte(Some(false))
+            .with_fts_query(lance_index::scalar::FullTextSearchQuery::new(
+                "hello".into(),
+            ))
+            .with_system_columns(&[ROW_ADDR])
+            .unwrap();
+        assert_eq!(adapter.blob_schema, BlobSchema::Write);
+        assert_eq!(adapter.use_rte, Some(false));
+        assert!(adapter.fts_query.is_some());
+        let names = adapter
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(names, "id,payload");
+        let DataType::Struct(fields) = adapter.schema().field(1).data_type().clone() else {
+            unreachable!()
+        };
+        assert!(fields.find("data").is_some());
+        let adapter = adapter.with_blob_schema(BlobSchema::Read);
+        assert_eq!(
+            adapter
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["id", "payload", "_rowid", "_score", "_rowaddr"]
+        );
+        let DataType::Struct(fields) = adapter.schema().field(1).data_type().clone() else {
+            unreachable!()
+        };
+        assert!(fields.find("kind").is_some());
+        assert_eq!(adapter.schema().fields().len(), 5);
     }
 
     #[tokio::test]
