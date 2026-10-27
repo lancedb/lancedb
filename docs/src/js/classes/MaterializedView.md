@@ -64,6 +64,7 @@ refresh(options?): Promise<RefreshMaterializedViewResult>
 ```
 
 Recompute the view from its source.
+Local refresh requires a source build with `experimental-functions`.
 
 Every refresh rebuilds the complete view. For local views,
 `sourceVersion` refreshes to that source version instead of the latest;

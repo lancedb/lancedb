@@ -133,6 +133,8 @@ pub(crate) async fn execute_declare(
 ) -> Result<AddColumnsResult> {
     use lance::dataset::mem_wal::DatasetMemWalExt;
 
+    crate::require_experimental_functions()?;
+
     // An RTE write spec keeps visible rows in tiers refresh cannot reach;
     // checked against latest committed state, not this handle's snapshot.
     table.checkout_latest().await?;
@@ -491,12 +493,14 @@ mod tests {
             .execute()
             .await
             .unwrap();
-        table
-            .add_columns()
-            .computed("derived", "spare * 2")
-            .execute()
-            .await
-            .unwrap();
+        if cfg!(feature = "experimental-functions") {
+            table
+                .add_columns()
+                .computed("derived", "spare * 2")
+                .execute()
+                .await
+                .unwrap();
+        }
         table
             .update_field_metadata(&[metadata_update("eager")])
             .await
@@ -510,7 +514,10 @@ mod tests {
         let schema = table.schema().await.unwrap();
         ensure_supported_function_metadata(&schema).unwrap();
         assert_eq!(function_bindings(&schema).unwrap().len(), 1);
-        assert!(schema.field_with_name("derived").is_ok());
+        assert_eq!(
+            schema.field_with_name("derived").is_ok(),
+            cfg!(feature = "experimental-functions")
+        );
         assert!(schema.field_with_name("moved").is_err());
     }
 
@@ -578,14 +585,16 @@ mod tests {
                     .await
                     .unwrap_err(),
             );
-            bound(
-                table
-                    .add_columns()
-                    .computed(column, "1")
-                    .execute()
-                    .await
-                    .unwrap_err(),
-            );
+            if cfg!(feature = "experimental-functions") {
+                bound(
+                    table
+                        .add_columns()
+                        .computed(column, "1")
+                        .execute()
+                        .await
+                        .unwrap_err(),
+                );
+            }
         }
         bound(
             table
