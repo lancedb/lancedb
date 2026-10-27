@@ -16,6 +16,7 @@ CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERV
 ```
 
 Column types are Arrow types under SQL names. See [Data types](/sql/data-types).
+
 A table inside a [namespace](/sql/ddl/namespace) is written as a dotted path:
 `prod.events.clicks`.
 

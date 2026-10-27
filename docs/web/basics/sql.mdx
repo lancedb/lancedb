@@ -82,6 +82,8 @@ In application code, load credentials from environment variables or a secrets
 manager. The [connection guide](/basics/connect#enterprise) shows that setup.
 
 `execute_query()` returns a blocking Arrow reader when results start arriving.
+The server can stream rows on the first call or return result tickets that the
+SDK follows automatically, with the same behavior for parameterized queries.
 The example uses `read_all()` to collect the small result in memory. For larger
 results, consume the reader in batches. To submit a query and check its status
 separately, use `execute_query_async()`. See [Queries](/basics/query) for query

@@ -47,6 +47,7 @@ import {
   register,
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
+import { experimentalFunctionsEnabled } from "../lancedb/native";
 import {
   BooleanQuery,
   Occur,
@@ -5477,13 +5478,14 @@ describe("LSM convergence and stats", () => {
 });
 
 describe("computed columns", () => {
+  const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
   afterEach(() => tmpDir.removeCallback());
 
-  it("declares a column and fills it on refresh", async () => {
+  experimentalTest("declares a column and fills it on refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
 
@@ -5508,7 +5510,7 @@ describe("computed columns", () => {
     );
   });
 
-  it("returns a job handle from refreshColumnAsync", async () => {
+  experimentalTest("returns a job handle from refreshColumnAsync", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
 
@@ -5530,7 +5532,7 @@ describe("computed columns", () => {
     );
   });
 
-  it("fills rows added since the last refresh", async () => {
+  experimentalTest("fills rows added since the last refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_append", [{ x: 1 }]);
 

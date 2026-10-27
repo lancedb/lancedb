@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use arrow_array::types::Float32Type;
 use arrow_array::{
-    BinaryArray, FixedSizeListArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch,
+    Array, BinaryArray, FixedSizeListArray, Int32Array, Int64Array, LargeBinaryArray, RecordBatch,
     RecordBatchIterator, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
@@ -83,8 +83,9 @@ async fn main() {
         ],
     )
     .unwrap();
-    let image_reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-        Box::new(RecordBatchIterator::new(vec![Ok(image_batch)].into_iter(), schema.clone()));
+    let image_reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+        RecordBatchIterator::new(vec![Ok(image_batch)].into_iter(), schema.clone()),
+    );
     let table = db
         .create_table("images", image_reader)
         .mode(CreateTableMode::Overwrite)
@@ -137,42 +138,45 @@ async fn main() {
     let search_rows: usize = results.iter().map(|batch| batch.num_rows()).sum();
     assert_eq!(search_rows, 1);
 
-    // --8<-- [start:blob_api_schema]
-    let blob_metadata = HashMap::from([(
+    // --8<-- [start:legacy_blob_api_schema]
+    let legacy_blob_metadata = HashMap::from([(
         "lance-encoding:blob".to_string(),
         "true".to_string(),
     )]);
-    let blob_schema = Schema::new(vec![
+    let legacy_blob_schema = Schema::new(vec![
         Field::new("id", DataType::Int64, false),
-        Field::new("video", DataType::LargeBinary, true).with_metadata(blob_metadata),
+        Field::new("video", DataType::LargeBinary, true).with_metadata(legacy_blob_metadata),
     ]);
-    // --8<-- [end:blob_api_schema]
+    // --8<-- [end:legacy_blob_api_schema]
 
-    // --8<-- [start:blob_api_ingest]
-    let blob_rows = vec![
+    // --8<-- [start:legacy_blob_api_ingest]
+    let legacy_blob_rows = vec![
         (1_i64, b"fake_video_bytes_1".to_vec()),
         (2_i64, b"fake_video_bytes_2".to_vec()),
     ];
 
-    let blob_schema = Arc::new(blob_schema);
-    let blob_batch = RecordBatch::try_new(
-        blob_schema.clone(),
+    let legacy_blob_schema = Arc::new(legacy_blob_schema);
+    let legacy_blob_batch = RecordBatch::try_new(
+        legacy_blob_schema.clone(),
         vec![
-            Arc::new(Int64Array::from_iter_values(blob_rows.iter().map(|row| row.0))),
+            Arc::new(Int64Array::from_iter_values(
+                legacy_blob_rows.iter().map(|row| row.0),
+            )),
             Arc::new(LargeBinaryArray::from_iter_values(
-                blob_rows.iter().map(|row| row.1.as_slice()),
+                legacy_blob_rows.iter().map(|row| row.1.as_slice()),
             )),
         ],
     )
     .unwrap();
-    let blob_reader: Box<dyn arrow_array::RecordBatchReader + Send> =
-        Box::new(RecordBatchIterator::new(vec![Ok(blob_batch)].into_iter(), blob_schema));
-    let blob_table = db
-        .create_table("videos", blob_reader)
+    let legacy_blob_reader: Box<dyn arrow_array::RecordBatchReader + Send> = Box::new(
+        RecordBatchIterator::new(vec![Ok(legacy_blob_batch)].into_iter(), legacy_blob_schema),
+    );
+    let legacy_blob_table = db
+        .create_table("legacy_videos", legacy_blob_reader)
         .mode(CreateTableMode::Overwrite)
         .execute()
         .await
         .unwrap();
-    // --8<-- [end:blob_api_ingest]
-    assert_eq!(blob_table.count_rows(None).await.unwrap(), 2);
+    // --8<-- [end:legacy_blob_api_ingest]
+    assert_eq!(legacy_blob_table.count_rows(None).await.unwrap(), 2);
 }
