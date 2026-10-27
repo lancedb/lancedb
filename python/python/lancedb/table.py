@@ -2988,6 +2988,10 @@ class Table(ABC):
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
+            Local declaration and refresh require a source build with the
+            ``experimental-functions`` Cargo feature, which published packages
+            do not enable. Remote Cloud/Enterprise operations remain available.
+
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
             field inherits Blob v2 semantics; other expressions derive their
@@ -3029,11 +3033,11 @@ class Table(ABC):
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
-        >>> table.add_columns(computed={"doubled": "x * 2"})
+        >>> table.add_columns(computed={"doubled": "x * 2"})  # doctest: +SKIP
         AddColumnsResult(version=2)
-        >>> table.refresh_column("doubled")
+        >>> table.refresh_column("doubled")  # doctest: +SKIP
         RefreshColumnResult(rows_filled=2, version=4)
-        >>> table.to_arrow().sort_by("x").to_pandas()
+        >>> table.to_arrow().sort_by("x").to_pandas()  # doctest: +SKIP
            x  doubled
         0  1        2
         1  2        4
@@ -3043,6 +3047,9 @@ class Table(ABC):
     def refresh_column(self, column: str) -> "RefreshColumnResult":
         """
         Fill the rows of a computed column that hold no value yet.
+
+        Local refresh requires the ``experimental-functions`` Cargo feature
+        in a source build. Published packages leave it disabled.
 
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
@@ -3070,6 +3077,9 @@ class Table(ABC):
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote Cloud/Enterprise jobs do not require this feature.
+
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
@@ -3087,13 +3097,13 @@ class Table(ABC):
         >>> import lancedb
         >>> db = lancedb.connect("./.lancedb")
         >>> table = db.create_table("computed_job_demo", [{"x": 1}, {"x": 2}])
-        >>> table.add_columns(computed={"doubled": "x * 2"})
+        >>> table.add_columns(computed={"doubled": "x * 2"})  # doctest: +SKIP
         AddColumnsResult(version=2)
-        >>> job = table.refresh_column_async("doubled")
-        >>> result = job.wait()
-        >>> result.rows_assigned
+        >>> job = table.refresh_column_async("doubled")  # doctest: +SKIP
+        >>> result = job.wait()  # doctest: +SKIP
+        >>> result.rows_assigned  # doctest: +SKIP
         2
-        >>> job.status()
+        >>> job.status()  # doctest: +SKIP
         'finished'
         """
 
@@ -7195,6 +7205,10 @@ class AsyncTable:
             Function columns are supported only on LanceDB Cloud and
             Enterprise.
         computed: Dict[str, str], optional
+            Local declaration and refresh require a source build with the
+            ``experimental-functions`` Cargo feature, which published packages
+            do not enable. Remote Cloud/Enterprise operations remain available.
+
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
             field inherits Blob v2 semantics; other expressions derive their
@@ -7314,6 +7328,9 @@ class AsyncTable:
         """
         Fill the rows of a computed column that hold no value yet.
 
+        Local refresh requires the ``experimental-functions`` Cargo feature
+        in a source build. Published packages leave it disabled.
+
         Declared with ``add_columns(computed=...)``, a column starts empty and
         gets its values here. Rows appended since the last refresh are filled
         by the next one, and rows whose inputs changed since they were computed
@@ -7384,6 +7401,9 @@ class AsyncTable:
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
+        Local refresh requires a source build with ``experimental-functions``.
+        Remote Cloud/Enterprise jobs do not require this feature.
+
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
@@ -7409,7 +7429,7 @@ class AsyncTable:
         ...     result = await job.wait()
         ...     assert result.rows_assigned == 1
         ...     return await job.status()
-        >>> asyncio.run(refresh_in_background())
+        >>> asyncio.run(refresh_in_background())  # doctest: +SKIP
         'finished'
         """
         return _typed_job(

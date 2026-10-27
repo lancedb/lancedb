@@ -72,6 +72,7 @@ pub(crate) async fn execute_refresh(
     view: &Table,
     pinned: Option<u64>,
 ) -> Result<RefreshMaterializedViewResult> {
+    crate::require_experimental_functions()?;
     let native = view.as_native().ok_or_else(|| Error::NotSupported {
         message: "materialized views are supported only on local tables".into(),
     })?;
@@ -576,6 +577,10 @@ mod tests {
     use crate::connect;
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn raced_first_full_refresh_lands_one_result() {
         let directory = tempfile::tempdir().unwrap();
         let connection = connect(directory.path().to_str().unwrap())

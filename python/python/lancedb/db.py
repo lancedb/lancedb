@@ -626,6 +626,10 @@ class DBConnection(EnforceOverrides):
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
 
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
+
         The view is populated before creation returns. Pass
         ``with_no_data=True`` to create only its definition and empty backing
         table. The view is a normal table: it can be queried, indexed and
@@ -1760,6 +1764,10 @@ class LanceDBConnection(DBConnection):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
 
@@ -1769,13 +1777,13 @@ class LanceDBConnection(DBConnection):
         >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
-        >>> view = db.create_materialized_view(
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
         ...     "adults",
         ...     "people",
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> view.table.count_rows()
+        >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
         LOOP.run(
@@ -2846,6 +2854,10 @@ class AsyncConnection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
