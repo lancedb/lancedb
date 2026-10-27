@@ -5790,6 +5790,61 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_adapter_write_scan_checks_metadata_and_nullability() {
+        use crate::table::datafusion::{BaseTableAdapter, BlobSchema};
+        use datafusion::prelude::SessionContext;
+        use datafusion_catalog::TableProvider;
+
+        let declared = Field::new("id", DataType::Int64, false)
+            .with_metadata(HashMap::from([("meaning".into(), "identifier".into())]));
+        for returned in [
+            declared.clone(),
+            declared.clone().with_nullable(true),
+            declared.clone().with_metadata(HashMap::new()),
+        ] {
+            let matches = returned == declared;
+            let write_schema = Schema::new(vec![declared.clone()]);
+            let response = RecordBatch::try_new(
+                Arc::new(Schema::new(vec![returned])),
+                vec![Arc::new(Int64Array::from(vec![1]))],
+            )
+            .unwrap();
+            let table =
+                Table::new_with_handler("my_table", move |request| match request.url().path() {
+                    "/v1/table/my_table/describe/" => {
+                        schema_describe_response(&write_schema).map(String::into_bytes)
+                    }
+                    "/v1/table/my_table/query/" => http::Response::builder()
+                        .status(200)
+                        .header(CONTENT_TYPE, ARROW_FILE_CONTENT_TYPE)
+                        .body(write_ipc_file(&response))
+                        .unwrap(),
+                    path => panic!("unexpected request: {path}"),
+                });
+            let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap()
+                .with_blob_schema(BlobSchema::Write);
+            let ctx = SessionContext::new();
+            let result = adapter.scan(&ctx.state(), None, &[], None).await;
+            if matches {
+                let plan = result.unwrap();
+                assert_eq!(plan.schema(), adapter.schema());
+                let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+                    .await
+                    .unwrap();
+                assert_eq!(batches[0].schema(), adapter.schema());
+            } else {
+                let error = result.unwrap_err();
+                assert!(
+                    error.to_string().contains("Scan schema mismatch"),
+                    "{error}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn test_adapter_blob_write_sql_remote_payload_round_trip() {
         use crate::table::datafusion::{BaseTableAdapter, BlobSchema};
         use datafusion::prelude::SessionContext;

@@ -10,11 +10,13 @@ use arrow_array::{
 use arrow_buffer::{NullBuffer, OffsetBuffer};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::concat::concat_batches;
-use datafusion::prelude::SessionContext;
+use datafusion::prelude::{SessionConfig, SessionContext};
 use datafusion_catalog::TableProvider;
-use lance_core::ROW_ID;
+use lance_core::{ROW_ADDR, ROW_ID};
+use lance_index::scalar::FullTextSearchQuery;
 use lancedb::{
     Table, blob, connect,
+    database::listing::OPT_NEW_TABLE_STORAGE_VERSION,
     table::datafusion::{BaseTableAdapter, BlobSchema},
 };
 use tempfile::{TempDir, tempdir};
@@ -164,7 +166,7 @@ async fn write_mode_rejects_blob_reads_before_execution_and_supports_scalar_self
         .unwrap()
         .with_system_columns(&[ROW_ID, lance_core::ROW_ADDR])
         .unwrap()
-        .with_blob_schema(BlobSchema::Write);
+        .with_blob_schema(BlobSchema::Read);
     ctx.register_table("system_docs", Arc::new(system_adapter))
         .unwrap();
     assert_eq!(
@@ -236,7 +238,7 @@ fn blob_inputs(values: Vec<Option<&[u8]>>) -> ArrayRef {
 }
 
 #[tokio::test]
-async fn nested_scalar_projection_preserves_the_underlying_descriptor_schema() {
+async fn nested_blob_projections_require_a_read_adapter() {
     let tmp = tempdir().unwrap();
     let db = connect(tmp.path().to_str().unwrap())
         .execute()
@@ -265,6 +267,41 @@ async fn nested_scalar_projection_preserves_the_underlying_descriptor_schema() {
     let table = db.create_table("docs", batch).execute().await.unwrap();
     let ctx = SessionContext::new();
     register(&ctx, &table, BlobSchema::Write).await;
+    // DataFusion requests the same whole parent struct for extra.note and
+    // extra.clip. Neither can satisfy the writer's advertised scan schema.
+    for query in [
+        "SELECT extra.note FROM docs ORDER BY id",
+        "SELECT count(extra.note) FROM docs",
+        "SELECT extra.note || 'x' FROM docs",
+        "SELECT row_number() OVER (ORDER BY extra.note) FROM docs",
+        "SELECT extra FROM docs",
+        "SELECT extra.clip FROM docs",
+        "SELECT extra.clip.size FROM docs",
+        "SELECT count(extra.clip) FROM docs",
+    ] {
+        let error = planning_error(&ctx, query).await;
+        assert!(
+            error.contains("Blob v2 scans require BlobSchema::Read"),
+            "{query}: {error}"
+        );
+    }
+    let explain = sql(&ctx, "EXPLAIN SELECT id FROM docs WHERE extra.note = 'a'").await;
+    let explain = explain
+        .column(1)
+        .as_string::<i32>()
+        .iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(explain.contains("full_filters=["), "{explain}");
+    assert!(!explain.contains("FilterExec"), "{explain}");
+    assert_eq!(
+        sql(&ctx, "SELECT id FROM docs WHERE extra.note = 'a'")
+            .await
+            .num_rows(),
+        1
+    );
+    register(&ctx, &table, BlobSchema::Read).await;
     let batch = sql(&ctx, "SELECT extra.note FROM docs ORDER BY id").await;
     assert_eq!(
         batch.column(0).as_string::<i32>(),
@@ -278,39 +315,12 @@ async fn nested_scalar_projection_preserves_the_underlying_descriptor_schema() {
             .value(0),
         2
     );
-    let explain = sql(
-        &ctx,
-        "EXPLAIN SELECT extra.note FROM docs WHERE extra.note = 'a'",
-    )
-    .await;
-    let explain = explain
-        .column(1)
-        .as_string::<i32>()
-        .iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(explain.contains("full_filters=["), "{explain}");
-    assert!(!explain.contains("FilterExec"), "{explain}");
     assert_eq!(
         sql(&ctx, "SELECT extra.note FROM docs WHERE extra.note = 'a'")
             .await
             .num_rows(),
         1
     );
-    for query in [
-        "SELECT extra FROM docs",
-        "SELECT extra.clip FROM docs",
-        "SELECT extra.clip.size FROM docs",
-        "SELECT count(extra.clip) FROM docs",
-    ] {
-        let error = planning_error(&ctx, query).await;
-        assert!(
-            error.contains("Blob v2 scans require BlobSchema::Read"),
-            "{query}: {error}"
-        );
-    }
-
     let reader = Arc::new(
         BaseTableAdapter::try_new(table.base_table().clone())
             .await
@@ -439,4 +449,188 @@ async fn read_mode_rejects_null_and_omitted_blob_inserts_without_writing() {
         );
         assert_eq!(table.count_rows(None).await.unwrap(), 0);
     }
+}
+
+#[tokio::test]
+async fn write_mode_inserts_exclude_read_only_builder_columns() {
+    for mode_first in [false, true] {
+        for system_first in [false, true] {
+            let (_tmp, table) = empty_table(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("text", DataType::Utf8, true),
+                blob("payload", true),
+            ])
+            .await;
+            let mut adapter = BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap();
+            if mode_first {
+                adapter = adapter.with_blob_schema(BlobSchema::Write);
+            }
+            let fts = FullTextSearchQuery::new("hello".into());
+            adapter = if system_first {
+                adapter
+                    .with_system_columns(&[ROW_ID, ROW_ADDR])
+                    .unwrap()
+                    .with_fts_query(fts)
+            } else {
+                adapter
+                    .with_fts_query(fts)
+                    .with_system_columns(&[ROW_ID, ROW_ADDR])
+                    .unwrap()
+            };
+            let writer = adapter.with_blob_schema(BlobSchema::Write);
+            let ctx = SessionContext::new();
+            ctx.register_table("docs", Arc::new(writer)).unwrap();
+            sql(
+                &ctx,
+                "INSERT INTO docs SELECT 1, 'hello', named_struct('data', X'6869', 'uri', NULL)",
+            )
+            .await;
+            sql(&ctx, "INSERT INTO docs (text, id) VALUES ('hello', 2)").await;
+            let ids = row_ids(&ctx, &table).await;
+            assert_eq!(
+                table.fetch_blobs("payload", &ids).await.unwrap(),
+                LargeBinaryArray::from(vec![Some(b"hi".as_slice()), None])
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn legacy_blob_write_mode_rejects_descriptor_scans_and_keeps_scalar_scans() {
+    let tmp = tempdir().unwrap();
+    let db = connect(tmp.path().to_str().unwrap())
+        .storage_options([(OPT_NEW_TABLE_STORAGE_VERSION, "2.1")])
+        .execute()
+        .await
+        .unwrap();
+    let legacy = Field::new("payload", DataType::LargeBinary, true).with_metadata(
+        std::collections::HashMap::from([("lance-encoding:blob".into(), "true".into())]),
+    );
+    let table = db
+        .create_empty_table(
+            "docs",
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                legacy,
+            ])),
+        )
+        .execute()
+        .await
+        .unwrap();
+    let ctx = SessionContext::new();
+    register(&ctx, &table, BlobSchema::Write).await;
+    sql(&ctx, "INSERT INTO docs VALUES (1, X'6869')").await;
+    let writer = ctx.table_provider("docs").await.unwrap();
+    assert_eq!(writer.schema().field(1).data_type(), &DataType::LargeBinary);
+    let error = writer
+        .scan(&ctx.state(), None, &[], None)
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("Scan schema mismatch"),
+        "{error}"
+    );
+    assert!(!error.to_string().contains("Blob v2"), "{error}");
+    let plan = writer
+        .scan(&ctx.state(), Some(&vec![0]), &[], None)
+        .await
+        .unwrap();
+    assert_eq!(
+        plan.schema(),
+        Arc::new(writer.schema().project(&[0]).unwrap())
+    );
+    assert_eq!(
+        sql(&ctx, "SELECT id + 1 FROM docs WHERE id = 1")
+            .await
+            .column(0)
+            .as_primitive::<arrow_array::types::Int64Type>()
+            .value(0),
+        2
+    );
+    assert_eq!(
+        sql(&ctx, "SELECT count(*) FROM docs")
+            .await
+            .column(0)
+            .as_primitive::<arrow_array::types::Int64Type>()
+            .value(0),
+        1
+    );
+    register(&ctx, &table, BlobSchema::Read).await;
+    let reader = ctx.table_provider("docs").await.unwrap();
+    let plan = reader.scan(&ctx.state(), None, &[], None).await.unwrap();
+    assert_eq!(plan.schema(), reader.schema());
+    let DataType::Struct(fields) = reader.schema().field(1).data_type().clone() else {
+        panic!("expected a legacy descriptor");
+    };
+    assert_eq!(fields.len(), 2);
+    assert!(fields.find("position").is_some());
+    assert!(fields.find("size").is_some());
+    assert_eq!(sql(&ctx, "SELECT * FROM docs").await.num_rows(), 1);
+}
+
+#[tokio::test]
+async fn copying_non_null_descriptors_between_tables_commits_no_rows() {
+    let (_tmp, source) = empty_table(vec![
+        Field::new("id", DataType::Int64, false),
+        blob("payload", true),
+    ])
+    .await;
+    let ctx = SessionContext::new_with_config(
+        SessionConfig::new()
+            .with_batch_size(1)
+            .with_target_partitions(1),
+    );
+    register(&ctx, &source, BlobSchema::Write).await;
+    sql(
+        &ctx,
+        "INSERT INTO docs SELECT 1, named_struct('data', X'6869', 'uri', NULL)",
+    )
+    .await;
+    sql(&ctx, "INSERT INTO docs VALUES (2, NULL)").await;
+    register(&ctx, &source, BlobSchema::Read).await;
+    let (_dest_tmp, destination) = empty_table(
+        source
+            .schema()
+            .await
+            .unwrap()
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect(),
+    )
+    .await;
+    let writer = BaseTableAdapter::try_new(destination.base_table().clone())
+        .await
+        .unwrap()
+        .with_blob_schema(BlobSchema::Write);
+    ctx.register_table("destination", Arc::new(writer)).unwrap();
+    let version = destination.version().await.unwrap();
+    // The null row is valid and reaches the writer before the non-null
+    // descriptor. Even if it is written to a fragment, it must not be committed.
+    let plan = ctx
+        .sql("INSERT INTO destination SELECT id, payload FROM docs ORDER BY id DESC")
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let error = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("blob"), "{error}");
+    assert_eq!(destination.count_rows(None).await.unwrap(), 0);
+    assert_eq!(destination.version().await.unwrap(), version);
+    sql(
+        &ctx,
+        "INSERT INTO destination SELECT id, payload FROM docs WHERE payload IS NULL",
+    )
+    .await;
+    let ids = row_ids(&ctx, &destination).await;
+    assert_eq!(ids.len(), 1);
+    assert_eq!(
+        destination.fetch_blobs("payload", &ids).await.unwrap(),
+        LargeBinaryArray::from(vec![None::<&[u8]>])
+    );
 }
