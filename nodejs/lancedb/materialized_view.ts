@@ -188,14 +188,20 @@ export class MaterializedView {
    * Recompute the view from its source.
    * Local refresh requires a source build with `experimental-functions`.
    *
-   * Every refresh rebuilds the complete view. For local views,
-   * `sourceVersion` refreshes to that source version instead of the latest;
-   * remote SQL refreshes do not support source-version pinning.
+   * `full: true` forces a remote rebuild; otherwise the server chooses the
+   * refresh mode. Local views always rebuild, and `sourceVersion` selects a
+   * source version instead of the latest. Remote SQL refreshes do not support
+   * source-version pinning. Their results leave `mode`, `rowsWritten`, and
+   * `sourceVersion` absent because the SQL job adapter does not expose these metrics.
    */
   async refresh(options?: {
+    full?: boolean;
     sourceVersion?: number;
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
-    return await this.inner.refreshMaterializedView(options?.sourceVersion);
+    return await this.inner.refreshMaterializedView(
+      options?.sourceVersion,
+      options?.full,
+    );
   }
 }

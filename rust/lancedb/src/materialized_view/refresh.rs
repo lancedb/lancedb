@@ -45,13 +45,16 @@ pub enum RefreshMode {
 /// The result of refreshing a materialized view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date.
-    pub mode: RefreshMode,
-    /// Rows written to the replacement view.
-    pub rows_written: u64,
-    /// The source table version the view reflects.
-    pub source_version: u64,
-    /// The view table version after the refresh.
+    /// How the view was brought up to date, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub mode: Option<RefreshMode>,
+    /// Rows written by this refresh, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub rows_written: Option<u64>,
+    /// The source table version the view reflects, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub source_version: Option<u64>,
+    /// The view table version observed after the refresh.
     pub version: u64,
 }
 
@@ -182,9 +185,9 @@ pub(crate) async fn execute_refresh(
     let version = committed.version().version;
     native.dataset.update(committed);
     Ok(RefreshMaterializedViewResult {
-        mode: RefreshMode::Rebuild,
-        rows_written: rows_written.load(Ordering::Relaxed),
-        source_version,
+        mode: Some(RefreshMode::Rebuild),
+        rows_written: Some(rows_written.load(Ordering::Relaxed)),
+        source_version: Some(source_version),
         version,
     })
 }

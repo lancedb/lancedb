@@ -699,6 +699,7 @@ export abstract class Table {
    */
   abstract refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -1442,8 +1443,9 @@ export class LocalTable extends Table {
 
   async refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion);
+    return await this.inner.refreshMaterializedView(sourceVersion, full);
   }
 
   async materializedViewDefinition(): Promise<string> {

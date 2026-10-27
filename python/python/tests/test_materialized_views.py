@@ -8,6 +8,7 @@ import threading
 
 import lancedb
 import pytest
+import pyarrow as pa
 from lancedb.db import AsyncConnection
 from lancedb.materialized_view import MaterializedViewDefinition
 from lancedb.remote.db import RemoteDBConnection
@@ -110,6 +111,98 @@ def test_remote_drop_async_returns_server_job():
         job = db.drop_materialized_view_async("adults")
         assert job.id == "mv-drop-123"
     assert requests == [("/v1/materialized_view/adults/drop", {})]
+
+
+@contextlib.contextmanager
+def mock_remote_materialized_view_refresh():
+    requests = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            requests.append(self.path)
+            if self.path == "/v1/materialized_view/view/describe":
+                response = {"query": "SELECT * FROM source"}
+            else:
+                assert self.path == "/v1/table/view/describe/"
+                response = {"version": 42, "schema": {"fields": []}}
+            encoded = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    with http.server.HTTPServer(("localhost", 0), Handler) as server:
+        thread = threading.Thread(target=server.serve_forever)
+        thread.start()
+        try:
+            yield f"http://localhost:{server.server_address[1]}", requests
+        finally:
+            server.shutdown()
+            thread.join()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sync", [False, True])
+@pytest.mark.parametrize("background", [False, True])
+@pytest.mark.parametrize("full", [False, True])
+async def test_remote_refresh_reports_unknown_metrics(sync, background, full):
+    flight = pytest.importorskip("pyarrow.flight")
+
+    class RefreshServer(flight.FlightServerBase):
+        def __init__(self):
+            super().__init__("grpc://127.0.0.1:0")
+            self.commands = []
+
+        def do_get(self, context, ticket):
+            self.commands.append(ticket.ticket)
+            # SQL completion carries no refresh statistics.
+            return flight.RecordBatchStream(pa.table({"status": ["ok"]}))
+
+    with (
+        mock_remote_materialized_view_refresh() as (host, requests),
+        RefreshServer() as server,
+    ):
+        options = {"full": True} if full else {}
+        connect = lancedb.connect if sync else lancedb.connect_async
+        db = connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            sql_host_override=f"grpc://127.0.0.1:{server.port}",
+            client_config={"retry_config": {"retries": 0}},
+        )
+        if sync:
+            view = db.open_materialized_view("view")
+            result = (
+                view.refresh_async(**options).wait()
+                if background
+                else view.refresh(**options)
+            )
+        else:
+            db = await db
+            view = await db.open_materialized_view("view")
+            if background:
+                job = await view.refresh_async(**options)
+                result = await job.wait()
+            else:
+                result = await view.refresh(**options)
+
+        assert result.mode is None
+        assert result.rows_written is None
+        assert result.source_version is None
+        assert result.version == 42
+        assert repr(result) == (
+            "RefreshMaterializedViewResult(mode=None, rows_written=None, "
+            "source_version=None, version=42)"
+        )
+        (command,) = server.commands
+        assert b'REFRESH MATERIALIZED VIEW "view"' in command
+        assert (b"WITH (full = true)" in command) is full
+        assert not any("count_rows" in path for path in requests)
 
 
 def test_sync_remote_create_uses_public_async_connection():
@@ -226,18 +319,35 @@ def test_definition_round_trips(tmp_path):
 
 
 @pytest.mark.experimental_functions
-def test_full_refresh_after_append(tmp_path):
+@pytest.mark.parametrize("full", [False, True])
+def test_full_refresh_after_append(tmp_path, full):
     db = make_db(tmp_path)
     view = db.create_materialized_view("copy", "people", with_no_data=True)
     view.refresh()
 
     db.open_table("people").add([{"name": "alan", "age": 41}])
-    result = view.refresh()
+    result = view.refresh(full=full)
     assert result.mode == "rebuild"
     assert result.rows_written == 4
+    assert result.source_version == db.open_table("people").version
     assert view.table.count_rows() == 4
 
     assert view.refresh().mode == "rebuild"
+
+
+@pytest.mark.experimental_functions
+def test_full_refresh_can_pin_local_source_version(tmp_path):
+    db = make_db(tmp_path)
+    source = db.open_table("people")
+    version = source.version
+    view = db.create_materialized_view("copy", "people", with_no_data=True)
+    source.add([{"name": "alan", "age": 41}])
+
+    result = view.refresh(full=True, source_version=version)
+    assert result.mode == "rebuild"
+    assert result.rows_written == 3
+    assert result.source_version == version
+    assert view.table.count_rows() == 3
 
 
 @pytest.mark.experimental_functions
