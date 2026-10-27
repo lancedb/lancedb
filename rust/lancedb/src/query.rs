@@ -3361,11 +3361,21 @@ mod tests {
     #[cfg(feature = "geo")]
     #[tokio::test]
     async fn test_st_dwithin_filter_on_rte_base_and_active_memtable() {
+        use crate::index::vector::IvfPqIndexBuilder;
+
         let tmp_dir = tempdir().unwrap();
         let table = make_geo_query_table(&tmp_dir).await;
         table.set_unenforced_primary_key(["id"]).await.unwrap();
         table
-            .enable_rte(crate::table::RTEWriteSpec::unsharded())
+            .create_index(&["vector"], Index::IvfPq(IvfPqIndexBuilder::default()))
+            .execute()
+            .await
+            .unwrap();
+        let vec_index = table.list_indices().await.unwrap()[0].name.clone();
+        table
+            .enable_rte(
+                crate::table::RTEWriteSpec::unsharded().with_maintained_indexes(vec![vec_index]),
+            )
             .await
             .unwrap();
 
