@@ -300,6 +300,28 @@ async def test_query_to_pandas_kwargs(table, table_async):
     assert async_df["id"].tolist() == [1, 2]
 
 
+def test_st_dwithin_plain_and_vector_queries(tmp_db):
+    data = pa.table(
+        {
+            "id": pa.array([1, 2, 3], pa.int32()),
+            "x": pa.array([0.0, 1.0, 3.0], pa.float64()),
+            "y": pa.array([0.0, 1.0, 4.0], pa.float64()),
+            "vector": pa.array(
+                [[0.0, 0.0], [1.0, 1.0], [3.0, 4.0]],
+                type=pa.list_(pa.float32(), list_size=2),
+            ),
+        }
+    )
+    table = tmp_db.create_table("geo_dwithin", data)
+    filter = "ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)"
+
+    plain = table.search().where(filter).to_arrow()
+    assert sorted(plain["id"].to_pylist()) == [1, 2]
+
+    vector = table.search([0.0, 0.0]).where(filter).limit(2).to_arrow()
+    assert sorted(vector["id"].to_pylist()) == [1, 2]
+
+
 @pytest.mark.parametrize("blob_mode", ["lazy", "bytes", "descriptions"])
 def test_plain_scan_query_to_pandas_blob_modes(tmp_db, blob_mode):
     pytest.importorskip("lance")

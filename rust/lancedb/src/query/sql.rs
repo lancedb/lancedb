@@ -8,7 +8,7 @@ use std::{any::TypeId, ops::ControlFlow};
 use datafusion_sql::sqlparser::{
     ast::{
         BinaryOperator, Expr, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, ObjectName,
-        SelectItem, SetExpr, Statement, visit_expressions_mut,
+        visit_expressions_mut,
     },
     dialect::{Dialect, GenericDialect},
     parser::Parser,
@@ -39,8 +39,10 @@ impl Dialect for LanceDialect {
 /// Rewrite `ST_DWithin(a, b, distance)` as `ST_Distance(a, b) <= distance`.
 ///
 /// GeoDataFusion does not currently expose `ST_DWithin`, but its definition is
-/// exactly this distance comparison. Invalid SQL and unsupported function
-/// shapes are left untouched so the query planner can report the usual error.
+/// exactly this distance comparison. Only unqualified, ordinary calls with
+/// exactly three positional arguments are rewritten. Invalid SQL and other
+/// function shapes are left untouched so the query planner can report the
+/// usual error.
 pub(crate) fn rewrite_st_dwithin(filter: &str) -> String {
     if !filter.to_ascii_lowercase().contains("st_dwithin") {
         return filter.to_string();
@@ -54,12 +56,23 @@ pub(crate) fn rewrite_st_dwithin(filter: &str) -> String {
         let Expr::Function(function) = expr else {
             return ControlFlow::<()>::Continue(());
         };
-        if !function.name.to_string().eq_ignore_ascii_case("st_dwithin") {
+        if function.name.0.len() != 1
+            || !function.name.to_string().eq_ignore_ascii_case("st_dwithin")
+            || function.uses_odbc_syntax
+            || !matches!(&function.parameters, FunctionArguments::None)
+            || function.filter.is_some()
+            || function.null_treatment.is_some()
+            || function.over.is_some()
+            || !function.within_group.is_empty()
+        {
             return ControlFlow::Continue(());
         }
         let FunctionArguments::List(arguments) = &function.args else {
             return ControlFlow::Continue(());
         };
+        if arguments.duplicate_treatment.is_some() || !arguments.clauses.is_empty() {
+            return ControlFlow::Continue(());
+        }
         let [
             FunctionArg::Unnamed(FunctionArgExpr::Expr(first)),
             FunctionArg::Unnamed(FunctionArgExpr::Expr(second)),
@@ -94,9 +107,8 @@ pub(crate) fn rewrite_st_dwithin(filter: &str) -> String {
 }
 
 fn parse_filter(filter: &str) -> Option<Expr> {
-    let statement = format!("SELECT 1 FROM t WHERE {filter}");
     let dialect = LanceDialect::default();
-    let mut token_iter = Tokenizer::new(&dialect, &statement)
+    let mut token_iter = Tokenizer::new(&dialect, filter)
         .tokenize()
         .ok()?
         .into_iter();
@@ -111,29 +123,15 @@ fn parse_filter(filter: &str) -> Option<Expr> {
         tokens.push(std::mem::replace(&mut previous, next));
     }
     tokens.push(previous);
-    // A predicate must parse as one complete expression. Do not let a rewrite
-    // silently discard anything after a statement delimiter.
-    if tokens.iter().any(|token| matches!(token, Token::SemiColon)) {
-        return None;
-    }
 
-    let mut statements = Parser::new(&dialect)
-        .with_tokens(tokens)
-        .parse_statements()
-        .ok()?;
-    if statements.len() != 1 {
+    let mut parser = Parser::new(&dialect).with_tokens(tokens);
+    let expr = parser.parse_expr().ok()?;
+    // A filter is one expression. Reject trailing clauses or statements rather
+    // than rewriting a prefix and silently changing what the caller asked for.
+    if parser.peek_token().token != Token::EOF {
         return None;
     }
-    let statement = statements.pop()?;
-    if let Statement::Query(query) = statement
-        && let SetExpr::Select(select) = *query.body
-        && let Some(expr) = select.selection
-        && matches!(select.projection.as_slice(), [SelectItem::UnnamedExpr(_)])
-    {
-        Some(expr)
-    } else {
-        None
-    }
+    Some(expr)
 }
 
 #[cfg(test)]
@@ -149,11 +147,30 @@ mod tests {
     }
 
     #[test]
-    fn leaves_other_filters_unchanged() {
-        assert_eq!(rewrite_st_dwithin("id == 1"), "id == 1");
-        assert_eq!(
-            rewrite_st_dwithin("ST_DWithin(point, origin)"),
-            "ST_DWithin(point, origin)"
-        );
+    fn leaves_unsupported_function_shapes_unchanged() {
+        for filter in [
+            "id == 1",
+            "'ST_DWithin(point, origin, 1.0)'",
+            "geo.ST_DWithin(point, origin, 1.0)",
+            "ST_DWithin(point, origin)",
+            "ST_DWithin(point, origin, 1.0, extra)",
+            "ST_DWithin(DISTINCT point, origin, 1.0)",
+            "ST_DWithin(point => point, origin => origin, distance => 1.0)",
+            "ST_DWithin(point, origin, 1.0) OVER ()",
+        ] {
+            assert_eq!(rewrite_st_dwithin(filter), filter);
+        }
+    }
+
+    #[test]
+    fn leaves_malformed_or_multi_expression_filters_unchanged() {
+        for filter in [
+            "ST_DWithin(point, origin, 1.0",
+            "ST_DWithin(point, origin, 1.0) LIMIT 0",
+            "ST_DWithin(point, origin, 1.0) ORDER BY id",
+            "ST_DWithin(point, origin, 1.0); SELECT 1",
+        ] {
+            assert_eq!(rewrite_st_dwithin(filter), filter);
+        }
     }
 }

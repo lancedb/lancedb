@@ -3211,34 +3211,73 @@ mod tests {
     }
 
     #[cfg(feature = "geo")]
-    #[tokio::test]
-    async fn test_st_dwithin_filter() {
-        let tmp_dir = tempdir().unwrap();
-        let uri = tmp_dir.path().to_str().unwrap();
-        let batch = RecordBatch::try_from_iter([
-            ("id", Arc::new(Int32Array::from_iter_values([1, 2, 3])) as _),
-            (
-                "x",
-                Arc::new(Float64Array::from_iter_values([0.0, 1.0, 3.0])) as _,
-            ),
-            (
-                "y",
-                Arc::new(Float64Array::from_iter_values([0.0, 1.0, 4.0])) as _,
-            ),
-        ])
-        .unwrap();
+    const ST_DWITHIN_FILTER: &str = "ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)";
 
-        let table = connect(uri)
+    #[cfg(feature = "geo")]
+    fn geo_query_batch(rows: &[(i32, f64, f64, [f32; 2])]) -> RecordBatch {
+        let schema = Arc::new(ArrowSchema::new(vec![
+            ArrowField::new("id", DataType::Int32, false),
+            ArrowField::new("x", DataType::Float64, false),
+            ArrowField::new("y", DataType::Float64, false),
+            ArrowField::new(
+                "vector",
+                DataType::FixedSizeList(
+                    Arc::new(ArrowField::new("item", DataType::Float32, true)),
+                    2,
+                ),
+                false,
+            ),
+        ]));
+        let vectors = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
+            rows.iter()
+                .map(|(_, _, _, vector)| Some(vector.iter().copied().map(Some).collect())),
+            2,
+        );
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(Int32Array::from_iter_values(
+                    rows.iter().map(|(id, _, _, _)| *id),
+                )),
+                Arc::new(Float64Array::from_iter_values(
+                    rows.iter().map(|(_, x, _, _)| *x),
+                )),
+                Arc::new(Float64Array::from_iter_values(
+                    rows.iter().map(|(_, _, y, _)| *y),
+                )),
+                Arc::new(vectors),
+            ],
+        )
+        .unwrap()
+    }
+
+    #[cfg(feature = "geo")]
+    async fn make_geo_query_table(tmp_dir: &tempfile::TempDir) -> Table {
+        connect(tmp_dir.path().to_str().unwrap())
             .execute()
             .await
             .unwrap()
-            .create_table("points", batch)
+            .create_table(
+                "points",
+                geo_query_batch(&[
+                    (1, 0.0, 0.0, [0.0, 0.0]),
+                    (2, 1.0, 1.0, [1.0, 1.0]),
+                    (3, 3.0, 4.0, [3.0, 4.0]),
+                ]),
+            )
             .execute()
             .await
-            .unwrap();
+            .unwrap()
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_st_dwithin_filter() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_geo_query_table(&tmp_dir).await;
         let batches = table
             .query()
-            .only_if("ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0)")
+            .only_if(ST_DWITHIN_FILTER)
             .execute()
             .await
             .unwrap()
@@ -3249,6 +3288,127 @@ mod tests {
         let ids = batch["id"].as_primitive::<Int32Type>();
 
         assert_eq!(ids.values(), &[1, 2]);
+
+        let result = table
+            .query()
+            .only_if("ST_DWithin(ST_Point(x, y), ST_Point(0.0, 0.0), 2.0) LIMIT 0")
+            .execute()
+            .await;
+        assert!(result.is_err(), "trailing SQL must fail in the real parser");
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_st_dwithin_vector_filter() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_geo_query_table(&tmp_dir).await;
+        let batches = table
+            .query()
+            .nearest_to([0.0, 0.0])
+            .unwrap()
+            .only_if(ST_DWITHIN_FILTER)
+            .limit(2)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let ids = batch["id"].as_primitive::<Int32Type>();
+
+        assert_eq!(ids.values(), &[1, 2]);
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_st_dwithin_explain_uses_lowered_expression() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_geo_query_table(&tmp_dir).await;
+        let plan = table
+            .query()
+            .only_if(ST_DWITHIN_FILTER)
+            .explain_plan(true)
+            .await
+            .unwrap();
+        let plan = plan.to_ascii_lowercase();
+
+        assert!(plan.contains("st_distance"), "{plan}");
+        assert!(!plan.contains("st_dwithin"), "{plan}");
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_st_dwithin_filter_survives_take_offsets_routing() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_geo_query_table(&tmp_dir).await;
+        let batches = table
+            .take_offsets(vec![0, 1, 2])
+            .only_if(ST_DWITHIN_FILTER)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let ids = batch["id"].as_primitive::<Int32Type>();
+
+        assert_eq!(ids.values(), &[1, 2]);
+    }
+
+    #[cfg(feature = "geo")]
+    #[tokio::test]
+    async fn test_st_dwithin_filter_on_rte_base_and_active_memtable() {
+        let tmp_dir = tempdir().unwrap();
+        let table = make_geo_query_table(&tmp_dir).await;
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table
+            .enable_rte(crate::table::RTEWriteSpec::unsharded())
+            .await
+            .unwrap();
+
+        let source = geo_query_batch(&[(4, 0.25, 0.25, [0.25, 0.25])]);
+        let schema = source.schema();
+        let mut merge = table.merge_insert(&["id"]);
+        merge
+            .when_matched_update_all(None)
+            .when_not_matched_insert_all();
+        merge
+            .execute(Box::new(RecordBatchIterator::new(vec![Ok(source)], schema)))
+            .await
+            .unwrap();
+
+        let plain = table
+            .query()
+            .only_if(ST_DWITHIN_FILTER)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let plain = concat_batches(&plain[0].schema(), &plain).unwrap();
+        let mut plain_ids = plain["id"].as_primitive::<Int32Type>().values().to_vec();
+        plain_ids.sort_unstable();
+        assert_eq!(plain_ids, vec![1, 4]);
+
+        let vector = table
+            .query()
+            .nearest_to([0.0, 0.0])
+            .unwrap()
+            .only_if(ST_DWITHIN_FILTER)
+            .limit(2)
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let vector = concat_batches(&vector[0].schema(), &vector).unwrap();
+        let mut vector_ids = vector["id"].as_primitive::<Int32Type>().values().to_vec();
+        vector_ids.sort_unstable();
+        assert_eq!(vector_ids, vec![1, 4]);
     }
 
     fn make_non_empty_batches() -> Box<dyn arrow_array::RecordBatchReader + Send> {
