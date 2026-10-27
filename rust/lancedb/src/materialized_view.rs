@@ -9,6 +9,11 @@
 //! query this version cannot maintain reads back as unrefreshable, not as a
 //! plain table. Queries, indexes and search work on the view unchanged;
 //! writes to its rows or stored columns are refused.
+//!
+//! Local creation and refresh require the `experimental-functions` Cargo
+//! feature. Opening, reading, listing and dropping existing views, remote
+//! client operations, and shared server commit primitives remain available
+//! without it.
 
 mod grouped;
 pub use grouped::IVF_PARTITION;
@@ -1245,6 +1250,7 @@ impl PreparedDeclaration {
         namespace_path: &[String],
         name: &str,
     ) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
         ensure_no_source_cycle(&self.database, namespace_path, name, &self.definition).await?;
         let empty: Vec<std::result::Result<arrow_array::RecordBatch, arrow_schema::ArrowError>> =
             vec![];
@@ -1733,6 +1739,7 @@ impl CreateMaterializedViewBuilder {
                 })
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             self.execute_native().await.map(|_| ())
         })))
@@ -1756,6 +1763,7 @@ impl CreateMaterializedViewBuilder {
     }
 
     async fn execute_native(self) -> Result<MaterializedView> {
+        crate::require_experimental_functions()?;
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
                 message: "automatic materialized-view refresh requires Cloud or Enterprise"
@@ -1900,6 +1908,7 @@ impl RefreshMaterializedViewBuilder {
                 .refresh_materialized_view_async(self.source_version, self.full)
                 .await;
         }
+        crate::require_experimental_functions()?;
         Ok(Job::spawned(tokio::spawn(async move {
             refresh::execute_refresh(&self.view.table, self.source_version).await
         })))
@@ -2082,6 +2091,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn refresh_always_rebuilds_without_source_row_ids() {
         let conn = connect("memory://").execute().await.unwrap();
         let source = conn
@@ -2149,6 +2162,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn a_view_cannot_lead_back_to_itself() {
         let conn = connect("memory://").execute().await.unwrap();
         let rows = || record_batch!(("x", Int32, [1, 2])).unwrap();
@@ -2184,6 +2201,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn direct_writes_to_a_view_are_refused() {
         use arrow_schema::Schema;
         use datafusion::prelude::SessionContext;
@@ -2326,6 +2347,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn indexes_and_optimize_still_apply_to_a_view() {
         use crate::index::Index;
         use crate::table::{CompactionOptions, OptimizeAction};
@@ -2373,6 +2398,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn computed_columns_of_a_view_are_still_filled_and_dropped() {
         use crate::table::computed_columns::{
             COMPUTED_COLUMN_META_KEY, EXPRESSION_META_KEY, INPUTS_META_KEY, KIND_META_KEY, SQL_KIND,

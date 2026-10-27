@@ -186,6 +186,7 @@ export class MaterializedView {
 
   /**
    * Recompute the view from its source.
+   * Local refresh requires a source build with `experimental-functions`.
    *
    * `full: true` forces a remote rebuild; otherwise the server chooses the
    * refresh mode. Local views always rebuild, and `sourceVersion` selects a

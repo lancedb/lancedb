@@ -428,10 +428,13 @@ class DBConnection(EnforceOverrides):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -622,6 +625,10 @@ class DBConnection(EnforceOverrides):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
 
         The view is populated before creation returns. Pass
         ``with_no_data=True`` to create only its definition and empty backing
@@ -820,7 +827,25 @@ class DBConnection(EnforceOverrides):
 
     @property
     def uri(self) -> str:
+        """The URI of this database."""
         return self._uri
+
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
+    def __len__(self) -> int:
+        """Return the number of tables in the root namespace across all pages."""
+        return sum(1 for _ in self._all_table_names())
+
+    def __contains__(self, name: str) -> bool:
+        """Return whether the root namespace contains the named table."""
+        return name in self._all_table_names()
 
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
@@ -1606,21 +1631,6 @@ class LanceDBConnection(DBConnection):
             )
         )
 
-    def _all_table_names(self) -> Generator[str, None, None]:
-        page_token = None
-        while True:
-            response = self.list_tables(page_token=page_token)
-            yield from response.tables
-            page_token = response.page_token
-            if not page_token:
-                return
-
-    def __len__(self) -> int:
-        return sum(1 for _ in self._all_table_names())
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._all_table_names()
-
     @override
     def create_table(
         self,
@@ -1754,6 +1764,10 @@ class LanceDBConnection(DBConnection):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
 
@@ -1763,13 +1777,13 @@ class LanceDBConnection(DBConnection):
         >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
-        >>> view = db.create_materialized_view(
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
         ...     "adults",
         ...     "people",
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> view.table.count_rows()
+        >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
         LOOP.run(
@@ -2550,10 +2564,13 @@ class AsyncConnection(object):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -2837,6 +2854,10 @@ class AsyncConnection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        Local creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; remote Cloud/Enterprise operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """

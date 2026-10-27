@@ -16,6 +16,7 @@ import pyarrow as pa
 import lancedb
 from lance_namespace.errors import NamespaceNotEmptyError, TableNotFoundError
 from lancedb.listing import AsyncListing, Listing
+from lancedb.materialized_view import DEFINITION_FORMAT, DEFINITION_META_KEY
 from lancedb.namespace import _MAX_QUERY_K, _query_to_namespace_request
 from lancedb.query import Query
 from lancedb.table import AsyncTable, LanceTable
@@ -359,7 +360,17 @@ class TestNamespaceConnection:
     def test_list_materialized_views(self):
         db = lancedb.connect_namespace("dir", {"root": self.temp_dir})
         db.create_table("source", [{"id": 1}])
-        db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view from an enabled build: listing must also work
+        # when local creation is disabled in the current build.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, Listing)
@@ -872,7 +883,16 @@ class TestAsyncNamespaceConnection:
     async def test_list_materialized_views(self):
         db = lancedb.connect_namespace_async("dir", {"root": self.temp_dir})
         await db.create_table("source", [{"id": 1}])
-        await db.create_materialized_view("view", "source", with_no_data=True)
+        # Model a stored view independently of the local creation feature.
+        schema = pa.schema(
+            [("id", pa.int64())],
+            metadata={
+                DEFINITION_META_KEY: json.dumps(
+                    {"format": DEFINITION_FORMAT, "query": "SELECT id FROM source"}
+                ).encode()
+            },
+        )
+        await db.create_table("view", schema=schema)
 
         names = db.list_materialized_views(page_limit=1)
         assert isinstance(names, AsyncListing)

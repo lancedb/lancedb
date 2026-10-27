@@ -6,10 +6,13 @@ import * as tmp from "tmp";
 import { Connection, connect } from "../lancedb";
 import {
   DEFINITION_META_KEY,
+  MaterializedView,
   definitionFromMetadata,
 } from "../lancedb/materialized_view";
+import { experimentalFunctionsEnabled } from "../lancedb/native";
 
 describe("materialized views", () => {
+  const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
   let tmpDir: tmp.DirResult;
   let db: Connection;
 
@@ -69,7 +72,7 @@ describe("materialized views", () => {
     );
   });
 
-  it("creates, refreshes and queries a view", async () => {
+  experimentalTest("creates, refreshes and queries a view", async () => {
     const view = await db.createMaterializedView("adults", "people", {
       select: ["name", ["shout", "upper(name)"]],
       where: "age >= 18",
@@ -81,7 +84,7 @@ describe("materialized views", () => {
     expect(rows.map((r) => r.shout).sort()).toEqual(["ADA", "GRACE"]);
   });
 
-  it("round-trips the definition", async () => {
+  experimentalTest("round-trips the definition", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
@@ -92,7 +95,7 @@ describe("materialized views", () => {
     );
   });
 
-  it.each([false, true])(
+  experimentalTest.each([false, true])(
     "fully refreshes after an append (full=%s)",
     async (full) => {
       const view = await db.createMaterializedView("copy", "people", {
@@ -112,7 +115,7 @@ describe("materialized views", () => {
   );
 
   it("forwards a forced refresh and preserves absent remote metrics", async () => {
-    const view = await db.createMaterializedView("copy", "people");
+    const view = new MaterializedView(await db.openTable("people"));
     const remoteResult = { version: 42 };
     const refresh = jest
       .spyOn(view.table(), "refreshMaterializedView")
@@ -121,7 +124,7 @@ describe("materialized views", () => {
     expect(refresh).toHaveBeenCalledWith(undefined, true);
   });
 
-  it("lists views and rejects non-views", async () => {
+  experimentalTest("lists views and rejects non-views", async () => {
     await db.createMaterializedView("adults", "people", {
       where: "age >= 18",
     });
@@ -137,17 +140,20 @@ describe("materialized views", () => {
     expect(await collect(db.listMaterializedViews())).toEqual([]);
   });
 
-  it("returns a job when dropping a view asynchronously", async () => {
-    await db.createMaterializedView("adults", "people");
+  experimentalTest(
+    "returns a job when dropping a view asynchronously",
+    async () => {
+      await db.createMaterializedView("adults", "people");
 
-    const job = await db.dropMaterializedViewAsync("adults");
-    expect(job.id).toBeNull();
-    expect(job.jobType).toBeNull();
-    await job.wait();
-    expect(await collect(db.listMaterializedViews())).toEqual([]);
-  });
+      const job = await db.dropMaterializedViewAsync("adults");
+      expect(job.id).toBeNull();
+      expect(job.jobType).toBeNull();
+      await job.wait();
+      expect(await collect(db.listMaterializedViews())).toEqual([]);
+    },
+  );
 
-  it("rejects an invalid expression at create time", async () => {
+  experimentalTest("rejects an invalid expression at create time", async () => {
     await expect(
       db.createMaterializedView("bad", "people", {
         select: [["x", "missing + 1"]],
@@ -162,16 +168,21 @@ describe("materialized views", () => {
       ).rejects.toThrow("non-negative integer");
     }
     expect(await collect(db.listMaterializedViews())).toEqual([]);
-
-    const view = await db.createMaterializedView("copy", "people");
-    for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
-      await expect(view.refresh({ sourceVersion })).rejects.toThrow(
-        "non-negative integer",
-      );
-    }
   });
 
-  it("quotes bare select names", async () => {
+  experimentalTest(
+    "rejects invalid source versions before refreshing",
+    async () => {
+      const view = await db.createMaterializedView("copy", "people");
+      for (const sourceVersion of [-1, 1.5, Infinity, NaN]) {
+        await expect(view.refresh({ sourceVersion })).rejects.toThrow(
+          "non-negative integer",
+        );
+      }
+    },
+  );
+
+  experimentalTest("quotes bare select names", async () => {
     await db.createTable("odd_names", [{ "order item": "widget" }]);
     const view = await db.createMaterializedView("quoted", "odd_names", {
       select: ["order item"],
@@ -181,11 +192,14 @@ describe("materialized views", () => {
     expect(Number(result.rowsWritten)).toBe(1);
   });
 
-  it("does not require stable row ids on the source", async () => {
-    await db.createTable("plain", [{ x: 1 }]);
-    const view = await db.createMaterializedView("v", "plain");
-    expect(await view.table().countRows()).toBe(1);
-  });
+  experimentalTest(
+    "does not require stable row ids on the source",
+    async () => {
+      await db.createTable("plain", [{ x: 1 }]);
+      const view = await db.createMaterializedView("v", "plain");
+      expect(await view.table().countRows()).toBe(1);
+    },
+  );
 });
 
 async function collect<T>(items: AsyncIterable<T>): Promise<T[]> {

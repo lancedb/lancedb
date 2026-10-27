@@ -20,6 +20,17 @@ pip install lancedb
 The following methods describe the synchronous API client. There
 is also an [asynchronous API client](#connections-asynchronous).
 
+Connections to `db://` databases reject local-only options with
+`NotImplementedError`. These include `session` and `manifest_enabled=True` on
+connect, per-table storage and write options on create, and `index_cache_size`,
+`storage_options`, or `location` on open (where the method accepts them).
+Omit these options to use server-managed storage and caching. Connection-level
+`storage_options` supported by an Enterprise deployment remain available.
+
+The synchronous remote `create_table` uses the same positional order as the
+local API: `name, data, schema, mode, exist_ok, on_bad_vectors, fill_value,
+embedding_functions`. Prefer keyword arguments for optional parameters.
+
 ## Connections (Synchronous)
 
 ::: lancedb.connect
@@ -297,7 +308,28 @@ listing a storage directory.
 
 ## Tables (Synchronous)
 
+Local and remote tables use the same arguments for index creation, deletion,
+index statistics, and search. For example, `table.delete(where="id = 1")`,
+`table.create_index("cosine", 2)` (the deprecated vector API), and
+`table.search([1.0, 1.0], fast_search=True)` work with either backend.
+`fast_search=True` excludes rows that have not been indexed.
+
+`create_scalar_index` defaults to `replace=True` on both backends. Both scalar
+and full-text index creation accept `wait_timeout`. Remote maintenance methods
+accept the local options: cleanup and compaction warn that they are no-ops,
+while `optimize` reports an unsupported operation. Removed Tantivy options
+produce the same explanatory errors on both backends.
+
+The old remote keyword names `predicate` for `delete`, `index_name` for
+`drop_index`, `index_uuid` for `index_stats`, and `column` for `create_fts_index`
+remain available with deprecation warnings. Use `where`, `name`, `index_name`,
+and `field_names`, respectively. For positional calls, use the argument order
+documented by `Table` below; specify index options by keyword when migrating
+code that used the former remote-only argument order.
+
 ::: lancedb.table.Table
+
+::: lancedb.table.CompactionOptions
 
 ::: lancedb.table.FragmentStatistics
 
@@ -397,6 +429,13 @@ scoped to each invocation and support `read`, `readinto`, `seek`, `tell`,
 
 ## Materialized Views (Synchronous)
 
+In the 0.41 SDK release, local materialized-view creation and refresh require a
+source build with the `experimental-functions` Cargo feature. Published Python
+packages leave it disabled. Opening, reading, listing and dropping existing views
+remain available, as do remote Cloud and Enterprise operations. The same feature
+requirement applies to local SQL computed-column declaration and refresh; ordinary
+eager `add_columns` transforms remain available.
+
 On Cloud and Enterprise, creation accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`:
 
@@ -411,7 +450,8 @@ view = db.create_materialized_view(
 
 Omit `auto_refresh_interval_seconds` to let the server determine when to refresh.
 These options also apply to asynchronous creation and creation jobs. Embedded
-connections support manual refresh and reject automatic scheduling requests.
+connections built with `experimental-functions` support manual refresh and reject
+automatic scheduling requests.
 
 ::: lancedb.materialized_view.MaterializedView
 

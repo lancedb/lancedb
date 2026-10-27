@@ -5,6 +5,7 @@ import contextlib
 from datetime import timedelta
 import http.server
 import io
+import inspect
 import json
 import multiprocessing as mp
 import pickle
@@ -765,6 +766,15 @@ def test_create_table_embedding_functions(with_schema):
         ]
 
 
+def test_create_table_positional_parameters_match_base_contract():
+    from lancedb.db import DBConnection
+    from lancedb.remote.db import RemoteDBConnection
+
+    expected = list(inspect.signature(DBConnection.create_table).parameters)[:9]
+    actual = list(inspect.signature(RemoteDBConnection.create_table).parameters)[:9]
+    assert actual == expected
+
+
 def test_create_table_exist_ok():
     def handler(request):
         if request.path == "/v1/table/test/create/?mode=exist_ok":
@@ -1145,8 +1155,9 @@ def test_table_create_indices():
         # Test create_fts_index with custom name (legacy method)
         with pytest.warns(DeprecationWarning, match="create_fts_index"):
             table.create_fts_index(
-                "text",
+                field_names="text",
                 wait_timeout=timedelta(seconds=2),
+                tokenizer_name="en_stem",
                 block_size=256,
                 custom_stop_words=["cloud"],
                 name="custom_fts_idx",
@@ -1155,6 +1166,8 @@ def test_table_create_indices():
         # Test create_index with custom name (legacy form: vector_column_name kwarg)
         with pytest.warns(DeprecationWarning, match="create_index"):
             table.create_index(
+                "cosine",
+                2,
                 vector_column_name="vector",
                 wait_timeout=timedelta(seconds=10),
                 name="custom_vector_idx",
@@ -1167,7 +1180,8 @@ def test_table_create_indices():
         scalar_req = received_requests[0]
         assert "name" in scalar_req
         assert scalar_req["name"] == "custom_scalar_idx"
-        assert scalar_req["replace"] is False
+        # The wire protocol omits replace=True (the server default).
+        assert "replace" not in scalar_req
 
         # Check FTS index request has custom name
         fts_req = received_requests[1]
@@ -1176,18 +1190,39 @@ def test_table_create_indices():
         assert fts_req["replace"] is False
         assert fts_req["block_size"] == 256
         assert fts_req["custom_stop_words"] == ["cloud"]
+        assert fts_req["language"] == "English"
+        assert fts_req["stem"] is True
 
         # Check vector index request has custom name
         vector_req = received_requests[2]
         assert "name" in vector_req
         assert vector_req["name"] == "custom_vector_idx"
         assert "replace" not in vector_req
+        assert vector_req["metric_type"] == "cosine"
+        assert vector_req["num_partitions"] == 2
+
+        with pytest.warns(DeprecationWarning, match="create_index"):
+            table.create_index(
+                index_type="IVF_HNSW_SQ",
+                num_partitions=1,
+                m=10,
+                ef_construction=50,
+                max_iterations=12,
+                sample_rate=64,
+            )
+        tuned_req = received_requests[-1]
+        assert tuned_req["index_type"] == "IVF_HNSW_SQ"
+        assert tuned_req["num_partitions"] == 1
+        assert tuned_req["m"] == 10
+        assert tuned_req["ef_construction"] == 50
+        assert tuned_req["max_iterations"] == 12
+        assert tuned_req["sample_rate"] == 64
 
         table.wait_for_index(["custom_scalar_idx"], timedelta(seconds=2))
         table.wait_for_index(
             ["custom_fts_idx", "custom_vector_idx"], timedelta(seconds=2)
         )
-        table.drop_index("custom_vector_idx")
+        table.drop_index(name="custom_vector_idx")
         table.drop_index("custom_scalar_idx")
         table.drop_index("custom_fts_idx")
 
@@ -1583,7 +1618,10 @@ def test_remote_json_fts_config(server_version):
     assert request["block_size"] == 256
 
 
-def test_remote_create_index_new_api(caplog):
+@pytest.mark.parametrize(
+    "rq_kwargs", [{}, {"num_bits": None}, {"num_bits": 1}, {"num_bits": 4}]
+)
+def test_remote_create_index_new_api(caplog, rq_kwargs):
     received_requests = []
 
     def handler(request):
@@ -1656,7 +1694,7 @@ def test_remote_create_index_new_api(caplog):
             table.create_index("category", config=BTree())
             table.create_index("text", config=FTS(block_size=256))
             # IvfRq via new API
-            table.create_index("vector", config=IvfRq(distance_type="l2"))
+            table.create_index("vector", config=IvfRq(distance_type="l2", **rq_kwargs))
             table.create_index(
                 "vector", config=IvfPq(distance_type="l2"), replace=False
             )
@@ -1681,6 +1719,10 @@ def test_remote_create_index_new_api(caplog):
             "vector",
         ]
         assert received_requests[2]["block_size"] == 256
+        if rq_kwargs.get("num_bits") is None:
+            assert "num_bits" not in received_requests[3]
+        else:
+            assert received_requests[3]["num_bits"] == rq_kwargs["num_bits"]
         assert received_requests[4]["replace"] is False
         assert received_requests[5]["replace"] is False
         assert "replace is not supported" not in caplog.text
@@ -1781,12 +1823,12 @@ def test_remote_unsupported_legacy_hnsw_pq():
                 )
 
 
-def test_remote_python_only_messages(caplog):
+def test_remote_python_only_messages():
     with mock_lancedb_connection(remote_unsupported_handler) as db:
-        with caplog.at_level("INFO"):
-            table = db.open_table("test", storage_options={}, index_cache_size=1)
-        assert "storage_options is ignored for remote tables" in caplog.text
-        assert "index_cache_size is ignored for remote tables" in caplog.text
+        for options in [{"storage_options": {}}, {"index_cache_size": 1}]:
+            with pytest.raises(NotImplementedError, match=next(iter(options))):
+                db.open_table("test", **options)
+        table = db.open_table("test")
         for method in ["to_arrow", "to_pandas", "to_polars"]:
             with pytest.raises(NotImplementedError) as error:
                 getattr(table, method)()

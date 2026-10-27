@@ -591,8 +591,8 @@ class PhraseQuery(FullTextQuery):
     ----------
     query : str
         The query string to match against.
-    column : str
-        The name of the column to match against.
+    column : str, optional
+        The column to match against. None leaves column selection to query planning.
     slop : int, default 0
         The maximum number of intervening positions permitted in the phrase.
     document_granularity : DocumentGranularity, optional
@@ -602,7 +602,7 @@ class PhraseQuery(FullTextQuery):
     """
 
     query: str
-    column: str
+    column: Optional[str] = None
     slop: int = pydantic.Field(0, kw_only=True)
     document_granularity: Optional[DocumentGranularity] = pydantic.Field(
         None, kw_only=True
@@ -3062,7 +3062,10 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
         if columns:
             self._vector_query.select(columns)
             self._fts_query.select(columns)
-        if self._where:
+        # An Expr has no truth value (it raises on bool()), so test for it
+        # explicitly instead of relying on truthiness; an empty SQL string is
+        # still skipped.
+        if isinstance(self._where, Expr) or self._where:
             self._vector_query.where(self._where, not self._postfilter)
             self._fts_query.where(self._where, not self._postfilter)
         # WAL-PK-FUSION: without the fallback, `if self._with_row_id:`.
