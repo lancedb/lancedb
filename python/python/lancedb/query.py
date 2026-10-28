@@ -2671,7 +2671,8 @@ class LanceHybridQueryBuilder(LanceQueryBuilder):
             )
             if not with_row_ids and "_rowid" in empty.column_names:
                 empty = empty.drop(["_rowid"])
-            return empty
+            # Match the columns a non-empty result has for this reranker
+            return reranker._keep_relevance_score(empty)
 
         original_distances = None
         original_scores = None
