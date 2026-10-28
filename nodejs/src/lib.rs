@@ -14,6 +14,7 @@ mod blob;
 mod catalog;
 mod connection;
 mod error;
+mod expr;
 mod header;
 mod index;
 mod iterator;
