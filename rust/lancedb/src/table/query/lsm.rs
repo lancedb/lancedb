@@ -121,6 +121,7 @@ pub(super) async fn create_lsm_plan(
         plain_plan(
             &ds_ref,
             &query,
+            &details.dir_id,
             pk_columns.clone(),
             snapshots,
             in_memory,
@@ -304,8 +305,13 @@ async fn build_read_context(
 
     let mut snapshots: Vec<ShardSnapshot> = Vec::new();
     for shard_id in shard_ids {
-        let manifest_store =
-            ShardManifestStore::new(store.clone(), &base_path, shard_id, scan_batch_size);
+        let manifest_store = ShardManifestStore::new(
+            store.clone(),
+            &base_path,
+            &details.dir_id,
+            shard_id,
+            scan_batch_size,
+        );
         if let Some(manifest) = manifest_store.latest().await? {
             snapshots.push(snapshot_from_manifest(shard_id, &manifest, &exclude));
         }
@@ -385,11 +391,13 @@ fn as_i64(value: Option<usize>) -> Option<i64> {
 fn base_scanner(
     dataset: &Dataset,
     query: &VectorQueryRequest,
+    dir_id: &str,
     pk_columns: Vec<String>,
     snapshots: Vec<ShardSnapshot>,
     in_memory: HashMap<Uuid, InMemoryMemTables>,
 ) -> Result<LsmScanner> {
-    let mut scanner = LsmScanner::new(Arc::new(dataset.clone()), snapshots, pk_columns);
+    let mut scanner = LsmScanner::new(Arc::new(dataset.clone()), snapshots, pk_columns)
+        .with_mem_wal_dir_id(dir_id);
     for (shard_id, memtables) in in_memory {
         scanner = scanner.with_in_memory_memtables(shard_id, memtables);
     }
@@ -436,13 +444,14 @@ fn enrich_filter_error(error: DataFusionError, schema: &ArrowSchema, context: &s
 async fn plain_plan(
     dataset: &Dataset,
     query: &VectorQueryRequest,
+    dir_id: &str,
     pk_columns: Vec<String>,
     snapshots: Vec<ShardSnapshot>,
     in_memory: HashMap<Uuid, InMemoryMemTables>,
     limit: Option<usize>,
     offset: Option<usize>,
 ) -> Result<Arc<dyn ExecutionPlan>> {
-    let scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
+    let scanner = base_scanner(dataset, query, dir_id, pk_columns, snapshots, in_memory)?
         .limit(as_i64(limit), as_i64(offset))?;
     Ok(scanner.create_plan().await?)
 }
@@ -491,10 +500,17 @@ async fn fts_plan(
         });
     }
 
-    let scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
-        .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
-        .full_text_search(fts)?
-        .limit(as_i64(limit), as_i64(offset))?;
+    let scanner = base_scanner(
+        dataset,
+        query,
+        &details.dir_id,
+        pk_columns,
+        snapshots,
+        in_memory,
+    )?
+    .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
+    .full_text_search(fts)?
+    .limit(as_i64(limit), as_i64(offset))?;
     Ok(scanner.create_plan().await?)
 }
 
@@ -740,10 +756,17 @@ async fn vector_plan(
     // Guard `k` to at least 1 so a degenerate `limit(0)` is trimmed by `limit`
     // below rather than rejected by `nearest`.
     let k = limit.unwrap_or(DEFAULT_TOP_K).max(1);
-    let mut scanner = base_scanner(dataset, query, pk_columns, snapshots, in_memory)?
-        .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
-        .nearest(&column, query_vector.as_ref(), k)?
-        .distance_metric(distance_type.into());
+    let mut scanner = base_scanner(
+        dataset,
+        query,
+        &details.dir_id,
+        pk_columns,
+        snapshots,
+        in_memory,
+    )?
+    .with_overfetch_factor(LSM_OVERFETCH_FACTOR)
+    .nearest(&column, query_vector.as_ref(), k)?
+    .distance_metric(distance_type.into());
     if let Some(nprobes) = query.nprobes {
         scanner = if query.maximum_nprobes == Some(0) {
             scanner.minimum_nprobes(nprobes)
