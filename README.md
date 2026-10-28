@@ -46,7 +46,7 @@ LanceDB is a central location where developers can build, train and analyze thei
 
 ### **Products**:
 - **LanceDB Embedded (open source)**: 100% open source, runs in your application's process; your data can live on local disk or in object storage. No vendor lock-in.
-- **LanceDB Enterprise**: Production-scale vector search with no servers to manage. Complete data sovereignty and security.
+- **LanceDB Enterprise**: Production-scale distributed search, indexing, and maintenance. Plus, complete data sovereignty and security.
 
 ### **Ecosystem**:
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.
