@@ -4,6 +4,7 @@
 //! This module contains adapters to allow LanceDB tables to be used as DataFusion table providers.
 
 mod blob_coerce;
+mod blob_nulls;
 pub mod cast;
 pub mod insert;
 pub mod reject_nan;
@@ -25,10 +26,14 @@ use datafusion_physical_plan::{
 };
 use futures::{TryFutureExt, TryStreamExt};
 use lance::dataset::{WriteMode, WriteParams};
+use lance_core::{
+    ROW_ADDR, ROW_ADDR_FIELD, ROW_ID, ROW_ID_FIELD,
+    datatypes::{Projection, Schema as LanceSchema},
+};
 
 use super::{AnyQuery, BaseTable};
 use crate::{
-    Result,
+    Error, Result,
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
 };
 use arrow_schema::{DataType, Field};
@@ -161,38 +166,156 @@ impl ExecutionPlan for MetadataEraserExec {
     }
 }
 
+/// The blob schema exposed by a [`BaseTableAdapter`].
+///
+/// DataFusion uses one provider schema for both scans and INSERT coercion.
+/// Blob descriptors and blob write inputs have different types, so applications
+/// that need both can register separate read and write adapters for one table.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum BlobSchema {
+    /// Expose Blob v2 descriptors (`kind`, `position`, `size`, `blob_id`, `blob_uri`)
+    /// and legacy v1 descriptors (`position`, `size`). Scans support all blob fields;
+    /// SQL INSERT into Blob v2 tables is unsupported.
+    #[default]
+    Read,
+    /// Expose Blob v2 write inputs (`data`, `uri`, `position`, `size`) and legacy
+    /// v1 `LargeBinary` inputs for SQL INSERT. Scans must match the projected
+    /// provider schema exactly; use [`Self::Read`] to scan blob descriptors or
+    /// scalar siblings whose projected parent contains a blob.
+    Write,
+}
+
+/// A DataFusion provider for a LanceDB table.
+///
+/// Defaults to [`BlobSchema::Read`], matching the descriptor schema produced by
+/// scans without fetching blob bytes. Use [`Self::with_blob_schema`] to enable
+/// SQL INSERT into blob columns. Legacy v1 blobs expose descriptors in read mode
+/// and `LargeBinary` inputs in write mode; write-mode descriptor scans fail with
+/// a schema mismatch. Tables without blob columns behave the same in both modes.
 #[derive(Debug)]
 pub struct BaseTableAdapter {
     table: Arc<dyn BaseTable>,
+    // Only the read schema includes opted-in system/FTS columns.
     schema: Arc<ArrowSchema>,
+    write_schema: Arc<ArrowSchema>,
+    blob_schema: BlobSchema,
     fts_query: Option<FullTextSearchQuery>,
-    use_lsm: Option<bool>,
+    use_rte: Option<bool>,
 }
 
 impl BaseTableAdapter {
+    /// Create an adapter whose schema matches default scans, including blob descriptors.
+    ///
+    /// Deriving the descriptor schema does not execute a query or read blob payloads.
     pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
-        let schema = table
-            .schema()
-            .await?
-            .as_ref()
-            .clone()
-            .with_metadata(HashMap::default());
+        let write_schema = table.schema().await?;
+        let schema = Projection::full(Arc::new(LanceSchema::try_from(write_schema.as_ref())?))
+            .to_arrow_schema();
+        let schema = blob_nulls::read_schema(&schema).with_metadata(HashMap::default());
+        let write_schema = Arc::new(
+            write_schema
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::default()),
+        );
 
         Ok(Self {
             table,
             schema: Arc::new(schema),
+            write_schema,
+            blob_schema: BlobSchema::Read,
             fts_query: None,
-            use_lsm: None,
+            use_rte: None,
         })
     }
 
-    /// Set the MemWAL read routing of every scan; see [`QueryRequest::use_lsm`].
-    pub fn with_use_lsm(mut self, use_lsm: Option<bool>) -> Self {
-        self.use_lsm = use_lsm;
+    /// Choose the schema used by DataFusion for blob columns.
+    ///
+    /// [`BlobSchema::Write`] enables INSERT with blob write structs, NULLs, and
+    /// omitted nullable blobs. Scans requiring blobs fail with
+    /// "Blob v2 scans require BlobSchema::Read" before execution. Legacy v1 blobs
+    /// expose `LargeBinary` write inputs, so their descriptor scans fail with a
+    /// schema mismatch. Write-mode scans are accepted only when the actual schema
+    /// exactly matches the projected provider schema, including metadata and
+    /// nullability. No blob payloads are fetched to emulate reads.
+    ///
+    /// Scalar projections that exclude blob fields, `COUNT(*)`, and scalar filters
+    /// remain supported. DataFusion projects whole top-level fields, so selecting
+    /// `extra.note` also requests its parent `extra`. If that struct contains a blob,
+    /// even this scalar projection requires [`BlobSchema::Read`], as do computed
+    /// scalar and window queries that project the same parent.
+    ///
+    /// Register a separate read adapter for blob descriptor queries and scalar
+    /// queries rejected in write mode. A self-insert whose SELECT accesses blobs
+    /// also fails before writing any rows.
+    /// Other adapter builders preserve the selected mode. Generated `_rowid`,
+    /// `_rowaddr`, and `_score` columns are exposed only in read mode.
+    ///
+    /// ```
+    /// use lancedb::table::datafusion::{BaseTableAdapter, BlobSchema};
+    ///
+    /// # async fn adapter(table: &lancedb::Table) -> lancedb::Result<BaseTableAdapter> {
+    /// Ok(BaseTableAdapter::try_new(table.base_table().clone())
+    ///     .await?
+    ///     .with_blob_schema(BlobSchema::Write))
+    /// # }
+    /// ```
+    pub fn with_blob_schema(mut self, blob_schema: BlobSchema) -> Self {
+        self.blob_schema = blob_schema;
+        self
+    }
+
+    /// Expose the requested Lance system columns to DataFusion.
+    ///
+    /// Supports [`ROW_ID`] (`_rowid`) and [`ROW_ADDR`] (`_rowaddr`), both nullable
+    /// `UInt64` fields. Columns are appended in the requested order, skipping any
+    /// already exposed by this adapter. Other names return [`Error::InvalidInput`].
+    ///
+    /// System columns are hidden by default so existing `SELECT *` queries keep
+    /// their data-only schema. After opting in, `SELECT *` includes these columns
+    /// in [`BlobSchema::Read`] mode. The write schema remains data-only for INSERT.
+    ///
+    /// ```
+    /// use lance_core::{ROW_ADDR, ROW_ID};
+    /// use lancedb::table::datafusion::BaseTableAdapter;
+    ///
+    /// # async fn adapter(table: &lancedb::Table) -> lancedb::Result<BaseTableAdapter> {
+    /// BaseTableAdapter::try_new(table.base_table().clone())
+    ///     .await?
+    ///     .with_system_columns(&[ROW_ID, ROW_ADDR])
+    /// # }
+    /// ```
+    pub fn with_system_columns(mut self, columns: &[impl AsRef<str>]) -> Result<Self> {
+        let mut fields = self.schema.fields().to_vec();
+        for column in columns {
+            let column = column.as_ref();
+            let field = match column {
+                ROW_ID => &*ROW_ID_FIELD,
+                ROW_ADDR => &*ROW_ADDR_FIELD,
+                _ => {
+                    return Err(Error::InvalidInput {
+                        message: format!("Unsupported system column: {column}"),
+                    });
+                }
+            };
+            if !fields.iter().any(|field| field.name() == column) {
+                fields.push(Arc::new(field.clone()));
+            }
+        }
+        self.schema = Arc::new(ArrowSchema::new(fields));
+        Ok(self)
+    }
+
+    /// Set the RTE read routing of every scan; see [`QueryRequest::use_rte`].
+    pub fn with_use_rte(mut self, use_rte: Option<bool>) -> Self {
+        self.use_rte = use_rte;
         self
     }
 
     /// Create a new adapter with an FTS query applied.
+    ///
+    /// The generated `_score` column is exposed only in [`BlobSchema::Read`] mode.
     pub fn with_fts_query(&self, fts_query: FullTextSearchQuery) -> Self {
         // Add _score column to the schema
         let score_field = Field::new("_score", DataType::Float32, true);
@@ -203,16 +326,28 @@ impl BaseTableAdapter {
         Self {
             table: self.table.clone(),
             schema,
+            write_schema: self.write_schema.clone(),
+            blob_schema: self.blob_schema,
             fts_query: Some(fts_query),
-            use_lsm: self.use_lsm,
+            use_rte: self.use_rte,
         }
     }
+}
+
+fn blob_scan_error() -> DataFusionError {
+    DataFusionError::Plan(
+        "Blob v2 scans require BlobSchema::Read; use a separate read adapter for blob fields"
+            .into(),
+    )
 }
 
 #[async_trait]
 impl TableProvider for BaseTableAdapter {
     fn schema(&self) -> Arc<ArrowSchema> {
-        self.schema.clone()
+        match self.blob_schema {
+            BlobSchema::Read => self.schema.clone(),
+            BlobSchema::Write => self.write_schema.clone(),
+        }
     }
 
     fn table_type(&self) -> TableType {
@@ -226,22 +361,42 @@ impl TableProvider for BaseTableAdapter {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        // For FTS queries, disable auto-projection of _score to match DataFusion expectations
-        let disable_scoring = self.fts_query.is_some() && projection.is_some();
+        // Check directly supplied filters too, not just optimizer pushdown calls.
+        if self.blob_schema == BlobSchema::Write {
+            for filter in filters {
+                if blob_nulls::references_descriptor(filter, &self.schema)? {
+                    return Err(blob_scan_error());
+                }
+            }
+        }
+        // The writer never advertises _score. For readers, an explicit projection
+        // controls whether it is included, rather than FTS auto-projection.
+        let disable_scoring = self.fts_query.is_some()
+            && (projection.is_some() || self.blob_schema == BlobSchema::Write);
 
         let mut query = QueryRequest {
             full_text_search: self.fts_query.clone(),
             disable_scoring_autoprojection: disable_scoring,
-            use_lsm: self.use_lsm,
+            use_rte: self.use_rte,
             ..Default::default()
         };
 
+        let provider_schema = self.schema();
         if let Some(projection) = projection {
             let field_names = projection
                 .iter()
-                .map(|i| self.schema.field(*i).name().clone())
+                .map(|i| provider_schema.field(*i).name().clone())
                 .collect();
             query.select = Select::Columns(field_names);
+        } else {
+            // Select::All excludes system columns, which may be part of our schema.
+            query.select = Select::Columns(
+                provider_schema
+                    .fields()
+                    .iter()
+                    .map(|field| field.name().clone())
+                    .collect(),
+            );
         }
         if !filters.is_empty() {
             let first = filters.first().unwrap().clone();
@@ -267,14 +422,57 @@ impl TableProvider for BaseTableAdapter {
             .create_plan(&AnyQuery::Query(query), options)
             .map_err(|err| DataFusionError::External(err.into()))
             .await?;
-        Ok(Arc::new(MetadataEraserExec::new(plan)))
+        let plan = blob_nulls::mask_plan(plan)?;
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(MetadataEraserExec::new(plan));
+        if self.blob_schema == BlobSchema::Write {
+            let schema = match projection {
+                Some(projection) => Arc::new(provider_schema.project(projection)?),
+                None => provider_schema,
+            };
+            // Compare the full schemas, including field metadata and nullability.
+            // A scan must satisfy its advertised contract before it is returned
+            // to DataFusion; later projections cannot repair a mismatched scan.
+            if plan.schema() != schema {
+                if plan
+                    .schema()
+                    .fields()
+                    .iter()
+                    .any(|field| blob_nulls::has_descriptor(field))
+                {
+                    return Err(blob_scan_error());
+                }
+                return Err(arrow_schema::ArrowError::SchemaError(format!(
+                    "Scan schema mismatch: expected {schema:?}, got {:?}",
+                    plan.schema()
+                ))
+                .into());
+            }
+        }
+        Ok(plan)
     }
 
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
     ) -> DataFusionResult<Vec<TableProviderFilterPushDown>> {
-        Ok(vec![TableProviderFilterPushDown::Exact; filters.len()])
+        // Lance evaluates pushed filters before the descriptor validity mask.
+        // Keep predicates touching blobs above that mask, including IS NULL:
+        // the stored descriptor's children are not independently nullable.
+        filters
+            .iter()
+            .map(|filter| {
+                Ok(
+                    if blob_nulls::references_descriptor(filter, &self.schema)? {
+                        if self.blob_schema == BlobSchema::Write {
+                            return Err(blob_scan_error());
+                        }
+                        TableProviderFilterPushDown::Unsupported
+                    } else {
+                        TableProviderFilterPushDown::Exact
+                    },
+                )
+            })
+            .collect()
     }
 
     fn statistics(&self) -> Option<Statistics> {
@@ -288,6 +486,17 @@ impl TableProvider for BaseTableAdapter {
         input: Arc<dyn ExecutionPlan>,
         insert_op: InsertOp,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+        if self.blob_schema == BlobSchema::Read
+            && self
+                .schema
+                .fields()
+                .iter()
+                .any(|field| blob_nulls::has_descriptor(field))
+        {
+            return Err(DataFusionError::NotImplemented(
+                "SQL INSERT into Blob v2 tables requires BlobSchema::Write".into(),
+            ));
+        }
         let mode = match insert_op {
             InsertOp::Append => WriteMode::Append,
             InsertOp::Overwrite => WriteMode::Overwrite,
@@ -319,6 +528,7 @@ pub mod tests {
         BinaryArray, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, UInt32Array,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use arrow_select::concat::concat_batches;
     use datafusion::{
         datasource::provider_as_source,
         prelude::{SessionConfig, SessionContext},
@@ -328,11 +538,13 @@ pub mod tests {
     use datafusion_execution::SendableRecordBatchStream;
     use datafusion_expr::{LogicalPlan, LogicalPlanBuilder, col, lit};
     use futures::{StreamExt, TryStreamExt};
+    use lance_core::{ROW_ADDR, ROW_ADDR_FIELD, ROW_ID, ROW_ID_FIELD};
     use tempfile::tempdir;
 
     use crate::{
         connect,
         index::{Index, scalar::BTreeIndexBuilder},
+        query::{ExecutableQuery, Query, QueryBase, Select},
         table::datafusion::BaseTableAdapter,
     };
 
@@ -505,6 +717,518 @@ pub mod tests {
                 expected.lines().count(),
                 "\nlines_checked:\n{lines_checked}\nexpected:\n{}",
                 expected.lines().count()
+            );
+        }
+    }
+
+    fn inline_blob_input(values: Vec<Option<&[u8]>>) -> arrow_array::ArrayRef {
+        use arrow_array::{Array, LargeBinaryArray, StructArray, UInt64Array};
+
+        let data = LargeBinaryArray::from(values);
+        let len = data.len();
+        let nulls = data.nulls().cloned();
+        let DataType::Struct(fields) = crate::blob("payload", true).data_type().clone() else {
+            unreachable!()
+        };
+        Arc::new(StructArray::new(
+            fields,
+            vec![
+                Arc::new(data),
+                Arc::new(StringArray::new_null(len)),
+                Arc::new(UInt64Array::new_null(len)),
+                Arc::new(UInt64Array::new_null(len)),
+            ],
+            nulls,
+        ))
+    }
+
+    #[tokio::test]
+    async fn test_blob_schema_builders_preserve_modes_and_system_columns() {
+        use super::BlobSchema;
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let table = db
+            .create_empty_table(
+                "docs",
+                Arc::new(Schema::new(vec![
+                    Field::new("id", DataType::Int64, false),
+                    crate::blob("payload", true),
+                ])),
+            )
+            .execute()
+            .await
+            .unwrap();
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_blob_schema(BlobSchema::Write)
+            .with_system_columns(&[ROW_ID])
+            .unwrap()
+            .with_use_rte(Some(false))
+            .with_fts_query(lance_index::scalar::FullTextSearchQuery::new(
+                "hello".into(),
+            ))
+            .with_system_columns(&[ROW_ADDR])
+            .unwrap();
+        assert_eq!(adapter.blob_schema, BlobSchema::Write);
+        assert_eq!(adapter.use_rte, Some(false));
+        assert!(adapter.fts_query.is_some());
+        let names = adapter
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>()
+            .join(",");
+        assert_eq!(names, "id,payload");
+        let DataType::Struct(fields) = adapter.schema().field(1).data_type().clone() else {
+            unreachable!()
+        };
+        assert!(fields.find("data").is_some());
+        let adapter = adapter.with_blob_schema(BlobSchema::Read);
+        assert_eq!(
+            adapter
+                .schema()
+                .fields()
+                .iter()
+                .map(|field| field.name().as_str())
+                .collect::<Vec<_>>(),
+            ["id", "payload", "_rowid", "_score", "_rowaddr"]
+        );
+        let DataType::Struct(fields) = adapter.schema().field(1).data_type().clone() else {
+            unreachable!()
+        };
+        assert!(fields.find("kind").is_some());
+        assert_eq!(adapter.schema().fields().len(), 5);
+    }
+
+    #[tokio::test]
+    async fn test_sql_blob_descriptor_nulls() {
+        use arrow_array::{UInt8Array, UInt64Array};
+        use arrow_select::concat::concat_batches;
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let blobs = inline_blob_input(vec![Some(b"hello"), Some(b""), None]);
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                crate::blob("payload", true),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), blobs],
+        )
+        .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
+        let adapter = Arc::new(
+            BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap(),
+        );
+        let ctx = SessionContext::new_with_config(SessionConfig::new().with_batch_size(2));
+        ctx.register_table("docs", adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT id, payload.kind, payload.position, payload.size, payload.blob_id, payload.blob_uri FROM docs ORDER BY id")
+            .await.unwrap().collect().await.unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(batch.num_rows(), 3);
+        assert_eq!(
+            batch
+                .column(1)
+                .as_any()
+                .downcast_ref::<UInt8Array>()
+                .unwrap(),
+            &UInt8Array::from(vec![Some(0), Some(0), None])
+        );
+        assert_eq!(
+            batch
+                .column(3)
+                .as_any()
+                .downcast_ref::<UInt64Array>()
+                .unwrap(),
+            &UInt64Array::from(vec![Some(5), Some(0), None])
+        );
+        for column in &batch.columns()[1..] {
+            assert!(!column.is_null(0));
+            assert!(!column.is_null(1));
+            assert!(column.is_null(2));
+        }
+
+        for (predicate, expected) in [
+            ("payload.size = 0", vec![2]),
+            ("payload.kind = 0", vec![1, 2]),
+            ("payload.blob_uri = ''", vec![1, 2]),
+            ("payload.size IS NULL", vec![3]),
+            ("payload.size IS NOT NULL", vec![1, 2]),
+            ("payload.kind IS NULL", vec![3]),
+            ("payload.position IS NULL", vec![3]),
+            ("payload.blob_id IS NULL", vec![3]),
+            ("payload.blob_uri IS NULL", vec![3]),
+            ("payload IS NULL", vec![3]),
+            ("payload.size = 0 OR payload.size IS NULL", vec![2, 3]),
+            ("id > 1 AND payload.size = 0", vec![2]),
+        ] {
+            let batches = ctx
+                .sql(&format!(
+                    "SELECT id FROM docs WHERE {predicate} ORDER BY id"
+                ))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let ids: Vec<i32> = batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int32Array>()
+                        .unwrap()
+                        .values()
+                        .to_vec()
+                })
+                .collect();
+            assert_eq!(ids, expected, "{predicate}");
+        }
+
+        let batches = ctx
+            .sql("SELECT id FROM docs WHERE payload.size IS NULL LIMIT 1")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap()
+                .value(0),
+            3
+        );
+        let batches = ctx
+            .sql("SELECT COUNT(*), COUNT(payload.size) FROM docs")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            3
+        );
+        assert_eq!(
+            batches[0]
+                .column(1)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap()
+                .value(0),
+            2
+        );
+        assert!(ctx.sql("SELECT payload.data FROM docs").await.is_err());
+
+        // Whole-struct scans must agree with the declared schema too.
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
+
+        // Opted-in system columns must compose with the descriptor schema and mask.
+        let adapter = BaseTableAdapter::try_new(table.base_table().clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ID, ROW_ADDR])
+            .unwrap();
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
+        let expected = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        let expected = concat_batches(&adapter.schema(), &expected).unwrap();
+        ctx.register_table("docs_with_system_columns", Arc::new(adapter))
+            .unwrap();
+        let batches = ctx
+            .sql("SELECT _rowaddr, _rowid, id FROM docs_with_system_columns WHERE payload.size IS NULL")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let columns =
+            [ROW_ADDR, ROW_ID, "id"].map(|name| expected.schema().index_of(name).unwrap());
+        assert_eq!(actual, expected.project(&columns).unwrap().slice(2, 1));
+    }
+
+    #[tokio::test]
+    async fn test_nested_blob_sibling_filter_pushdown() {
+        use arrow_array::{Array, StructArray};
+
+        let tmp = tempdir().unwrap();
+        let db = connect(tmp.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let blobs = inline_blob_input(vec![Some(b"hello"), None, Some(b"")]);
+        let fields = vec![
+            Arc::new(Field::new("note", DataType::Utf8, false)),
+            Arc::new(crate::blob("clip", true)),
+            Arc::new(Field::new("note.with.dot", DataType::Utf8, false)),
+        ];
+        let extra = StructArray::new(
+            fields.into(),
+            vec![
+                Arc::new(StringArray::from(vec!["note 7", "note 8", "note 9"])),
+                blobs,
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+            None,
+        );
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int32, false),
+                Field::new("extra", extra.data_type().clone(), false),
+            ])),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3])), Arc::new(extra)],
+        )
+        .unwrap();
+        let table = db.create_table("docs", batch).execute().await.unwrap();
+        let adapter = Arc::new(
+            BaseTableAdapter::try_new(table.base_table().clone())
+                .await
+                .unwrap(),
+        );
+        let ctx = SessionContext::new();
+        ctx.register_table("docs", adapter).unwrap();
+
+        for (predicate, pushed, expected) in [
+            ("extra.note = 'note 7'", true, vec![1]),
+            ("extra.\"note.with.dot\" = 'b'", true, vec![2]),
+            ("extra.clip.size IS NULL", false, vec![2]),
+            ("get_field(extra, 'clip', 'size') = 0", false, vec![3]),
+            ("extra.clip IS NULL", false, vec![2]),
+            (
+                "extra.note = 'note 7' OR extra.clip.size IS NULL",
+                false,
+                vec![1, 2],
+            ),
+        ] {
+            let sql = format!("SELECT id FROM docs WHERE {predicate}");
+            let explain = ctx
+                .sql(&format!("EXPLAIN {sql}"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let explain = explain
+                .iter()
+                .flat_map(|batch| batch.column(1).as_string::<i32>().iter())
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert_eq!(explain.contains("FilterExec"), !pushed, "{explain}");
+            if pushed {
+                assert!(explain.contains("full_filters=["), "{explain}");
+            }
+            let batches = ctx
+                .sql(&format!("{sql} ORDER BY id"))
+                .await
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let ids = batches
+                .iter()
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_primitive::<arrow_array::types::Int32Type>()
+                        .values()
+                        .iter()
+                        .copied()
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected, "{predicate}");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_system_columns_opt_in() {
+        let fixture = TestFixture::new().await;
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", fixture.adapter.clone()).unwrap();
+
+        let batches = ctx
+            .sql("SELECT * FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches[0].num_columns(), 2);
+        assert_eq!(batches[0].schema(), fixture.adapter.schema());
+        for column in [ROW_ID, ROW_ADDR] {
+            assert!(ctx.sql(&format!("SELECT {column} FROM foo")).await.is_err());
+        }
+
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ADDR, ROW_ADDR])
+            .unwrap();
+        assert_eq!(adapter.schema().fields().len(), 3);
+        assert_eq!(adapter.schema().field(2), &*ROW_ADDR_FIELD);
+        assert!(adapter.schema().index_of(ROW_ID).is_err());
+
+        let adapter = adapter
+            .with_system_columns(&[ROW_ID.to_string(), ROW_ADDR.to_string()])
+            .unwrap();
+        assert_eq!(adapter.schema().fields().len(), 4);
+        assert_eq!(adapter.schema().field(3), &*ROW_ID_FIELD);
+        assert!(adapter.schema().metadata().is_empty());
+
+        let err = adapter.with_system_columns(&["_unknown"]).unwrap_err();
+        assert!(matches!(err, crate::Error::InvalidInput { .. }));
+
+        // Default adapters must remain compatible with INSERT ... SELECT *.
+        ctx.sql("INSERT INTO foo SELECT * FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let batches = ctx
+            .sql("SELECT COUNT(*) FROM foo")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(
+            batches[0]
+                .column(0)
+                .as_primitive::<arrow_array::types::Int64Type>()
+                .value(0),
+            20
+        );
+    }
+
+    #[tokio::test]
+    async fn test_system_columns_sql() {
+        let fixture = TestFixture::new().await;
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ID, ROW_ADDR])
+            .unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_table("foo", Arc::new(adapter)).unwrap();
+
+        // Compare SQL results with the native query's row IDs and row addresses.
+        let native = Query::new(fixture.adapter.table.clone())
+            .select(Select::columns(&["i", "indexed", ROW_ADDR]))
+            .with_row_id()
+            .execute()
+            .await
+            .unwrap()
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        let schema = Arc::new(
+            native[0]
+                .schema()
+                .as_ref()
+                .clone()
+                .with_metadata(HashMap::new()),
+        );
+        let expected = concat_batches(&schema, &native).unwrap();
+
+        for columns in [
+            vec!["i", ROW_ID],
+            vec![ROW_ID, "i"],
+            vec!["i", ROW_ADDR],
+            vec![ROW_ADDR, "i"],
+            vec![ROW_ADDR, ROW_ID],
+            vec![ROW_ID],
+            vec![ROW_ADDR],
+            vec!["i", "indexed", ROW_ID, ROW_ADDR],
+        ] {
+            let sql = format!("SELECT {} FROM foo ORDER BY i", columns.join(", "));
+            let batches = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+            let actual = concat_batches(&batches[0].schema(), &batches).unwrap();
+            let indices = columns
+                .iter()
+                .map(|name| schema.index_of(name).unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(actual, expected.project(&indices).unwrap(), "{sql}");
+        }
+
+        let batches = ctx
+            .sql("SELECT * FROM foo ORDER BY i")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let indices = ["i", "indexed", ROW_ID, ROW_ADDR].map(|name| schema.index_of(name).unwrap());
+        assert_eq!(batches[0], expected.project(&indices).unwrap());
+
+        // Filtering on the ID must work even when the ID is not in the output.
+        let row_id = expected
+            .column_by_name(ROW_ID)
+            .unwrap()
+            .as_primitive::<arrow_array::types::UInt64Type>()
+            .value(3);
+        let batches = ctx
+            .sql(&format!("SELECT i FROM foo WHERE _rowid = {row_id}"))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        assert_eq!(batches[0], expected.project(&[0]).unwrap().slice(3, 1));
+    }
+
+    #[tokio::test]
+    async fn test_system_columns_scan_without_projection() {
+        let fixture = TestFixture::new().await;
+        let adapter = BaseTableAdapter::try_new(fixture.adapter.table.clone())
+            .await
+            .unwrap()
+            .with_system_columns(&[ROW_ADDR, ROW_ID])
+            .unwrap();
+        let ctx = SessionContext::new();
+        let plan = adapter.scan(&ctx.state(), None, &[], None).await.unwrap();
+        assert_eq!(plan.schema(), adapter.schema());
+        let batches = datafusion_physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap();
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 10);
+        for batch in batches {
+            assert_eq!(batch.schema(), adapter.schema());
+            assert_eq!(
+                batch
+                    .column(2)
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .values(),
+                batch
+                    .column(3)
+                    .as_primitive::<arrow_array::types::UInt64Type>()
+                    .values()
             );
         }
     }

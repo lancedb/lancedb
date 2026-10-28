@@ -23,7 +23,7 @@ Parameter and result types are Arrow type names, not SQL ones: `int64`,
 unless it is declared `NOT NULL`.
 
 The body is Python source. Its dependencies are declared with it and are part
-of the **immutable function version** -- changing one produces a new version
+of the **immutable function version**. Changing one produces a new version
 rather than altering the registered one, so a column filled by an earlier
 version is unaffected.
 
@@ -40,7 +40,7 @@ version is unaffected.
 | | |
 | --- | --- |
 | `LANGUAGE` other than `python` | refused |
-| `pip` and `conda` together | refused -- pick one |
+| `pip` and `conda` together | refused (pick one) |
 | `conda_channels` without `conda` | refused |
 | `gpu` set to anything but `'true'` | refused |
 | An empty body | refused |
@@ -69,13 +69,13 @@ DROP FUNCTION IF EXISTS embed WITH (version = '1')
 DROP FUNCTION embed WITH (version = '1', cascade = 'true')
 ```
 
-`version` is required -- a function is a set of immutable versions, and
+`version` is required: a function is a set of immutable versions, and
 dropping is always of one specific version, never "the function" as a whole.
 
 <Warning>
 Without `cascade = 'true'`, dropping a version that a column still pins fails
 rather than breaking that column silently. Passing it drops the version and
-lets columns pinned to it stop refreshing -- they keep their last-filled
+lets columns pinned to it stop refreshing. They keep their last-filled
 values, per [Guarantees](/basics/guarantees#jobs).
 </Warning>
 

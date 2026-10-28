@@ -53,7 +53,7 @@ A bi-encoder maps an entire piece of content (a query, a document page) to a *si
 
 ### Multi-vector (Late-Interaction) Models {#multi-vector-late-interaction-models}
 
-Multi-vector models, pioneered by ColBERT, take a different approach. Instead of one vector per page, they generate a *set of vectors* for each page—one for every token (or image patch).
+Multi-vector models, pioneered by ColBERT, take a different approach. Instead of one vector per page, they generate a *set of vectors* for each page: one for every token (or image patch).
 
 *   **Mechanism (MaxSim):** The search process is more sophisticated. For each token in the query, the system finds the most similar token on the page. These maximum similarity scores are then summed up to get the final relevance score. This "late-interaction" preserves fine-grained, token-level details.
 *   **The Models:** We used several vision-language models adapted for this architecture, including `ColPali`, `ColQwen2`, and `ColSmol`. While their underlying transformer backbones differ, they all share the ColBERT philosophy of representing documents as a bag of contextualized token embeddings.

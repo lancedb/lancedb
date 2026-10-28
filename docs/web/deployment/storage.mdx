@@ -16,7 +16,7 @@ availability:
 This page is about the embedded library, where your connection chooses and
 configures the storage backend. A LanceDB Enterprise deployment sets up its own
 storage when it is deployed, so a `db://` connection passes none of these
-options except an Azure storage account name -- see
+options except an Azure storage account name. See
 [Deployment](/enterprise/deployment) for how a deployment is set up.
 
 LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
@@ -49,7 +49,7 @@ LanceDB separates storage and compute and writes immutable fragments, making it 
 <Note>
 **Concurrent writers on S3**
 
-S3 and S3 Express now support atomic writes natively, so LanceDB handles concurrent writers against the same table out-of-the-box — no external commit coordinator is required. Bucket-level [server-side encryption with KMS](/storage/configuration#server-side-encryption-with-kms) and [S3 Express One Zone](/storage/configuration#s3-express) are also supported on this tier.
+S3 and S3 Express now support atomic writes natively, so LanceDB handles concurrent writers against the same table out-of-the-box: no external commit coordinator is required. Bucket-level [server-side encryption with KMS](/storage/configuration#server-side-encryption-with-kms) and [S3 Express One Zone](/storage/configuration#s3-express) are also supported on this tier.
 </Note>
 
 ### 2\. File storage (EFS, GCS Filestore, Azure File) {#2-file-storage-efs-gcs-filestore-azure-file}

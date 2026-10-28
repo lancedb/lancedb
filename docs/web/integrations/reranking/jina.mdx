@@ -12,7 +12,7 @@ import { PyRerankingJinaUsage } from '/snippets/provider_examples.mdx';
 This reranker uses the [Jina](https://jina.ai/reranker/) API to rerank the search results. You can use this reranker by passing `JinaReranker()` to the `rerank()` method. Note that you'll either need to set the `JINA_API_KEY` environment variable or pass the `api_key` argument to use this reranker.
 
 
-> **Note:** Supported query types – Hybrid, Vector, and FTS.
+> **Note:** Supported query types: Hybrid, Vector, and FTS.
 
 
 Replace the credential placeholders with your provider credentials. In application code, load credentials from environment variables or a secrets manager.

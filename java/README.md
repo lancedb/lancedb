@@ -29,35 +29,35 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
     .build();
 ```
 
-## MemWAL LSM write path
+## RTE write path
 
 Most table operations reach LanceDB through the `LanceNamespace` above, which is
-generated from the Lance Namespace specification. The MemWAL LSM routes are not part
+generated from the Lance Namespace specification. The RTE LSM routes are not part
 of that specification, so they are issued through a separate client:
 
 ```java
 import com.lancedb.LanceDbRestClient;
-import com.lancedb.LanceDbTableLsm;
-import com.lancedb.LsmWriteSpec;
+import com.lancedb.LanceDbTableRTE;
+import com.lancedb.RTEWriteSpec;
 
 LanceDbRestClient client = LanceDbNamespaceClientBuilder.newBuilder()
     .apiKey("your_lancedb_cloud_api_key")
     .database("your_database_name")
     .buildRestClient();
 
-LanceDbTableLsm lsm = new LanceDbTableLsm(client, "my_table");
+LanceDbTableRTE rte = new LanceDbTableRTE(client, "my_table");
 
-// Route future merge_insert upserts through the MemWAL, hash-bucketed by `id`.
-lsm.setLsmWriteSpec(LsmWriteSpec.bucket("id", 16));
+// Route future merge_insert upserts through the RTE, hash-bucketed by `id`.
+rte.enableRTE(RTEWriteSpec.bucket("id", 16));
 
 // ... merge_insert traffic ...
 
 // Converge the fresh tier into the base table.
-lsm.checkpointLsm();
+rte.checkpointRTE();
 
-// Inspect live per-bucket state.
-lsm.getLsmStats().ifPresent(stats -> stats.buckets().forEach(bucket ->
-    System.out.println(bucket.shardId() + ": " + bucket.generations().size() + " L0 generations")));
+// Inspect live per-table-shard state.
+rte.getRTEStats().ifPresent(stats -> stats.tableShards().forEach(tableShard ->
+    System.out.println(tableShard.shardId() + ": " + tableShard.sstables().size() + " SSTables")));
 
 client.close();
 ```
