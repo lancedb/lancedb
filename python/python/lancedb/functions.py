@@ -674,7 +674,7 @@ class RefreshColumnResult(_RemoteValue):
         return self.published_version
 
 
-_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -2106,6 +2106,8 @@ def udf(
         The synchronous callable, or the class whose instances are called.
     name : str, optional
         The remote Function name. Defaults to the callable name.
+        Must start with an ASCII letter or underscore and contain only ASCII
+        letters, digits, and underscores.
     input_schema : pyarrow.Schema, optional
         Explicit input fields in the exact order of the callable parameters.
         Must be provided together with ``output_schema``.
