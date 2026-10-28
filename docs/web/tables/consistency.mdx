@@ -1,0 +1,90 @@
+---
+title: "Consistency"
+sidebarTitle: "Consistency"
+description: "Understand when readers see changes and choose the freshness your application needs."
+icon: "water"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Configure read freshness in OSS and Enterprise. OSS checks for table updates;
+    Enterprise uses the connection setting to tighten its configured freshness bound.
+---
+
+import { PyReadConsistency } from '/snippets/read_consistency.mdx';
+
+## Table snapshots and freshness {#consistency}
+
+Each table read uses one committed version of the data. **Freshness** describes
+whether that version includes recent writes. For example, after another
+application appends records, an already-open table handle can still read the
+version from before the append.
+
+For example, a dashboard may need the latest updates, while an experiment may
+need to keep reading a specific table version. Use read freshness settings for the dashboard and an explicit table version
+for the experiment.
+
+## Visibility of writes {#visibility}
+
+In **OSS**, a table handle sees its own committed writes. By default, it does
+not automatically check for changes made through other handles or processes.
+Use a read consistency interval or `checkout_latest()` to pick up those changes.
+
+In **Enterprise**, readers use the service's configured freshness policy.
+A connection can request fresher data. When a read must include a completed
+write, use a zero interval or call `checkout_latest()` after the write, with a
+client and server that support these freshness controls.
+
+## Configure read freshness {#configure-consistency-parameters}
+
+Set `read_consistency_interval` when connecting. This controls when reads
+pick up newer table versions; it does not change how writes commit.
+
+| Setting | OSS | Enterprise |
+| --- | --- | --- |
+| **Unset** | Keep the open table version until explicitly refreshed or changed by that handle. | Use the service's configured freshness policy. |
+| **Zero** | Check for the latest committed version on every read. | Request the latest committed version on every read. |
+| **Non-zero interval** | Check for updates on a read once the interval since the last check has elapsed. | Request data no older than the interval allows; the service may return fresher data. |
+
+`checkout_latest()` explicitly refreshes an OSS table handle. On Enterprise it
+asks subsequent reads on that handle to reflect data at least as recent as the
+refresh request. To read a fixed historical version instead, use
+[table versioning](/management/table#versioning).
+
+<Accordion title="Complete Python example: compare two readers">
+
+Install the Python SDK with `pip install lancedb`, then save this as
+`consistency.py` and run `python consistency.py`. It creates a temporary local
+database and removes it when finished. No Enterprise connection is needed.
+
+<CodeBlock filename="consistency.py" language="python" icon="python">
+{PyReadConsistency}
+</CodeBlock>
+
+The default reader sees one row until refreshed. The reader with a zero
+interval sees the new row on its next read.
+
+</Accordion>
+
+## Choose a freshness interval {#choosing}
+
+- **Reads that must include recent writes:** use a zero interval. Checking more
+  frequently can increase read latency and storage requests.
+- **Dashboards with an acceptable delay:** choose an interval within that delay
+  budget, then measure the effect on latency and cost.
+- **Reproducible experiments:** read an explicit table version and retain it for
+  as long as the experiment needs it.
+
+Choose the interval based on the delay your application can tolerate between
+a write completing and a reader seeing it.
+
+## Learn more {#next}
+
+- [Connect](/basics/connect): configure your client.
+- [Table versioning](/management/table#versioning): read and restore retained versions.
+- [Guarantees](/basics/guarantees): understand commit and failure boundaries.
+
+<span id="handle-bad-vectors" />
+
+For invalid vector handling during ingestion, see
+[Create a table](/ingestion/create-table#from-a-custom-schema).

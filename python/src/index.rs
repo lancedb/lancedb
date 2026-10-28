@@ -8,7 +8,7 @@ use lancedb::index::vector::{
 };
 use lancedb::index::{
     Index as LanceDbIndex,
-    scalar::{BTreeIndexBuilder, FmIndexBuilder, FtsIndexBuilder},
+    scalar::{BTreeIndexBuilder, DocumentGranularity, FmIndexBuilder, FtsIndexBuilder},
 };
 use pyo3::IntoPyObject;
 use pyo3::types::PyStringMethods;
@@ -42,7 +42,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
-                let inner_opts = FtsIndexBuilder::default()
+                let mut inner_opts = FtsIndexBuilder::default()
                     .base_tokenizer(params.base_tokenizer)
                     .language(&params.language)
                     .map_err(|_| {
@@ -54,13 +54,27 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                     .with_position(params.with_position)
                     .lower_case(params.lower_case)
                     .max_token_length(params.max_token_length)
-                    .remove_stop_words(params.remove_stop_words)
-                    .stem(params.stem)
                     .ascii_folding(params.ascii_folding)
                     .ngram_min_length(params.ngram_min_length)
                     .ngram_max_length(params.ngram_max_length)
                     .ngram_prefix_only(params.prefix_only)
-                    .custom_stop_words(params.custom_stop_words);
+                    .custom_stop_words(params.custom_stop_words)
+                    .document_granularity(
+                        DocumentGranularity::try_from(params.document_granularity.as_str())
+                            .map_err(|err| PyValueError::new_err(err.to_string()))?,
+                    );
+                if let Some(stem) = params.stem {
+                    inner_opts = inner_opts.stem(stem);
+                }
+                if let Some(remove_stop_words) = params.remove_stop_words {
+                    inner_opts = inner_opts.remove_stop_words(remove_stop_words);
+                }
+                if let Some(memory_limit) = params.memory_limit {
+                    inner_opts = inner_opts.memory_limit_mb(memory_limit);
+                }
+                if let Some(num_workers) = params.num_workers {
+                    inner_opts = inner_opts.num_workers(num_workers);
+                }
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -122,8 +136,10 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 let mut ivf_rq_builder = IvfRqIndexBuilder::default()
                     .distance_type(distance_type)
                     .max_iterations(params.max_iterations)
-                    .sample_rate(params.sample_rate)
-                    .num_bits(params.num_bits);
+                    .sample_rate(params.sample_rate);
+                if let Some(num_bits) = params.num_bits {
+                    ivf_rq_builder = ivf_rq_builder.num_bits(num_bits);
+                }
                 if let Some(num_partitions) = params.num_partitions {
                     ivf_rq_builder = ivf_rq_builder.num_partitions(num_partitions);
                 }
@@ -205,14 +221,17 @@ struct FtsParams {
     language: String,
     max_token_length: Option<usize>,
     lower_case: bool,
-    stem: bool,
-    remove_stop_words: bool,
+    stem: Option<bool>,
+    remove_stop_words: Option<bool>,
     custom_stop_words: Option<Vec<String>>,
     ascii_folding: bool,
     ngram_min_length: u32,
     ngram_max_length: u32,
     prefix_only: bool,
     block_size: usize,
+    memory_limit: Option<u64>,
+    num_workers: Option<usize>,
+    document_granularity: String,
 }
 
 #[derive(FromPyObject)]
@@ -248,7 +267,7 @@ struct IvfSqParams {
 struct IvfRqParams {
     distance_type: String,
     num_partitions: Option<u32>,
-    num_bits: u32,
+    num_bits: Option<u32>,
     max_iterations: u32,
     sample_rate: u32,
     target_partition_size: Option<u32>,
@@ -442,5 +461,54 @@ impl IndexConfig {
             index_version: value.index_version,
             index_details: value.index_details.map(|s| parse_index_details(py, s)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pyo3::types::{PyDict, PyDictMethods};
+    use serde_json::json;
+
+    #[test]
+    fn fts_build_controls_are_forwarded() {
+        Python::initialize();
+        Python::attach(|py| {
+            let locals = PyDict::new(py);
+            py.run(
+                c"class FTS:
+    with_position = True
+    base_tokenizer = 'simple'
+    language = 'English'
+    max_token_length = None
+    lower_case = True
+    stem = False
+    remove_stop_words = False
+    custom_stop_words = None
+    ascii_folding = False
+    ngram_min_length = 3
+    ngram_max_length = 3
+    prefix_only = False
+    block_size = 128
+    memory_limit = 2048
+    num_workers = 7
+    document_granularity = 'row'
+
+config = FTS()",
+                None,
+                Some(&locals),
+            )
+            .unwrap();
+
+            let config = locals.get_item("config").unwrap().unwrap();
+            let index = extract_index_params(&Some(config)).unwrap();
+            let LanceDbIndex::FTS(params) = index else {
+                panic!("expected FTS index parameters");
+            };
+            let training_json = params.to_training_json().unwrap();
+
+            assert_eq!(training_json.get("memory_limit"), Some(&json!(2048)));
+            assert_eq!(training_json.get("num_workers"), Some(&json!(7)));
+        });
     }
 }

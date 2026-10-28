@@ -175,7 +175,7 @@ class Reranker(ABC):
             if the results haven't been executed yet or the results in arrow format.
         query : str or None,
             The input query. Some rerankers might not need the query to rerank.
-            In that case, it can be set to None explicitly. This is inteded to
+            In that case, it can be set to None explicitly. This is intended to
             be handled by the reranker implementations.
         deduplicate : bool, optional
             Whether to deduplicate the results based on the `_rowid` column,
@@ -241,6 +241,7 @@ class Reranker(ABC):
         This op is slower than just keeping relevance score but can be useful
         for debugging.
         """
+        combined_schema = pa.unify_schemas([vector_results.schema, fts_results.schema])
         # add nulls to fts results for _distance
         if "_distance" not in fts_results.column_names:
             fts_results = fts_results.append_column(
@@ -265,7 +266,9 @@ class Reranker(ABC):
             else:
                 vector_results_dict[key] = value
 
-        combined = pa.Table.from_pylist(list(vector_results_dict.values()))
+        combined = pa.Table.from_pylist(
+            list(vector_results_dict.values()), schema=combined_schema
+        )
         return combined
 
     def _keep_relevance_score(self, combined_results: pa.Table):
