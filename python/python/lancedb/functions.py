@@ -993,6 +993,11 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
 
     if isinstance(annotation, pa.DataType):
         return annotation, nullable
+    if annotation is pa.Array or annotation is pa.RecordBatch:
+        raise TypeError(
+            f"cannot infer Arrow types from Function annotation {annotation!r}; "
+            "provide input_schema and output_schema together for batch callables"
+        )
     if annotation is bool:
         return pa.bool_(), nullable
     if annotation is int:
@@ -2010,8 +2015,11 @@ def udf(
 
     **Functions and classes.** A decorated function is called once per row,
     or once per batch when its parameters are annotated ``pyarrow.Array`` or
-    it takes one ``pyarrow.RecordBatch``. A decorated class is the same
-    callable with state: each remote instance calls ``__init__`` once, calls
+    it takes one ``pyarrow.RecordBatch``. These batch annotations require both
+    ``input_schema`` and ``output_schema`` explicitly: the annotations do not
+    specify Arrow element types or fields. This also applies to a class's
+    ``__call__`` method. A decorated class is the same callable with state:
+    each remote instance calls ``__init__`` once, calls
     ``__call__`` for every row or batch of every input it processes, and calls
     ``close()``, if defined, once when it retires. Load models, open clients,
     and build rate limiters in ``__init__``; every batch of the instance then
@@ -2061,10 +2069,12 @@ def udf(
         The remote Function name. Defaults to the callable name.
     input_schema : pyarrow.Schema, optional
         Explicit input fields in the exact order of the callable parameters.
-        Must be provided together with ``output_schema``.
+        Required for batch annotations. Must be provided together with
+        ``output_schema``.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Must be provided together with ``input_schema``.
+        non-nullable. Required for batch annotations. Must be provided together
+        with ``input_schema``.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     conda : sequence of str, optional
@@ -2102,6 +2112,15 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> import pyarrow as pa
+    >>> @udf(
+    ...     input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    ...     output_schema=pa.int64(),
+    ... )
+    ... def batch_identity(value: pa.Array) -> pa.Array:
+    ...     return value
+    >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
+    [1, 2, 3]
     >>> @udf(pip=["cupy-cuda12x"], gpu=True)
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
