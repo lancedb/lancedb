@@ -475,7 +475,8 @@
               "integrations/data/pandas_and_pyarrow",
               "integrations/data/polars_arrow",
               "integrations/data/dlt",
-              "integrations/data/voxel51"
+              "integrations/data/voxel51",
+              "integrations/data/firecrawl"
             ]
           },
           {
