@@ -1,0 +1,32 @@
+extends: substitution
+message: "Consider '%s' instead of '%s'."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#say-it-directly
+level: suggestion
+ignorecase: true
+# Keep this list small. Technical nouns such as GPU utilization stay intact.
+swap:
+  utilize: use
+  utilizes: uses
+  utilized: used
+  utilizing: using
+  in order to: to
+tests:
+  - name: suggests familiar verbs
+    input: Utilize the index. The query utilizes it. We utilized it. Try utilizing it.
+    want: |
+      1:1:LanceDB.PlainLanguage:Consider 'use' instead of 'Utilize'.
+      1:30:LanceDB.PlainLanguage:Consider 'uses' instead of 'utilizes'.
+      1:46:LanceDB.PlainLanguage:Consider 'used' instead of 'utilized'.
+      1:63:LanceDB.PlainLanguage:Consider 'using' instead of 'utilizing'.
+  - name: shortens an unnecessary phrase
+    input: Create an index in order to search faster.
+    want: |
+      1:17:LanceDB.PlainLanguage:Consider 'to' instead of 'in order to'.
+  - name: preserves technical terms and identifiers
+    input: |
+      Measure GPU utilization and resource underutilization. Keep the rows in order. Call `utilize()` and `in order to` only as literal examples.
+
+      ```python
+      utilized = "in order to"
+      ```
+    want: ''
