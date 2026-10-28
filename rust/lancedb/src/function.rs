@@ -459,6 +459,8 @@ pub struct FunctionVersion {
     #[serde(deserialize_with = "deserialize_object_version")]
     version: String,
     image: FunctionImage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_digest: Option<String>,
     signature: FunctionSignature,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     secret_bindings: Vec<SecretBinding>,
@@ -503,6 +505,23 @@ impl FunctionVersion {
     pub fn image(&self) -> &FunctionImage {
         &self.image
     }
+
+    /// Digest of the registered source artifact, when provided by the server.
+    ///
+    /// Compare this with [`FunctionArtifactRequest::digest`] to identify matching
+    /// source, independently of the built image's manifest digest.
+    ///
+    /// ```
+    /// use lancedb::function::{FunctionArtifactRequest, FunctionVersion};
+    ///
+    /// fn has_same_source(version: &FunctionVersion, artifact: &FunctionArtifactRequest) -> bool {
+    ///     version.source_digest() == Some(artifact.digest.as_str())
+    /// }
+    /// ```
+    pub fn source_digest(&self) -> Option<&str> {
+        self.source_digest.as_deref()
+    }
+
     pub fn signature(&self) -> &FunctionSignature {
         &self.signature
     }
@@ -964,6 +983,32 @@ mod conda_environment_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn function_version_preserves_source_digest() {
+        const VERSION: &str = include_str!(
+            "../tests/fixtures/first_class_functions/v1/remote_function_version.canonical.json"
+        );
+        let mut document: Value = serde_json::from_str(VERSION).unwrap();
+        let legacy = FunctionVersion::from_json(VERSION).unwrap();
+        assert_eq!(legacy.source_digest(), None);
+        assert_eq!(legacy.to_canonical_json().unwrap(), VERSION.trim_end());
+
+        for digest in [Value::Null, serde_json::json!("sha256:source-artifact")] {
+            document["source_digest"] = digest.clone();
+            let version = FunctionVersion::from_json(&document.to_string()).unwrap();
+            assert_eq!(version.source_digest(), digest.as_str());
+            assert_eq!(version.image(), legacy.image());
+            let encoded = version.to_canonical_json().unwrap();
+            let encoded_value: Value = serde_json::from_str(&encoded).unwrap();
+            if digest.is_null() {
+                assert!(encoded_value.get("source_digest").is_none());
+            } else {
+                assert_eq!(encoded_value["source_digest"], digest);
+            }
+            assert_eq!(FunctionVersion::from_json(&encoded).unwrap(), version);
+        }
+    }
 
     #[test]
     fn blob_reader_access_survives_signature_round_trip() {
