@@ -1,9 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+import * as http from "http";
+import type { AddressInfo } from "net";
 import * as tmp from "tmp";
 
 import { type Table, connect } from "../lancedb";
+import {
+  Table as ArrowTable,
+  Field,
+  Int64,
+  Schema,
+  Utf8,
+  tableToIPC,
+} from "../lancedb/arrow";
 import { Expr, col, func, lit, litBool, litInt } from "../lancedb/expr";
 
 describe("expr", () => {
@@ -231,5 +241,106 @@ describe("expr", () => {
         .toArray();
       expect(results.length).toBe(2);
     });
+
+    it.each([
+      ["backslash", "\\"],
+      ["quote", "'"],
+      ["backslash quote", "\\'"],
+      ["OR true payload", "\\') OR true --"],
+      ["line comment payload", "\\' -- OR true"],
+      ["block comment payload", "\\') /* OR true */ --"],
+    ])("filters the exact %s value", async (label, value) => {
+      const escaped = await db.createTable(
+        `escaped_${label.replaceAll(" ", "_")}`,
+        [
+          { id: 1, tenant: value },
+          { id: 2, tenant: "different tenant" },
+        ],
+      );
+      try {
+        const results = await escaped
+          .query()
+          .where(col("tenant").eq(lit(value)))
+          .toArray();
+        expect(results).toHaveLength(1);
+        expect(results[0].id).toBe(1);
+        expect(results[0].tenant).toBe(value);
+      } finally {
+        escaped.close();
+      }
+    });
+  });
+
+  it("sends a quoted expression value to remote as one literal", async () => {
+    const value = "\\') OR true --";
+    const schema = new Schema([
+      new Field("id", new Int64(), false),
+      new Field("tenant", new Utf8(), false),
+    ]);
+    const response = Buffer.from(tableToIPC(new ArrowTable(schema), "stream"));
+    let remoteFilter: unknown;
+
+    const server = http.createServer((req, res) => {
+      const path = req.url ?? "";
+      if (path.endsWith("/describe/")) {
+        res.writeHead(200, { "Content-Type": "application/json" }).end(
+          JSON.stringify({
+            name: "tenants",
+            version: 1,
+            schema: {
+              fields: [
+                { name: "id", type: { type: "int64" }, nullable: false },
+                { name: "tenant", type: { type: "string" }, nullable: false },
+              ],
+            },
+          }),
+        );
+        return;
+      }
+      if (path.endsWith("/query/")) {
+        let body = "";
+        req.on("data", (chunk) => {
+          body += chunk;
+        });
+        req.on("end", () => {
+          remoteFilter = JSON.parse(body).filter;
+          res
+            .writeHead(200, {
+              "Content-Type": "application/vnd.apache.arrow.stream",
+            })
+            .end(response);
+        });
+        return;
+      }
+      res.writeHead(404).end();
+    });
+
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address() as AddressInfo;
+
+    try {
+      const db = await connect("db://dev", {
+        apiKey: "fake",
+        hostOverride: `http://127.0.0.1:${address.port}`,
+      });
+      try {
+        const remoteTable = await db.openTable("tenants");
+        await remoteTable
+          .query()
+          .where(col("tenant").eq(lit(value)))
+          .toArrow();
+      } finally {
+        db.close();
+      }
+    } finally {
+      await new Promise<void>((resolve) => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      });
+    }
+
+    expect(remoteFilter).toBe("(tenant = '\\'') OR true --')");
   });
 });
