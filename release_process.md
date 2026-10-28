@@ -24,6 +24,55 @@ from the packaging index after a while. Once your application is stable, we
 recommend switching to full releases, which will never be removed from package
 indexes.
 
+## Prepare a stable release
+
+### Select the release baseline
+
+Choose the SDK product commit for the planned release and record its SHA. Include
+all fixes required for that release, including security fixes. Create and push a
+release branch such as `release/v0.41` from that commit before opening the Lance RC
+upgrade PR. For a patch to an existing stable line, reuse its release branch and
+backport the required fixes.
+
+Keep the selected product baseline while main continues development. If main
+already tracks a newer Lance development version, retain that dependency on main
+and prepare the stable Lance dependency on the SDK release branch. Any additional
+fixes should arrive through reviewed PRs into the release branch and be validated.
+
+### Validate the Lance RC
+
+1. Open a **draft PR targeting the SDK release branch** to consume the exact Lance
+   RC. Check both the PR base and dependency references when using automation.
+   Update the Rust declarations and lockfile, Python dependency declarations and
+   lockfile, and Java Maven version consistently.
+2. Wait for the RC artifacts needed by each SDK to be available, then run the
+   relevant Rust, Python, Node.js, Java, and packaging checks. Resolve compatibility
+   failures and rerun CI after changes to the PR or its release-branch base.
+3. Before the Lance vote is closed, report the exact Lance tag and peeled SHA,
+   SDK release-branch base and PR head SHAs (and tested merge commit, when
+   applicable), and full CI results to the release manager. Label local source
+   checks separately from checks consuming the published RC artifacts.
+
+Keep the RC validation PR unmerged until Lance is approved. Once the official
+stable Lance artifacts are available, update the PR to that stable dependency and
+rerun the relevant checks. In particular, verify that the Rust package resolves
+published dependencies: Cargo only reads [`[patch]` settings at the workspace root](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section),
+so package consumers do not inherit a dependency's workspace override. Merge the
+validated stable update into the SDK release branch.
+
+### Publish the validated candidate
+
+Run **Create Release Commit** from the verified SDK release-branch head. Do not
+switch to a later main snapshot after validation. Start with a dry run, review the
+expected version and lockfile updates, and use the same branch and release inputs
+for the real run.
+
+The workflow creates a new version commit and tag. Compare that tag with the
+validated candidate and check that only the expected mechanical version and
+lockfile updates were introduced. Code or dependency changes require renewed
+validation. Verify all four SDK publishing workflows and the exact registry
+artifacts before reporting the stable release as complete.
+
 ## Making releases
 
 The release process uses a handful of GitHub actions to automate the process.
@@ -54,7 +103,17 @@ To start a release, trigger a `Create Release Commit` action from
 (Click on "Run workflow").
 
 * **For a preview release**, leave the default parameters.
-* **For a stable release**, set the `release_type` input to `stable`.
+* **For a stable release**, select the verified release branch and set the `type` input to `stable`.
+
+For example, dry-run a stable release from the selected branch:
+
+```bash
+gh workflow run make-release-commit.yml --repo lancedb/lancedb \
+  --ref release/v0.41 -f type=stable -f dry_run=true -f bump-minor=false
+```
+
+After reviewing the dry run, use the same branch and inputs with `dry_run=false`.
+Select `bump-minor` according to the version and breaking-change check below.
 
 > [!IMPORTANT]
 > If there was a breaking change since the last stable release, and we haven't
