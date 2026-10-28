@@ -171,9 +171,6 @@ class _FailingAsyncInner:
     def name(self):
         return "hist"
 
-    def _is_native(self):
-        return True
-
     async def schema(self):
         return PUSHDOWN_DATA.schema
 
