@@ -77,7 +77,7 @@ pub(crate) async fn execute_refresh(
 ) -> Result<RefreshMaterializedViewResult> {
     crate::require_experimental_functions()?;
     let native = view.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only in LanceDB Embedded".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     native.dataset.ensure_mutable()?;
     let lock = refresh_lock(native.dataset.get().await?.uri());
