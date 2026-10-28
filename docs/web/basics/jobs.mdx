@@ -8,7 +8,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Job handles track operations in OSS and Enterprise. Enterprise also
+    Job handles track operations in LanceDB Embedded and LanceDB Enterprise. Enterprise also
     supports listing server jobs, reopening them by ID and reading their events.
 ---
 
@@ -19,7 +19,7 @@ column refresh. Use it to check progress, wait for completion and inspect
 failures.
 
 Methods such as Python's `create_index_async` and TypeScript's
-`createIndexAsync` return job handles. In OSS, the work runs in your application
+`createIndexAsync` return job handles. In LanceDB Embedded, the work runs in your application
 process; in Enterprise, it runs on server workers or through the SQL query
 backend. A returned handle can represent an operation that has already finished,
 so check its status before
@@ -58,12 +58,13 @@ Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event
 history.
 
-## OSS and Enterprise execution {#in-process}
+## Embedded and Distributed execution {#in-process}
 
-The following table describes local operations and Enterprise registry jobs.
+The following table describes LanceDB Embedded operations and registry jobs on
+LanceDB Distributed (provided by LanceDB Enterprise).
 SQL-backed job handles follow the query lifecycle described below.
 
-| | OSS | Enterprise registry job |
+| | Embedded | Enterprise registry job |
 | --- | --- | --- |
 | Execution | In your application process | On server workers |
 | Job identity | No server ID | A server ID for looking up the job |
@@ -72,7 +73,7 @@ SQL-backed job handles follow the query lifecycle described below.
 
 ### SQL-backed job handles
 
-Remote materialized-view CREATE, REFRESH, and DROP use the SQL query backend.
+On Enterprise, materialized-view CREATE, REFRESH, and DROP use the SQL query backend.
 Python's `create_materialized_view_async()`, `mv.refresh_async()`, and
 `drop_materialized_view_async()` return job handles with `status()`, `wait()`,
 and `cancel()`. Synchronous creation, refresh, and drop wait on the same SQL

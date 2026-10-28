@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Full-text search is available in OSS and Enterprise.
+    Full-text search is available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import {
@@ -131,7 +131,7 @@ tbl
 ```
 </CodeGroup>
 
-OSS builds the index before the call returns. Enterprise builds it in the
+LanceDB Embedded builds the index before the call returns. Enterprise builds it in the
 background. Wait for completion with Python’s `table.wait_for_index(["text_idx"])`
 or TypeScript’s `await tbl.waitForIndex(["text_idx"], 300)` before querying it.
 Use your actual index name if you chose a different one.
@@ -187,7 +187,7 @@ values rather than probabilities.
 
 ### Keeping the index up to date {#keeping-the-index-up-to-date}
 
-In OSS, new rows can remain outside the FTS index until you optimize the table.
+In LanceDB Embedded, new rows can remain outside the FTS index until you optimize the table.
 Search includes those rows by scanning them, but that work can increase query
 latency. Call `optimize()` to update the index:
 
@@ -207,7 +207,7 @@ tbl.optimize(OptimizeAction::All).await?;
 ```
 </CodeGroup>
 
-Choose an OSS maintenance schedule based on write volume and query latency.
+Choose a LanceDB Embedded maintenance schedule based on write volume and query latency.
 Inspect index coverage with `table.index_stats(...)` and optimize when the
 unindexed data adds too much work. `.fast_search()` skips unindexed rows, so
 use it only when omitting recent records is acceptable.
@@ -289,7 +289,7 @@ export LANCE_LANGUAGE_MODEL_HOME=/path/to/lance/language_models
 For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`, `lindera/ipadic` under `<model-home>/lindera/ipadic/...`, and `lindera/ko-dic` under `<model-home>/lindera/ko-dic/...`.
 
 Model files must be installed where indexing and queries run: on your machine
-for OSS, or on the Enterprise cluster for a remote table.
+for LanceDB Embedded, or on the Enterprise cluster for an Enterprise table.
 
 <Note>
 Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. If you use another stemming language, such as Arabic, Greek, Romanian, Tamil, or Turkish, set `remove_stop_words=False` or pass `custom_stop_words`.

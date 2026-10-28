@@ -22,7 +22,7 @@ import {
 } from '/snippets/connection.mdx';
 
 LanceDB organizes Lance tables through a catalog-level abstraction defined by
-the *namespace spec*. LanceDB OSS is an embedded library for accessing those
+the *namespace spec*. LanceDB Embedded is an embedded library for accessing those
 tables, and LanceDB Enterprise is a multimodal lakehouse that provides shared
 compute and catalog services on top of the Lance format.
 If you're coming from traditional databases or lakehouses, you can think of a namespace as the catalog path that says where a table name lives.
@@ -76,7 +76,7 @@ directory. Namespaces can nest inside it, as in this hierarchy:
 The hierarchy is logical, not a tree of folders: a directory namespace records it in a
 `__manifest` table in the root directory, and stores each table in a directory of its own there.
 
-As a user of LanceDB OSS, you might never notice namespaces at first, because a plain connection
+As a user of LanceDB Embedded, you might never notice namespaces at first, because a plain connection
 uses only the root namespace, which is implicit. Connecting to this namespace is as simple as
 connecting to the catalog root:
 
@@ -165,7 +165,7 @@ println!("Created table: {}", table.name());
 </CodeGroup>
 
 <Info>
-- For simple use cases in LanceDB OSS, you don't need to go too deep into namespaces.
+- For simple use cases in LanceDB Embedded, you don't need to go too deep into namespaces.
 - To integrate LanceDB with external catalogs, understand how each namespace implementation resolves table names and locations in your organization's setup.
 </Info>
 

@@ -910,7 +910,7 @@ def test_table_unimplemented_functions():
             message = str(exc_info.value)
             assert method in message
             assert "not" in message and "supported" in message
-            assert "remote tables" in message
+            assert "LanceDB Distributed" in message
             assert "cloud" not in message.lower()
             assert f"search().{method}()" in message
 
@@ -977,7 +977,7 @@ async def test_remote_to_lance_rejection(
             await table.to_lance(**options)
         assert requests == opened_requests
 
-    assert "to_lance() is not supported for remote tables" in str(sync_error.value)
+    assert "to_lance() is not supported in LanceDB Distributed" in str(sync_error.value)
     assert "query the server" in str(sync_error.value)
     assert str(sync_error.value) == str(async_error.value)
 
@@ -1764,7 +1764,8 @@ def test_remote_create_index_new_api(caplog, rq_kwargs):
         assert received_requests[5]["replace"] is False
         assert "replace is not supported" not in caplog.text
         assert caplog.messages == [
-            "GPU accelerator is not supported for remote tables and will be ignored."
+            "GPU accelerator is not supported in LanceDB Distributed "
+            "and will be ignored."
         ]
 
 
@@ -1822,7 +1823,7 @@ def test_remote_unsupported_operations_sync(method, args, kwargs, operation):
         with pytest.raises(NotImplementedError) as error:
             getattr(table, method)(*args, **kwargs)
         expected = f"LanceDBError: not supported: {operation} is not supported "
-        expected += "for remote tables."
+        expected += "in LanceDB Distributed."
         if operation == "IVF_HNSW_PQ":
             expected += " Please use IVF_HNSW_SQ instead."
         assert str(error.value) == expected
@@ -1840,7 +1841,7 @@ async def test_remote_unsupported_operations_async(method, args, kwargs, operati
         with pytest.raises(NotImplementedError) as error:
             await getattr(table, method)(*args, **kwargs)
         expected = f"LanceDBError: not supported: {operation} is not supported "
-        expected += "for remote tables."
+        expected += "in LanceDB Distributed."
         if operation == "IVF_HNSW_PQ":
             expected += " Please use IVF_HNSW_SQ instead."
         assert str(error.value) == expected
@@ -1852,7 +1853,7 @@ def test_remote_unsupported_legacy_hnsw_pq():
         with pytest.warns(DeprecationWarning, match="create_index"):
             with pytest.raises(
                 NotImplementedError,
-                match="IVF_HNSW_PQ is not supported for remote tables. "
+                match="IVF_HNSW_PQ is not supported in LanceDB Distributed. "
                 "Please use IVF_HNSW_SQ instead.",
             ):
                 table.create_index(
@@ -1870,14 +1871,15 @@ def test_remote_python_only_messages():
             with pytest.raises(NotImplementedError) as error:
                 getattr(table, method)()
             assert str(error.value) == (
-                f"{method}() is not supported for remote tables. "
+                f"{method}() is not supported in LanceDB Distributed. "
                 f"Use table.search().{method}() instead."
             )
         for method in ["compact_files", "cleanup_old_versions"]:
             with pytest.warns(UserWarning) as warning:
                 getattr(table, method)()
             assert (
-                str(warning[0].message) == f"{method}() is a no-op for remote tables."
+                str(warning[0].message)
+                == f"{method}() is a no-op in LanceDB Distributed."
             )
 
 
@@ -3842,7 +3844,7 @@ async def test_async_remote_to_lance_rejects_storage_access(monkeypatch):
             raise AssertionError("remote table URI must not be requested")
 
         monkeypatch.setattr(table, "uri", fail_uri)
-        with pytest.raises(NotImplementedError, match="remote tables"):
+        with pytest.raises(NotImplementedError, match="LanceDB Distributed"):
             await table.to_lance()
 
 

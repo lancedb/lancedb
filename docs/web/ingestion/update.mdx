@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Update rows through the SDKs in OSS and Enterprise. Enterprise also supports the SQL UPDATE statement.
+    Update rows through the SDKs in LanceDB Embedded and LanceDB Enterprise. Enterprise also supports the SQL UPDATE statement.
 ---
 
 import {
@@ -71,7 +71,7 @@ Rust's `column` argument is an expression, so the string value includes SQL quot
 
 In this separate example, Bob keeps his name and his login count becomes **21**.
 Python's `values_sql` and TypeScript's `valuesSql` accept expressions.
-These SDK expressions work with embedded OSS tables; they do not require an
+These SDK expressions work with LanceDB Embedded tables; they do not require an
 Enterprise SQL endpoint. Enterprise also offers [`UPDATE`](/sql/dml/update).
 
 ## Verify the affected data {#verify}

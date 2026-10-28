@@ -8,13 +8,16 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Python, TypeScript and Rust support both LanceDB OSS and LanceDB Enterprise.
+    Python, TypeScript and Rust support both LanceDB Embedded and LanceDB Enterprise.
     Java provides a client for the Enterprise REST API.
 ---
 
 Use a LanceDB SDK to create tables, add data, build indexes and run searches
-from your application. Python, TypeScript and Rust work with both the embedded
-OSS library and LanceDB Enterprise.
+from your application. Python, TypeScript and Rust work with both LanceDB
+Embedded and LanceDB Enterprise. LanceDB Embedded runs in your application's
+process; your data can live on local disk or in object storage. LanceDB
+Enterprise runs LanceDB Distributed: query execution, indexing and maintenance
+run on the Enterprise service, outside your application.
 
 The [quickstart](/quickstart) includes installation instructions and complete
 examples in all three languages. For connection settings, see
@@ -73,16 +76,16 @@ For PyTorch worker setup and connection factories, see
 ## Moving to LanceDB Enterprise {#moving-to-enterprise}
 
 The core table workflow stays familiar: connect, create or open a table, write
-records, and query them. Enterprise runs those operations on remote compute and
-manages background maintenance.
+records, and query them. Enterprise runs those operations with LanceDB
+Distributed and manages background maintenance.
 
 - **Configure the connection.** Replace the local path with your database URI,
   and supply the endpoint, region and credentials provided by your administrator.
   [Connect to Enterprise](/basics/connect#enterprise) shows these settings.
-- **Retrieve query results.** Python's remote tables do not support whole-table
+- **Retrieve query results.** Python tables on Enterprise do not support whole-table
   `to_arrow()` or `to_pandas()` calls. Use a query and select the columns and
   number of rows you need, for example `table.search().limit(10).to_arrow()`.
-- **Handle table listings and namespaces.** Remote table listings are paginated.
+- **Handle table listings and namespaces.** Enterprise table listings are paginated.
   Use the namespace and pagination options described in
   [Namespaces](/management/namespace).
 - **Use server-side jobs.** Index builds and feature refreshes can run as

@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Vector, full-text and hybrid search are available in OSS and Enterprise.
+    Vector, full-text and hybrid search are available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import { PyVectorSearch, TsVectorSearchBody, TsVectorSearchTail } from '/snippets/search_examples.mdx';
@@ -106,9 +106,9 @@ in [Data loading](/training/data-loading). The SDK buffers Enterprise
 query responses before exposing batches. Set a query limit rather than relying
 on batch iteration alone to bound memory.
 
-Direct Lance dataset access through Python's `table.to_lance()` is an OSS
-interface. Use the SDK query builders for reads that need to work with both
-OSS and Enterprise.
+Direct Lance dataset access through Python's `table.to_lance()` is a LanceDB
+Embedded interface. Use the SDK query builders for reads that need to work with
+both LanceDB Embedded and LanceDB Enterprise.
 
 ## Investigate a slow query {#diagnostics}
 

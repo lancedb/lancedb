@@ -30,11 +30,11 @@
 //! - `azure` - Enable Azure Blob Storage object store support.
 //! - `gcs` - Enable Google Cloud Storage object store support.
 //! - `oss` - Enable Alibaba Cloud OSS object store support.
-//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `remote` - Enable the client for connecting to LanceDB Enterprise or LanceDB Cloud (legacy).
 //! - `experimental-functions` - Opt in to local SQL computed-column declarations
 //!   and refresh, and local materialized-view creation and refresh. Disabled by
-//!   default, including in published Python and TypeScript packages. Remote
-//!   Cloud/Enterprise operations, reading existing data, metadata protections,
+//!   default, including in published Python and TypeScript packages. LanceDB
+//!   Distributed operations, reading existing data, metadata protections,
 //!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
@@ -56,10 +56,10 @@
 //!
 //! LanceDB accepts the different form of database path:
 //!
-//! - `/path/to/database` - local database on file system.
+//! - `/path/to/database` - database on the local file system.
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-//! - `db://dbname` - Lance Cloud
-//! - `db://` with a host override - remote tables in the storage root
+//! - `db://dbname` - LanceDB Enterprise or LanceDB Cloud (legacy)
+//! - `db://` with a host override - LanceDB Enterprise tables in the storage root
 //!
 //! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!

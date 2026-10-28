@@ -8,7 +8,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Local creation and refresh require a source build with the experimental-functions Cargo feature. Enterprise runs the work on remote compute. See [Enterprise refreshes](#availability) for server compatibility requirements.
+    Creation and refresh in LanceDB Embedded require a source build with the experimental-functions Cargo feature. Enterprise runs the work on the Enterprise service. See [Enterprise refreshes](#availability) for server compatibility requirements.
 ---
 
 import {
@@ -21,10 +21,10 @@ filtered or transformed dataset that you can query, index and search repeatedly.
 Refresh the view after its source data changes.
 
 <Note>
-In the 0.41 SDK release, local materialized-view creation and refresh require a
+In the 0.41 SDK release, materialized-view creation and refresh in LanceDB Embedded require a
 source build with the `experimental-functions` Cargo feature. Published Python
 and TypeScript packages leave it disabled. Opening, reading, listing and dropping
-existing views remain available, as do remote Cloud and Enterprise operations.
+existing views remain available, as do LanceDB Enterprise operations.
 </Note>
 
 <Note>
@@ -84,7 +84,7 @@ when maintaining an existing pipeline.
 
 <Badge color="red">Enterprise</Badge>
 
-Enterprise runs materialized-view creation and refresh on remote compute.
+Enterprise runs materialized-view creation and refresh on the Enterprise service.
 For SQL, see [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view) and
 [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view).
 

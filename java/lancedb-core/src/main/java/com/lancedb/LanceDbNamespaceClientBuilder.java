@@ -22,7 +22,7 @@ import java.util.Optional;
 /**
  * Util class to help construct a {@link LanceNamespace} for LanceDB.
  *
- * <p>For LanceDB Cloud, use the simplified builder API:
+ * <p>For LanceDB Cloud (legacy hosted service), use the simplified builder API:
  *
  * <pre>{@code
  * import org.lance.namespace.LanceNamespace;

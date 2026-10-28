@@ -159,7 +159,7 @@ Learn how to configure, build, and search LanceDB vector indexes, including buil
 The `distance_type` can be specified at search time in addition to build time. If
 you do this, set it to the same value used to build the vector index. If the search
 metric does not match the index metric, LanceDB cannot use the index and falls
-back to a costly flat search. On LanceDB Cloud, the brute-force KNN safety limit
+back to a costly flat search. On LanceDB Cloud (legacy hosted service), the brute-force KNN safety limit
 can reject that search on a large table instead of executing it. An Enterprise
 deployment applies the same limit only when it is configured to.
 
@@ -279,7 +279,7 @@ In LanceDB Enterprise, vector indexes are managed **automatically**. The system 
 - GPU-based `IVF_PQ` builds are available on request. [Contact support](/deployment/support) to enable them for your deployment. Build time depends on dataset size, dimensions and GPU resources.
 
  <Badge color="gray">Open-Source</Badge> 
- LanceDB OSS users can manually create vector indexes by calling `table.create_index()`. 
+ LanceDB Embedded users can manually create vector indexes by calling `table.create_index()`. 
  See the above sections for guidance on manually tuning index parameters as data changes.
 
 <Note>
@@ -290,7 +290,7 @@ In the embedded library the index is built before `create_index()` returns.
 </Note>
 
 <Note>
-Rows appended after an initial index build remain outside the index until refreshed manually (OSS) or automatically (Enterprise). Normal
+Rows appended after an initial index build remain outside the index until refreshed manually (Embedded) or automatically (Enterprise). Normal
 search still checks those unindexed rows with a slower fallback path; `fast_search()` skips that
 fallback and searches only indexed rows.
 </Note>
@@ -330,7 +330,7 @@ Each entry returned by `list_indices()` also carries detailed per-index metadata
 
 
 <Note>
-These fields are populated for local tables. In LanceDB Enterprise, `list_indices()` returns them except `num_unindexed_rows`; use `index_stats()` for index coverage.
+These fields are populated for LanceDB Embedded tables. In LanceDB Enterprise, `list_indices()` returns them except `num_unindexed_rows`; use `index_stats()` for index coverage.
 </Note>
 #### Custom Index Names
 

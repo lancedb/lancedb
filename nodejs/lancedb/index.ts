@@ -288,11 +288,11 @@ export async function tokenize(
  *
  * Accepted formats:
  *
- * - `/path/to/database` - local database
+ * - `/path/to/database` - database on the local file system
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
- * - `db://host:port` - remote database (LanceDB cloud)
+ * - `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
  * @param {string} uri - The uri of the database. If the database uri starts
- * with `db://` then it connects to a remote database.
+ * with `db://` then it connects to LanceDB Enterprise or LanceDB Cloud (legacy).
  * @see {@link ConnectionOptions} for more details on the URI format.
  * @param  options - The options to use when connecting to the database
  * @example
@@ -333,9 +333,9 @@ export async function connect(
  *
  * Accepted formats:
  *
- * - `/path/to/database` - local database
+ * - `/path/to/database` - database on the local file system
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
- * - `db://host:port` - remote database (LanceDB cloud)
+ * - `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
  * @param  options - The options to use when connecting to the database
  * @see {@link ConnectionOptions} for more details on the URI format.
  * @example
@@ -533,7 +533,7 @@ function restConfigToProperties(
  * Connect to a LanceDB database through a namespace.
  *
  * Unlike {@link connect}, which routes by URI scheme (local path vs.
- * `db://` cloud), `connectNamespace` always returns a namespace-backed
+ * `db://`), `connectNamespace` always returns a namespace-backed
  * connection. The `implName` selects the namespace implementation:
  *
  * - `"dir"` — directory namespace, configured with {@link DirNamespaceConfig}.

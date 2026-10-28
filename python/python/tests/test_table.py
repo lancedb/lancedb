@@ -5552,7 +5552,9 @@ async def test_computed_column_async(tmp_path):
 def test_function_errors_are_remote_only(tmp_path):
     db = lancedb.connect(tmp_path)
     table = db.create_table("t", [{"x": 1}])
-    with pytest.raises(NotImplementedError, match="LanceDB Cloud and Enterprise"):
+    with pytest.raises(
+        NotImplementedError, match="recorded only in LanceDB Distributed"
+    ):
         table.function_errors()
 
 
