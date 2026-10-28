@@ -5136,7 +5136,6 @@ dependencies = [
 [[package]]
 name = "lance-arrow"
 version = "15.0.0-beta.4"
-source = "git+https://github.com/lance-format/lance.git?tag=v15.0.0-beta.4#77123c9aa671dc509383e1e5cec96d5cd3c3212e"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
