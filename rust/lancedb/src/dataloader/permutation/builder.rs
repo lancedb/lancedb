@@ -18,6 +18,7 @@ use crate::{
     database::{CreateTableRequest, Database},
     dataloader::permutation::{
         shuffle::{Shuffler, ShufflerConfig},
+        sidecar,
         split::{SPLIT_ID_COLUMN, SplitStrategy, Splitter},
         util::{TemporaryDirectory, rename_column},
     },
@@ -61,6 +62,7 @@ pub struct PermutationConfig {
     temp_dir: TemporaryDirectory,
     /// Destination
     destination: PermutationDestination,
+    checkpoint_identity: bool,
 }
 
 /// Strategy for shuffling the data.
@@ -167,6 +169,24 @@ impl PermutationBuilder {
         self
     }
 
+    /// Build a logical occurrence digest using private disk-backed sidecars.
+    ///
+    /// Temporary ordinary plans only; requires temporary disk storage. Default
+    /// construction is unchanged. Extra correlation sorts run after the original
+    /// plan is fully built, with a separate bounded sort pool (not an RSS cap).
+    ///
+    /// ```no_run
+    /// # use lancedb::{Table, dataloader::permutation::builder::PermutationBuilder};
+    /// # async fn example(base: Table) -> lancedb::Result<Table> {
+    /// PermutationBuilder::new(base).with_checkpoint_identity().build().await
+    /// # }
+    /// ```
+    #[doc(hidden)]
+    pub fn with_checkpoint_identity(mut self) -> Self {
+        self.config.checkpoint_identity = true;
+        self
+    }
+
     async fn sort_by_column(
         &self,
         data: SendableRecordBatchStream,
@@ -249,6 +269,32 @@ impl PermutationBuilder {
 
     /// Builds the permutation table and stores it in the given database.
     pub async fn build(mut self) -> Result<Table> {
+        let correlation = if self.config.checkpoint_identity {
+            if !matches!(self.config.destination, PermutationDestination::Temporary)
+                || !matches!(
+                    self.config.split_strategy,
+                    SplitStrategy::NoSplit
+                        | SplitStrategy::Sequential { .. }
+                        | SplitStrategy::Random { .. }
+                )
+            {
+                return Err(Error::NotSupported {
+                    message: "checkpoint sidecar requires a temporary ordinary permutation".into(),
+                });
+            }
+            let limit = std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_MEMORY_LIMIT);
+            Some(sidecar::Correlation::new(
+                &self.config.temp_dir,
+                limit,
+                sidecar::DISK_LIMIT_BYTES,
+            )?)
+        } else {
+            None
+        };
+
         // Remote tables resolve latest independently for each request. Use a
         // separate pinned handle so count, projection, and scan all refer to one
         // snapshot without changing the caller's table checkout state. Native
@@ -319,6 +365,12 @@ impl PermutationBuilder {
         // Bootstrap's output row count (num_samples) differs from its input row count
         // (num_rows); every other strategy's output matches its input. The shuffler
         // must be told the former, not assume it always equals the latter.
+        let (rows, source_completion) = if let Some(correlation) = &correlation {
+            let (rows, completion) = correlation.tap(rows)?;
+            (rows, Some(completion))
+        } else {
+            (rows, None)
+        };
         let output_rows = splitter.output_row_count(num_rows);
         let split_data = splitter.apply(rows, num_rows).await?;
 
@@ -383,7 +435,20 @@ impl PermutationBuilder {
 
         let table = database.create_table(create_table_request).await?;
 
-        Ok(Table::new(table, database))
+        let table = Table::new(table, database);
+        if let (Some(correlation), Some(completion)) = (correlation, source_completion) {
+            let digest = correlation.finish(&table, completion, num_rows).await?;
+            let mut metadata = table.schema().await?.metadata().clone();
+            metadata.insert(sidecar::IDENTITY_KEY.to_string(), digest);
+            table
+                .as_native()
+                .ok_or_else(|| Error::NotSupported {
+                    message: "checkpoint sidecar requires native temporary storage".into(),
+                })?
+                .replace_schema_metadata(metadata)
+                .await?;
+        }
+        Ok(table)
     }
 }
 
@@ -395,6 +460,107 @@ mod tests {
     use crate::{arrow::LanceDbDatagenExt, connect, dataloader::permutation::split::SplitSizes};
 
     use super::*;
+
+    async fn sidecar_builder_fidelity(rows: u64, random: bool) {
+        let directory = tempfile::tempdir().unwrap();
+        let db = connect(directory.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap();
+        let data = lance_datagen::gen_batch()
+            .col("value", lance_datagen::array::step::<Int32Type>())
+            .into_ldb_stream(RowCount::from(rows), BatchCount::from(1));
+        let base = db.create_table("base", data).execute().await.unwrap();
+        let strategy = if random {
+            SplitStrategy::Random {
+                seed: Some(42),
+                sizes: SplitSizes::Fixed(4),
+                clump_size: Some(3),
+            }
+        } else {
+            SplitStrategy::Sequential {
+                sizes: SplitSizes::Fixed(4),
+            }
+        };
+        let make =
+            || PermutationBuilder::new(base.clone()).with_split_strategy(strategy.clone(), None);
+        let disabled = make().build().await.unwrap();
+        let enabled = make().with_checkpoint_identity().build().await.unwrap();
+        let a = disabled.schema().await.unwrap();
+        let b = enabled.schema().await.unwrap();
+        assert_eq!(a.fields(), b.fields());
+        let mut metadata = b.metadata.clone();
+        let digest = metadata
+            .remove(super::super::sidecar::IDENTITY_KEY)
+            .unwrap();
+        assert!(digest.starts_with("logical-occurrences-v1:"));
+        assert_eq!(a.metadata, metadata);
+        async fn pairs(table: &Table) -> Vec<(u64, u64)> {
+            let batches = table
+                .query()
+                .execute()
+                .await
+                .unwrap()
+                .try_collect::<Vec<_>>()
+                .await
+                .unwrap();
+            batches
+                .iter()
+                .flat_map(|batch| {
+                    let ids = batch
+                        .column_by_name(SRC_ROW_ID_COL)
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .unwrap();
+                    let splits = batch
+                        .column_by_name(SPLIT_ID_COLUMN)
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<arrow_array::UInt64Array>()
+                        .unwrap();
+                    (0..batch.num_rows())
+                        .map(|i| (ids.value(i), splits.value(i)))
+                        .collect::<Vec<_>>()
+                })
+                .collect()
+        }
+        let a = pairs(&disabled).await;
+        let b = pairs(&enabled).await;
+        assert_eq!(a.len(), rows as usize - rows as usize % 4);
+        assert_eq!(a.len(), b.len());
+        assert!(
+            a.iter().zip(&b).all(|(a, b)| a == b),
+            "enabled identity changed actual native plan order"
+        );
+        let again = make().with_checkpoint_identity().build().await.unwrap();
+        assert_eq!(
+            again
+                .schema()
+                .await
+                .unwrap()
+                .metadata
+                .get(super::super::sidecar::IDENTITY_KEY),
+            Some(&digest)
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sidecar_builder_fidelity_small() {
+        sidecar_builder_fidelity(1200, false).await;
+        sidecar_builder_fidelity(1200, true).await;
+        sidecar_builder_fidelity(1203, false).await;
+    }
+
+    #[test_log::test(tokio::test)]
+    #[ignore = "bounded 1M-row native spill qualification; requires explicit 16MiB environment cap"]
+    async fn test_sidecar_builder_fidelity_spill() {
+        assert_eq!(
+            std::env::var("LANCEDB_PERM_BUILDER_MEMORY_LIMIT").unwrap(),
+            "16777216"
+        );
+        sidecar_builder_fidelity(1_048_576, false).await;
+    }
 
     #[tokio::test]
     async fn test_permutation_table_only_stores_row_id_and_split_id() {
@@ -653,6 +819,19 @@ mod tests {
             metadata.get(BASE_BRANCH_CONFIG_KEY).map(String::as_str),
             Some("exp")
         );
+        let identified = PermutationBuilder::new(branch.clone())
+            .with_checkpoint_identity()
+            .build()
+            .await
+            .unwrap();
+        let mut identified_metadata = identified.schema().await.unwrap().metadata.clone();
+        assert!(
+            identified_metadata
+                .remove(super::sidecar::IDENTITY_KEY)
+                .is_some()
+        );
+        assert_eq!(identified_metadata, metadata);
+        assert_eq!(identified.count_rows(None).await.unwrap(), 10);
 
         // Main records nothing, so an absent key keeps meaning main.
         let main_permutation = PermutationBuilder::new(data_table.clone())

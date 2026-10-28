@@ -687,6 +687,84 @@ so the fetch APIs cannot read their bytes yet.
 
 ## PyTorch
 
+### Checkpoint identity
+
+`StreamingDataset` checkpoints can bind progress to a dataset and plan:
+
+```python
+from lancedb.streaming import StreamingDataset
+
+# table is an existing native table; retain its snapshot for later restores.
+dataset = StreamingDataset(
+    table,
+    checkpoint_mode="snapshot",
+    checkpoint_identity="training-corpus-generation-7",
+)
+iterator = iter(dataset)
+first = next(iterator)
+checkpoint = dataset.state_dict()
+iterator.close()
+
+resumed = StreamingDataset(
+    table,
+    checkpoint_mode="snapshot",
+    checkpoint_identity="training-corpus-generation-7",
+)
+resumed.load_state_dict(checkpoint)
+```
+
+Snapshot mode compares the actual plan's branch/version, selected input schema,
+configuration, caller generation identity, and local filesystem locator where
+available. Reopen the recorded historical snapshot before constructing `resumed`
+if the table changed. Deleted historical snapshots cannot be silently replaced
+with latest data. Caller identities must change after deletion/recreation;
+locators alone do not establish immutable data identity.
+
+To allow compaction or relocation while preserving a logical training sequence,
+use `checkpoint_mode="logical_reference"` and an immutable
+`checkpoint_revision`. This trusts the caller's statement that contents and
+order are equivalent. It does not verify all data. Custom plans still compare
+their existing permutation fingerprint. Transforms/custom strategies/callable
+error policies require `checkpoint_policy_id`; update it when their semantics
+change. The schema fingerprint describes input before a user transform.
+
+The default `checkpoint_mode="legacy"` remains **unverified**: it does not
+protect against the wrong dataset. New checkpoints include a version-1 envelope,
+which historical consumers expecting an exact field set might not understand.
+Older LanceDB readers may instead ignore the new fields and restore cursor-only
+state without enforcing provenance. These checks require a version-aware reader;
+writing a new envelope alone cannot make an older reader safe.
+Schema-less legacy states and version-1 legacy states can merge together, always
+remaining unverified. Mixing asserted and unverified states is rejected in either
+order. Loading legacy state into an asserted dataset requires
+`allow_legacy=True`; exports from that instance then remain unverified. Unknown
+future schema versions cannot use this migration path.
+
+Ordinary asserted plans also record a digest of the actual ordered logical
+occurrences, including the eligible row count. For the same canonical eligible
+source scan order, this detects a different resulting split/shuffle plan even if
+the public seed/configuration matches. It does not detect content reorderings that
+reassign the same ordinal pattern. Snapshot mode relies on the pinned backend's
+scan-order contract; logical-reference mode relies on the caller's assertion of
+unchanged logical contents and order. The digest permits
+compaction when logical scan and plan order are unchanged. It does not hash the
+dataset contents or establish transform/runtime compatibility. Custom strategies
+retain their existing physical permutation fingerprint. Legacy mode remains
+unverified. Earlier unreleased asserted version-1 checkpoints without this digest
+are rejected, including when `allow_legacy=True`.
+
+The opt-in digest uses disk-backed sidecars and three external sorts after the
+usual plan construction. This adds IO and temporary disk use; the sort memory
+setting is not a total process memory cap. The private sidecar scratch limit is
+100GiB, covering its spools and correlation sorts, separately from the existing
+permutation sorter/shuffler. Exceeding it aborts construction without an identity;
+there is no unverified fallback. Legacy mode does not request sidecars.
+
+Rank and worker counts are excluded from identity so supported elastic
+resharding remains available. Collect every previous rank's checkpoint and call
+`StreamingDataset.merge_state_dicts` before restoring on the new topology.
+
+
 ::: lancedb.streaming.StreamingDataset
 
 ::: lancedb.streaming.StreamingDataLoader
