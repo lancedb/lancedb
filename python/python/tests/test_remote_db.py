@@ -54,7 +54,7 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 
 @contextlib.contextmanager
-def mock_lancedb_connection(handler):
+def mock_lancedb_connection(handler, **client_config):
     with http.server.HTTPServer(
         ("localhost", 0), make_mock_http_handler(handler)
     ) as server:
@@ -71,6 +71,7 @@ def mock_lancedb_connection(handler):
                 "timeout_config": {
                     "connect_timeout": 1,
                 },
+                **client_config,
             },
         )
 
@@ -108,6 +109,101 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+@pytest.fixture
+def existence_handler(method, identifier, status):
+    def handler(request):
+        resource = "namespace" if method == "namespace_exists" else "table"
+        resource_id = "$".join(identifier) or "$"
+        suffix = "/" if resource == "table" else ""
+        assert request.command == "POST"
+        assert request.path == f"/v1/{resource}/{resource_id}/describe{suffix}"
+        assert request.headers["x-api-key"] == "fake"
+        assert request.headers["X-Exists-Test"] == "present"
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"lookup failed")
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "method,identifier",
+    [
+        ("namespace_exists", []),
+        ("namespace_exists", ["ns"]),
+        ("namespace_exists", ["parent", "ns"]),
+        ("table_exists", ["table"]),
+        ("table_exists", ["parent", "ns", "table"]),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 404, 403, 507])
+def test_remote_exists(method, identifier, status, existence_handler):
+    from lancedb.remote.header import StaticHeaderProvider
+
+    provider = StaticHeaderProvider({"X-Exists-Test": "present"})
+    with mock_lancedb_connection(existence_handler, header_provider=provider) as db:
+        if status in (200, 404):
+            assert getattr(db, method)(identifier) is (status == 200)
+        else:
+            with pytest.raises(HttpError) as exc_info:
+                getattr(db, method)(identifier)
+            assert exc_info.value.status_code == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,identifier",
+    [
+        ("namespace_exists", []),
+        ("namespace_exists", ["parent", "ns"]),
+        ("table_exists", ["table"]),
+        ("table_exists", ["parent", "ns", "table"]),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 404, 403, 507])
+async def test_async_remote_exists(method, identifier, status, existence_handler):
+    from lancedb.remote.header import StaticHeaderProvider
+
+    provider = StaticHeaderProvider({"X-Exists-Test": "present"})
+    async with mock_lancedb_connection_async(
+        existence_handler, header_provider=provider
+    ) as db:
+        if status in (200, 404):
+            assert await getattr(db, method)(identifier) is (status == 200)
+        else:
+            with pytest.raises(HttpError) as exc_info:
+                await getattr(db, method)(identifier)
+            assert exc_info.value.status_code == status
+
+
+@pytest.mark.parametrize("table_id", [[], ["invalid/name"]])
+def test_remote_table_exists_rejects_invalid_identifier(table_id):
+    requests = []
+    with mock_lancedb_connection(lambda request: requests.append(request.path)) as db:
+        with pytest.raises(ValueError):
+            db.table_exists(table_id)
+    assert requests == []
+
+
+def test_remote_table_exists_rechecks_cached_table():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200 if len(requests) == 1 else 404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    with mock_lancedb_connection(handler) as db:
+        table_id = ["ns", "table"]
+        assert db.table_exists(table_id) is True
+        assert db.table_exists(table_id) is False
+        assert table_id == ["ns", "table"]
+    assert requests == ["/v1/table/ns$table/describe/"] * 2
 
 
 def paginated_table_listing_handler(request):

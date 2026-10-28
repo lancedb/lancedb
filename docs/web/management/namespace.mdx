@@ -243,8 +243,11 @@ let db = lancedb::connect_namespace("rest", properties)
 ```
 </CodeGroup>
 [LanceDB Enterprise](/enterprise) operates a REST namespace server on top of the Lance format, so any REST client that can speak the REST namespace API
-contract can be used to interact with it. It does not serve the contract's `exists` routes, so checks such as `namespace_exists`
-fail against it. For authentication examples in LanceDB Enterprise, visit
+contract can be used to interact with it. It does not serve the contract's `exists` routes,
+so existence checks made through a direct REST namespace client fail against it.
+Python remote connections created with `lancedb.connect("db://...")` or
+`lancedb.connect_async("db://...")` support `namespace_exists` and `table_exists`
+through the existing describe routes instead. For authentication examples in LanceDB Enterprise, visit
 the [Namespaces in SDKs](#namespaces-in-lancedb-enterprise) page. 
 
 ## Best practices {#best-practices}

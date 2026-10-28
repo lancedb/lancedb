@@ -2436,6 +2436,49 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
+    async def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id: List[str]
+            The namespace identifier to check. An empty list represents root.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> async def check_namespace(conn):
+        ...     return await conn.namespace_exists(["analytics"])
+        """
+        return await self._inner.namespace_exists(namespace_id)
+
+    async def table_exists(self, table_id: List[str]) -> bool:
+        """Check if a table exists.
+
+        Parameters
+        ----------
+        table_id: List[str]
+            The full identifier, including namespace segments and table name.
+            Must contain at least the table name.
+
+        Returns
+        -------
+        bool
+            True if the table exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> async def check_table(conn):
+        ...     return await conn.table_exists(["analytics", "events"])
+        """
+        return await self._inner.table_exists(table_id)
+
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
