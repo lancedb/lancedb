@@ -115,14 +115,14 @@ describe("remote connection", () => {
             ...options,
             mode: "overwrite",
           }),
-        ).rejects.toThrow(/write_options.*remote/);
+        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
         await expect(
           db.createEmptyTable(
             "test",
             new Schema([new Field("value", new Int64(), true)]),
             options,
           ),
-        ).rejects.toThrow(/write_options.*remote/);
+        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
       },
     );
     expect(requests).toEqual([]);

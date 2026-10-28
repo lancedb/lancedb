@@ -2666,7 +2666,7 @@ mod tests {
                 .execute()
                 .await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains("write_options") && message.contains("remote")));
+                if message.contains("write_options") && message.contains("LanceDB Distributed")));
         }
     }
 
@@ -2739,7 +2739,7 @@ mod tests {
         ] {
             let result = builder.execute().await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains(option) && message.contains("remote")));
+                if message.contains(option) && message.contains("LanceDB Distributed")));
         }
     }
 
@@ -2757,7 +2757,7 @@ mod tests {
         ] {
             let result = builder.api_key("fake").region("us-east-1").execute().await;
             assert!(matches!(result, Err(Error::NotSupported { message })
-                if message.contains(option) && message.contains("remote")));
+                if message.contains(option) && message.contains("LanceDB Distributed")));
         }
     }
 

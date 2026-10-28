@@ -86,7 +86,7 @@ async def test_remote_create_rejects_write_options(storage_options, empty):
     if not empty:
         kwargs["data"] = [{"value": 1}]
     async with mock_lancedb_connection_async(handler) as db:
-        with pytest.raises(NotImplementedError, match="write_options.*remote"):
+        with pytest.raises(NotImplementedError, match="write_options.*LanceDB Distributed"):
             await db.create_table("t", storage_options=storage_options, **kwargs)
     assert requests == []
 
@@ -108,7 +108,7 @@ def test_sync_remote_create_rejects_write_options(options):
         request.end_headers()
 
     with mock_lancedb_connection(handler) as db:
-        with pytest.raises(NotImplementedError, match="remote"):
+        with pytest.raises(NotImplementedError, match="LanceDB Distributed"):
             db.create_table("t", [{"value": 1}], **options)
     assert requests == []
 
@@ -129,11 +129,11 @@ async def test_remote_open_rejects_local_options(options, asynchronous):
 
     if asynchronous:
         async with mock_lancedb_connection_async(handler) as db:
-            with pytest.raises(NotImplementedError, match="remote"):
+            with pytest.raises(NotImplementedError, match="LanceDB Distributed"):
                 await db.open_table("t", **options)
     else:
         with mock_lancedb_connection(handler) as db:
-            with pytest.raises(NotImplementedError, match="remote"):
+            with pytest.raises(NotImplementedError, match="LanceDB Distributed"):
                 db.open_table("t", **options)
     assert requests == []
 
@@ -149,6 +149,6 @@ async def test_remote_open_rejects_location():
         request.wfile.write(b'{"version": 1, "schema": {"fields": []}}')
 
     async with mock_lancedb_connection_async(handler) as db:
-        with pytest.raises(NotImplementedError, match="location.*remote"):
+        with pytest.raises(NotImplementedError, match="location.*LanceDB Distributed"):
             await db.open_table("t", location="/tmp/zzz")
     assert requests == []
