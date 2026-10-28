@@ -115,11 +115,11 @@ Staging shows saved release editions, so it won't show a new source change
 just because that change merged.
 
 Follow the [style guide](https://github.com/lancedb/docs/blob/main/STYLE.md).
-Vale reports suggestions on changed lines in a pull request. Check a page
-locally with:
+[Vale](https://vale.sh) checks wording, names and punctuation using the
+[bundled LanceDB rules](.github/vale/README.md). Pull requests show suggestions
+on the lines they change. With Vale 3.24.0 installed, check a page locally with:
 
 ```bash
-vale sync
 vale docs/web/indexing/vector-index.mdx
 ```
 

@@ -447,8 +447,8 @@ above:
 </CodeGroup>
 
 In the Python SDK, `Table.to_pandas()`, `Table.to_arrow()`, and the query builder
-methods `to_pandas()`, `to_arrow()`, and `to_list()` accept a `blob_mode`
-argument:
+methods `to_pandas()`, `to_arrow()`, `to_list()`, and `to_batches()` accept a
+`blob_mode` argument. Sync and async query builders support the same modes:
 
 | `blob_mode` | `to_pandas()` | `to_arrow()` and `to_list()` |
 | --- | --- | --- |
@@ -456,10 +456,11 @@ argument:
 | `"descriptions"` | Returns descriptor dicts with `kind`, `position`, `size`, `blob_id`, and `blob_uri`. | Returns the 5-field descriptor without `_lance_row_id`. |
 | `"bytes"` | Materializes each blob as `bytes` in the DataFrame. | Materializes each blob as `large_binary` in Arrow or `bytes` in Python dicts. |
 
-`to_pandas(blob_mode="lazy")` and `to_pandas(blob_mode="bytes")` require
-pylance. Without it they raise `ImportError`. `to_arrow()`,
-`to_list(blob_mode="bytes")`, `to_pandas(blob_mode="descriptions")`, and the
-fetch methods do not.
+For supported local v2 blob projections, `to_pandas(blob_mode="bytes")` and
+`to_pandas(blob_mode="descriptions")` use native Arrow conversion without
+pylance. Pandas conversions that need the Lance scanner, including plain-scan
+`"lazy"` handles and legacy blobs, still require pylance. `to_arrow()`,
+`to_list()`, `to_batches()`, and the fetch methods do not require pylance.
 
 `blob_mode="bytes"` requires a local table snapshot, so remote and in-memory
 tables raise `NotImplementedError`. On a remote table, `Table.to_pandas()` and
@@ -475,9 +476,34 @@ them out of the projection. Extra keyword arguments on
 `to_pandas()`, such as `split_blocks` and `self_destruct`, are forwarded to
 PyArrow.
 
+###### Stream blob results {#multimodal-blob-batches}
+
+`to_batches(blob_mode="bytes")` fetches blob v2 payloads one batch at a time
+and returns them as Arrow `large_binary` values. Iterate over the reader and
+call `batch.to_pandas()` to convert each batch to a DataFrame without collecting
+all payloads at once.
+
+For sync queries, call `query.to_batches(batch_size=64, blob_mode="bytes")`
+and iterate with `for`. For async queries, call
+`await query.to_batches(max_batch_length=64, blob_mode="bytes")` and iterate
+with `async for`. Sync full-text and hybrid queries do not support
+`to_batches()`.
+
+The default `"lazy"` mode returns descriptors and keeps automatic `_rowid`
+columns visible for manual fetches. `"descriptions"` returns the five-field
+descriptors. Both `"bytes"` and `"descriptions"` hide automatic row IDs;
+explicitly requested row IDs remain visible.
+
+Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
+including no legacy blobs, blobs inside lists, remote tables, or namespace
+`QueryTable` pushdown. If concurrent writers can overwrite the table, use a
+separate reader checked out to a fixed version before querying. Otherwise,
+an overwrite can invalidate the row IDs used to fetch bytes and raise
+`ValueError`.
+
 ###### Optional pandas examples {#multimodal-blob-pandas}
 
-These examples require pylance. The query example expects `tbl_async`,
+The lazy-handle calls below require pylance. The query example expects `tbl_async`,
 `query_vector`, and a `video` column, which the `photos` table does not define.
 
 <CodeGroup>
@@ -1180,7 +1206,6 @@ on finding this information in a consistent place. Use them when they fit your u
 | --- | --- | --- |
 | `lancedb:description` | Human-readable description of the field. | `"CLIP embedding of the product image"` |
 | `lancedb:tag:<name>` | User-defined key/value tag, where the suffix names the tag category. | `"lancedb:tag:model": "clip"` |
-| `lancedb:logical-column` | Groups related columns into one logical column. For example, `feature_v1` and `feature_v2` might belong to the same logical column. | `"lancedb:logical-column": "feature"` |
 | `lancedb:status` | Life cycle state of the column: `production`, `candidate`, `deprecated`, or `archived`. | `"lancedb:status": "production"` |
 
 <Note>
