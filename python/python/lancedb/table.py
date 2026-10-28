@@ -110,6 +110,7 @@ from .util import (
 )
 from .index import lang_mapping
 from .schema import (
+    _restore_blob_extensions,
     blob_v2_column_paths,
     is_blob_v2_field,
     row_addressable_blob_v2_paths,
@@ -6019,10 +6020,13 @@ class AsyncTable:
 
     async def schema(self) -> pa.Schema:
         """The [Arrow Schema](https://arrow.apache.org/docs/python/api/datatypes.html#)
-        of this Table
+        of this Table. Remote blob v2 fields retain their Arrow extension type.
 
         """
-        return await self._inner.schema()
+        schema = await self._inner.schema()
+        if not self._inner._is_native():
+            schema = _restore_blob_extensions(schema)
+        return schema
 
     async def embedding_functions(self) -> Dict[str, EmbeddingFunctionConfig]:
         """
