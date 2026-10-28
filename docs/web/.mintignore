@@ -4,3 +4,10 @@
 # the drafts marked "Draft for the Functions release".
 management/function.mdx
 sql/ddl/function.mdx
+
+# GRANT/REVOKE currently only covers privileges on Secrets and Functions
+# (CREATE SECRET, CREATE FUNCTION, USAGE on a secret or function), which are
+# themselves part of the Functions release: see the "Draft for the Functions
+# release" block in governance/authorization.mdx#privileges. At release,
+# remove this entry and add the page to the navigation in docs.json.
+sql/ddl/grant.mdx

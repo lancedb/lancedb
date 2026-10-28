@@ -77,6 +77,59 @@ like any other column (order by it, filter on it, project it) and exists only
 in a relation that came from `fts()`. See
 [Data types](/sql/data-types#pseudo-columns).
 
+### `dedupe` and `duplicate_pairs` {#dedupe}
+
+Scan a vector column's [index](/indexing/vector-index) partitions for rows
+closer than a distance threshold, without a full pairwise scan or a shuffle:
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+```
+
+<Note>
+Earlier releases spelled these `vector_duplicate_pairs` and `vector_dedup`;
+those names are rejected on current deployments.
+</Note>
+
+`duplicate_pairs` returns every close pair it finds: `row_id_a`, `row_id_b`
+and `distance`, plus `segment_id`, `partition_id` and `dataset_version`
+identifying where it was found. `dedupe` instead resolves overlapping pairs
+into duplicate groups and returns one representative row **in the table's
+own schema** per group — every column, including a BlobV2 column, comes
+through unchanged, so `dedupe`'s result composes directly into
+`CREATE TABLE ... AS` or `CREATE MATERIALIZED VIEW ... AS`:
+
+```sql
+CREATE MATERIALIZED VIEW frames_deduped AS
+SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+```
+
+`resolution` chooses how `dedupe` groups overlapping pairs, and is refused on
+`duplicate_pairs`, which has no notion of a group:
+
+| `resolution` | |
+| --- | --- |
+| `connected_components` (default) | groups transitively: if a~b and b~c are both close, all three resolve together |
+| `direct_representative` | only pairs within the threshold of each other resolve together |
+
+On `duplicate_pairs`, project an application-level identifier instead of the
+internal row ID with `id_column`, a top-level scalar column — the pair's
+selected columns become `id_a`/`id_b` instead of `row_id_a`/`row_id_b`:
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02, id_column => 'frame_id')
+```
+
+`selection` scopes the scan to a sample of partitions instead of all of them,
+the same `all` (default) / `first` / `random` choice as
+[`ivf_partition`](/sql/scalar-functions#ivf-partition):
+
+```sql
+SELECT * FROM dedupe('frames', 'vec',
+  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+```
+
 ### `generate_series` {#generate-series}
 
 ```sql

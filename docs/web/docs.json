@@ -375,6 +375,7 @@
               {
                 "group": "DDL",
                 "pages": [
+                  "sql/ddl/database",
                   "sql/ddl/namespace",
                   "sql/ddl/table",
                   "sql/ddl/view",
@@ -404,6 +405,7 @@
                   "sql/dql/aggregation",
                   "sql/dql/window",
                   "sql/dql/sampling",
+                  "sql/dql/changes",
                   "sql/dql/fts",
                   "sql/dql/explain"
                 ],

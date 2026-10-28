@@ -1,0 +1,49 @@
+---
+title: "Database"
+sidebarTitle: "Database"
+description: "ATTACH DATABASE: bind a database to a storage location."
+icon: database
+keywords: ["attach database", "database", "sql", "ddl"]
+---
+
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
+
+A database is the catalog's top-level container: it holds
+[namespaces](/sql/ddl/namespace), which hold tables, views and other objects.
+`ATTACH DATABASE` binds a name to a storage location so its objects become
+reachable.
+
+## ATTACH DATABASE {#attach}
+
+```sql
+ATTACH DATABASE analytics WITH (location = 'analytics')
+ATTACH DATABASE IF NOT EXISTS analytics WITH (location = 'analytics')
+```
+
+`location` is the only supported option, and the only way to say where a
+database lives: a relative subdirectory, never an absolute path or a URI.
+
+<Warning>
+An absolute path (`/tmp/db`), an `s3://` or `file://` URI, a Windows path
+(`C:/db`), a `..` segment, an empty string and a doubled slash (`sub//db`)
+are all refused.
+</Warning>
+
+`IF NOT EXISTS` makes the statement a no-op rather than an error when the
+database is already attached.
+
+<Note>
+A quoted name reaches characters a bare identifier cannot, such as
+`` ATTACH DATABASE "team/search" WITH (location = 'team-search') ``.
+</Note>
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Namespace" icon="folder-tree" href="/sql/ddl/namespace">
+    CREATE SCHEMA inside an attached database.
+  </Card>
+  <Card title="Table" icon="table" href="/sql/ddl/table">
+    Creating tables once a database and namespace exist.
+  </Card>
+</CardGroup>

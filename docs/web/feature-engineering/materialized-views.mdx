@@ -87,6 +87,16 @@ when maintaining an existing pipeline.
 Enterprise runs materialized-view creation and refresh on the Enterprise service.
 For SQL, see [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view) and
 [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-view).
+Creation, refresh and drop also have async, job-returning SDK methods; see
+[Materialized view](/management/materialized-view#manage).
+
+{/*
+Draft for automatic materialized-view refresh. See
+[CREATE MATERIALIZED VIEW](/sql/ddl/materialized-view#create) and
+[ALTER MATERIALIZED VIEW](/sql/ddl/materialized-view#alter) for scheduling a
+view the same way a computed column schedules itself; see
+[Automatic refresh](/feature-engineering/refresh-column#automatic).
+*/}
 
 Use an SDK version supported by your Enterprise deployment. Materialized-view
 APIs and stored definitions have changed across releases; a local SDK example

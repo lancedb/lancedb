@@ -107,9 +107,30 @@ ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_interval_seconds = 60
 ALTER TABLE my_table ALTER COLUMN doubled SET auto_refresh_enabled = true;
 ```
 
-Disabling automatic refresh prevents new automatic jobs. Inflight jobs may
-finish, and manual refresh remains available. Re-enabling wakes maintenance
-to consider accumulated changes under the interval and dependency rules.
+This is the only way to toggle a Function-filled column too, even one
+declared from the SDK: continuing the `caption` example from
+[Functions](/management/function#chain), `ALTER TABLE videos ALTER COLUMN
+caption SET auto_refresh_enabled = false` pauses it the same way, whether
+`caption` was declared through `add_columns` or through SQL.
+
+<Note>
+The current setting is in the column's own field metadata,
+`computed_column.auto_refresh_enabled`, readable from `table.schema` without
+submitting a job to ask.
+</Note>
+
+**Disabling does not skip or drop writes.** Rows written while disabled
+commit with no computed value, the same as a row written before the column
+existed; they do not queue anywhere separate. Inflight jobs may finish, and
+manual refresh remains available throughout.
+
+**Re-enabling catches up the entire backlog in one pass**, not just rows
+written after that point: the next scheduler tick processes every row left
+unfilled since the column was disabled, in a single refresh, with no
+further write required to trigger it. This is "catch up," not "resume
+cadence" -- a column disabled for an hour and re-enabled fills everything
+that accumulated during that hour, immediately, rather than only picking up
+new rows from the moment it is re-enabled.
 */}
 
 ## Refreshing part of a table {#partial}

@@ -60,6 +60,30 @@ shows the setup. `select`, `where` and `limit` define the query.
 | refresh | `refresh` | `refresh` | `REFRESH MATERIALIZED VIEW` |
 | drop | `drop_table` | `dropTable` | `DROP TABLE` |
 
+<Badge color="red">Enterprise</Badge> Creating, refreshing and dropping a
+materialized view each have an async, job-returning counterpart --
+`create_materialized_view_async`, `view.refresh_async()`,
+`drop_materialized_view_async` -- the same pattern as
+[`refresh_column_async`](/feature-engineering/refresh-column#async): each
+returns a [job](/basics/jobs) you `wait()` on instead of blocking:
+
+```python
+from datetime import timedelta
+
+job = db.create_materialized_view_async(
+    "frames_captioned", source="frames", select=["frame_id", "caption"],
+)
+view = job.wait(timeout=timedelta(minutes=15))
+```
+
+{/*
+Draft for automatic materialized-view refresh.
+
+`create_materialized_view_async` also accepts `auto_refresh_enabled` and
+`auto_refresh_interval_seconds`; see
+[CREATE MATERIALIZED VIEW](/sql/ddl/materialized-view#create).
+*/}
+
 <Note>
 On a local database, `list_materialized_views` reads table schemas to find
 views. On Enterprise, it asks the server for the view listing, as
