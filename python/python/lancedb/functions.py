@@ -366,6 +366,12 @@ class FunctionVersion(_RemoteValue):
     [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
     they are what [get_function][lancedb.db.DBConnection.get_function] takes.
     An empty ``namespace_path`` is the root namespace.
+
+    ``source_digest`` identifies the registered source artifact, independently
+    of the built ``image``. Compare it with
+    ``udf_def.registration_request.artifact.digest`` to check whether a local
+    [UdfDefinition][lancedb.functions.UdfDefinition] has the same source.
+    It is ``None`` when the server does not provide a source digest.
     """
 
     name: str
@@ -374,6 +380,7 @@ class FunctionVersion(_RemoteValue):
     location: str
     version: _ObjectVersion
     image: FunctionImage
+    source_digest: Optional[str] = None
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
     created_at_millis: int
