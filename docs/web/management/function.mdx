@@ -246,6 +246,40 @@ Function output blobs follow the same compaction and cleanup lifecycle as
 ingested Managed blobs. Retained versions continue to own their payloads;
 cleanup reclaims an object only after its retained references are gone.
 
+### Draft: incremental blob inputs (upcoming)
+
+This feature requires an SDK that exports `BlobReader` and a compatible
+Enterprise runtime with reader input support enabled. Coordinate the runtime
+upgrade before registering or executing reader Functions.
+
+Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
+incrementally. The signature selects the access mode without another
+registration option. For example, read the first MP4 box type without loading
+the whole video:
+
+```python
+from lancedb import BlobReader, udf
+
+
+@udf
+def first_box_type(video: BlobReader) -> bytes:
+    video.seek(4)
+    return video.read(4)
+```
+
+The worker passes a seekable reader backed by the stored blob. `read(size)`
+reads from the current cursor; `read_range(offset, length)` reads a byte range
+without moving it. `size()` returns the payload size without reading it.
+Each row call receives its own reader, which closes when the call returns or
+raises. Do not retain it for another invocation.
+
+Use `video: bytes` when the Function needs the complete payload. Bytes inputs
+materialize before invocation and remain subject to eager input limits.
+Reader inputs keep the unread payload out of the input batch, but calling
+`video.read()` without a size loads all remaining bytes in Python. Reader
+inputs are supported in row mode. Return values remain ordinary values such
+as `bytes`; this feature does not add streamed outputs.
+
 ## Declare the environment {#environment}
 
 The function runs remotely, so its dependencies are part of its definition:

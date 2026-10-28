@@ -66,7 +66,7 @@ def response_page(kind, names, token):
         ]
     else:
         items = names
-    key = "views" if kind == "materialized_views" else kind
+    key = kind
     return {key: items, "page_token": token}
 
 
@@ -85,7 +85,7 @@ async def advance(items, asynchronous):
     return await items.__anext__() if asynchronous else next(items)
 
 
-KINDS = ["secrets", "views", "jobs", "functions", "materialized_views"]
+KINDS = ["secrets", "views", "jobs", "functions"]
 
 
 @pytest.mark.asyncio
@@ -236,9 +236,7 @@ async def test_listing_lazy_pages_and_resume(listing_server, kind, asynchronous)
     )
     db = await connection(endpoint, asynchronous)
     method = getattr(db, "list_" + kind)
-    kwargs = (
-        {} if kind in ("jobs", "materialized_views") else {"namespace_path": ["team"]}
-    )
+    kwargs = {} if kind == "jobs" else {"namespace_path": ["team"]}
     items = method(page_token="start/token", page_limit=2, **kwargs)
     assert requests == []
     assert items.page_token() == "start/token"
@@ -273,7 +271,7 @@ async def test_listing_lazy_pages_and_resume(listing_server, kind, asynchronous)
             assert path.path == "/v1/jobs/list"
             assert body == {"page_token": token, "limit": 2}
         else:
-            namespace = "$" if kind == "materialized_views" else "team"
+            namespace = "team"
             resource = kind.removesuffix("s")
             assert path.path == f"/v1/namespace/{namespace}/{resource}/list"
             expected = {"page_token": [token], "limit": ["2"]}

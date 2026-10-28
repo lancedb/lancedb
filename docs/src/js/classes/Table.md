@@ -69,6 +69,10 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+Local computed-column declaration and refresh require a source build with
+the `experimental-functions` Cargo feature. Published packages disable it;
+remote Cloud/Enterprise operations remain available.
+
 The `{ computed }` form stores the expression rather than evaluating it
 now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
@@ -1035,6 +1039,7 @@ abstract refreshColumn(column): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
+Local refresh requires a source build with `experimental-functions`.
 
 Rows appended since the last refresh are filled by the next one, and
 rows whose inputs changed since they were computed are recomputed;
@@ -1063,6 +1068,8 @@ abstract refreshColumnAsync(column): Promise<Job>
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
 job instead of blocking until it completes.
+Local refresh requires a source build with `experimental-functions`.
+Remote Cloud/Enterprise jobs do not require this feature.
 
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
@@ -1427,8 +1434,6 @@ used when appropriate:
 - `lancedb:description`: for a human-readable description of a field.
 - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-  `feature_v2` might be in the same logical column.
 - `lancedb:status`: for status options (`production`, `candidate`,
   `deprecated`, `archived`) to designate the current life cycle state of
   this column.

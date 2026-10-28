@@ -180,6 +180,10 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
+Local creation and refresh require a source build with the
+`experimental-functions` Cargo feature, disabled in published packages.
+Remote Cloud/Enterprise operations do not require this feature.
+
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
@@ -432,8 +436,8 @@ abstract dropMaterializedView(name, namespacePath?): Promise<void>
 
 Drop the materialized view named `name`.
 
-The view may become unavailable before physical cleanup finishes. Use
-[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+Remote drops wait for the SQL command to remove the catalog binding.
+Physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -455,8 +459,9 @@ Rejects a table that exists but is not a materialized view.
 abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
 ```
 
-Start dropping the materialized view named `name` and return its cleanup
-job without waiting for completion.
+Start dropping the materialized view named `name` and return its job.
+Remote jobs have type `query` and use the SQL query ID as `id`. Waiting
+confirms catalog removal; physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
