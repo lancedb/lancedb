@@ -20,6 +20,7 @@ pub struct Expr {
 #[napi]
 impl Expr {
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn eq(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().eq(other.inner.clone()),
@@ -27,6 +28,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn ne(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().not_eq(other.inner.clone()),
@@ -34,6 +36,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn lt(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().lt(other.inner.clone()),
@@ -41,6 +44,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn lte(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().lt_eq(other.inner.clone()),
@@ -48,6 +52,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn gt(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().gt(other.inner.clone()),
@@ -55,6 +60,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn gte(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().gt_eq(other.inner.clone()),
@@ -62,6 +68,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn and(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().and(other.inner.clone()),
@@ -69,6 +76,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn or(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().or(other.inner.clone()),
@@ -83,6 +91,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn add(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().add(other.inner.clone()),
@@ -90,6 +99,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn sub(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().sub(other.inner.clone()),
@@ -97,6 +107,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn mul(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().mul(other.inner.clone()),
@@ -104,6 +115,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn div(&self, other: &Expr) -> Self {
         Self {
             inner: self.inner.clone().div(other.inner.clone()),
@@ -125,6 +137,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn contains(&self, substr: &Expr) -> Self {
         Self {
             inner: contains(self.inner.clone(), substr.inner.clone()),
@@ -132,6 +145,7 @@ impl Expr {
     }
 
     #[napi]
+    #[allow(clippy::use_self)] // NAPI doesn't allow Self here but clippy reports it
     pub fn is_in(&self, list: Vec<&Expr>) -> Self {
         let items: Vec<DfExpr> = list.into_iter().map(|e| e.inner.clone()).collect();
         Self {
@@ -161,6 +175,7 @@ impl Expr {
 /// The column name is preserved exactly as given (case-sensitive), so
 /// `col("firstName")` correctly references a field named `firstName`.
 #[napi]
+#[allow(dead_code)]
 pub fn col(name: String) -> Expr {
     Expr {
         inner: ldb_col(name),
@@ -169,6 +184,7 @@ pub fn col(name: String) -> Expr {
 
 /// Create a literal (constant) value expression.
 #[napi]
+#[allow(dead_code)]
 pub fn lit(value: napi::bindgen_prelude::Either<String, f64>) -> napi::Result<Expr> {
     match value {
         Either::A(s) => Ok(Expr { inner: df_lit(s) }),
@@ -178,6 +194,7 @@ pub fn lit(value: napi::bindgen_prelude::Either<String, f64>) -> napi::Result<Ex
 
 /// Create a literal boolean value expression.
 #[napi]
+#[allow(dead_code)]
 pub fn lit_bool(value: bool) -> Expr {
     Expr {
         inner: df_lit(value),
@@ -186,6 +203,7 @@ pub fn lit_bool(value: bool) -> Expr {
 
 /// Create a literal integer value expression.
 #[napi]
+#[allow(dead_code)]
 pub fn lit_int(value: i64) -> Expr {
     Expr {
         inner: df_lit(value),
@@ -194,6 +212,7 @@ pub fn lit_int(value: i64) -> Expr {
 
 /// Call an arbitrary registered SQL function by name.
 #[napi]
+#[allow(dead_code)]
 pub fn func(name: String, args: Vec<&Expr>) -> napi::Result<Expr> {
     let df_args: Vec<DfExpr> = args.into_iter().map(|e| e.inner.clone()).collect();
     lancedb::expr::func(&name, df_args)
