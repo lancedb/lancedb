@@ -288,8 +288,8 @@ impl BlobFile {
         }
     }
 
-    /// Physical byte offset in the data file. `None` on remote handles. The
-    /// Cloud byte-range route does not expose storage layout.
+    /// Physical byte offset in the data file. `None` on LanceDB Distributed handles. The
+    /// server's byte-range route does not expose storage layout.
     pub fn position(&self) -> Option<u64> {
         match &self.inner {
             BlobFileInner::Native(file) => Some(file.position()),
@@ -298,8 +298,8 @@ impl BlobFile {
         }
     }
 
-    /// Path of the data file holding the blob. `None` on remote handles. The
-    /// Cloud byte-range route does not expose storage layout.
+    /// Path of the data file holding the blob. `None` on LanceDB Distributed handles. The
+    /// server's byte-range route does not expose storage layout.
     pub fn data_path(&self) -> Option<&Path> {
         match &self.inner {
             BlobFileInner::Native(file) => Some(file.data_path()),
@@ -308,8 +308,8 @@ impl BlobFile {
         }
     }
 
-    /// Native storage layout. `None` on remote handles. The Cloud byte-range
-    /// route does not expose layout.
+    /// Native storage layout. `None` on LanceDB Distributed handles. The server's
+    /// byte-range route does not expose layout.
     pub fn kind(&self) -> Option<lance_core::datatypes::BlobKind> {
         match &self.inner {
             BlobFileInner::Native(file) => Some(file.kind()),
@@ -318,7 +318,7 @@ impl BlobFile {
         }
     }
 
-    /// External URI for native handles. Remote handles do not expose storage URIs.
+    /// External URI for native handles. LanceDB Distributed handles do not expose storage URIs.
     pub fn uri(&self) -> Option<&str> {
         match &self.inner {
             BlobFileInner::Native(file) => file.uri(),

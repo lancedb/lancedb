@@ -1922,7 +1922,8 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                    message: "uses_v2_manifest_paths is not supported in LanceDB Distributed."
+                        .into(),
                 })
                 .infer_error()?
                 .uses_v2_manifest_paths()
@@ -1937,7 +1938,8 @@ impl Table {
             inner
                 .as_native()
                 .ok_or_else(|| lancedb::Error::NotSupported {
-                    message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                    message: "migrate_manifest_paths_v2 is not supported in LanceDB Distributed."
+                        .into(),
                 })
                 .infer_error()?
                 .migrate_manifest_paths_v2()

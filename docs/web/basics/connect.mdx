@@ -1,7 +1,7 @@
 ---
 title: "Connect to LanceDB"
 sidebarTitle: "Connect"
-description: "Use the embedded LanceDB OSS library with tables in a local directory or object storage, or connect to LanceDB Enterprise."
+description: "Use LanceDB Embedded with tables in a local directory or object storage, or connect to LanceDB Enterprise."
 icon: plug
 keywords: ["connect", "uri", "embedded", "object storage", "s3", "enterprise", "db://"]
 ---
@@ -20,15 +20,18 @@ import {
     TsConnectObjectStorage,
 } from '/snippets/connection.mdx';
 
-The URI you pass to `connect` decides where the work runs. The same Python,
-TypeScript and Rust SDKs open all three kinds;
-[OSS and Enterprise](/basics/offerings) describes how the two offerings differ.
+The URI you pass to `connect` decides where the work runs. LanceDB Embedded
+runs in your application's process; your data can live on local disk or in
+object storage. LanceDB Enterprise runs LanceDB Distributed: query execution,
+indexing and maintenance run on the Enterprise service, outside your
+application. The same Python, TypeScript and Rust SDKs open all three kinds;
+[Embedded and Enterprise](/basics/offerings) describes how the two offerings differ.
 
 | URI | Where queries run |
 | --- | --- |
-| A local path, such as `./data` | OSS: in your process |
-| `s3://`, `gs://` or `az://` | OSS: in your process, reading object storage |
-| `db://` | LanceDB Enterprise: queries run on your cluster |
+| A local path, such as `./data` | LanceDB Embedded: in your process |
+| `s3://`, `gs://` or `az://` | LanceDB Embedded: in your process, reading object storage |
+| `db://` | LanceDB Enterprise: LanceDB Distributed runs queries on your cluster |
 
 ## A local directory {#local}
 

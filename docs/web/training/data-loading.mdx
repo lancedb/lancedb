@@ -59,7 +59,7 @@ for batch in dataloader:
 The `StreamingDataset` wraps a LanceDB `Table` and yields plain Python dictionaries by default. Whether iterating directly or through a PyTorch `DataLoader`, only one iterator can be simultaneously active on a `StreamingDataset` instance. 
 
 <Note>
-`StreamingDataset` is built on the `permutation` API and works with both LanceDB OSS and LanceDB Enterprise. The underlying table data can live on local disk or object storage.
+`StreamingDataset` is built on the `permutation` API and works with both LanceDB Embedded and LanceDB Enterprise. The underlying table data can live on local disk or object storage.
 </Note>
 
 To understand the wide range of scenarios handled by `StreamingDataset`, consider a model trained with stochastic gradient descent (SGD) and distributed data parallelism (DDP). In this example, we need to load batches onto multiple GPUs

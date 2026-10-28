@@ -1,10 +1,10 @@
 # Java SDK
 
-The LanceDB Java SDK provides a convenient way to interact with LanceDB Cloud and Enterprise deployments using the Lance REST Namespace API.
+The LanceDB Java SDK provides a convenient way to interact with LanceDB Enterprise deployments using the Lance REST Namespace API.
 
 !!! note
-    The Java SDK currently only works for LanceDB remote database that connects to LanceDB Cloud and Enterprise.
-    Local database support is a work in progress. Check [LANCEDB-2848](https://github.com/lancedb/lancedb/issues/2848) for the latest progress.
+    The Java SDK currently only works with LanceDB Distributed, connecting to LanceDB Enterprise or LanceDB Cloud (legacy).
+    LanceDB Embedded support is a work in progress. Check [LANCEDB-2848](https://github.com/lancedb/lancedb/issues/2848) for the latest progress.
 
 ## Installation
 
@@ -20,7 +20,7 @@ Add the following dependency to your `pom.xml`:
 
 ## Quick Start
 
-### Connecting to LanceDB Cloud
+### Connecting to LanceDB Cloud (legacy)
 
 ```java
 import com.lancedb.LanceDbNamespaceClientBuilder;
@@ -51,8 +51,8 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 |--------|-------------|----------|
 | `apiKey(String)` | LanceDB API key | Yes |
 | `database(String)` | Database name | Yes |
-| `endpoint(String)` | Custom endpoint URL for Enterprise deployments | No |
-| `region(String)` | AWS region (default: "us-east-1") | No |
+| `endpoint(String)` | Custom endpoint URL for LanceDB Enterprise deployments | No |
+| `region(String)` | LanceDB Cloud (legacy) region (default: "us-east-1") | No |
 | `config(String, String)` | Additional configuration parameters | No |
 
 ### Opening a Table with Vended Credentials

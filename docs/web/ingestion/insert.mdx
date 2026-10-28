@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Append records through the SDKs in OSS and Enterprise. For large Enterprise writes, see [large upload settings](#bulk-ingests-into-a-remote-table).
+    Append records through the SDKs in LanceDB Embedded and LanceDB Enterprise. For large Enterprise writes, see [large upload settings](#bulk-ingests-into-a-remote-table).
 ---
 
 import {
@@ -167,7 +167,7 @@ Wait for the write operation's result, then check the expected records.
 Progress callbacks describe activity; they do not establish that a write
 succeeded. If a request fails after the server may have committed it, blindly
 repeating an append can duplicate rows. The client's automatic retries can do
-the same: on a remote table, the Python and TypeScript 0.40.0 clients resend an
+the same: on an Enterprise table, the Python and TypeScript 0.40.0 clients resend an
 append after a retryable status such as `504`, even when the server had already
 committed it, and `add()` still returns success. Reconcile using your record
 IDs, or choose an upsert policy designed for replay.
@@ -176,9 +176,9 @@ IDs, or choose an upsert policy designed for replay.
 
 <Badge color="red">Enterprise</Badge>
 
-This section applies only to remote tables (`db://` connections). Embedded (local) writes are unaffected.
+This section applies only to LanceDB Enterprise tables (`db://` connections). LanceDB Embedded writes are unaffected.
 
-When you write to a remote LanceDB Enterprise table, the client sends the write as one HTTP `insert` request unless it splits the data into more than one partition, which it does for a large input it can measure or when you set [`write_parallelism`](#write-parallelism). A partitioned write goes up as a multipart write: the client cuts each partition into one or more `insert` parts and uploads them under a single upload id. Each part is streamed. Its size and duration still affect resource use and
+When you write to a LanceDB Enterprise table, the client sends the write as one HTTP `insert` request unless it splits the data into more than one partition, which it does for a large input it can measure or when you set [`write_parallelism`](#write-parallelism). A partitioned write goes up as a multipart write: the client cuts each partition into one or more `insert` parts and uploads them under a single upload id. Each part is streamed. Its size and duration still affect resource use and
 timeouts: it has to finish within the client read timeout while the server writes it to object storage, so on very large ingests an oversized part can run past that timeout and surface as:
 
 ```text

@@ -24,7 +24,7 @@ Run optimization as regular table maintenance, particularly after many small
 writes or a large ingest.
 
 {/*
-Draft for the OSS compaction SQ partition check release. Keep this section
+Draft for the LanceDB Embedded compaction SQ partition check release. Keep this section
 unpublished until that behavior ships.
 
 ### Recover from an oversized SQ partition {#oversized-sq-partition}
@@ -62,7 +62,7 @@ needs to.
 <Note>
 **Enterprise job type:** `compact`. Runs automatically as data accumulates,
 separately from [`cleanup`](/maintenance/cleanup). The two are distinct jobs
-even though `optimize()` bundles both in one OSS call.
+even though `optimize()` bundles both in one LanceDB Embedded call.
 </Note>
 
 ## Retraining indexes {#retrain}
@@ -113,7 +113,7 @@ Two things accumulate on a long-lived table as more and more data gets added to 
 - **Many small fragments build up as you write**, slowing down queries that have to scan across more files. **Compaction** merges them back into larger fragments.
 - **Old versions build up as the table changes**, growing disk usage beyond the live data size (LanceDB retains them for time-travel and rollback). **Cleanup** prunes versions older than a retention window.
 
-In OSS, you run them yourself via `optimize()`, which bundles both into a single call:
+In LanceDB Embedded, you run them yourself via `optimize()`, which bundles both into a single call:
 
 ```python Python icon="python"
 from datetime import timedelta
@@ -129,7 +129,7 @@ until the first supported release is confirmed.
 
 ### Tune compaction for wide rows {#tune-wide-rows}
 
-For an existing local table, derive a fragment row target from the expected
+For an existing LanceDB Embedded table, derive a fragment row target from the expected
 row size. These examples use rows averaging 1 KiB and a 64 KiB fragment
 target; choose sizes for your workload. Smaller scan batches and one compaction
 task at a time can also reduce memory use.
@@ -148,7 +148,7 @@ separately when needed; Python's `optimize()` includes those steps.
 
 TypeScript's `optimize()` does not currently expose the fragment row target,
 scan batch size, or compaction thread count. These tuning examples apply to
-Python and Rust local tables.
+Python and Rust tables in LanceDB Embedded.
 
 Planning remains row based. The row target bounds later passes after existing
 oversized fragments have been rewritten; the first pass rewrites those

@@ -444,8 +444,8 @@ pub trait QueryBase {
     /// # }
     /// ```
     ///
-    /// Note: Expression filters are not supported for remote/server-side queries.
-    /// Use [`QueryBase::only_if`] with SQL strings for remote tables.
+    /// Note: Expression filters are not supported for LanceDB Distributed queries.
+    /// Use [`QueryBase::only_if`] with SQL strings in LanceDB Distributed.
     ///
     /// Calling this multiple times combines the expressions with a logical AND
     /// rather than replacing the previous filter.
@@ -1025,7 +1025,7 @@ impl Query {
     /// By default, there is no embedding model, and the input should be
     /// vector/slice of floats.
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
     ///
     /// If there is only one vector column (a column whose data type is a
     /// fixed size list of floats) then the column does not need to be specified.
@@ -1269,7 +1269,7 @@ impl VectorQuery {
     /// result.
     ///
     /// NaN and infinite components are rejected with [`Error::InvalidInput`]
-    /// after conversion to Float32, for both local and remote tables.
+    /// after conversion to Float32, in both LanceDB Embedded and LanceDB Distributed.
     pub fn add_query_vector(mut self, vector: impl IntoQueryVector) -> Result<Self> {
         self.request.add_query_vector(vector)?;
         Ok(self)

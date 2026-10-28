@@ -544,7 +544,7 @@ impl<S: HttpSend> RemoteTable<S> {
         ) && !self.server_version.support_fts_document_granularity()
         {
             return Err(Error::NotSupported {
-                message: "FTS document granularity requires remote server version 0.6.0 or later"
+                message: "FTS document granularity requires LanceDB Enterprise server version 0.6.0 or later"
                     .into(),
             });
         }
@@ -569,7 +569,7 @@ impl<S: HttpSend> RemoteTable<S> {
         // Warn if train=false is specified since it's not meaningful
         if !index.train {
             log::warn!(
-                "train=false has no effect remote tables. The index will be created empty and automatically populated in the background."
+                "train=false has no effect in LanceDB Distributed. The index will be created empty and automatically populated in the background."
             );
         }
 
@@ -623,7 +623,7 @@ impl<S: HttpSend> RemoteTable<S> {
             }
             Index::IvfHnswPq(_) => {
                 return Err(Error::NotSupported {
-                    message: "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.".into(),
+                    message: "IVF_HNSW_PQ is not supported in LanceDB Distributed. Please use IVF_HNSW_SQ instead.".into(),
                 });
             }
         };
@@ -1067,7 +1067,7 @@ impl<S: HttpSend> RemoteTable<S> {
                 QueryFilter::Datafusion(expr) => expr_to_sql_string(expr)?,
                 QueryFilter::Substrait(_) => {
                     return Err(Error::NotSupported {
-                        message: "Substrait filters are not supported for remote queries"
+                        message: "Substrait filters are not supported in LanceDB Distributed"
                             .to_string(),
                     });
                 }
@@ -1117,7 +1117,7 @@ impl<S: HttpSend> RemoteTable<S> {
         if let Some(full_text_search) = &params.full_text_search {
             if full_text_search.wand_factor.is_some() {
                 return Err(Error::NotSupported {
-                    message: "Wand factor is not supported for remote tables.".into(),
+                    message: "Wand factor is not supported in LanceDB Distributed.".into(),
                 });
             }
 
@@ -1128,7 +1128,7 @@ impl<S: HttpSend> RemoteTable<S> {
             {
                 return Err(Error::NotSupported {
                     message:
-                        "FTS document granularity requires remote server version 0.6.0 or later"
+                        "FTS document granularity requires LanceDB Enterprise server version 0.6.0 or later"
                             .into(),
                 });
             }
@@ -2760,7 +2760,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         if add.allow_external_blob_outside_bases {
             return Err(Error::NotSupported {
-                message: "allow_external_blob_outside_bases is only supported on local tables"
+                message: "allow_external_blob_outside_bases is only supported in LanceDB Embedded"
                     .to_string(),
             });
         }
@@ -3432,7 +3432,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     async fn optimize(&self, _action: OptimizeAction) -> Result<OptimizeStats> {
         self.check_mutable().await?;
         Err(Error::NotSupported {
-            message: "optimize is not supported for remote tables.".into(),
+            message: "optimize is not supported in LanceDB Distributed.".into(),
         })
     }
     async fn add_columns(
@@ -4480,7 +4480,7 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(err, Error::NotSupported { .. }), "got {err:?}");
-        assert!(err.to_string().contains("local tables"));
+        assert!(err.to_string().contains("LanceDB Embedded"));
     }
 
     #[tokio::test]
@@ -6560,7 +6560,7 @@ mod tests {
             match result.unwrap_err() {
                 Error::NotSupported { message } => assert_eq!(
                     message,
-                    format!("{operation} is not supported for remote tables.")
+                    format!("{operation} is not supported in LanceDB Distributed.")
                 ),
                 error => panic!("expected not-supported error, got {error}"),
             }
@@ -6588,7 +6588,7 @@ mod tests {
             .unwrap_err();
         assert_not_supported_error(
             error,
-            "IVF_HNSW_PQ is not supported for remote tables. Please use IVF_HNSW_SQ instead.",
+            "IVF_HNSW_PQ is not supported in LanceDB Distributed. Please use IVF_HNSW_SQ instead.",
         );
     }
 
@@ -7692,10 +7692,9 @@ mod tests {
             panic!("legacy remote query unexpectedly succeeded")
         };
 
-        assert!(
-            err.to_string()
-                .contains("document granularity requires remote server version 0.6.0 or later")
-        );
+        assert!(err.to_string().contains(
+            "document granularity requires LanceDB Enterprise server version 0.6.0 or later"
+        ));
     }
 
     #[rstest]
@@ -8641,12 +8640,9 @@ mod tests {
             .execute()
             .await;
 
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("document granularity requires remote server version 0.6.0 or later")
-        );
+        assert!(result.unwrap_err().to_string().contains(
+            "document granularity requires LanceDB Enterprise server version 0.6.0 or later"
+        ));
     }
 
     #[tokio::test]

@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, secret resolution, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by LanceDB Enterprise.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -275,7 +275,7 @@ class FunctionSignature(_RemoteValue):
 
 
 class PythonEnvironmentSpec(_RemoteValue):
-    """One Sophon-managed Python environment source."""
+    """One LanceDB Enterprise-managed Python environment source."""
 
     kind: str
     packages: tuple[str, ...] = ()
@@ -653,8 +653,8 @@ class FunctionBinding(_RemoteValue):
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
-    Local jobs produce this value in process. LanceDB Cloud and Enterprise
-    decode the same value from the durable server-job terminal payload.
+    LanceDB Embedded jobs produce this value in process. LanceDB Distributed
+    decodes the same value from the durable server-job terminal payload.
     """
 
     rows_assigned: _UInt64

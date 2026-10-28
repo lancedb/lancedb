@@ -9,7 +9,6 @@ swap:
   '(?:Lancedb|LanceDb|lanceDB|LANCEDB|Lance DB)': LanceDB
   'LanceDB (?:cloud|CLOUD)': LanceDB Cloud
   'LanceDB (?:enterprise|ENTERPRISE)': LanceDB Enterprise
-  'LanceDB (?:oss|Oss)': LanceDB OSS
   '(?:HuggingFace|Huggingface|Hugging face)': Hugging Face
   Langchain: LangChain
   Typescript: TypeScript

@@ -8,8 +8,9 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    OSS opens tables in a local directory or object storage. Enterprise connects
-    to remote compute with a database URI and credentials.
+    LanceDB Embedded opens tables in a local directory or object storage.
+    LanceDB Enterprise connects with a database URI and credentials and runs
+    operations with LanceDB Distributed.
 ---
 
 import { PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
@@ -22,14 +23,15 @@ objects, and configure how your application reaches the data.
 
 | URI | Offering | Where queries run |
 | --- | --- | --- |
-| `./.lancedb` | OSS, with local storage | In your application |
-| `s3://bucket/path`, `gs://bucket/path`, `az://container/path` | OSS, with object storage | In your application |
-| `db://my-database` | Enterprise | On remote compute |
+| `./.lancedb` | LanceDB Embedded, with local storage | In your application |
+| `s3://bucket/path`, `gs://bucket/path`, `az://container/path` | LanceDB Embedded, with object storage | In your application |
+| `db://my-database` | LanceDB Enterprise | On the Enterprise service (LanceDB Distributed) |
 
 [Connect to LanceDB](/basics/connect) has examples for each connection type.
-A connection to object storage still uses the embedded library: your process
-reads and writes the bucket directly. Enterprise runs operations remotely and
-manages the supporting compute and maintenance.
+A connection to object storage still uses LanceDB Embedded: your process
+reads and writes the bucket directly. LanceDB Enterprise runs LanceDB
+Distributed: query execution, indexing and maintenance run on the Enterprise
+service, outside your application.
 
 ## Connect to Enterprise {#deployment}
 
@@ -60,7 +62,7 @@ manager. See [Authentication](/enterprise/authentication) for OAuth and
 
 ## Storage options {#storage-options}
 
-For OSS tables in object storage, `storage_options` configures credentials,
+For LanceDB Embedded tables in object storage, `storage_options` configures credentials,
 endpoints and options for new tables. This example enables stable row IDs for
 tables created through the connection:
 
@@ -91,7 +93,7 @@ See [Storage](/deployment/storage) for provider credentials and other options.
 
 ## Read consistency {#consistency}
 
-For OSS connections, `read_consistency_interval` controls how often reads check
+For LanceDB Embedded connections, `read_consistency_interval` controls how often reads check
 for table versions committed by other writers. For example, check at most once
 every five seconds:
 
@@ -112,7 +114,7 @@ const db = await lancedb.connect("./.lancedb", { readConsistencyInterval: 5 });
 ```
 </CodeGroup>
 
-By default, an OSS table handle does not automatically pick up another
+By default, an Embedded table handle does not automatically pick up another
 process's writes. Reopen the table, check out its latest version, or configure
 a consistency interval when you need those updates. A zero interval checks on
 every read, with the cost of a metadata check.
@@ -139,7 +141,7 @@ versions and lifecycle operations.
 
 <Warning>
 Dropping a table removes its history as well as its current data. You cannot
-recover a dropped table through table versioning. The OSS `drop_database()`
+recover a dropped table through table versioning. The LanceDB Embedded `drop_database()`
 and `drop_all_tables()` operations remove all tables without a confirmation prompt.
 </Warning>
 

@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Query plans are available in OSS and Enterprise.
+    Query plans are available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import { PyQueryPlan, TsQueryPlanBody, TsQueryPlanTail } from '/snippets/search_examples.mdx';
@@ -26,7 +26,7 @@ the query and adds measurements, including execution time and rows processed.
 
 Use the first to inspect query structure and the second to investigate work
 actually performed. Operator names and available measurements can differ
-between OSS and Enterprise. SQL provides [EXPLAIN and EXPLAIN ANALYZE](/sql/dql/explain).
+between LanceDB Embedded and LanceDB Enterprise. SQL provides [EXPLAIN and EXPLAIN ANALYZE](/sql/dql/explain).
 
 <span id="try-both-methods-on-a-local-table"></span>
 
@@ -161,7 +161,7 @@ CoalesceBatchesExec: target_batch_size=1024
 
 #### 5\. Data Retrieval {#5-data-retrieval}
 
-- `RemoteTake` is the deployment's operator for this step; a local plan shows Lance's `Take` or a `LanceRead` over the selected row IDs, depending on the library version
+- `RemoteTake` is the deployment's operator for this step; a LanceDB Embedded plan shows Lance's `Take` or a `LanceRead` over the selected row IDs, depending on the library version
 - Handles efficient data retrieval from remote storage locations
 - Fetches specific rows and columns needed for the final output
 - Optimizes network bandwidth by only retrieving required data
@@ -328,25 +328,26 @@ ProjectionExec: expr=[chunk_index@4 as chunk_index, title@5 as title, identifier
 
 </Accordion>
 
-### Distributed metrics on remote tables {#distributed-metrics-on-remote-tables}
+### Distributed metrics on LanceDB Enterprise {#distributed-metrics-on-remote-tables}
 
 <Badge color="red">Enterprise</Badge>
 
-When you call `analyze_plan` against a LanceDB Enterprise deployment that distributes its queries across a pool of workers, the query runs on those workers. By default the returned plan aggregates each operator's metrics into a single value, matching the local single-node output. Pass a `distributed_metrics` mode when you need to see how work was split across workers:
+When you call `analyze_plan` against a LanceDB Enterprise deployment that distributes its queries across a pool of workers, the query runs on those workers. By default the returned plan aggregates each operator's metrics into a single value, matching the single-node output of LanceDB Embedded. Pass a `distributed_metrics` mode when you need to see how work was split across workers:
 
 | Mode          | What it shows                                                                       | When to use it                                                                                          |
 | :------------ | :---------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------ |
-| `aggregate`   | One summary value per operator (default). Same shape as local `analyze_plan`.       | Everyday performance checks and comparisons against a local plan.                                       |
+| `aggregate`   | One summary value per operator (default). Same shape as Embedded `analyze_plan`.    | Everyday performance checks and comparisons against an Embedded plan.                                   |
 | `per_worker`  | Metrics reported separately for each worker that participated in the query.         | Diagnosing stragglers or uneven work distribution across the cluster.                                   |
 | `full`        | Both the aggregate summary and the per-worker breakdown.                            | Deep investigations where you need the totals *and* the per-worker detail in a single output.           |
 
 Python exposes this option through `distributed_metrics`. In TypeScript, pass
-the same mode to `analyzePlan()` as its `distributedMetrics` argument. Local
-Python queries ignore the distributed mode and return local measurements.
+the same mode to `analyzePlan()` as its `distributedMetrics` argument. Python
+queries on LanceDB Embedded ignore the distributed mode and return single-node
+measurements.
 
 <CodeGroup>
 ```python Python icon="python"
-# Show a per-worker breakdown for a remote query
+# Show a per-worker breakdown for a query on LanceDB Enterprise
 plan = (
     table.search(query_embed)
     .where("identifier > 0 AND identifier < 1000000")
