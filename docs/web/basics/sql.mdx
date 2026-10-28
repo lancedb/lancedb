@@ -8,7 +8,7 @@ availability:
   oss: unavailable
   enterprise: available
   summary: >-
-    Enterprise supports SQL through Arrow Flight SQL. Use the SDK table APIs for embedded OSS tables. See [Connection settings](#sql-is-remote) to connect.
+    Enterprise supports SQL through Arrow Flight SQL. Use the SDK table APIs for LanceDB Embedded tables. See [Connection settings](#sql-is-remote) to connect.
 ---
 
 Use SQL in LanceDB Enterprise to filter records, join tables, calculate
@@ -52,7 +52,7 @@ API and SQL endpoints may use different hosts or ports.
 See [Connect to Enterprise](/basics/connect#enterprise) for other connection options.
 
 SQL runs in Enterprise. Connections to a local directory or an object-storage
-bucket use the embedded OSS library and cannot execute SQL statements. Use
+bucket use LanceDB Embedded and cannot execute SQL statements. Use
 SDK table operations to query those tables.
 
 ## Run a query in Python {#sql-from-python}
@@ -94,7 +94,7 @@ handles, streaming, and cancellation.
 Use **SQL** for joins, aggregations, window functions, and analytical queries
 written in SQL. Use **SDK table operations** to build applications around table
 management, ingestion, filtering, and search, including applications that run
-with the embedded OSS library.
+with LanceDB Embedded.
 
 You can combine them. For example, create and populate a table with an SDK,
 then query it with SQL to prepare a training dataset. In Python, both workflows
@@ -130,7 +130,7 @@ server version supports this form, then use
 [`EXPLAIN`](/sql/dql/explain) to inspect the query plan.
 
 The [SDK vector search API](/search/vector-search) is also available in
-Enterprise and OSS. Use it when you prefer the SDK query builder or need to
+LanceDB Enterprise and LanceDB Embedded. Use it when you prefer the SDK query builder or need to
 search embedded tables.
 
 For full-text search in SQL, use the [`fts()`](/sql/functions#fts) table

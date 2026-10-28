@@ -70,7 +70,7 @@ changes incrementally for supported queries; other queries require a full rebuil
 See [refresh behavior](/feature-engineering/materialized-views#incremental) for
 version-specific details.
 
-Enterprise runs materialization on remote compute. Use the SDK and refresh
+Enterprise runs materialization on the Enterprise service. Use the SDK and refresh
 options supported by your server version; see
 [Enterprise refreshes](/feature-engineering/materialized-views#availability).
 
@@ -78,8 +78,8 @@ options supported by your server version; see
 
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
-| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | OSS and Enterprise |
-| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | OSS and Enterprise |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | Embedded and Enterprise |
+| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | Embedded and Enterprise |
 | [Geneva](/geneva) | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 
 {/*

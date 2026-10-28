@@ -1261,7 +1261,7 @@ impl Database for ListingDatabase {
             });
         }
         Err(Error::NotSupported {
-            message: "rename_table is not supported in LanceDB OSS".into(),
+            message: "rename_table is not supported in LanceDB Embedded".into(),
         })
     }
 

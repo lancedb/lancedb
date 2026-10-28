@@ -43,7 +43,7 @@ Run vector search and keep the results as a Polars `DataFrame` for further proce
 
 ## Work with LazyFrames {#work-with-lazyframes}
 
-When you want to operate on the entire table (potentially larger than RAM), convert to a Polars `LazyFrame` so you can chain transformations without loading everything at once. This works for local tables only; with LanceDB Enterprise, `search(...).to_polars()` returns an eager DataFrame of query results.
+When you want to operate on the entire table (potentially larger than RAM), convert to a Polars `LazyFrame` so you can chain transformations without loading everything at once. This works for LanceDB Embedded tables only; with LanceDB Enterprise, `search(...).to_polars()` returns an eager DataFrame of query results.
 
 <CodeBlock filename="Python" language="Python" icon="python">
   {PyPlatformsPolarsLazyframe}

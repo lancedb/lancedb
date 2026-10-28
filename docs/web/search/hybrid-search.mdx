@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Hybrid search is available in OSS and Enterprise.
+    Hybrid search is available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import { PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
@@ -84,9 +84,9 @@ import { Utf8 } from "apache-arrow";
 </CodeGroup>
 
 ### 2\. Connect to LanceDB {#2-connect-to-lancedb}
-Choose a local OSS connection or use your Enterprise connection details.
+Choose a LanceDB Embedded connection or use your Enterprise connection details.
 
-<Badge color="green">OSS</Badge>
+<Badge color="green">Embedded</Badge>
 
 <CodeGroup>
 ```python Python icon="python"
@@ -389,7 +389,7 @@ which relevant rows reach the candidate set before evaluating how a reranker
 orders them. Record latency as well as relevance: increasing candidate counts
 or applying a model-based reranker adds work.
 
-Reranking runs in the application for both OSS and Enterprise connections.
+Reranking runs in the application for both Embedded and Enterprise connections.
 See [Reranking](/reranking) for model-free fusion, model-based rerankers,
 custom implementations and score interpretation.
 

@@ -1572,9 +1572,10 @@ class Table(ABC):
         raise NotImplementedError("to_arrow is not supported for this table type")
 
     def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return a local table as a lance.LanceDataset.
+        """Return a LanceDB Embedded table as a lance.LanceDataset.
 
-        Remote tables cannot be opened as Lance datasets by the client. Use
+        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        client. Use
         ``table.search().to_arrow()`` to read them through the server.
 
         Returns
@@ -1586,7 +1587,7 @@ class Table(ABC):
     def to_polars(self, batch_size=None) -> "pl.LazyFrame":
         """Return the table as a Polars LazyFrame.
 
-        For remote tables, use ``table.search().to_polars()`` to convert query
+        In LanceDB Distributed, use ``table.search().to_polars()`` to convert query
         results to a Polars DataFrame.
 
         Parameters
@@ -2530,7 +2531,7 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Materialize full blob bytes for ``column`` at the given rows.
 
-        Local tables support both legacy blob v1 and blob v2 columns.
+        LanceDB Embedded supports both legacy blob v1 and blob v2 columns.
         The result has the same length and order as ``row_ids``. Null blobs
         produce null slots; valid empty blobs produce ``b""``.
 
@@ -2542,7 +2543,7 @@ class Table(ABC):
 
         Blobs inside lists cannot be fetched by row id yet.
 
-        Remote servers limit each request to 1024 row IDs and 64 MiB of blob
+        LanceDB Distributed limits each request to 1024 row IDs and 64 MiB of blob
         bytes. The client splits requests automatically and reads an individual
         larger blob through the Range route. This method still materializes all
         bytes in memory; for large values use :meth:`fetch_blob_files`.
@@ -2556,7 +2557,7 @@ class Table(ABC):
     ) -> pa.LargeBinaryArray:
         """Materialize row-specific byte ranges from a blob column.
 
-        Local tables support both legacy blob v1 and blob v2 columns.
+        LanceDB Embedded supports both legacy blob v1 and blob v2 columns.
         Each request is a three-item ``(row_id, offset, length)`` sequence.
         Requests may be repeated or reordered, including multiple ranges for
         the same blob.
@@ -2569,7 +2570,7 @@ class Table(ABC):
         results are returned.
 
         Row IDs can be obtained from a query with ``with_row_id(True)``.
-        Remote tables read the requested ranges through version-pinned blob
+        LanceDB Distributed reads the requested ranges through version-pinned blob
         handles using HTTP byte-range requests.
         """
 
@@ -2581,12 +2582,12 @@ class Table(ABC):
     ) -> "list[Optional[BlobFile]]":
         """Open lazy, seekable :class:`~lancedb._blob.BlobFile` handles.
 
-        Local tables support both legacy blob v1 and blob v2 columns.
+        LanceDB Embedded supports both legacy blob v1 and blob v2 columns.
         Prefer this over :meth:`fetch_blobs` for large payloads. ``row_ids`` is
         a ``list[int]``, an integer Arrow array or chunked array, or a query
         ``pyarrow.Table`` carrying row identity via ``_rowid`` or a
         ``_lance_row_id`` field on the blob descriptor. Null blob values return
-        ``None``. Remote tables require LanceDB Cloud server 0.5.0 or newer.
+        ``None``. LanceDB Distributed requires server version 0.5.0 or newer.
 
         ``_rowid`` values stay valid after compaction when the table has stable
         row ids.
@@ -2823,8 +2824,8 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDb Cloud (since LanceDB
-        Cloud manages cleanup for you automatically)
+        This function is not available in LanceDB Distributed, which manages
+        cleanup for you automatically.
         """
 
     @abstractmethod
@@ -2845,8 +2846,8 @@ class Table(ABC):
 
         Notes
         -----
-        This function is not available in LanceDB Cloud (since LanceDB
-        Cloud manages compaction for you automatically)
+        This function is not available in LanceDB Distributed, which manages
+        compaction for you automatically.
         """
 
     @abstractmethod
@@ -2932,7 +2933,7 @@ class Table(ABC):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. For remote tables,
+        rebuilt in the client process from index metadata. In LanceDB Distributed,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -2988,12 +2989,12 @@ class Table(ABC):
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
-            Function columns are supported only on LanceDB Cloud and
-            Enterprise.
+            Function columns are supported only in LanceDB
+            Distributed.
         computed: Dict[str, str], optional
-            Local declaration and refresh require a source build with the
+            LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. Remote Cloud/Enterprise operations remain available.
+            do not enable. LanceDB Distributed operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -3012,14 +3013,15 @@ class Table(ABC):
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            On LanceDB Cloud and Enterprise the expression is planned by the
+            In LanceDB Distributed the expression is planned by the
             server, and the refresh runs as a server job -- see
             [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
             Cannot be combined with ``transforms``.
 
         auto_refresh_enabled: bool, optional
             Enable automatic refresh for each declared computed output. Defaults
-            to True. Local tables store this option; scheduling requires a server.
+            to True. LanceDB Embedded stores this option; scheduling requires a
+            server.
         auto_refresh_interval_seconds: int, optional
             Positive minimum interval after a successful refresh, in seconds.
             When omitted, the server determines when to refresh. Applies to every
@@ -3059,7 +3061,8 @@ class Table(ABC):
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        Local tables only: a remote refresh runs as a server job, through
+        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
+        server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
@@ -3080,14 +3083,15 @@ class Table(ABC):
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        Local refresh requires a source build with ``experimental-functions``.
-        Remote Cloud/Enterprise jobs do not require this feature.
+        LanceDB Embedded refresh requires a source build with
+        ``experimental-functions``.
+        LanceDB Distributed jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`Job.wait` returns. Invalid input --
         an unknown column, or one that is not computed -- raises here rather
-        than failing the job. On local tables the job runs in-process; on
-        LanceDB Cloud and Enterprise it is the server's backfill job.
+        than failing the job. In LanceDB Embedded the job runs in-process; in
+        LanceDB Distributed it is the server's backfill job.
 
         Returns
         -------
@@ -3123,7 +3127,7 @@ class Table(ABC):
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        detail was capped. LanceDB Distributed only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -4186,7 +4190,7 @@ class LanceTable(Table):
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported on remote tables.
+        Currently only supported in LanceDB Distributed.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -4435,7 +4439,7 @@ class LanceTable(Table):
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
-            Local tables only.
+            LanceDB Embedded only.
 
         Returns
         -------
@@ -5077,7 +5081,7 @@ class LanceTable(Table):
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. For remote tables,
+        rebuilt in the client process from index metadata. In LanceDB Distributed,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may
@@ -6071,9 +6075,10 @@ class AsyncTable:
         return AsyncQuery(self._inner.query(), self)
 
     async def to_lance(self, **kwargs) -> lance.LanceDataset:
-        """Return the Lance dataset backing a local table.
+        """Return the Lance dataset backing a LanceDB Embedded table.
 
-        Remote tables cannot be opened as Lance datasets by the client. Use
+        LanceDB Distributed tables cannot be opened as Lance datasets by the
+        client. Use
         [to_arrow][lancedb.table.AsyncTable.to_arrow] or
         [query][lancedb.table.AsyncTable.query] to read them through the server.
 
@@ -6094,7 +6099,7 @@ class AsyncTable:
         """
         if not self._inner._is_native():
             raise NotImplementedError(
-                "to_lance() is not supported for remote tables; "
+                "to_lance() is not supported in LanceDB Distributed; "
                 "query the server instead"
             )
 
@@ -6127,7 +6132,7 @@ class AsyncTable:
         Parameters
         ----------
         blob_mode: str, default "lazy"
-            Controls how Lance blob columns are returned. Remote tables support
+            Controls how Lance blob columns are returned. LanceDB Distributed supports
             "descriptions"; "bytes" and "lazy" are not yet supported.
         **kwargs
             Forwarded to PyArrow / Lance pandas conversion.
@@ -6371,7 +6376,7 @@ class AsyncTable:
 
         This is a hint to the database that the given columns will be accessed
         in the future and the database should prefetch the data if possible.
-        Currently only supported on remote tables.
+        Currently only supported in LanceDB Distributed.
 
         This call initiates prewarming and returns once the request is accepted.
         It is idempotent and safe to call from multiple clients concurrently.
@@ -6415,8 +6420,8 @@ class AsyncTable:
         """
         Get the table URI (storage location).
 
-        For remote tables, this fetches the location from the server via describe.
-        For local tables, this returns the dataset URI.
+        In LanceDB Distributed, this fetches the location from the server via describe.
+        In LanceDB Embedded, this returns the dataset URI.
 
         Returns
         -------
@@ -6499,7 +6504,7 @@ class AsyncTable:
             using too much memory.
         allow_external_blob_outside_bases: bool, default False
             Allow blob URIs outside registered bases. See :meth:`Table.add`.
-            Local tables only.
+            LanceDB Embedded only.
 
         """
         schema = await self.schema()
@@ -7203,12 +7208,12 @@ class AsyncTable:
             or named-struct result in the named table column. A bare
             named-struct application expands its ordered result fields as one
             atomic binding; aliases come from ``rename(columns=...)``.
-            Function columns are supported only on LanceDB Cloud and
-            Enterprise.
+            Function columns are supported only in LanceDB
+            Distributed.
         computed: Dict[str, str], optional
-            Local declaration and refresh require a source build with the
+            LanceDB Embedded declaration and refresh require a source build with the
             ``experimental-functions`` Cargo feature, which published packages
-            do not enable. Remote Cloud/Enterprise operations remain available.
+            do not enable. LanceDB Distributed operations remain available.
 
             A mapping from output column names to SQL expressions derives each
             output field from its expression. A direct projection of a Blob v2
@@ -7226,13 +7231,13 @@ class AsyncTable:
             While a declaration reads a column, that column cannot be renamed,
             retyped or dropped.
 
-            On LanceDB Cloud and Enterprise the expression is planned by
+            In LanceDB Distributed the expression is planned by
             the server. Cannot be combined with ``transforms``.
 
         auto_refresh_enabled: bool, optional
             Enable automatic refresh for each computed output declared by this
-            call. Defaults to True. Local tables store the setting; automatic
-            scheduling requires Cloud or Enterprise.
+            call. Defaults to True. LanceDB Embedded stores the setting; automatic
+            scheduling requires LanceDB Distributed.
         auto_refresh_interval_seconds: int, optional
             Positive minimum seconds after a successful refresh before another
             automatic refresh is eligible. When omitted, the server determines when
@@ -7337,7 +7342,8 @@ class AsyncTable:
         by the next one, and rows whose inputs changed since they were computed
         are recomputed; everything else is left as it is.
 
-        Local tables only: a remote refresh runs as a server job, through
+        LanceDB Embedded only. In LanceDB Distributed, a refresh runs as a
+        server job, through
         [`refresh_column_async`][lancedb.table.Table.refresh_column_async].
 
         Parameters
@@ -7364,7 +7370,7 @@ class AsyncTable:
         A refresh running under a skip policy records each row it skipped
         with the input that failed and the error. This lists those records,
         newest job first, plus a summary for any fragment whose per-row
-        detail was capped. LanceDB Cloud and Enterprise only; reading errors
+        detail was capped. LanceDB Distributed only; reading errors
         needs read access to the table, since a message carries the value
         that failed.
 
@@ -7402,14 +7408,15 @@ class AsyncTable:
         Like :meth:`refresh_column`, but returns a handle to the refresh job
         instead of blocking until it completes.
 
-        Local refresh requires a source build with ``experimental-functions``.
-        Remote Cloud/Enterprise jobs do not require this feature.
+        LanceDB Embedded refresh requires a source build with
+        ``experimental-functions``.
+        LanceDB Distributed jobs do not require this feature.
 
         The job may already be complete when returned; callers must not assume
         the column is filled until :meth:`AsyncJob.wait` resolves. Invalid
         input -- an unknown column, or one that is not computed -- raises here
-        rather than failing the job. On local tables the job runs
-        in-process; on LanceDB Cloud and Enterprise it is the server's
+        rather than failing the job. In LanceDB Embedded the job runs
+        in-process; in LanceDB Distributed it is the server's
         backfill job.
 
         Returns
@@ -7831,7 +7838,7 @@ class AsyncTable:
         Specify exactly one of ``column`` or ``index_name``.
 
         Model-backed tokenizers such as ``jieba/*`` and ``lindera/*`` are
-        rebuilt in the client process from index metadata. For remote tables,
+        rebuilt in the client process from index metadata. In LanceDB Distributed,
         this means the same tokenizer model files must also exist locally
         (under ``LANCE_LANGUAGE_MODEL_HOME``) and must match the files the
         server uses. A mismatch cannot be detected: the returned tokens may

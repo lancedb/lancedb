@@ -35,7 +35,7 @@ Modern machine learning models can be trained to convert raw data into embedding
 of floating point numbers. The position of an embedding in vector space captures the semantics of
 the data, so vectors that are close to each other are considered similar.
 
-LanceDB provides an embedding function registry in OSS as well as its Enterprise versions
+LanceDB provides an embedding function registry in LanceDB Embedded as well as LanceDB Enterprise
 ([see below](#embeddings-in-lancedb-enterprise))
 that automatically generates vector embeddings during data ingestion. Query text is embedded
 automatically too, in the client, for local and Enterprise tables alike, with SDK-specific query
@@ -198,7 +198,7 @@ You can find all supported embedding models in the [integrations](/integrations/
 <Badge color="red">Enterprise</Badge>
 
 In LanceDB Enterprise, embedding generation during data ingestion is client-side and the resulting vectors are
-stored on the remote table.
+stored in the Enterprise table.
 
 <Info>
 The Enterprise server does not currently generate embeddings from query text on its own. Any automatic
@@ -207,13 +207,13 @@ query-time embedding happens on the client side.
 
 ### How string queries are interpreted {#how-string-queries-are-interpreted}
 
-For the Python remote client, `table.search("hello")` can take two different paths:
+When the Python SDK connects to Enterprise, `table.search("hello")` can take two different paths:
 
 - If the selected vector column has embedding metadata
   (i.e., the table schema stores the source-column, vector-column, and
   embedding-function mapping created from fields like `SourceField()` and
   `VectorField()` during table creation), then the embeddings are computed in the Python client process.
-  The client uses the same local LanceDB embedding registry used by OSS tables to
+  The client uses the same local LanceDB embedding registry used by LanceDB Embedded tables to
   reconstruct the embedding function from schema metadata, compute the query vector in
   the client process, and send that vector to Enterprise for search.
   ```python

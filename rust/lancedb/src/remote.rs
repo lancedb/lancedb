@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 //! This module contains a remote client for a LanceDB server.  This is used
-//! to communicate with LanceDB cloud.  It can also serve as an example for
+//! to communicate with LanceDB Enterprise or LanceDB Cloud (legacy).  It can also serve as an example for
 //! building client/server applications with LanceDB or as a client for some
 //! other custom LanceDB service.
 

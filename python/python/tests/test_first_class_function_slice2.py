@@ -89,6 +89,27 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
     }
 
 
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
+
+
 def test_secret_bound_udf_matches_its_shared_registration_golden():
     assert analyze_caption("  hello  ") == "hello"
     bound = analyze_caption.bind_secrets(
