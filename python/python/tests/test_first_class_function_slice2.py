@@ -471,6 +471,30 @@ def test_udf_conda_environment():
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
 
 
+def test_udf_apt_system_packages():
+    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+    def decode(value: float) -> float:
+        return value
+
+    request = json.loads(decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"] == {
+        "kind": "pip",
+        "packages": ["torchcodec"],
+        "system_packages": ["libavcodec60", "libavutil58"],
+    }
+
+    @udf(conda=["numpy"], apt=["libsndfile1"])
+    def conda_decode(value: float) -> float:
+        return value
+
+    request = json.loads(conda_decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["system_packages"] == ["libsndfile1"]
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "system_packages" not in pip_request["runtime"]["environment"]
+    with pytest.raises(ValueError, match="trimmed"):
+        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
+
+
 def test_udf_gpu_marker_uses_gpu_runtime():
     @udf(pip=["cupy-cuda12x"], gpu=True)
     def double_on_gpu(value: int) -> int:

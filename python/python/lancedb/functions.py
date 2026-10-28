@@ -283,6 +283,7 @@ class PythonEnvironmentSpec(_RemoteValue):
     path: Optional[str] = None
     modules: tuple[str, ...] = ()
     image: Optional[str] = None
+    system_packages: tuple[str, ...] = ()
 
 
 class PythonRuntimeSpec(_RemoteValue):
@@ -1791,6 +1792,7 @@ class UdfDefinition:
         gpu: bool = False,
         conda: tuple[str, ...] = (),
         conda_channels: tuple[str, ...] = (),
+        apt: tuple[str, ...] = (),
         code: tuple[types.ModuleType, ...] = (),
     ):
         is_class = inspect.isclass(function)
@@ -1806,14 +1808,23 @@ class UdfDefinition:
         if conda_channels and not conda:
             raise ValueError("conda_channels requires conda packages")
         packages = tuple(sorted(set(conda if conda else pip)))
-        if any(not package or package != package.strip() for package in packages):
+        system_packages = tuple(sorted(set(apt)))
+        if any(
+            not package or package != package.strip()
+            for package in packages + system_packages
+        ):
             raise ValueError("package requirements must be non-empty and trimmed")
         if conda:
             environment_spec = PythonEnvironmentSpec(
-                kind="conda", packages=packages, channels=tuple(conda_channels)
+                kind="conda",
+                packages=packages,
+                channels=tuple(conda_channels),
+                system_packages=system_packages,
             )
         else:
-            environment_spec = PythonEnvironmentSpec(kind="pip", packages=packages)
+            environment_spec = PythonEnvironmentSpec(
+                kind="pip", packages=packages, system_packages=system_packages
+            )
         environment = dict(env)
         if any(
             not isinstance(key, str) or not isinstance(value, str)
@@ -1982,6 +1993,7 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    apt: tuple[str, ...] | list[str] = (),
     code: Sequence[types.ModuleType] = (),
 ) -> Callable[[Callable[..., Any]], UdfDefinition]: ...
 
@@ -1998,6 +2010,7 @@ def udf(
     gpu: bool = False,
     conda: tuple[str, ...] | list[str] = (),
     conda_channels: tuple[str, ...] | list[str] = (),
+    apt: tuple[str, ...] | list[str] = (),
     code: Sequence[types.ModuleType] = (),
 ):
     """Prepare a Python function or class for remote Function registration.
@@ -2071,6 +2084,12 @@ def udf(
         Conda packages for the remote environment, instead of ``pip``.
     conda_channels : sequence of str, optional
         Conda channels in priority order; requires ``conda``.
+    apt : sequence of str, optional
+        Debian packages (``"name"`` or ``"name=version"``) added to the remote
+        image before the Python environment, for shared libraries pip and
+        conda cannot provide, such as FFmpeg's for ``torchcodec``. Packages
+        are unpacked without running their maintainer scripts. Works with
+        ``pip`` or ``conda``; requires image execution.
     env : mapping of str to str, optional
         Environment variables included in the Function definition. Not for
         credentials -- these are ordinary configuration, stored with the
@@ -2131,6 +2150,7 @@ def udf(
             gpu=gpu,
             conda=tuple(conda),
             conda_channels=tuple(conda_channels),
+            apt=tuple(apt),
             code=tuple(code),
         )
 
