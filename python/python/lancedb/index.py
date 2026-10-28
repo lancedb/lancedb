@@ -145,9 +145,9 @@ class FTS:
     Lance tokenizer can panic on malformed triples; see
     https://github.com/lance-format/lance/issues/8812.
 
-    Remote tables use the same ``FTS()`` configuration and require a server
-    that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
-    before searching a newly created remote index with its default name.
+    LanceDB Distributed uses the same ``FTS()`` configuration and requires a
+    server that supports JSON FTS. Wait for ``table.wait_for_index(["doc_idx"])``
+    before searching a newly created index there with its default name.
 
     Examples
     --------
@@ -210,12 +210,12 @@ class FTS:
     memory_limit : int, optional
         The total memory limit in MiB for the local FTS build stage. The limit
         is divided evenly among indexing workers. This build-only setting is
-        not persisted with the index and does not apply to remote tables.
+        not persisted with the index and does not apply to LanceDB Distributed.
     num_workers : int, optional
         The number of workers for a local FTS build. By default Lance uses
         roughly half of the available CPU cores. The effective value is
         limited by the available compute capacity. This build-only setting is
-        not persisted with the index and does not apply to remote tables.
+        not persisted with the index and does not apply to LanceDB Distributed.
     document_granularity : DocumentGranularity, default ROW
         ``ROW`` treats the selected text in one table row as one document.
         ``LIST_ELEMENT`` treats each element of the deepest list on the indexed

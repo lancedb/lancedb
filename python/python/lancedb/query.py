@@ -125,7 +125,7 @@ def _supports_local_blob_fetch(
 def _blob_bytes_without_snapshot_error() -> NotImplementedError:
     return NotImplementedError(
         "blob_mode='bytes' cannot safely materialize blob columns without a "
-        "stable table snapshot. Remote tables and namespace QueryTable pushdown "
+        "stable table snapshot. LanceDB Distributed and namespace QueryTable pushdown "
         "run the query on a server, so the blob fetch could read another table "
         "version. Use blob_mode='descriptions'."
     )
@@ -1147,7 +1147,8 @@ class LanceQueryBuilder(ABC):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -3483,7 +3484,7 @@ class AsyncQueryBase(object):
             ``fetch_blobs`` reads. ``"descriptions"`` returns them without it.
             ``"bytes"`` returns payload bytes and raises for legacy blob columns
             and blobs inside lists.
-            Remote tables and namespace query pushdown refuse ``"bytes"``.
+            LanceDB Distributed and namespace query pushdown refuse ``"bytes"``.
         """
         blob_sources = await self._validated_blob_sources(blob_mode)
         batch_iter = await self.to_batches(timeout=timeout)
@@ -3562,7 +3563,8 @@ class AsyncQueryBase(object):
             mode and for legacy blob columns. Other local blob v2
             queries return descriptors in ``"lazy"`` and ``"descriptions"``
             modes, or payloads in ``"bytes"`` mode, through :meth:`to_arrow`.
-            Remote blob queries support only ``"descriptions"`` until a stable
+            LanceDB Distributed blob queries support only ``"descriptions"`` until a
+            stable
             table snapshot can bind the query and blob fetches.
         **kwargs
             Forwarded to pyarrow.Table.to_pandas after query execution and
@@ -4209,9 +4211,10 @@ class AsyncVectorQueryBase:
         your actual data to find the smallest possible value that will still give
         you the desired recall.
 
-        LanceDB retains this as `nprobes` through local and remote request
-        construction. Lance sets both probe bounds to this value. Explicit minimum
-        or maximum settings can override their respective bounds.
+        LanceDB retains this as `nprobes` through LanceDB Embedded and LanceDB
+        Distributed request construction. Lance sets both probe bounds to this
+        value. Explicit minimum or maximum settings can override their respective
+        bounds.
         """
         self._inner.nprobes(nprobes)
         return self

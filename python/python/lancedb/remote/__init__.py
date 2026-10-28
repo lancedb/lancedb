@@ -163,7 +163,7 @@ class TlsConfig:
 
 @dataclass
 class ClientConfig:
-    """Configuration for the LanceDB Cloud HTTP client.
+    """Configuration for the HTTP client used to connect to LanceDB Enterprise.
 
     Attributes
     ----------
@@ -190,7 +190,7 @@ class ClientConfig:
         Provider for dynamic headers to be added to each request.
     user_id: Optional[str]
         User identifier for tracking purposes. This is sent as the
-        `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+        `x-lancedb-user-id` header in requests to LanceDB Enterprise.
 
         This can also be set via the `LANCEDB_USER_ID` environment variable.
         Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another

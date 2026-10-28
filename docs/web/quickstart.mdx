@@ -7,7 +7,8 @@ icon: rocket
 import { PyConnect, TsConnect, RsConnect, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
 import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartVectorSearch1, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1 } from '/snippets/quickstart.mdx';
 
-This quickstart uses a local database and works without an account or API key.
+This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
+LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
 
 Follow the steps below, or jump to the [complete examples](#code) to copy a runnable program.
 
@@ -154,7 +155,7 @@ Use the database URI, API key, and endpoint provided by your administrator or th
 In application code, load credentials from environment variables or a secrets manager. See [connection settings](/basics/connect#enterprise) for an example.
 </Note>
 
-Need a deployment? [Contact the LanceDB team](https://www.lancedb.com/contact). For differences between local and server execution, see [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
+Need a deployment? [Contact the LanceDB team](https://www.lancedb.com/contact). For differences between Embedded and Distributed execution, see [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
 </Accordion>
 
 <Accordion title="Connect directly to object storage instead">

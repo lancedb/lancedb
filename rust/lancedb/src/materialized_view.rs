@@ -171,7 +171,7 @@ pub(crate) fn physical_unnest(
             return Err(Error::NotSupported {
                 message: format!(
                     "'{name}' in FROM position is a Function; views over Function rows are \
-                     supported only on LanceDB Cloud and Enterprise"
+                     supported only in LanceDB Distributed"
                 ),
             });
         }
@@ -1464,7 +1464,7 @@ async fn prepare_with(
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "materialized views are supported only in LanceDB Embedded".into(),
         });
     };
     let source_namespace = source.namespace().to_vec();
@@ -1492,7 +1492,7 @@ async fn prepare_with(
     let resolved = Table::new(resolved, database.clone());
     let Some(native) = resolved.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only on local databases".into(),
+            message: "materialized views are supported only in LanceDB Embedded".into(),
         });
     };
     let caller_uri = caller_native.dataset.get().await?.uri().to_string();
@@ -1665,15 +1665,15 @@ impl CreateMaterializedViewBuilder {
         self
     }
 
-    /// Enable or disable automatic refresh on Cloud and Enterprise.
+    /// Enable or disable automatic refresh in LanceDB Distributed.
     /// When omitted, the server determines whether automatic refresh is enabled.
-    /// Embedded databases do not support automatic refresh.
+    /// LanceDB Embedded does not support automatic refresh.
     pub fn auto_refresh_enabled(mut self, enabled: bool) -> Self {
         self.auto_refresh_enabled = Some(enabled);
         self
     }
 
-    /// Set a positive, finite refresh interval in seconds on Cloud and Enterprise.
+    /// Set a positive, finite refresh interval in seconds in LanceDB Distributed.
     /// When omitted, the server determines when to refresh.
     ///
     /// ```no_run
@@ -1766,7 +1766,7 @@ impl CreateMaterializedViewBuilder {
         crate::require_experimental_functions()?;
         if self.auto_refresh_enabled == Some(true) || self.auto_refresh_interval_seconds.is_some() {
             return Err(Error::NotSupported {
-                message: "automatic materialized-view refresh requires Cloud or Enterprise"
+                message: "automatic materialized-view refresh requires LanceDB Distributed"
                     .to_string(),
             });
         }
@@ -1825,7 +1825,7 @@ impl MaterializedView {
 
     /// The query parsed into the local refresh grammar.
     ///
-    /// Sophon may store SQL broader than the local grammar; use
+    /// LanceDB Enterprise may store SQL broader than the local grammar; use
     /// [`Self::definition_sql`] when the original SQL is sufficient.
     pub fn definition(&self) -> Result<&MaterializedViewDefinition> {
         self.parsed_definition
@@ -1875,8 +1875,8 @@ pub struct RefreshMaterializedViewBuilder {
 }
 
 impl RefreshMaterializedViewBuilder {
-    /// Force a complete rebuild instead of letting the remote server choose
-    /// the refresh mode. Defaults to `false`. Local views always rebuild.
+    /// Force a complete rebuild instead of letting the server choose
+    /// the refresh mode. Defaults to `false`. LanceDB Embedded views always rebuild.
     ///
     /// ```no_run
     /// # #![recursion_limit = "256"]
@@ -2015,7 +2015,7 @@ impl Connection {
     /// Start dropping a materialized view and return its job.
     ///
     /// This validates that the named resource is a materialized view rather
-    /// than an ordinary table. For remote connections the job has type `query`
+    /// than an ordinary table. In LanceDB Distributed the job has type `query`
     /// and its ID identifies the SQL query. Waiting completes once the catalog
     /// binding is removed; physical cleanup continues in the background.
     ///

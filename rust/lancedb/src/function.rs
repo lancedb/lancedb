@@ -771,8 +771,8 @@ impl_json!(FunctionBinding);
 /// Stable terminal result of an expression-backed or Function-backed column
 /// refresh [`crate::Job`].
 ///
-/// Local refresh jobs produce this value in process. LanceDB Cloud and
-/// Enterprise decode the same value from the durable job's terminal payload.
+/// LanceDB Embedded refresh jobs produce this value in process. LanceDB
+/// Distributed decodes the same value from the durable job's terminal payload.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshColumnResult {
     /// Rows assigned a value by this refresh.

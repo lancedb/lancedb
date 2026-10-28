@@ -8,7 +8,7 @@ availability:
   oss: unavailable
   enterprise: available
   summary: >-
-    Enterprise supports Functions when enabled for your Enterprise cluster; the embedded library cannot register or run them.
+    Enterprise supports Functions when enabled for your Enterprise cluster; LanceDB Embedded cannot register or run them.
 ---
 
 import {
@@ -29,8 +29,8 @@ rather than pulling rows to your process.
 
 Registering and running a function needs a LanceDB Enterprise deployment with
 Functions enabled, which they are not by default. On a
-local connection `create_function` raises `NotImplementedError`; to derive a
-column locally, declare a
+LanceDB Embedded connection `create_function` raises `NotImplementedError`; to
+derive a column there, declare a
 [SQL computed column](/feature-engineering/add-computed-column) instead.
 
 <Note>
@@ -241,14 +241,15 @@ as `bytes`; this feature does not add streamed outputs.
 
 ## Declare the environment {#environment}
 
-The function runs remotely, so its dependencies are part of its definition:
+The function runs on the Enterprise service, not in your application, so its
+dependencies are part of its definition:
 
 | | |
 | --- | --- |
-| `pip` | requirements for the remote environment |
+| `pip` | requirements for the function's execution environment |
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
-| `python_version` | remote Python major/minor, defaulting to yours |
+| `python_version` | Python major/minor for the execution environment, defaulting to yours |
 | `gpu` | whether every execution requires a GPU |
 
 These are part of the **immutable function version**. Changing a dependency

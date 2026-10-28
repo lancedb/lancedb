@@ -83,7 +83,8 @@ const DEFAULT_MAX_BYTES_PER_REQUEST: u64 = 8 * 1024 * 1024 * 1024;
 /// timeout (which also covers the request-body upload) fires.
 const DEFAULT_MAX_REQUEST_DURATION_DIVISOR: u32 = 2;
 
-/// Configuration for the LanceDB Cloud HTTP client.
+/// Configuration for the HTTP client used to connect to LanceDB Enterprise or
+/// LanceDB Cloud (legacy).
 #[derive(Clone)]
 pub struct ClientConfig {
     pub timeout_config: TimeoutConfig,
@@ -108,7 +109,7 @@ pub struct ClientConfig {
     pub header_provider: Option<Arc<dyn HeaderProvider>>,
     /// User identifier for tracking purposes.
     ///
-    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Cloud/Enterprise.
+    /// This is sent as the `x-lancedb-user-id` header in requests to LanceDB Enterprise.
     /// It can be set directly, or via the `LANCEDB_USER_ID` environment variable.
     /// Alternatively, set `LANCEDB_USER_ID_ENV_KEY` to specify another environment
     /// variable that contains the user ID value.

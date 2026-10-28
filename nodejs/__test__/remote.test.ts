@@ -140,7 +140,9 @@ describe("remote connection", () => {
         async (db) => {
           await expect(
             db.openTable("test", undefined, options),
-          ).rejects.toThrow(/not supported for remote/);
+          ).rejects.toThrow(
+            /not supported for table access in LanceDB Distributed/,
+          );
         },
       );
       expect(requests).toEqual([]);
@@ -316,7 +318,7 @@ describe("remote connection", () => {
           ],
         ];
         for (const [run, operation] of cases) {
-          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Distributed.`;
           if (operation === "IVF_HNSW_PQ") {
             message += " Please use IVF_HNSW_SQ instead.";
           }
@@ -463,7 +465,7 @@ describe("remote connection", () => {
           table.add([{ id: 1n }], {
             allowExternalBlobOutsideBases: true,
           }),
-        ).rejects.toThrow("only supported on local tables");
+        ).rejects.toThrow("only supported in LanceDB Embedded");
         expect(insertRequests).toBe(0);
 
         await expect(table.add([{ id: 2n }])).resolves.toMatchObject({

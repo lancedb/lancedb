@@ -117,7 +117,7 @@ pub const OPT_REMOTE_SQL_HOST_OVERRIDE: &str = "remote_database_sql_host_overrid
 
 #[derive(Clone, Debug, Default)]
 pub struct RemoteDatabaseOptions {
-    /// The LanceDB Cloud API key
+    /// The LanceDB Enterprise or LanceDB Cloud (legacy) API key
     pub api_key: Option<String>,
     /// The LanceDB Cloud region
     pub region: Option<String>,
@@ -187,11 +187,11 @@ impl RemoteDatabaseOptionsBuilder {
         }
     }
 
-    /// Set the LanceDB Cloud API key
+    /// Set the LanceDB Enterprise or LanceDB Cloud (legacy) API key
     ///
     /// # Arguments
     ///
-    /// * `api_key` - The LanceDB Cloud API key
+    /// * `api_key` - The API key
     pub fn api_key(mut self, api_key: String) -> Self {
         self.options.api_key = Some(api_key);
         self
@@ -871,7 +871,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
 
     async fn read_consistency(&self) -> Result<ReadConsistency> {
         Err(Error::NotSupported {
-            message: "Getting the read consistency of a remote database is not yet supported"
+            message: "Getting the read consistency is not yet supported in LanceDB Distributed"
                 .to_string(),
         })
     }
@@ -882,7 +882,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
     ) -> Result<Job> {
         if request.with_no_data {
             return Err(Error::NotSupported {
-                message: "remote materialized views must be populated during creation".to_string(),
+                message:
+                    "materialized views in LanceDB Distributed must be populated during creation"
+                        .to_string(),
             });
         }
         if let Some(seconds) = request.auto_refresh_interval_seconds
@@ -1475,7 +1477,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ] {
             if provided {
                 return Err(Error::NotSupported {
-                    message: format!("{option} is not supported for remote table creation"),
+                    message: format!(
+                        "{option} is not supported for table creation in LanceDB Distributed"
+                    ),
                 });
             }
         }
@@ -1616,7 +1620,9 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ] {
             if provided {
                 return Err(Error::NotSupported {
-                    message: format!("{option} is not supported for remote table access"),
+                    message: format!(
+                        "{option} is not supported for table access in LanceDB Distributed"
+                    ),
                 });
             }
         }

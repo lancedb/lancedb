@@ -45,8 +45,8 @@ LanceDB is a central location where developers can build, train and analyze thei
 - **Advanced Features**: Zero-copy, automatic versioning, manage versions of your data without needing extra infrastructure. GPU support in building vector index.
 
 ### **Products**:
-- **Open Source & Local**: 100% open source, runs locally or in your cloud. No vendor lock-in.
-- **Cloud and Enterprise**: Production-scale vector search with no servers to manage. Complete data sovereignty and security.
+- **LanceDB Embedded (open source)**: 100% open source, runs in your application's process; your data can live on local disk or in object storage. No vendor lock-in.
+- **LanceDB Enterprise**: Production-scale vector search with no servers to manage. Complete data sovereignty and security.
 
 ### **Ecosystem**:
 - **Columnar Storage**: Built on the Lance columnar format for efficient storage and analytics.

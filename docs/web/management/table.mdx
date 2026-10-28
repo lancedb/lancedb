@@ -248,7 +248,7 @@ set to the exact version a model saw.
 <Warning>
 A shallow clone depends on the source's files continuing to exist. If the source
 is [compacted](/maintenance/compaction) past the retention window, the version
-the clone points at can be pruned. Local OSS connections support shallow clones
+the clone points at can be pruned. LanceDB Embedded connections support shallow clones
 only; `is_shallow=False` is not implemented. If the copy must outlive the
 source's history, copy its data into an independent table instead. A deployment
 that supports cloning also makes shallow clones only, and one whose catalog
@@ -462,8 +462,9 @@ pylance. Pandas conversions that need the Lance scanner, including plain-scan
 `"lazy"` handles and legacy blobs, still require pylance. `to_arrow()`,
 `to_list()`, `to_batches()`, and the fetch methods do not require pylance.
 
-`blob_mode="bytes"` requires a local table snapshot, so remote and in-memory
-tables raise `NotImplementedError`. On a remote table, `Table.to_pandas()` and
+`blob_mode="bytes"` requires a LanceDB Embedded table snapshot, so Enterprise
+and in-memory tables raise `NotImplementedError`. On an Enterprise table,
+`Table.to_pandas()` and
 `Table.to_arrow()` aren't supported, and a query's `to_pandas()` also raises in
 the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
@@ -495,7 +496,7 @@ descriptors. Both `"bytes"` and `"descriptions"` hide automatic row IDs;
 explicitly requested row IDs remain visible.
 
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
-including no legacy blobs, blobs inside lists, remote tables, or namespace
+including no legacy blobs, blobs inside lists, Enterprise tables, or namespace
 `QueryTable` pushdown. If concurrent writers can overwrite the table, use a
 separate reader checked out to a fixed version before querying. Otherwise,
 an overwrite can invalidate the row IDs used to fetch bytes and raise
@@ -686,7 +687,7 @@ between inline values and Managed objects.
 
 Enterprise Functions can consume blob columns and
 return new blobs. Their output payloads are managed by the destination table.
-Local tables can also derive blob columns with
+LanceDB Embedded tables can also derive blob columns with
 [SQL computed columns](/feature-engineering/add-computed-column).
 
 Deleting a row or replacing its blob does not immediately remove the old
@@ -741,8 +742,8 @@ Write raw bytes to a V1 blob column:
 
 #### 3\. Convert blob tables to pandas {#multimodal-3-convert-blob-tables-to-pandas}
 
-On local tables with V1 blob columns, `to_pandas()` in Python accepts `blob_mode`
-(`"lazy"`, `"bytes"`, or `"descriptions"`). Remote tables raise
+On LanceDB Embedded tables with V1 blob columns, `to_pandas()` in Python accepts
+`blob_mode` (`"lazy"`, `"bytes"`, or `"descriptions"`). Enterprise tables raise
 `NotImplementedError`, and `"bytes"` is not supported on in-memory tables.
 Extra keyword arguments such as `split_blocks` or `self_destruct` are forwarded
 to the PyArrow / Lance pandas conversion:
@@ -1537,7 +1538,7 @@ mixing in lower-level Lance file operations.
 **System Operations**
 
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
-In LanceDB OSS, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+In LanceDB Embedded, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
 which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
 when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 
