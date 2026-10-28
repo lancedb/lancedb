@@ -43,6 +43,15 @@ jobs:
           distribution: temurin
           java-version: 17
           cache: "maven"
+      - name: Check out the Lance 14.0.2 candidate
+        uses: actions/checkout@v6
+        with:
+          repository: lance-format/lance
+          ref: 65f154db29e0744d84dc744979b3f1525d675524
+          path: candidate-lance
+      - name: Install the candidate Java API for SDK validation
+        working-directory: candidate-lance/java
+        run: ./mvnw -B --no-transfer-progress -Dskip.build.jni=true -DskipTests -Dspotless.skip=true -Dgpg.skip=true install
       - name: Java Style Check
         run: ./mvnw checkstyle:check
       - name: Build and install
