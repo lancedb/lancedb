@@ -727,6 +727,15 @@ impl Connection {
                     status_code: Some(status),
                     ..
                 }) if status.as_u16() == 404 => Ok(false),
+                Err(lancedb::Error::Lance {
+                    source: lance_core::Error::Namespace { ref source, .. },
+                }) if matches!(
+                    source.downcast_ref::<lance_namespace::NamespaceError>(),
+                    Some(lance_namespace::NamespaceError::NamespaceNotFound { .. })
+                ) =>
+                {
+                    Ok(false)
+                }
                 Err(err) => Err(err).infer_error(),
             }
         })
