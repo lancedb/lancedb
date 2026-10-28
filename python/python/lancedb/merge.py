@@ -102,15 +102,19 @@ class LanceMergeInsertBuilder(object):
         """
         Controls the join and write strategy for the merge operation.
 
-        When ``True`` (the default), the operation uses a scalar index on the join
-        key when available. Partial-column updates then patch the supplied columns,
-        rewriting those columns for every row in each fragment containing a match.
+        When ``True`` (the default), the operation can use scalar indexes on the
+        join keys when the operation supports the indexed path and all join keys
+        have usable indexes. When a partial-column update actually takes this path,
+        it patches the supplied columns, rewriting those columns for every row in
+        each fragment containing a match.
 
         When ``False``, the operation performs a full-scan join and rewrites matched
-        rows by deleting and appending them. This plan can materialize the entire
-        target table on the hash-join build side, so it can use substantial memory or
-        exhaust the server on large tables. Do not treat it as a general-purpose
-        row-rewrite switch.
+        rows by deleting and appending them. This can also happen with ``True``, for
+        example when a join key lacks a usable index or a partial-column update
+        includes a blob column. Any full-scan plan can materialize the entire target
+        table on the hash-join build side and exhaust the server on large tables.
+        The default flag alone is not a memory safeguard. Do not treat ``False`` as
+        a general-purpose row-rewrite switch.
 
         See [How merge insert executes](https://docs.lancedb.com/ingestion/merge-insert#how-merge-insert-executes)
         for the performance and index-coverage tradeoffs.
@@ -118,7 +122,7 @@ class LanceMergeInsertBuilder(object):
         Parameters
         ----------
         use_index: bool
-            Whether to use an index for the merge operation. Defaults to ``True``.
+            Whether to allow index use for the merge. Defaults to ``True``.
         """
         self._use_index = use_index
         return self

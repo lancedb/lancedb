@@ -82,14 +82,16 @@ deduplication logic when you need key-based upsert semantics.
 `merge_insert` first joins the incoming rows to the target table on the columns passed to
 `merge_insert(...)`. Its physical write strategy depends on whether that join uses a scalar index:
 
-- With `use_index=True` (the default), LanceDB uses a scalar index on the join key when one is
-  available. For a partial-column update, it patches the supplied columns. Every updated column is
+- With `use_index=True` (the default), LanceDB can use scalar indexes on the join keys when the
+  operation supports the indexed path and all join keys have usable indexes. When a partial-column
+  update actually takes this path, it patches the supplied columns. Every updated column is
   read and rewritten for every row in each fragment that contains a match, so a small but scattered
   update can still touch much of the table. Scalar indexes on those updated columns lose coverage
   for the rewritten fragments until the indexes are optimized.
 - With `use_index=False`, LanceDB performs a full-scan join and rewrites matched rows by deleting
-  them and appending complete replacement rows. The rewritten rows are not covered by existing
-  scalar indexes until the indexes are optimized.
+  them and appending complete replacement rows. This can also happen with `use_index=True`, for
+  example when a join key lacks a usable index or a partial-column update includes a blob column.
+  The rewritten rows are not covered by existing scalar indexes until the indexes are optimized.
 
 Within the fragments touched by a merge, column patching is generally favorable when the fraction
 of rows matched is greater than the fraction of each row represented by the updated columns. For
@@ -99,8 +101,10 @@ much data is rewritten more than simply reducing the number of rows in each batc
 <Warning>
 Do not use `use_index=False` as a general-purpose row-rewrite switch for large tables. The full-scan
 plan can materialize the entire target table on the hash-join build side, so memory use grows with
-the target table rather than with the incoming batch and can exhaust the server. Keep the default
-indexed path unless you have profiled both strategies with representative data and memory limits.
+the target table rather than with the incoming batch and can exhaust the server. This warning also
+applies to full-scan fallbacks with `use_index=True`: the default flag alone is not a memory
+safeguard. Confirm that the merge can use the indexed path and profile representative data under
+your memory limits.
 </Warning>
 
 ### Update matched rows only {#update-matched-rows-only}
