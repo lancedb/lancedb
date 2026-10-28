@@ -4,7 +4,7 @@
 
 import os
 import pathlib
-from datetime import time, timedelta
+from datetime import time, timedelta, timezone
 from decimal import Decimal, localcontext
 from typing import Optional
 
@@ -303,6 +303,19 @@ def test_value_to_sql_keeps_nanoseconds(tmp_path):
         34_200_000_000_250,
         34_200_000_000_250,
     ]
+
+
+def test_value_to_sql_keeps_duration_units():
+    for unit, sql_unit in [("s", "Second"), ("ms", "Millisecond")]:
+        assert (
+            value_to_sql(pa.scalar(1500, pa.duration(unit)))
+            == f"arrow_cast(1500, 'Duration({sql_unit})')"
+        )
+
+
+def test_value_to_sql_rejects_time_with_timezone():
+    with pytest.raises(ValueError, match="time values with a timezone"):
+        value_to_sql(time(9, 30, tzinfo=timezone.utc))
 
 
 def test_value_to_sql_dict():

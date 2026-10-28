@@ -427,6 +427,11 @@ def _(value: date):
 
 @value_to_sql.register(time)
 def _(value: time):
+    if value.utcoffset() is not None:
+        raise ValueError(
+            "time values with a timezone cannot be converted to SQL, "
+            "because Arrow time columns do not store one"
+        )
     # A plain string literal can be assigned to a time column but not compared with one.
     return f"arrow_cast('{value.isoformat()}', 'Time64(Microsecond)')"
 
