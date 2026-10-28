@@ -1,0 +1,317 @@
+---
+title: "Metadata Filtering in LanceDB"
+sidebarTitle: Filtering
+description: "Use predicates to select rows and control when filters apply to search."
+icon: "filter"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Metadata filtering is available in OSS and Enterprise.
+---
+
+import { PyFilterSearch, TsFilterSearchBody, TsFilterSearchTail } from '/snippets/search_examples.mdx';
+import { RsExampleBody as RsFilterSearchBody, RsExampleTail as RsFilterSearchTail } from '/snippets/search_filter_search.mdx';
+
+A filter restricts results to rows that satisfy a condition. Use it on its
+own to select records, or combine it with vector, full-text or hybrid search.
+For example, search for similar documents only within a particular category.
+
+<span id="search-within-matching-rows"></span>
+
+<Accordion title="Run a complete filtering example">
+
+These examples use three sample records and hand-written vectors, so no
+embedding service is needed. Each program creates a temporary local table
+and removes it when finished.
+
+- **Python:** Install with `pip install lancedb`, save as `filtered_search.py`, then run `python filtered_search.py`.
+- **TypeScript:** Install with `npm install @lancedb/lancedb`, save as `filtered_search.mts`, then run `node filtered_search.mts` with Node.js 22.18 or later.
+- **Rust:** Download and extract the [complete Rust examples](/static/code/search-rust.zip), then run `cargo run --locked --bin filter_search` from the extracted directory.
+
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{PyFilterSearch}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsFilterSearchBody + "\n" + TsFilterSearchTail}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsFilterSearchBody + "\n" + RsFilterSearchTail}
+</CodeBlock>
+</CodeGroup>
+
+The query vector is closest to the gardening record, but the filter excludes
+that category. The results contain only the two animal records.
+
+</Accordion>
+
+## Prefiltering and postfiltering {#choose-when-the-filter-runs}
+
+- **Prefiltering**, the default, limits the rows eligible for retrieval before
+  search chooses its candidates.
+- **Postfiltering** removes nonmatching rows after candidates are selected.
+  It can return fewer than `limit` rows, including zero, even when matching
+  records exist elsewhere in the table.
+
+Both modes exclude rows that fail the predicate. They differ in which matching
+rows the search can find. On hybrid queries, the filter applies to both the
+vector and full-text searches.
+
+SDK filters use SQL expressions without requiring a SQL connection. For
+Enterprise SQL queries, see [SELECT](/sql/dql/select#filtering).
+
+## Filtering examples by language {#example-metadata-filtering}
+
+The following excerpts use a connected `db` handle. Create this sample table
+before running the queries beneath it; each query uses the same four records.
+
+<CodeGroup>
+```python Python icon="python"
+data = [
+    {"vector": [3.1, 4.1], "item": "foo", "price": 10.0},
+    {"vector": [5.9, 26.5], "item": "bar", "price": 20.0},
+    {"vector": [10.2, 100.8], "item": "baz", "price": 30.0},
+    {"vector": [1.4, 9.5], "item": "fred", "price": 40.0},
+]
+table = db.create_table("metadata_filter_example", data=data, mode="overwrite")
+```
+
+```typescript TypeScript icon="square-js"
+const data = [
+  { vector: [3.1, 4.1], item: "foo", price: 10.0 },
+  { vector: [5.9, 26.5], item: "bar", price: 20.0 },
+  { vector: [10.2, 100.8], item: "baz", price: 30.0 },
+  { vector: [1.4, 9.5], item: "fred", price: 40.0 },
+];
+
+const tableName = "metadata_filter_example";
+const table = await db.createTable(tableName, data, {
+  mode: "overwrite",
+});
+```
+</CodeGroup>
+
+## Combine predicates {#chaining-where-clauses}
+
+Repeated filter calls combine predicates with logical `AND`. For example, `where("a > 0").where("b < 10")` is equivalent to `where("(a > 0) AND (b < 10)")`.
+
+Use a single expression for a fixed filter. Chain calls when your application
+builds the filter incrementally.
+
+<CodeGroup>
+```python Python icon="python"
+# Both filters apply: item is in the list AND price is above 15.
+result = (
+    table.search([100, 102])
+    .where("item IN ('foo', 'bar', 'baz')")
+    .where("price > 15.0")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+// Both filters apply: item is in the list AND price is above 15.
+const result = await table
+  .search([100, 102])
+  .where("item IN ('foo', 'bar', 'baz')")
+  .where("price > 15.0")
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+<Warning>
+In Python SDK versions before `0.34.0` and Rust/TypeScript SDK versions before `0.31.0`, a second `where(...)` or `only_if(...)` call replaced the first filter, so only the last predicate was applied. If your code needs to run on those older versions, write a single predicate with `AND` instead of chaining calls. When upgrading to the latest SDKs, review any existing chained filters and drop earlier calls you no longer want to apply.
+</Warning>
+
+### Filtering Without Vector Search {#filtering-without-vector-search}
+
+You can always filter your data without search. This is useful when you need to query based on metadata:
+
+<CodeGroup>
+```python Python icon="python"
+filtered_no_search_result = (
+    table.search()
+    .where("(item IN ('foo', 'bar', 'baz')) AND (price > 15.0)")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const filteredResult = await table
+  .query()
+  .where("(item IN ('foo', 'bar', 'baz')) AND (price > 15.0)")
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+Set `limit()` explicitly to control how many matching records your application
+receives.
+
+### Pre-Filtering with Vector Search {#pre-filtering-with-vector-search}
+
+<CodeGroup>
+```python Python icon="python"
+filtered_result = (
+    table.search([100, 102])
+    .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const results = await table
+  .search([100, 102])
+  .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+### Post-Filtering with Vector Search {#post-filtering-with-vector-search}
+
+<CodeGroup>
+```python Python icon="python"
+post_filtered_result = (
+    table.search([100, 102])
+    .where("(item IN ('foo', 'bar')) AND (price > 15.0)", prefilter=False)
+    .limit(3)
+    .to_arrow()
+)
+```
+
+```typescript TypeScript icon="square-js"
+const postFilteredResult = await table.vectorSearch([100, 102])
+  .where("(item IN ('foo', 'bar')) AND (price > 15.0)")
+  .postfilter()
+  .limit(3)
+  .toArray();
+```
+</CodeGroup>
+
+Postfiltering can return fewer than the requested number of records because
+the predicate removes candidates after search.
+
+## Write SQL predicates {#filtering-with-sql}
+
+Pass a SQL expression as the filter string. These expressions also select rows
+for SDK update and delete operations; they are not standalone SQL statements.
+
+LanceDB supports a growing list of SQL expressions:
+
+| SQL Expression | Description |
+|:---------------|:-------------|
+| `>, >=, <, <=, =` | Comparison operators |
+| `AND`, `OR`, `NOT` | Logical operators |
+| `IS NULL`, `IS NOT NULL` | Null checks |
+| `IS TRUE`, `IS NOT TRUE`, `IS FALSE`, `IS NOT FALSE` | Boolean checks |
+| `IN` | Value matching from a set |
+| `LIKE`, `NOT LIKE` | Pattern matching |
+| `CAST` | Type conversion |
+| `regexp_match(column, pattern)` | Regular expression matching |
+| [DataFusion Functions](https://datafusion.apache.org/user-guide/sql/scalar_functions.html) | Additional SQL functions |
+
+### Simple SQL Filters {#simple-sql-filters}
+
+For example, the following filter string is acceptable:
+
+<CodeGroup>
+```python Python icon="python"
+table.search([100, 102]).where(
+    "(item IN ('foo', 'baz')) AND (price > 20.0)"
+).to_arrow()
+```
+
+```typescript TypeScript icon="square-js"
+await table
+  .search([100, 102])
+  .where("(item IN ('foo', 'baz')) AND (price > 20.0)")
+  .toArray();
+```
+</CodeGroup>
+
+### Advanced SQL Filters {#advanced-sql-filters}
+
+If your column name contains special characters, upper-case characters, or is a [SQL Keyword](https://docs.rs/sqlparser/latest/sqlparser/keywords/index.html),
+you can use backtick (`` ` ``) to escape it. For nested fields, each segment of the
+path must be wrapped in backticks.
+
+```sql
+`CUBE` = 10 AND `UpperCaseName` = '3' AND `column name with space` IS NOT NULL
+AND `nested with space`.`inner with space` < 2
+```
+
+<Note>
+Periods separate nested fields. LanceDB does not allow a literal period in a
+top-level column name; backticks do not remove that restriction.
+</Note>
+
+### Dates, Timestamps, Decimals {#dates-timestamps-decimals}
+
+Literals for dates, timestamps, and decimals can be written by writing the string
+value after the type name. For example:
+
+<CodeGroup>
+```sql SQL icon="SQL"
+date_col = date '2021-01-01'
+and timestamp_col = timestamp '2021-01-01 00:00:00'
+and decimal_col = decimal(8,3) '1.000'
+```
+</CodeGroup>
+
+For timestamp columns, the precision can be specified as a number in the type
+parameter. Microsecond precision (6) is the default.
+
+| SQL            | Time unit    |
+|:-------------- |:------------ |
+| `timestamp(0)` | Seconds      |
+| `timestamp(3)` | Milliseconds |
+| `timestamp(6)` | Microseconds |
+| `timestamp(9)` | Nanoseconds  |
+
+## Apache Arrow Mapping {#apache-arrow-mapping}
+
+LanceDB uses Arrow types for schemas and in-memory data. On disk, tables use
+the [Lance format](/basics/lance).
+The mapping from SQL types to Arrow types is:
+
+| SQL type                                                  | Arrow type         |
+|:--------------------------------------------------------- |:------------------ |
+| `boolean`                                                 | `Boolean`          |
+| `tinyint` / `tinyint unsigned`                            | `Int8` / `UInt8`   |
+| `smallint` / `smallint unsigned`                          | `Int16` / `UInt16` |
+| `int` or `integer` / `int unsigned` or `integer unsigned` | `Int32` / `UInt32` |
+| `bigint` / `bigint unsigned`                              | `Int64` / `UInt64` |
+| `float`                                                   | `Float32`          |
+| `double`                                                  | `Float64`          |
+| `decimal(precision, scale)`                               | `Decimal128`       |
+| `date`                                                    | `Date32`           |
+| `timestamp`                                               | `Timestamp`        |
+| `string`                                                  | `Utf8`             |
+| `binary`                                                  | `Binary`           |
+
+
+## Speed up frequently used filters {#best-practices}
+
+Consider a [scalar index](/indexing/scalar-index) on frequently filtered columns.
+Use the query plan to check whether a predicate uses that index. Functions or
+casts applied to a column can change which optimizations are available.
+For list columns, a label-list index supports membership filters such as
+`array_has_any` and `array_has_all`.
+
+## Understand missing matches {#limitations}
+
+A restrictive predicate can legitimately leave fewer rows than the requested
+limit. Approximate vector search can also miss qualifying neighbors, and
+postfiltering can discard candidates without retrieving replacements.
+
+For a recall comparison, run the same query and predicate while bypassing the
+vector index on a suitably sized test table. Then compare the indexed query's
+results and latency while changing probe or refinement settings. Increasing
+those settings does not guarantee a full result set. See
+[vector search](/search/vector-search) and [query plans](/search/explain).

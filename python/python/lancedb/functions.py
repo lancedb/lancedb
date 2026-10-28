@@ -26,12 +26,14 @@ import re
 import sys
 import textwrap
 import types
+import warnings
 from collections.abc import Mapping, Sequence
 from datetime import date, datetime
 from typing import (
     Annotated,
     Any,
     Callable,
+    Literal,
     Optional,
     Union,
     get_args,
@@ -51,7 +53,9 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
+from ._blob_reader import BlobReader
 from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
@@ -212,6 +216,7 @@ class FunctionParameter(_RemoteValue):
     name: str
     arrow_type: str
     nullable: bool
+    blob_access: Optional[Literal["bytes", "reader"]] = None
 
 
 class FunctionResultField(_OpenRemoteValue):
@@ -355,16 +360,23 @@ _ObjectVersion = Annotated[
 
 
 class FunctionVersion(_RemoteValue):
-    """A pinned object revision, independent of its executable image digest."""
+    """A pinned object revision, independent of its executable image digest.
+
+    ``name`` and ``namespace_path`` are the Function's parts, as a
+    [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
+    they are what [get_function][lancedb.db.DBConnection.get_function] takes.
+    An empty ``namespace_path`` is the root namespace.
+    """
 
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
     image: FunctionImage
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
-    created_at: str
+    created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
 
@@ -443,6 +455,7 @@ class FunctionVersion(_RemoteValue):
         return FunctionApplication(
             function=FunctionVersionRef(
                 name=self.name,
+                namespace_path=self.namespace_path,
                 object_id=self.object_id,
                 location=self.location,
                 version=self.version,
@@ -501,6 +514,7 @@ class FunctionRegistrationRequest(_RemoteValue):
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
@@ -687,6 +701,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.string(), "utf8"),
     (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
+    (pa.large_binary(), "large_binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
@@ -836,11 +851,7 @@ def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
             {
                 "name": child.name,
                 "nullable": child.nullable,
-                "type": (
-                    {"type": "large_binary"}
-                    if pa.types.is_large_binary(child.type)
-                    else _exact_arrow_type(child.type)
-                ),
+                "type": _exact_arrow_type(child.type),
             }
             for child in storage
         ],
@@ -1089,6 +1100,43 @@ def _infer_signature(
     if (input_schema is None) != (output_schema is None):
         raise ValueError("input_schema and output_schema must be provided together")
 
+    try:
+        annotations = get_type_hints(function, include_extras=True)
+    except Exception as error:
+        raise TypeError(f"failed to resolve Function annotations: {error}") from error
+
+    def input_parameter(field):
+        annotation = annotations.get(field.name)
+        if get_origin(annotation) in (Union, types.UnionType):
+            choices = [
+                value for value in get_args(annotation) if value is not type(None)
+            ]
+            if len(choices) == 1:
+                annotation = choices[0]
+        arrow_type = _canonical_arrow_field(field)
+        if annotation is BlobReader:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE:
+                raise TypeError(
+                    f"BlobReader input '{field.name}' requires a Blob V2 field"
+                )
+            access = "reader"
+        elif annotation is bytes:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE and not (
+                pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type)
+            ):
+                raise TypeError(
+                    f"bytes input '{field.name}' requires binary or Blob V2"
+                )
+            access = "bytes"
+        else:
+            access = "bytes" if arrow_type == _FUNCTION_BLOB_V2_TYPE else None
+        return FunctionParameter(
+            name=field.name,
+            arrow_type=arrow_type,
+            nullable=field.nullable,
+            blob_access=access,
+        )
+
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
@@ -1103,20 +1151,9 @@ def _infer_signature(
                 "input_schema fields must exactly match callable parameters in order: "
                 f"expected {expected!r}, got {actual!r}"
             )
-        inputs = tuple(
-            FunctionParameter(
-                name=field.name,
-                arrow_type=_canonical_arrow_field(field),
-                nullable=field.nullable,
-            )
-            for field in input_schema
-        )
+        inputs = tuple(input_parameter(field) for field in input_schema)
         return FunctionSignature(inputs=inputs, output=_function_output(output_schema))
 
-    try:
-        annotations = get_type_hints(function, include_extras=True)
-    except Exception as error:
-        raise TypeError(f"failed to resolve Function annotations: {error}") from error
     missing = [
         parameter.name for parameter in parameters if parameter.name not in annotations
     ]
@@ -1125,15 +1162,21 @@ def _infer_signature(
         raise TypeError(f"missing Function annotations: {names!r}")
     inputs = []
     for parameter in parameters:
-        data_type, nullable = _annotation_type(annotations[parameter.name])
-        inputs.append(
-            FunctionParameter(
-                name=parameter.name,
-                arrow_type=_canonical_arrow_field(
-                    pa.field(parameter.name, data_type, nullable=nullable)
-                ),
-                nullable=nullable,
+        annotation = annotations[parameter.name]
+        base = annotation
+        nullable = False
+        if get_origin(base) in (Union, types.UnionType):
+            choices = [value for value in get_args(base) if value is not type(None)]
+            if len(choices) == 1:
+                base, nullable = choices[0], True
+        if base is BlobReader:
+            inputs.append(
+                input_parameter(_blob_field(parameter.name, nullable=nullable))
             )
+            continue
+        data_type, nullable = _annotation_type(annotation)
+        inputs.append(
+            input_parameter(pa.field(parameter.name, data_type, nullable=nullable))
         )
     output_type, output_nullable = _annotation_type(annotations["return"])
     if output_nullable:
@@ -1232,7 +1275,7 @@ _PYTHON_CALLABLE_ARTIFACT = "python_callable"
 _PYTHON_BUNDLE_ARTIFACT = "python_bundle"
 # Modules the Function image places beside user code.
 _RESERVED_SOURCE_MODULES = frozenset(
-    {"user_function", "lance_source", "lance_callable"}
+    {"user_function", "lance_source", "lance_callable", "lance_blob"}
 )
 # The service accepts bundle paths made of these components only.
 _SOURCE_PATH_COMPONENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1492,6 +1535,8 @@ class _SourcePackager:
         """One module-level line that rebinds `name` to `value` in the artifact:
         an import for modules and importable classes/functions, a literal
         otherwise."""
+        if value is BlobReader:
+            return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise ValueError(
@@ -1527,9 +1572,14 @@ class _SourcePackager:
         return f"{name} = {_literal_source(value)}"
 
     def _require_importable(self, module_name: str) -> None:
-        """Refuse an import the Function's environment has no way to satisfy:
-        a module that lives in a local source tree, is not shipped with
-        ``code=``, and names no declared package."""
+        """Warn about an import the Function's environment likely cannot
+        satisfy: a module that lives in a local source tree, is not shipped
+        with ``code=``, and names no declared package.
+
+        A warning rather than an error: a distribution name need not match
+        the module it installs, so a declared package can still provide the
+        module, and callers may rewrite the packaged source before
+        registering it."""
         top = module_name.partition(".")[0]
         if (
             top in self._code_modules
@@ -1543,10 +1593,12 @@ class _SourcePackager:
         roots = _installed_roots()
         if not locations or any(location.startswith(roots) for location in locations):
             return
-        raise ValueError(
+        warnings.warn(
             f"@udf source imports {module_name!r} from {locations[0]}, a local "
-            "module the Function's environment cannot import; ship it with "
-            f"code=[{top}] or declare the package that provides it in pip/conda"
+            "module the Function's environment may not be able to import; ship "
+            f"it with code=[{top}] or declare the package that provides it in "
+            "pip/conda",
+            UserWarning,
         )
 
 
@@ -1991,8 +2043,9 @@ def udf(
       place.
 
     A reference to a module in a local source tree that is neither shipped
-    with ``code`` nor provided by a declared package is rejected at
-    registration. Closures, lambdas, nested definitions, mutable module-level
+    with ``code`` nor named by a declared package draws a warning at
+    registration, because the worker will most likely fail to import it.
+    Closures, lambdas, nested definitions, mutable module-level
     objects, code that reaches the module namespace another way
     (``globals()``/``eval``, ``sys.modules``, ``builtins``), and a
     non-standard ``__builtins__`` are rejected where they can be seen and

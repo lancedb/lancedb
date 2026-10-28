@@ -162,6 +162,29 @@ def test_function_version_binds_named_columns_as_one_immutable_application():
     ] == [("text", "column", "documents.body")]
 
 
+def test_function_version_names_its_namespace_as_a_separate_field():
+    """A Function is named by its parts, as a Secret is; a root one states no
+    namespace."""
+    value = job_result("remote_function_job.json")
+    root = FunctionVersion.from_json(json.dumps(value))
+    assert root.namespace_path == ()
+    assert "namespace_path" not in json.loads(root.to_canonical_json())
+
+    nested = FunctionVersion(**{**value, "namespace_path": ["analytics", "features"]})
+    assert nested.name == "embed"
+    assert nested.namespace_path == ("analytics", "features")
+    assert json.loads(nested.to_canonical_json())["namespace_path"] == [
+        "analytics",
+        "features",
+    ]
+    application = nested(text=col("documents.body"))
+    assert application.function.name == "embed"
+    assert application.function.namespace_path == ("analytics", "features")
+    assert json.loads(application.to_canonical_json())["function"][
+        "namespace_path"
+    ] == ["analytics", "features"]
+
+
 def test_function_version_binding_validates_names_and_direct_columns():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))
@@ -375,8 +398,21 @@ class _FunctionDeclarationInner:
     def __init__(self):
         self.calls = []
 
-    async def add_function_columns(self, application_json, output_name):
-        self.calls.append((json.loads(application_json), output_name))
+    async def add_function_columns(
+        self,
+        application_json,
+        output_name,
+        auto_refresh_enabled,
+        auto_refresh_interval_seconds,
+    ):
+        self.calls.append(
+            (
+                json.loads(application_json),
+                output_name,
+                auto_refresh_enabled,
+                auto_refresh_interval_seconds,
+            )
+        )
         return "declared"
 
 
@@ -397,14 +433,18 @@ async def test_add_columns_routes_struct_as_one_and_multi_output_binding_atomica
     )
     assert result == "declared"
     assert inner.calls[-1][1] == "features"
+    assert inner.calls[-1][2:] == (None, None)
 
     bare = application._copy(update={"columns": {}}).rename(
         columns={"normalized_text": "search_text"}
     )
-    result = await table.add_columns(bare)
+    result = await table.add_columns(
+        bare, auto_refresh_enabled=False, auto_refresh_interval_seconds=300
+    )
     assert result == "declared"
     assert inner.calls[-1][1] is None
     assert inner.calls[-1][0]["columns"] == {"normalized_text": "search_text"}
+    assert inner.calls[-1][2:] == (False, 300)
 
 
 @pytest.mark.asyncio

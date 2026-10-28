@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.40.0-beta.9"
+version = "0.41.0-beta.17"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -46,7 +46,7 @@ lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lind
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-encoding = { workspace = true }
-lance-arrow = { workspace = true }
+lance-arrow = { "version" = "=15.0.0-beta.3", "tag" = "v15.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
@@ -55,6 +55,7 @@ moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 log.workspace = true
+tracing.workspace = true
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures.workspace = true
@@ -66,19 +67,23 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
+strum_macros = "0.28"
 tempfile = { workspace = true }
 aws-smithy-types = { workspace = true, optional = true }
-aws-sdk-bedrockruntime = { version = "1.27.0", optional = true }
+# Default features include the legacy `rustls` feature, which pulls in rustls 0.21.
+aws-sdk-bedrockruntime = { version = "1.77.0", optional = true, default-features = false, features = ["default-https-client", "rt-tokio"] }
 # For remote feature
-reqwest = { version = "0.12.0", default-features = false, features = [
+reqwest = { version = "0.13.0", default-features = false, features = [
     "charset",
     "gzip",
     "http2",
     "json",
-    "macos-system-configuration",
+    "query",
     # Avoid linking OpenSSL into Python wheels, which breaks on FIPS hosts.
-    "rustls-tls-native-roots",
+    # This uses the aws-lc-rs crypto provider.
+    "rustls",
     "stream",
+    "system-proxy",
 ], optional = true }
 tonic = { workspace = true, optional = true }
 http = { version = "1", optional = true } # Matching what is in reqwest
@@ -114,9 +119,10 @@ random_word = { version = "0.4.3", features = ["en"] }
 tokio = { workspace = true, features = ["io-util", "macros", "net", "test-util"] }
 uuid = { workspace = true }
 walkdir = "2"
-aws-sdk-dynamodb = { version = "1.55.0" }
-aws-sdk-s3 = { version = "1.55.0" }
-aws-sdk-kms = { version = "1.48.0" }
+# Default features include the legacy `rustls` feature, which pulls in rustls 0.21.
+aws-sdk-dynamodb = { version = "1.68.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
+aws-sdk-s3 = { version = "1.79.0", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a", "http-1x"] }
+aws-sdk-kms = { version = "1.63.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-config = { version = "1.5.10" }
 aws-smithy-runtime = { version = "1.9.1" }
 aws-smithy-types.workspace = true
@@ -131,6 +137,9 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 
 [features]
 default = []
+# Local SQL computed columns and materialized-view creation/refresh.
+# Remote clients and shared server primitives do not require this feature.
+experimental-functions = []
 # Native spatial indexes and queries. Remote RTree requests do not require this feature.
 geo = ["lance/geo"]
 aws = [

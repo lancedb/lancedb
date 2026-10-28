@@ -131,7 +131,8 @@ export interface IvfRqOptions {
    *
    * This value controls how much each residual component is compressed. The more
    * bits, the more accurate the index will be but the slower search. Typical values
-   * are small integers; the default is 1 bit per dimension.
+   * are small integers. If unset, uses Lance's default (currently 5 bits per
+   * dimension). Set to 1 for maximum compression.
    */
   numBits?: number;
 
@@ -491,6 +492,7 @@ export type BaseTokenizer =
   | "whitespace"
   | "raw"
   | "ngram"
+  | "code"
   | "icu"
   | "icu/split"
   | `jieba/${string}`
@@ -519,6 +521,8 @@ export interface FtsOptions {
    * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   *
+   * "code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
    *
    * "icu" - ICU dictionary-based word segmentation.
    *

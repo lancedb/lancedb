@@ -2,13 +2,19 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 """Materialized views: tables defined by a query over a source table and
-maintained by refresh. See ``DBConnection.create_materialized_view``."""
+maintained by refresh. See ``DBConnection.create_materialized_view``.
+
+Local creation and refresh require the ``experimental-functions`` Cargo feature
+in a source build. Published packages disable it. Opening, reading, listing and
+dropping existing views and remote Cloud/Enterprise operations remain available.
+"""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
+
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Tuple, Union
 
 from .background_loop import LOOP
 from .job import AsyncJob, Job, _typed_job
@@ -27,6 +33,9 @@ SelectArg = Union[
     Dict[str, str],
     None,
 ]
+
+
+MaterializedViewSource = str
 
 
 DEFINITION_FORMAT = 2
@@ -179,18 +188,16 @@ class AsyncMaterializedView:
     ) -> "RefreshMaterializedViewResult":
         """Recompute the view from its source.
 
-        The refresh is incremental when the source's changes can be
-        reconciled into the view -- rows added, changed or removed since the
-        last one -- and otherwise rebuilds. ``full=True`` forces a rebuild;
-        ``source_version`` refreshes to that source version instead of the
-        latest.
+        ``full=True`` forces a remote rebuild; otherwise the server chooses
+        the refresh mode. Local views always rebuild, and ``source_version``
+        selects a source version instead of the latest. Remote SQL refreshes
+        do not support source-version pinning.
 
-        Concurrent refreshes of one view do not duplicate its rows. Two that
-        plan the same source rows conflict on commit, and the loser raises
-        rather than writing them a second time.
+        Remote results leave ``mode``, ``rows_written``, and ``source_version``
+        as ``None`` because the SQL job adapter does not expose these metrics.
         """
         return await self._table._inner.refresh_materialized_view(
-            full=full, source_version=source_version
+            source_version=source_version, full=full
         )
 
     async def refresh_async(
@@ -198,15 +205,15 @@ class AsyncMaterializedView:
     ) -> "AsyncJob[RefreshMaterializedViewResult]":
         """Submit a refresh and return its job without waiting.
 
-        The job may already be complete for a local view. On LanceDB Cloud
-        and Enterprise, its ``id`` is the server job identifier returned by
-        the refresh endpoint.
+        The job may already be complete for a local view. Remote refreshes are
+        submitted through the SQL service. Options and result metrics follow
+        [refresh][lancedb.materialized_view.AsyncMaterializedView.refresh].
         """
         from ._lancedb import RefreshMaterializedViewResult
 
         return _typed_job(
             await self._table._inner.refresh_materialized_view_async(
-                full=full, source_version=source_version
+                source_version=source_version, full=full
             ),
             RefreshMaterializedViewResult.from_json,
         )

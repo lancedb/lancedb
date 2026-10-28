@@ -1,6 +1,6 @@
 [package]
 name = "lancedb-python"
-version = "0.40.0-beta.9"
+version = "0.41.0-beta.17"
 publish = false
 edition.workspace = true
 description = "Python bindings for LanceDB"
@@ -8,7 +8,7 @@ license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 
 [lib]
 name = "_lancedb"
@@ -22,6 +22,7 @@ bytes.workspace = true
 lancedb.workspace = true
 datafusion-common.workspace = true
 lance-core.workspace = true
+lance-arrow.workspace = true
 lance-namespace.workspace = true
 lance-namespace-impls.workspace = true
 lance-io.workspace = true
@@ -51,3 +52,4 @@ pyo3-build-config = { version = "0.28", features = ["abi3-py310"] }
 default = ["remote", "lancedb/aws", "lancedb/gcs", "lancedb/azure", "lancedb/dynamodb", "lancedb/oss", "lancedb/huggingface", "lancedb/cos", "lancedb/goosefs", "lancedb/metrics-otel"]
 fp16kernels = ["lancedb/fp16kernels"]
 remote = ["lancedb/remote"]
+experimental-functions = ["lancedb/experimental-functions"]

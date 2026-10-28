@@ -38,9 +38,9 @@ preview: CherryPickPreview;
 
 ```ts
 status:
-  | "failed"
-  | "unknown"
   | "ready"
+  | "failed"
   | "notImplemented"
-  | "cherryPicked";
+  | "cherryPicked"
+  | "unknown";
 ```

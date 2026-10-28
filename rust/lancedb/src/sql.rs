@@ -17,6 +17,10 @@ pub enum QueryStatus {
     /// The server is still executing the query.
     Running,
     /// The server has made the complete result available.
+    ///
+    /// Directly streamed queries report `Finished` when their stream reaches
+    /// its end. Deferred queries report the server's execution state. Open the
+    /// reader directly instead of waiting for this status before reading.
     Finished,
     /// The server accepted cancellation but has not confirmed it yet.
     Cancelling,
@@ -60,7 +64,10 @@ pub(crate) trait QueryHandle: Send + Sync {
 /// A handle to a submitted SQL query.
 ///
 /// The handle can be inspected, opened as an Arrow reader, or cancelled.
-/// Dropping it does not cancel the server-side query.
+/// The server may stream results on the initial call or defer execution and
+/// return result tickets. Dropping an unread handle or its reader stops a
+/// directly streamed query; deferred execution continues until explicitly
+/// cancelled. This applies equally with and without parameters.
 /// Identifier lookup is scoped to the connection that submitted the query and
 /// is not a durable resume mechanism.
 pub struct Query {
@@ -88,6 +95,10 @@ impl Query {
     }
 
     /// Get a point-in-time description of the query.
+    ///
+    /// Directly streamed queries stay [`QueryStatus::Running`] until the result
+    /// stream ends. Deferred queries expose the server's execution state. Open
+    /// [`Self::reader`] directly instead of waiting for [`QueryStatus::Finished`].
     pub async fn describe(&self) -> Result<QueryDescription> {
         self.handle.describe().await
     }
