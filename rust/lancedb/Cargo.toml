@@ -46,7 +46,7 @@ lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lind
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-encoding = { workspace = true }
-lance-arrow = { "version" = "=15.0.0-beta.4", "tag" = "v15.0.0-beta.4", "git" = "https://github.com/lance-format/lance.git" }
+lance-arrow = { workspace = true }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
