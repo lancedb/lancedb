@@ -127,6 +127,47 @@ def test_function_without_initialization_keeps_its_wire_form():
     assert request["artifact"]["kind"] == "python_callable"
 
 
+@pytest.mark.parametrize("annotation", ["Array", "RecordBatch"])
+@pytest.mark.parametrize("kind", ["function", "class"])
+def test_batch_annotations_require_explicit_schemas(annotation, kind, helper_package):
+    if kind == "class":
+        source = f"""
+            import pyarrow as pa
+
+            class identity:
+                def __call__(self, value: pa.{annotation}) -> pa.{annotation}:
+                    return value
+        """
+    else:
+        source = f"""
+            import pyarrow as pa
+
+            def identity(value: pa.{annotation}) -> pa.{annotation}:
+                return value
+        """
+    module = helper_package("fx_batch_annotations", {"__init__.py": source})
+    with pytest.raises(TypeError, match="input_schema and output_schema"):
+        udf(module.identity)
+
+
+def test_array_batch_annotations_accept_explicit_schemas():
+    @udf(
+        input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        output_schema=pa.int64(),
+    )
+    def identity(value: pa.Array) -> pa.Array:
+        return value
+
+    signature = identity.registration_request.signature
+    assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+        ("value", "int64", False)
+    ]
+    assert signature.output.arrow_type == "int64"
+    assert signature.output.nullable is False
+    values = pa.array([1, 2, 3])
+    assert identity(values).equals(values)
+
+
 @pytest.mark.parametrize("class_udf", [False, True])
 @pytest.mark.parametrize("postponed", [False, True])
 @pytest.mark.parametrize(
