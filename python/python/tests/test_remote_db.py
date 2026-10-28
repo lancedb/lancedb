@@ -10,7 +10,9 @@ import json
 import multiprocessing as mp
 import pickle
 import re
+import subprocess
 import sys
+import textwrap
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -52,7 +54,7 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 
 @contextlib.contextmanager
-def mock_lancedb_connection(handler):
+def mock_lancedb_connection(handler, **client_config):
     with http.server.HTTPServer(
         ("localhost", 0), make_mock_http_handler(handler)
     ) as server:
@@ -69,6 +71,7 @@ def mock_lancedb_connection(handler):
                 "timeout_config": {
                     "connect_timeout": 1,
                 },
+                **client_config,
             },
         )
 
@@ -106,6 +109,101 @@ async def mock_lancedb_connection_async(handler, **client_config):
         finally:
             server.shutdown()
             handle.join()
+
+
+@pytest.fixture
+def existence_handler(method, identifier, status):
+    def handler(request):
+        resource = "namespace" if method == "namespace_exists" else "table"
+        resource_id = "$".join(identifier) or "$"
+        suffix = "/" if resource == "table" else ""
+        assert request.command == "POST"
+        assert request.path == f"/v1/{resource}/{resource_id}/describe{suffix}"
+        assert request.headers["x-api-key"] == "fake"
+        assert request.headers["X-Exists-Test"] == "present"
+        request.send_response(status)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}" if status == 200 else b"lookup failed")
+
+    return handler
+
+
+@pytest.mark.parametrize(
+    "method,identifier",
+    [
+        ("namespace_exists", []),
+        ("namespace_exists", ["ns"]),
+        ("namespace_exists", ["parent", "ns"]),
+        ("table_exists", ["table"]),
+        ("table_exists", ["parent", "ns", "table"]),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 404, 403, 507])
+def test_remote_exists(method, identifier, status, existence_handler):
+    from lancedb.remote.header import StaticHeaderProvider
+
+    provider = StaticHeaderProvider({"X-Exists-Test": "present"})
+    with mock_lancedb_connection(existence_handler, header_provider=provider) as db:
+        if status in (200, 404):
+            assert getattr(db, method)(identifier) is (status == 200)
+        else:
+            with pytest.raises(HttpError) as exc_info:
+                getattr(db, method)(identifier)
+            assert exc_info.value.status_code == status
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,identifier",
+    [
+        ("namespace_exists", []),
+        ("namespace_exists", ["parent", "ns"]),
+        ("table_exists", ["table"]),
+        ("table_exists", ["parent", "ns", "table"]),
+    ],
+)
+@pytest.mark.parametrize("status", [200, 404, 403, 507])
+async def test_async_remote_exists(method, identifier, status, existence_handler):
+    from lancedb.remote.header import StaticHeaderProvider
+
+    provider = StaticHeaderProvider({"X-Exists-Test": "present"})
+    async with mock_lancedb_connection_async(
+        existence_handler, header_provider=provider
+    ) as db:
+        if status in (200, 404):
+            assert await getattr(db, method)(identifier) is (status == 200)
+        else:
+            with pytest.raises(HttpError) as exc_info:
+                await getattr(db, method)(identifier)
+            assert exc_info.value.status_code == status
+
+
+@pytest.mark.parametrize("table_id", [[], ["invalid/name"]])
+def test_remote_table_exists_rejects_invalid_identifier(table_id):
+    requests = []
+    with mock_lancedb_connection(lambda request: requests.append(request.path)) as db:
+        with pytest.raises(ValueError):
+            db.table_exists(table_id)
+    assert requests == []
+
+
+def test_remote_table_exists_rechecks_cached_table():
+    requests = []
+
+    def handler(request):
+        requests.append(request.path)
+        request.send_response(200 if len(requests) == 1 else 404)
+        request.send_header("Content-Type", "application/json")
+        request.end_headers()
+        request.wfile.write(b"{}")
+
+    with mock_lancedb_connection(handler) as db:
+        table_id = ["ns", "table"]
+        assert db.table_exists(table_id) is True
+        assert db.table_exists(table_id) is False
+        assert table_id == ["ns", "table"]
+    assert requests == ["/v1/table/ns$table/describe/"] * 2
 
 
 def paginated_table_listing_handler(request):
@@ -3532,6 +3630,128 @@ BLOB_DESCRIBE_RESPONSE = {
         ]
     },
 }
+
+
+@pytest.mark.parametrize("use_async", [False, True])
+@pytest.mark.parametrize("with_pylance", [False, True])
+@pytest.mark.parametrize("nested", [False, True])
+def test_remote_schema_restores_blob_extensions(use_async, with_pylance, nested):
+    description = json.loads(json.dumps(BLOB_DESCRIBE_RESPONSE))
+    without_ranges = description["schema"]["fields"].pop()
+    without_ranges["name"] = "without_ranges"
+    image = json.loads(json.dumps(without_ranges))
+    image["name"] = "image"
+    image["nullable"] = False
+    image["metadata"]["lance-encoding:blob-inline-size-threshold"] = "8192"
+    image["type"]["fields"].extend(
+        {"name": name, "type": {"type": "uint64"}, "nullable": True}
+        for name in ("position", "size")
+    )
+    plain = {
+        "name": "plain",
+        "type": image["type"],
+        "nullable": True,
+        "metadata": {"app-key": "app-value"},
+    }
+    fields = [image, without_ranges, plain]
+    if nested:
+        fields = [
+            {
+                "name": "nested",
+                "type": {"type": "struct", "fields": fields},
+                "nullable": False,
+            },
+            {
+                "name": "images",
+                "type": {"type": "list", "fields": [image]},
+                "nullable": True,
+            },
+        ]
+    description["schema"]["fields"].extend(fields)
+    description["schema"]["metadata"] = {"schema-key": "schema-value"}
+
+    def handler(request):
+        assert request.path == "/v1/table/test/describe/"
+        send_json(request, description)
+
+    # A fresh interpreter must read the schema before blob() or a pylance import
+    # registers the extension type and hides the original failure.
+    script = textwrap.dedent(
+        """\
+        import asyncio
+        import importlib.abc
+        import sys
+        import pyarrow as pa
+
+        if sys.argv[3] == "False":
+            class NoLance(importlib.abc.MetaPathFinder):
+                def find_spec(self, fullname, path, target=None):
+                    if fullname == "lance" or fullname.startswith("lance."):
+                        raise ModuleNotFoundError(fullname, name="lance")
+            sys.meta_path.insert(0, NoLance())
+        import lancedb
+
+        assert "lance.blob" not in sys.modules
+        options = dict(api_key="fake", host_override=sys.argv[1])
+
+        async def read_schema():
+            db = await lancedb.connect_async("db://dev", **options)
+            table = await db.open_table("test")
+            return await table.schema()
+
+        if sys.argv[2] == "True":
+            schema = asyncio.run(read_schema())
+        else:
+            db = lancedb.connect("db://dev", **options)
+            schema = db.open_table("test").schema
+
+        assert schema.metadata == {b"schema-key": b"schema-value"}
+        assert schema.field("id") == pa.field("id", pa.int64(), nullable=False)
+        if sys.argv[4] == "True":
+            assert not schema.field("nested").nullable
+            fields = schema.field("nested").type
+            assert schema.field("images").type.value_field.equals(
+                fields.field("image"), check_metadata=True
+            )
+        else:
+            fields = schema
+
+        image = fields.field("image")
+        assert isinstance(image.type, pa.ExtensionType), image
+        assert image.type == lancedb.blob("x").type
+        assert type(image.type) is lancedb.BlobType
+        assert not image.nullable
+        assert image.metadata == {
+            b"lance-encoding:blob-inline-size-threshold": b"8192"
+        }
+        plain = fields.field("plain")
+        assert plain.type == image.type.storage_type
+        assert plain.metadata == {b"app-key": b"app-value"}
+        without_ranges = fields.field("without_ranges")
+        assert isinstance(without_ranges.type, pa.ExtensionType), without_ranges
+        assert type(without_ranges.type) is lancedb.BlobType
+        assert without_ranges.type.storage_type == pa.struct([
+            pa.field("data", pa.large_binary()), pa.field("uri", pa.string())
+        ])
+        assert without_ranges.nullable
+        """
+    )
+    with mock_lancedb_connection(handler) as db:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                script,
+                db.host_override,
+                str(use_async),
+                str(with_pylance),
+                str(nested),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.asyncio

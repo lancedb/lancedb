@@ -214,14 +214,21 @@ await db.tableNames();
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
 rather than at the database root.
 
-To find out whether a table exists, open it and handle the error, or look for
-its name in a listing. A missing table raises `ValueError` on a local directory
-or a deployment, and `lance_namespace.TableNotFoundError` on a connection from
-`connect_namespace`. A listing returns one page of names at a time, so check
-every page. Python's `table_exists` is no substitute: a local directory or a
-deployment raises `NotImplementedError` for it, and on a connection from
-`connect_namespace("dir", ...)` or `connect_namespace("rest", ...)` it fails with
-an `AttributeError`. TypeScript has no `tableExists`.
+For Python remote connections created with `lancedb.connect("db://...")`, use
+`db.table_exists(["documents"])` to check whether a table exists. For an async
+remote connection, use `await db.table_exists(["documents"])`. Include namespace
+segments before the table name, for example `["analytics", "documents"]`. These
+checks return `False` when the table is missing and propagate other errors,
+including permission errors.
+
+Local synchronous directory connections still raise `NotImplementedError` for
+`table_exists`. On a connection from `connect_namespace("dir", ...)` or
+`connect_namespace("rest", ...)`, it fails with an `AttributeError`. For these
+connections, open the table and handle the error, or look for its name in a
+listing. A missing table raises `ValueError` on a local directory and
+`lance_namespace.TableNotFoundError` on a connection from `connect_namespace`.
+A listing returns one page of names at a time, so check every page. TypeScript
+has no `tableExists`.
 
 ## Rename and clone tables {#rename-clone}
 

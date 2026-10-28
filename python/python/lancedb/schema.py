@@ -32,8 +32,8 @@ _resolved_blob_type = None
 class _FallbackBlobType(pa.ExtensionType):
     """lance.blob.v2 extension type used when pylance is not installed."""
 
-    def __init__(self) -> None:
-        pa.ExtensionType.__init__(self, _BLOB_V2_STORAGE_TYPE, _BLOB_EXTENSION_NAME)
+    def __init__(self, storage_type: pa.DataType = _BLOB_V2_STORAGE_TYPE) -> None:
+        pa.ExtensionType.__init__(self, storage_type, _BLOB_EXTENSION_NAME)
 
     def __arrow_ext_serialize__(self) -> bytes:
         return b""
@@ -42,7 +42,7 @@ class _FallbackBlobType(pa.ExtensionType):
     def __arrow_ext_deserialize__(
         cls, storage_type: pa.DataType, serialized: bytes
     ) -> "_FallbackBlobType":
-        return cls()
+        return cls(storage_type)
 
     def __reduce__(self):
         return type(self).__arrow_ext_deserialize__, (
@@ -181,6 +181,24 @@ def _resolve_blob_type():
         ) from err
     _resolved_blob_type = _FallbackBlobType
     return _resolved_blob_type
+
+
+def _restore_blob_extensions(schema: pa.Schema) -> pa.Schema:
+    """Restore blob fields read before their extension type was registered."""
+    unrestored = _collect_blob_paths(
+        schema,
+        lambda field: (
+            not isinstance(field.type, pa.ExtensionType)
+            and _metadata_marks_blob_v2(field.metadata or {})
+        ),
+    )
+    if not unrestored:
+        return schema
+
+    _resolve_blob_type()
+    # Arrow's deserializer uses the registered class and preserves nested fields,
+    # storage layouts, nullability, and unrelated metadata. Only the schema is read.
+    return pa.ipc.read_schema(schema.serialize())
 
 
 def blob(
