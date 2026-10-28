@@ -91,9 +91,10 @@ result, so the results can go into the same table as the crawled pages:
   {PyFirecrawlWebSearch}
 </CodeBlock>
 
-To refresh a site later, crawl it again and write the new chunks with
-[`merge_insert`](/ingestion/merge-insert) keyed on `source_url`, or delete a page's old rows
-before adding its new ones.
+To refresh a page later, crawl it again, delete that page's old rows with
+`table.delete(f"source_url = '{url}'")`, and add its new chunks. Every chunk of a page shares
+the same `source_url`, so it cannot serve as a [`merge_insert`](/ingestion/merge-insert) key
+until each chunk has its own identity.
 
 ## Learn more {#learn-more}
 
