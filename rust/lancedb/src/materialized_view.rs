@@ -1464,7 +1464,7 @@ async fn prepare_with(
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
-            message: "this operation is only supported in LanceDB Embedded".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let source_namespace = source.namespace().to_vec();
@@ -1492,7 +1492,7 @@ async fn prepare_with(
     let resolved = Table::new(resolved, database.clone());
     let Some(native) = resolved.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only in LanceDB Embedded".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         });
     };
     let caller_uri = caller_native.dataset.get().await?.uri().to_string();

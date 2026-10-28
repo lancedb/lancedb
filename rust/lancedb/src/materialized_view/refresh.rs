@@ -199,7 +199,7 @@ pub async fn replace_materialized_view_fragments(
     stream: SendableRecordBatchStream,
 ) -> Result<u64> {
     let native = view.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only in LanceDB Embedded".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     native.dataset.ensure_mutable()?;
     let lock = refresh_lock(native.dataset.get().await?.uri());
@@ -320,7 +320,7 @@ async fn open_source(view: &Table, definition: &MaterializedViewDefinition) -> R
         })
         .await?;
     let native = source.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only in LanceDB Embedded".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     Ok(native.dataset.get().await?.as_ref().clone())
 }

@@ -846,7 +846,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// The default returns `NotSupported`; Lance-backed tables override it.
     async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
         Err(Error::NotSupported {
-            message: "computed columns are supported only in LanceDB Embedded".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
     /// Fill a computed column's unfilled rows and recompute those whose
@@ -856,7 +856,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         _column: &str,
     ) -> Result<Job<crate::function::RefreshColumnResult>> {
         Err(Error::NotSupported {
-            message: "computed columns are supported only in LanceDB Embedded".into(),
+            message: "this operation is only supported on LanceDB Embedded".into(),
         })
     }
     /// The per-row errors Function refreshes recorded on this table; see
