@@ -388,6 +388,36 @@ class RemoteDBConnection(DBConnection):
         return LOOP.run(self._conn.describe_namespace(namespace_path=namespace_path))
 
     @override
+    def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """Check if a namespace exists.
+
+        ``namespace_id`` contains the namespace segments; an empty list represents
+        root. Returns False only if the namespace is not found. Other errors,
+        including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> def check_namespace(conn):
+        ...     return conn.namespace_exists(["analytics"])
+        """
+        return LOOP.run(self._conn.namespace_exists(namespace_id))
+
+    @override
+    def table_exists(self, table_id: List[str]) -> bool:
+        """Check if a table exists.
+
+        ``table_id`` contains the namespace segments followed by the table name.
+        Returns False only if the table is not found. Other errors, including
+        permission errors, are propagated.
+
+        Examples
+        --------
+        >>> def check_table(conn):
+        ...     return conn.table_exists(["analytics", "events"])
+        """
+        return LOOP.run(self._conn.table_exists(table_id))
+
+    @override
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
