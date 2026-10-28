@@ -1,14 +1,13 @@
 name: Docs prose style
 
-# Vale checks the mechanical rules in the LanceDB style guide
-# (lancedb/docs, STYLE.md) with the package pinned in .vale.ini. Its findings
-# are advisory annotations on the lines a pull request adds or changes and
-# never fail the job; an install, sync or configuration error still does.
+# Style findings are advisory; installation and configuration errors fail.
 on:
   pull_request:
     paths:
       - "docs/web/**/*.mdx"
       - ".vale.ini"
+      - ".github/vale/**"
+      - ".github/workflows/docs-style.yml"
 
 permissions:
   contents: read
@@ -40,6 +39,7 @@ jobs:
         uses: vale-cli/vale-action@518a9136acc6e6668ce7c00d367051e0941e87ff # v3.0.0
         with:
           version: none
+          sync: false
           files: docs/web
           reporter: github-pr-annotations
           filter_mode: added
