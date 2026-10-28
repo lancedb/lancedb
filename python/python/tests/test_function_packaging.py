@@ -11,9 +11,10 @@ import json
 import subprocess
 import sys
 import textwrap
+import types
 import warnings
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated, Optional, get_type_hints
 
 import pyarrow as pa
 import pytest
@@ -124,6 +125,95 @@ def test_function_without_initialization_keeps_its_wire_form():
     request = json.loads(double.registration_request.to_canonical_json())
     assert "initialization" not in request["signature"]
     assert request["artifact"]["kind"] == "python_callable"
+
+
+@pytest.mark.parametrize("class_udf", [False, True])
+@pytest.mark.parametrize("postponed", [False, True])
+@pytest.mark.parametrize(
+    ("annotation", "nullable"),
+    [
+        ("BlobReader", False),
+        ("Reader", False),
+        ('"Reader"', False),
+        ("Reader | None", True),
+        ("Optional[Reader]", True),
+        ('Optional["Reader"]', True),
+        ("MaybeReader", True),
+        ("lancedb.BlobReader", False),
+        ("lancedb.BlobReader | None", True),
+    ],
+)
+def test_blob_reader_annotations_resolve_in_the_artifact(
+    helper_package, monkeypatch, class_udf, postponed, annotation, nullable
+):
+    definition = (
+        f"class read_blob:\n"
+        f"    def __call__(self, video: {annotation}) -> int:\n"
+        f"        return 0\n"
+        if class_udf
+        else f"def read_blob(video: {annotation}) -> int:\n    return 0\n"
+    )
+    module = helper_package(
+        "fx_blob_annotations",
+        {
+            "__init__.py": (
+                ("from __future__ import annotations\n" if postponed else "")
+                + "import lancedb\n"
+                "from typing import Optional\n"
+                "from lancedb import BlobReader, BlobReader as Reader\n"
+                "from lancedb.functions import udf\n"
+                "MaybeReader = Optional[Reader]\n\n"
+                f"@udf\n{definition}"
+            )
+        },
+    )
+    request = module.read_blob.registration_request
+    parameter = request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "reader"
+    assert parameter.nullable is nullable
+
+    # Workers provide lance_blob rather than importing the client SDK's reader.
+    worker = types.ModuleType("lance_blob")
+    worker.BlobReader = type("BlobReader", (), {})
+    monkeypatch.setitem(sys.modules, "lance_blob", worker)
+    namespace = {}
+    exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
+    packaged = namespace["read_blob"]
+    if class_udf:
+        packaged = packaged.__call__
+    assert get_type_hints(packaged) == {
+        "video": Optional[worker.BlobReader] if nullable else worker.BlobReader,
+        "return": int,
+    }
+
+
+def test_blob_reader_annotation_does_not_shadow_body_globals(
+    helper_package, monkeypatch
+):
+    module = helper_package(
+        "fx_blob_annotation_globals",
+        {
+            "__init__.py": """
+                from lancedb import BlobReader
+                from lancedb.functions import udf
+
+                _lance_blob_reader = 7
+
+                @udf
+                def read_blob(video: BlobReader) -> int:
+                    return _lance_blob_reader
+            """
+        },
+    )
+    worker = types.ModuleType("lance_blob")
+    worker.BlobReader = type("BlobReader", (), {})
+    monkeypatch.setitem(sys.modules, "lance_blob", worker)
+    namespace = {}
+    exec(compile(artifact(module.read_blob), "user_function.py", "exec"), namespace)
+    packaged = namespace["read_blob"]
+    assert get_type_hints(packaged)["video"] is worker.BlobReader
+    assert packaged(worker.BlobReader()) == 7
 
 
 @pytest.mark.parametrize(

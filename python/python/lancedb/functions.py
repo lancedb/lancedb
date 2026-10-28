@@ -1462,8 +1462,8 @@ class _SourcePackager:
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
 
-    def package(self, target: Any) -> str:
-        entry = self._definition(target, entry=True)
+    def package(self, target: Any, signature: FunctionSignature) -> str:
+        entry = self._definition(target, entry=True, signature=signature)
         parts = [_SOURCE_HEADER]
         if self._imports:
             parts.extend(["", *(self._imports[name] for name in sorted(self._imports))])
@@ -1472,12 +1472,20 @@ class _SourcePackager:
         parts.extend(["", entry, ""])
         return "\n".join(parts)
 
-    def _definition(self, target: Any, *, entry: bool) -> str:
+    def _definition(
+        self, target: Any, *, entry: bool, signature: Optional[FunctionSignature] = None
+    ) -> str:
         definition = _definition_node(target, entry=entry)
         if not inspect.isclass(target) and inspect.getclosurevars(target).nonlocals:
             raise ValueError(
                 "@udf cannot package functions that capture closure values"
             )
+        namespace = _definition_namespace(target)
+        reader_name = (
+            self._blob_annotations(definition, signature, namespace)
+            if signature is not None
+            else None
+        )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
         dynamic = _namespace_acquisition(definition, references)
@@ -1485,9 +1493,10 @@ class _SourcePackager:
             raise ValueError(
                 f"@udf cannot package dynamic namespace access: {dynamic!r}"
             )
-        namespace = _definition_namespace(target)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
+        if reader_name is not None:
+            self._bind(reader_name, BlobReader)
         unresolved = []
         for name in sorted(references):
             if name == target.__name__:
@@ -1507,6 +1516,44 @@ class _SourcePackager:
                 f"@udf source contains unresolved global names: {unresolved!r}"
             )
         return source
+
+    def _blob_annotations(
+        self,
+        definition: Union[ast.FunctionDef, ast.ClassDef],
+        signature: FunctionSignature,
+        namespace: Mapping[str, Any],
+    ) -> Optional[str]:
+        """Bind reader inputs to the worker type, including postponed aliases."""
+        readers = {
+            parameter.name: parameter
+            for parameter in signature.inputs
+            if parameter.blob_access == "reader"
+        }
+        if not readers:
+            return None
+        call = definition
+        if isinstance(definition, ast.ClassDef):
+            call = next(
+                (
+                    member
+                    for member in definition.body
+                    if isinstance(member, ast.FunctionDef) and member.name == "__call__"
+                ),
+                None,
+            )
+        if call is None:
+            return None
+        # Avoid shadowing globals used by the body or other packaged definitions.
+        name = "_lance_blob_reader"
+        while name in namespace or name in self._names or name == definition.name:
+            name += "_"
+        for argument in (*call.args.args, *call.args.kwonlyargs):
+            if argument.arg in readers:
+                annotation = name
+                if readers[argument.arg].nullable:
+                    annotation += " | None"
+                argument.annotation = ast.parse(annotation, mode="eval").body
+        return name
 
     def _claim(self, name: str, meaning: Any) -> None:
         claimed = self._names.setdefault(name, meaning)
@@ -1845,7 +1892,7 @@ class UdfDefinition:
         code_files, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
-        ).package(function)
+        ).package(function, signature)
         if code_files:
             kind = _PYTHON_BUNDLE_ARTIFACT
             source = json.dumps(
