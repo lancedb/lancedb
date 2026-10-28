@@ -1831,26 +1831,37 @@ def test_fetch_and_transform_time_positive_after_iteration(lance_table):
     assert ds.transform_time > 0.0
 
 
-def test_fetch_time_excludes_transform(lance_table):
-    """fetch_time does not include transform time: fetch + transform < total wall time,
-    and neither counter bleeds into the other."""
-    import pyarrow as pa
-    import time
+def test_fetch_time_excludes_transform(lance_table, monkeypatch):
+    """Each counter includes only its own stage's elapsed time."""
+    from types import SimpleNamespace
+
+    clock = 0.0
+    fetch = streaming.Permutation.__getitems__
+
+    def measured_fetch(permutation, indices):
+        nonlocal clock
+        batch = fetch(permutation, indices)
+        clock += 2.0
+        return batch
 
     def slow_transform(batch: pa.RecordBatch) -> list:
-        time.sleep(0.01)  # 10 ms of artificial transform work
+        nonlocal clock
+        clock += 3.0
         return batch.to_pydict()["id"]
 
+    monkeypatch.setattr(streaming, "time", SimpleNamespace(perf_counter=lambda: clock))
+    monkeypatch.setattr(streaming.Permutation, "__getitems__", measured_fetch)
     ds = StreamingDataset(
         lance_table,
-        num_splits=NUM_SPLITS,
+        num_splits=1,
         shuffle_seed=SHUFFLE_SEED,
+        read_batch_size=NUM_ROWS,
         transform=slow_transform,
     )
-    list(ds)
+    assert sorted(ds) == list(range(NUM_ROWS))
 
-    # The slow transform should dominate transform_time.
-    assert ds.transform_time > ds.fetch_time
+    assert ds.fetch_time == pytest.approx(2.0)
+    assert ds.transform_time == pytest.approx(3.0)
 
 
 def test_bytes_loaded_increases_after_iteration(lance_table):

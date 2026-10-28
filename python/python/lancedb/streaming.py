@@ -109,6 +109,13 @@ class _StreamingDatasetAdapter(IterableDataset):
         for sample in self.dataset._iter(consumer_checkpoint_transport=True):
             yield _WorkerSample(sample, self.dataset)
 
+    def __getstate__(self):
+        # Python 3.10 otherwise forwards this protocol through __getattr__.
+        return {"dataset": self.dataset}
+
+    def __setstate__(self, state):
+        self.dataset = state["dataset"]
+
     def __getattr__(self, name):
         dataset = self.__dict__.get("dataset")
         if dataset is None:

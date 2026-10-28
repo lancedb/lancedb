@@ -51,7 +51,10 @@ async def test_embeddings_openai_async():
     # --8<-- [end:async_openai_embeddings]
 
 
-def test_embeddings_secret():
+def test_embeddings_secret(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
     # --8<-- [start:register_secret]
     registry = get_registry()
     registry.set_var("api_key", "sk-...")
@@ -64,6 +67,17 @@ def test_embeddings_secret():
     except ImportError:
         pytest.skip("torch not installed")
 
+    # Test variable resolution without downloading an embedding model.
+    model = Mock()
+    transformers = SimpleNamespace(
+        AutoTokenizer=SimpleNamespace(from_pretrained=Mock(return_value=Mock())),
+        AutoModel=SimpleNamespace(from_pretrained=Mock(return_value=model)),
+    )
+    monkeypatch.setattr(
+        "lancedb.embeddings.transformers.attempt_import_or_raise",
+        lambda _: transformers,
+    )
+
     # --8<-- [start:register_device]
     import torch
 
@@ -73,4 +87,6 @@ def test_embeddings_secret():
 
     func = registry.get("huggingface").create(device="$var:device:cpu")
     # --8<-- [end:register_device]
-    assert func.device == "cuda" if torch.cuda.is_available() else "cpu"
+    expected_device = "cuda" if torch.cuda.is_available() else "cpu"
+    assert func.device == expected_device
+    model.to.assert_called_once_with(expected_device)
