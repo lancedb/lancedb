@@ -1,0 +1,144 @@
+---
+title: "Profiling a dataset"
+sidebarTitle: "Aggregate"
+description: "Measure coverage, missing values and class balance before selecting a dataset."
+icon: chart-column
+keywords: ["aggregate", "group by", "class balance", "count", "profiling", "distinct"]
+availability:
+  oss: unavailable
+  enterprise: available
+  summary: >-
+    Enterprise supports SQL aggregation.
+---
+
+Use SQL aggregates to summarize a dataset: count records, find missing values,
+and compare groups. These summaries help you understand the data before
+selecting records for search, evaluation or training.
+
+## Example data {#example-data}
+
+Connect with an [Enterprise SQL client](/basics/sql). The examples use a small
+document table and a separate label table. Expand the setup below to create them.
+
+<Accordion title="Create the example tables">
+
+`curation_documents` has six records describing four documents.
+`curation_labels` has one label for each of three documents. `row_id` identifies
+a record; `doc_id` identifies the document it describes.
+
+Run each statement separately in a scratch database or namespace. Create these
+tables once for the whole section, using fresh names if they already exist.
+
+```sql
+CREATE TABLE curation_documents (
+    row_id BIGINT, doc_id BIGINT, version BIGINT,
+    source VARCHAR, caption VARCHAR, score DOUBLE
+);
+INSERT INTO curation_documents VALUES
+    (1, 10, 1, 'web', NULL, 0.80),
+    (2, 10, 2, 'web', 'A cat on a chair', 0.95),
+    (3, 20, 1, 'books', 'A dog in a field', 0.90),
+    (4, 30, 1, 'web', NULL, 0.70),
+    (5, 30, 1, 'web', 'A cat by a window', 0.85),
+    (6, 40, 1, 'books', 'A bird in a tree', 0.60);
+
+CREATE TABLE curation_labels (doc_id BIGINT, label VARCHAR);
+INSERT INTO curation_labels VALUES
+    (10, 'cat'), (20, 'dog'), (30, 'cat');
+```
+
+`score` is a sample quality score, not a search result score. Document 10 has
+two versions. Document 30 has two records at the same version. Document 40
+has no label. These cases let you check the effect of each operation.
+
+</Accordion>
+
+## Count records and missing values {#size}
+
+Use `count(*)` to count rows and `count(column)` to count non-null values.
+Add `DISTINCT` to count unique values:
+
+```sql
+SELECT count(*) AS records,
+       count(DISTINCT doc_id) AS documents,
+       count(caption) AS captioned,
+       count(*) FILTER (WHERE caption IS NULL) AS missing_caption
+FROM curation_documents;
+```
+
+The example returns **6 records, 4 documents, 4 populated captions and 2 missing
+captions**. `count(column)` excludes null values; it does not check whether a
+string is empty or whether a value is useful for the task.
+
+## Group records by label {#balance}
+
+Use `GROUP BY` to calculate a summary for each label:
+
+```sql
+SELECT label, count(*) AS documents
+FROM curation_labels
+GROUP BY label
+ORDER BY documents DESC, label;
+```
+
+There are **2 cats and 1 dog** in the label table. Document 40 is absent, so this
+query does not measure labeling coverage across all source documents. Use a
+[left join](/curation/join#join-type) to find documents without labels.
+
+Decide whether the distribution matches your intended use. A uniform random
+sample tends to preserve the source distribution; it does not balance classes.
+To cap the number selected per label, use
+[ranking within a group](/curation/windowing#per-group).
+
+## Count records that match a condition {#conditional}
+
+```sql
+SELECT source,
+       count(*) AS records,
+       count(*) FILTER (WHERE score >= 0.9) AS high_score,
+       count(*) FILTER (WHERE caption IS NULL) AS missing_caption
+FROM curation_documents
+GROUP BY source
+ORDER BY source;
+```
+
+`FILTER` applies a condition to one aggregate. Here, `books` has 2 records,
+1 high-score record and no missing captions. `web` has 4 records, 1 high-score
+record and 2 missing captions. Counts are per record, so repeated document IDs
+still contribute more than once.
+
+<span id="distinct"></span>
+## Group numeric values into ranges {#buckets}
+
+Use `count(DISTINCT column)` for the number of distinct non-null values.
+For numeric fields, group by a range or summarize their distribution. For
+example, this query counts records in score buckets of width 0.1:
+
+```sql
+SELECT floor(score * 10) / 10 AS score_bucket, count(*) AS records
+FROM curation_documents
+GROUP BY score_bucket
+ORDER BY score_bucket;
+```
+
+For time-based data, group by the time interval relevant to the task. The
+[aggregation reference](/sql/dql/aggregation) and
+[scalar function reference](/sql/scalar-functions) cover additional summaries,
+including approximate counts and percentiles. Use an approximate aggregate when an estimate is sufficient; use an exact
+count when the result must be precise.
+
+## Profile a sample {#sampling}
+
+A [sample](/curation/sampling) can help you explore a large dataset before a
+full scan. Report the sample size and method alongside the result. A sample can miss rare classes, and fragment sampling can reflect the order
+in which records were written.
+
+Before accepting a curated dataset, check its required fields and key
+constraints directly rather than inferring them from a small sample.
+
+## Continue curating {#reference}
+
+Use these measurements to choose a [sample](/curation/sampling),
+[attach missing metadata](/curation/join), or
+[select one record per document](/curation/windowing).
+See [Aggregation](/sql/dql/aggregation) for complete SQL syntax.

@@ -35,7 +35,12 @@
 //! - `azure` - Enable Azure Blob Storage object store support.
 //! - `gcs` - Enable Google Cloud Storage object store support.
 //! - `oss` - Enable Alibaba Cloud OSS object store support.
-//! - `remote` - Enable remote client to connect to LanceDB cloud.
+//! - `remote` - Enable the client for connecting to LanceDB Enterprise or LanceDB Cloud (legacy).
+//! - `experimental-functions` - Opt in to local SQL computed-column declarations
+//!   and refresh, and local materialized-view creation and refresh. Disabled by
+//!   default, including in published Python and TypeScript packages. LanceDB
+//!   Distributed operations, reading existing data, metadata protections,
+//!   and ordinary eager `add_columns` transforms do not require this feature.
 //! - `huggingface` - Enable HuggingFace Hub integration for loading datasets from the Hub.
 //! - `fp16kernels` - Enable FP16 kernels for faster vector search on CPU.
 //! - `metrics` - Publish LanceDB's internal metrics through the
@@ -56,9 +61,10 @@
 //!
 //! LanceDB accepts the different form of database path:
 //!
-//! - `/path/to/database` - local database on file system.
+//! - `/path/to/database` - database on the local file system.
 //! - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud object store
-//! - `db://dbname` - Lance Cloud
+//! - `db://dbname` - LanceDB Enterprise or LanceDB Cloud (legacy)
+//! - `db://` with a host override - LanceDB Enterprise tables in the storage root
 //!
 //! You can also use [`ConnectBuilder`] to configure the connection to the database.
 //!
@@ -176,13 +182,15 @@
 //! # }
 //! ```
 
-// The MemWAL LSM read path (`table::query::lsm`) deepens the `create_plan` future's
+// The RTE read path (`table::query::lsm`) deepens the `create_plan` future's
 // type graph enough to overflow the default trait-recursion limit while evaluating
 // auto-traits (`Send`) through the Linux io_uring build's moka cache. Raise it.
 #![recursion_limit = "256"]
 
 pub mod arrow;
+pub mod authz;
 pub mod blob;
+pub mod catalog;
 pub mod connection;
 pub mod data;
 pub mod database;
@@ -190,10 +198,13 @@ pub mod dataloader;
 pub mod embeddings;
 pub mod error;
 pub mod expr;
+pub mod function;
 pub mod index;
 pub mod io;
 pub mod ipc;
 pub mod job;
+pub mod listing;
+pub mod materialized_view;
 #[cfg(feature = "metrics-otel")]
 pub mod metrics_otel;
 #[cfg(feature = "polars")]
@@ -202,10 +213,13 @@ pub mod query;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod rerankers;
+pub mod secrets;
+pub mod sql;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;
 pub mod utils;
+pub mod view;
 
 use std::{fmt::Display, str::FromStr};
 
@@ -214,9 +228,13 @@ use serde::{Deserialize, Serialize};
 pub use blob::{BlobRangeRequest, blob, is_blob};
 pub use connection::{ConnectNamespaceBuilder, Connection};
 pub use error::{Error, JobFailure, Result};
+pub use function::FunctionVersion;
 pub use job::Job;
 use lance_index::vector::ApproxMode as LanceApproxMode;
 use lance_linalg::distance::DistanceType as LanceDistanceType;
+pub use materialized_view::{
+    MaterializedView, MaterializedViewDefinition, RefreshMaterializedViewResult, RefreshMode,
+};
 /// Re-export of the [`metrics`](https://docs.rs/metrics) crate facade. Enable
 /// the `metrics` feature to publish LanceDB's internal metrics; install any
 /// `metrics`-compatible recorder to collect them. See also [`metrics_otel`] for
@@ -224,6 +242,19 @@ use lance_linalg::distance::DistanceType as LanceDistanceType;
 #[cfg(feature = "metrics")]
 pub use metrics;
 pub use table::{FtsToken, Table};
+
+/// Gate local execution without hiding client types or metadata protections.
+pub(crate) fn require_experimental_functions() -> Result<()> {
+    if !cfg!(feature = "experimental-functions") {
+        return Err(Error::NotSupported {
+            message: "local computed columns and materialized-view creation/refresh require \
+                      building LanceDB with the 'experimental-functions' Cargo feature; \
+                      official Python and TypeScript packages do not enable it"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 /// Tokenize a full-text search query using an explicit FTS tokenizer configuration.
 ///
@@ -385,3 +416,9 @@ pub use lance_io::object_store::ObjectStoreRegistry;
 /// declaring their own (potentially mismatched) direct `datafusion` dependency.
 /// See <https://github.com/lancedb/lancedb/issues/3575>.
 pub use datafusion;
+
+/// Connect to a remote catalog through its HTTP(S) root namespace endpoint.
+#[cfg(feature = "remote")]
+pub fn connect_catalog(endpoint: impl Into<String>) -> catalog::ConnectCatalogBuilder {
+    catalog::ConnectCatalogBuilder::new(endpoint)
+}
