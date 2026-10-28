@@ -1,82 +1,123 @@
 ---
 title: "Update rows"
 sidebarTitle: "Update"
-description: "Change values in rows that already exist, by predicate or SQL expression."
+description: "Select existing rows, change values or expressions, and verify the changes."
 icon: pen
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Update rows through the SDKs in OSS and Enterprise. Enterprise also supports the SQL UPDATE statement.
 ---
 
-These examples use the table set up in
-[Ingesting data](/ingestion), and the connection made there.
-
 import {
-    PyUpdateOperation as UpdateOperation,
-    PyUpdateUsingSql as UpdateUsingSql,
     TsUpdateOperation,
     TsUpdateUsingSql,
     RsUpdateOperation,
     RsUpdateUsingSql,
 } from '/snippets/tables.mdx';
+import {
+    PyUpdateOperation as UpdateOperation,
+    PyUpdateUsingSql as UpdateUsingSql,
+} from '/snippets/ingestion_examples.mdx';
 
-<Note>
-In SQL this is [`UPDATE`](/sql/dml/update).
-</Note>
+import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
 
-## Update rows {#update-rows}
+Use `update` to change rows selected by a predicate. Use
+[merge insert](/ingestion/merge-insert) instead when matching an incoming dataset
+against existing keys.
 
-Use `update` when you already know which target rows to modify and you do not need to compare against an incoming dataset.
+## Select the rows to change {#select-rows}
 
-<CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateOperation}
-    </CodeBlock>
+Check the predicate with a [filtered query](/search/filtering) before applying
+the update. These examples target the row with `id = 2`. Review the scope
+carefully when omitting a predicate, since that can update the entire table.
 
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateOperation}
-    </CodeBlock>
+Each example below starts from Alice with 10 logins and Bob with 20. The
+Python programs create and remove their own temporary database. TypeScript
+and Rust operation blocks use `db`; a complete program is provided below.
 
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateOperation}
-    </CodeBlock>
-</CodeGroup>
-
-Expected table contents:
-
-| id | name | login_count |
-| --- | --- | --- |
-| 1 | Alice | 10 |
-| 2 | Bobby | 20 |
-
-<Warning title="Warning">
-Updating nested columns is not yet supported.
-</Warning>
-
-## Update rows with SQL expressions {#update-rows-with-sql-expressions}
-
-Use `values_sql` when you want to use SQL-like expressions to update rows. This is useful for operations like incrementing a counter, or setting a column value based on another column.
+## Assign a new value {#update-rows}
 
 <CodeGroup>
-    <CodeBlock filename="Python" language="Python" icon="python">
-    {UpdateUsingSql}
-    </CodeBlock>
-
-    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    {TsUpdateUsingSql}
-    </CodeBlock>
-
-    <CodeBlock filename="Rust" language="Rust" icon="rust">
-    {RsUpdateUsingSql}
-    </CodeBlock>
+<CodeBlock filename="Python" language="python" icon="python">
+{UpdateOperation}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsUpdateOperation}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsUpdateOperation}
+</CodeBlock>
 </CodeGroup>
 
-Expected table contents:
+The result contains Alice and **Bobby**, with their login counts unchanged.
+The Python `values` and TypeScript `values` arguments take literal values.
+Rust's `column` argument is an expression, so the string value includes SQL quotes.
 
-| id | name | login_count |
-| --- | --- | --- |
-| 1 | Alice | 10 |
-| 2 | Bob | 21 |
+## Calculate a value from the existing row {#update-rows-with-sql-expressions}
 
-<Note title="SQL syntax">
-See the [SQL queries](/sql#connecting) page for more information on the supported SQL syntax.
-</Note>
+<CodeGroup>
+<CodeBlock filename="Python" language="python" icon="python">
+{UpdateUsingSql}
+</CodeBlock>
+<CodeBlock filename="TypeScript" language="typescript" icon="square-js">
+{TsUpdateUsingSql}
+</CodeBlock>
+<CodeBlock filename="Rust" language="rust" icon="rust">
+{RsUpdateUsingSql}
+</CodeBlock>
+</CodeGroup>
 
-When rows are updated, they are moved out of any existing index. The row will still show up in search queries, but the query will not be as fast as it would be if the row was in the index. If you update a large proportion of rows, consider triggering an index rebuild afterwards.
+In this separate example, Bob keeps his name and his login count becomes **21**.
+Python's `values_sql` and TypeScript's `valuesSql` accept expressions.
+These SDK expressions work with embedded OSS tables; they do not require an
+Enterprise SQL endpoint. Enterprise also offers [`UPDATE`](/sql/dml/update).
+
+## Verify the affected data {#verify}
+
+Read the selected rows again and inspect the changed fields. For another
+connection or table handle, account for its
+[read consistency](/tables/consistency) settings.
+
+Nested-field updates are not supported by these operations. For schema changes,
+see [schema evolution](/management/table#schema). Treat derived values separately:
+changing an input field is not a guarantee that every stored feature has been
+recomputed. See [Refresh a column](/feature-engineering/refresh-column).
+
+Updates can change index coverage and query cost. After a large update,
+inspect the workload and follow [index maintenance](/indexing/reindexing)
+guidance for the backend you use.
+
+## Complete write workflow {#complete-example}
+
+<Accordion title="Complete examples: create, append, update, upsert and delete">
+
+Each program creates a temporary local database, performs the five operations,
+prints the result, and removes its temporary data when finished.
+
+- **Python:** install `lancedb`, save the code as `ingestion.py`, and run
+  `python ingestion.py`.
+- **TypeScript:** install `@lancedb/lancedb`, save the code as `ingestion.mts`,
+  and run `node ingestion.mts` with Node.js 22.18 or later.
+- **Rust:** download the [complete Rust project](/static/code/ingestion-rust.zip),
+  extract it, and run `cargo run --locked`. It includes `src/main.rs`, the Cargo
+  manifest and a lockfile for the example's dependencies. The code is shown below.
+
+<CodeGroup>
+<CodeBlock filename="ingestion.py" language="python" icon="python">
+{PyWriteWorkflow}
+</CodeBlock>
+<CodeBlock filename="ingestion.mts" language="typescript" icon="square-js">
+{TsWriteWorkflowBody}
+{TsWriteWorkflowTail}
+</CodeBlock>
+<CodeBlock filename="src/main.rs" language="rust" icon="rust">
+{RsWriteWorkflow}
+</CodeBlock>
+</CodeGroup>
+
+After the operations, Alice has 10 logins, Bobby has 21, and Charlie has 6.
+Dana is selected for deletion and is absent from the final result.
+
+</Accordion>

@@ -1,134 +1,91 @@
 ---
 title: "Guarantees"
 sidebarTitle: "Guarantees"
-description: "What a write promises when it returns, what a reader sees, and what survives a failure."
+description: "Understand table commits, concurrent writes and the boundaries of recovery."
 icon: shield-check
-keywords: ["guarantees", "consistency", "atomicity", "durability", "concurrency", "acid"]
+keywords: ["guarantees", "consistency", "atomicity", "durability", "concurrency"]
 ---
 
-What the system promises, and — just as usefully — what it does not. Most
-surprises in practice come from assuming one of the guarantees below is
-stronger or weaker than it is.
+## Atomic table writes {#writes}
 
-## Writes {#writes}
+A table transaction commits its changes atomically: readers see the committed
+table version, not a partially applied transaction. For example, a committed
+append adds its rows together.
 
-**A write is atomic.** Every write commits a new table version. Either the
-version exists and holds all of the change, or it does not exist and holds none
-of it. There is no state in which a reader sees half an `add()`.
+This boundary is one table transaction. A workflow that updates several tables
+or runs a background job can contain multiple commits. Do not assume the whole
+workflow is atomic.
 
-**A write returns only after the commit.** When the call returns, the version
-is durable in object storage. Nothing is buffered in your process waiting to be
-flushed.
+<span id="schema" />
 
-**Every write advances the version**, including one that affects zero rows. A
-delete whose predicate matches nothing still commits. Version numbers count
-commits, not changes.
+Schema changes are also part of table history. Changing a column's type can
+rewrite data; adding a derived column can write the new column independently.
 
-**Concurrent writes are resolved optimistically.** A transaction records the
-change and the version it was based on. At commit time, a conflicting
-concurrent operation is detected rather than silently overwritten, and the
-commit is retried against the newer version. Operations that do not collide —
-appending while another process appends — both succeed.
+## Consistent reads {#reads}
 
-<Note>
-`merge_insert` reports its retry attempts in the result. A high count means
-contention on the same keys, not an error.
-</Note>
+A read of a table uses a consistent snapshot. A consistent snapshot can still
+be older than another writer's latest commit. [Consistency](/tables/consistency)
+explains how OSS and Enterprise choose the version a reader sees.
 
-## Reads {#reads}
+For an experiment that must keep using the same data, select a specific retained
+table version rather than relying on a connection's default freshness.
 
-**A read sees a consistent snapshot.** A query reads one table version
-throughout; it never sees a mixture of two.
+## Concurrent writes {#concurrency}
 
-**Which version, by default, is the one open at the time the table was opened.**
-This is the guarantee most often assumed to be stronger than it is:
+Lance uses optimistic concurrency control. Writers prepare changes, then check
+compatibility with intervening commits. Compatible changes can be committed;
+conflicts may be retried or returned as errors.
 
-<Warning>
-A long-lived connection **does not observe other processes' writes** until it
-reopens the table or its `read_consistency_interval` elapses. The default is
-right for a batch job reading a stable snapshot and wrong for a service
-expected to see fresh data.
-</Warning>
+Applications must handle failed writes. Concurrent appends are compatible, but
+that does not promise success through storage failures or exhausted retries.
+Do not rely on a particular ordering between independent writers.
 
-Set `read_consistency_interval` when several processes write the same table and
-readers must observe those writes. The cost is a metadata check on that
-interval. See [Consistency](/tables/consistency).
+The [Lance transaction specification](https://lance.org/format/table/transaction/)
+describes commit behavior and compatibility between operations.
 
-**Your own writes are always visible to you.** The interval governs other
-writers, not yourself.
+## Storage durability {#durability}
 
-## Durability and history {#durability}
+A committed table version is stored in the table’s configured storage. LanceDB
+OSS uses your local filesystem or object store; LanceDB Enterprise uses the
+cluster’s configured storage.
 
-**Old versions are retained, not overwritten.** A new version does not destroy
-the one before it, which is what makes [time travel](/management/table#versioning) work
-and what lets a reader finish a scan that started on an older version.
+Table version history does not replace backups. Configure storage redundancy
+and backups to meet your recovery requirements.
 
-**Deletion is a mark, not an erase.** A deleted row is recorded in a deletion
-file. The data is recoverable for as long as the version that contains it
-exists.
+## Background job completion {#jobs}
 
-<Warning>
-Retention is finite. [Compaction](/maintenance/compaction) prunes versions
-older than the retention window — **7 days by default** — and a tag or branch
-pointing at a pruned version no longer resolves. If you rely on reading old
-versions, widen the window before running it, not after.
-</Warning>
+In LanceDB Enterprise, operations such as index builds and column refreshes
+can run as background jobs. Receiving a job handle confirms submission. Wait
+for the job to succeed before relying on its result.
 
-**Dropping a table ends its history.** Versioning does not survive
-`drop_table`; there is no undrop.
+Some operations save results in batches. If a job fails or is cancelled,
+batches already committed can remain in the table. Each operation’s guide
+explains whether it can leave partial results.
 
-## Jobs {#jobs}
+## Writes after a client timeout {#timeouts}
 
-**A refresh recomputes only what changed.** It gives values to rows that lack
-them and recomputes rows whose inputs changed since they were computed; it
-leaves the rest alone. Two consequences, both relied on elsewhere:
+If a client times out while waiting for a write, the write may already have
+committed. Retrying an append can therefore insert the same records again.
 
-- **Retrying is safe.** Re-running a refresh fills what is still empty or stale.
-  It is not guaranteed to cost only the rows that did not complete: a retry can
-  recompute values that were already written.
-- **A filled value catches up at the next refresh.** If a column derives from
-  `price` and a row's `price` later changes, the derived value keeps its old
-  value until the next refresh recomputes it.
+Check whether the intended records were written before retrying. For an
+operation submitted as a background job, check its status using the job handle.
 
-**What a failure keeps depends on where the refresh ran.** `refresh_column` in
-your process commits the column once, so a failure keeps none of its values. A
-refresh job on a deployment commits finished batches as it goes, so some values
-can remain.
+## Version history and recovery {#history}
 
-**Cancellation is a request.** `cancel()` asks a job to stop; it does not
-guarantee it stops before doing more work, and cancelling a finished job does
-nothing.
+Retained table versions let you inspect earlier data or restore a table to a
+previous version. Cleanup can remove those versions and their underlying files,
+so configure retention to cover the history you need.
 
-**A job id is opaque.** It correlates with server logs and the jobs API.
-Parsing it, or storing it to resume the job later, is not supported.
+Dropping a table is different from deleting records. Table version history
+cannot undo `drop_table`.
 
-See [Jobs](/basics/jobs).
+<span id="not-guaranteed" />
 
-## Schema {#schema}
+## Learn more {#next}
 
-**Schema changes are versioned like data changes.** Adding, renaming, retyping
-or dropping a column commits a version, so a schema change can be travelled back
-through.
-
-**A computed column's inputs are protected.** While a declaration references a
-column, that column cannot be renamed, retyped, or dropped — the declaration is
-part of the schema and will not be invalidated out from under itself.
-
-**Most schema changes do not rewrite data.** Adding a derived column writes only
-the new column. Type changes are the exception and can be substantial.
-
-## What is not guaranteed {#not-guaranteed}
-
-Worth stating plainly, because each is occasionally assumed:
-
-| | |
-| --- | --- |
-| Multi-table transactions | A commit covers one table. There is no cross-table atomic write. |
-| Read-your-writes across processes | Governed by `read_consistency_interval`, not automatic. |
-| Unenforced primary keys | `SET UNENFORCED PRIMARY KEY` records intent; it does not enforce uniqueness. |
-| Ordering of concurrent appends | Two appends both succeed; their relative row order is not defined. |
-| Index freshness | An index does not cover rows added after it was built until [optimized](/maintenance/compaction). |
-| Automatic compaction | Nothing runs in the background. `optimize()` runs when you call it. |
-
-The last two are the most common source of "why is this query slow" — see
-[Limits](/basics/limits) for the bounds that pair with them.
+- [Consistency](/tables/consistency): control when reads observe updates.
+- [Table versioning](/management/table#versioning): inspect and restore history.
+- [Cleanup](/maintenance/cleanup): configure retention and understand protected versions.
+- [Jobs](/basics/jobs): distinguish submission, completion and cancellation.
+- [Column refresh](/feature-engineering/refresh-column): understand partial progress.
+- [Architecture](/architecture): understand storage and background maintenance.

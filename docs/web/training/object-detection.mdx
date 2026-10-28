@@ -5,7 +5,7 @@ description: End-to-end fine-tuning of a Faster R-CNN object detector on curated
 icon: car
 ---
 
-This example walks through fine-tuning an autonomous vehicle (AV) perception model on targeted failure-mode slices of [BDD100K](https://www.bdd100k.com/) — riders, nighttime pedestrians, and distant pedestrians — using LanceDB as a single multimodal table from raw JPEG bytes through to the PyTorch training loop.
+This example walks through fine-tuning an autonomous vehicle (AV) perception model on targeted failure-mode slices of [BDD100K](https://www.bdd100k.com/) (riders, nighttime pedestrians, and distant pedestrians) using LanceDB as a single multimodal table from raw JPEG bytes through to the PyTorch training loop.
 
 The full pipeline lives in the [lancedb/training](https://github.com/lancedb/training/tree/main/object-detection) repository. This page focuses on the parts most relevant to training: defining curated splits as materialized views, loading them through the [`Permutation`](/training/data-loading) API, and pinning checkpoints to an exact data version.
 
@@ -22,13 +22,13 @@ Fine-tuning Faster R-CNN ResNet50 FPN v2 for 10 epochs on each curated slice (ba
 | **Distant pedestrian**   | mAP@0.5 | 0.4746 | **0.5788** | **+22.0%** |
 |                          | Recall  | 0.6794 | **0.8024** | **+18.1%** |
 
-No external data added — only training-distribution correction via SQL filters over a single Lance table. Each panel below shows the same frame with three overlaid predictions: **green** = ground truth · **red** = pretrained COCO baseline · **blue** = fine-tuned model.
+No external data added, only training-distribution correction via SQL filters over a single Lance table. Each panel below shows the same frame with three overlaid predictions: **green** = ground truth · **red** = pretrained COCO baseline · **blue** = fine-tuned model.
 
-![Rider detection — ground truth vs baseline vs fine-tuned](/static/assets/images/training/rider_04.jpg)
+![Rider detection: ground truth vs baseline vs fine-tuned](/static/assets/images/training/rider_04.jpg)
 
-![Nighttime pedestrian detection — ground truth vs baseline vs fine-tuned](/static/assets/images/training/nighttime_person_01.jpg)
+![Nighttime pedestrian detection: ground truth vs baseline vs fine-tuned](/static/assets/images/training/nighttime_person_01.jpg)
 
-![Distant pedestrian detection — ground truth vs baseline vs fine-tuned](/static/assets/images/training/distant_person_00.jpg)
+![Distant pedestrian detection: ground truth vs baseline vs fine-tuned](/static/assets/images/training/distant_person_00.jpg)
 
 The rest of the page walks through the pipeline that produced these checkpoints.
 
@@ -42,7 +42,7 @@ A perception model fine-tuned on a generic dataset typically misses the long-tai
 | **Nighttime pedestrians** | `timeofday = 'night' AND has_person = true` |
 | **Distant pedestrians** | `has_person = true AND person_bbox_area_pct < 30.0` |
 
-Each curated slice becomes a [Geneva materialized view](/geneva/jobs/materialized-views) — a named, refreshable SQL filter over the source table — and the training script loads it by name. New footage flows in through `add()` → `backfill()` → `refresh()`; no manifests, no exports, no reshuffling on disk.
+Each curated slice becomes a [Geneva materialized view](/geneva/jobs/materialized-views) (a named, refreshable SQL filter over the source table), and the training script loads it by name. New footage flows in through `add()` → `backfill()` → `refresh()`; no manifests, no exports, no reshuffling on disk.
 
 ## 1\. Schema {#1-schema}
 
@@ -70,7 +70,7 @@ BDD_SCHEMA = pa.schema([
 ])
 ```
 
-Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a Lance table — no intermediate preprocessing job. The table can live on local disk, S3, GCS, or Azure; everything downstream (backfills, views, the training loader) opens it in place via `lancedb.connect("s3://...")` with no local copy step.
+Ingestion streams `pa.RecordBatch`es of raw frames + annotations directly into a Lance table, with no intermediate preprocessing job. The table can live on local disk, S3, GCS, or Azure; everything downstream (backfills, views, the training loader) opens it in place via `lancedb.connect("s3://...")` with no local copy step.
 
 ## 2\. Backfill curation features with Geneva {#2-backfill-curation-features-with-geneva}
 
@@ -117,12 +117,12 @@ with gconn.local_ray_context():
 ```
 
 <Note>
-Because the curation features are flat scalar columns on the same table, all four retrieval modes — SQL, full-text search, vector search, and SQL-filtered vector search — work directly without joins or exports. See [Geneva backfilling](/geneva/jobs/backfilling) for how a backfill fills only the rows that lack values.
+Because the curation features are flat scalar columns on the same table, all four retrieval modes (SQL, full-text search, vector search, and SQL-filtered vector search) work directly without joins or exports. See [Geneva backfilling](/geneva/jobs/backfilling) for how a backfill fills only the rows that lack values.
 </Note>
 
 ## 3\. Define training splits as materialized views {#3-define-training-splits-as-materialized-views}
 
-A training split is a named SQL filter, not a CSV manifest. Each view stays in sync with the source table and bumps its `version` on every refresh — the link between a checkpoint and the exact data that produced it.
+A training split is a named SQL filter, not a CSV manifest. Each view stays in sync with the source table and bumps its `version` on every refresh. That version is the link between a checkpoint and the exact data that produced it.
 
 ```py Python icon=Python
 import geneva
@@ -155,7 +155,7 @@ with gconn.local_ray_context():
 
 ## 4\. PyTorch DataLoader via the Permutation API {#4-pytorch-dataloader-via-the-permutation-api}
 
-The training script doesn't know about the filter — it opens a view by name and reads through the [`Permutation`](/training/data-loading) API. Each DataLoader worker reopens its own connection lazily, reads Arrow batches directly from Lance (zero-copy, no intermediate file format), and the collate function decodes the whole batch in one pass. `Permutation` provides random-access indexing over the table, so shuffling is a cheap pointer rewrite rather than a full-dataset shuffle on disk.
+The training script doesn't know about the filter: it opens a view by name and reads through the [`Permutation`](/training/data-loading) API. Each DataLoader worker reopens its own connection lazily, reads Arrow batches directly from Lance (zero-copy, no intermediate file format), and the collate function decodes the whole batch in one pass. `Permutation` provides random-access indexing over the table, so shuffling is a cheap pointer rewrite rather than a full-dataset shuffle on disk.
 
 ```py Python icon=Python
 import lancedb
@@ -246,12 +246,12 @@ def make_loader(uri, table_name, batch_size=64, num_workers=8, shuffle=False):
 ```
 
 <Note>
-`with_format("arrow")` keeps batches as zero-copy `pa.RecordBatch`es — no per-row Python boxing, no pickling between worker and main. Each DataLoader worker reopens its own `Permutation` after fork (the Rust async handle is cleared in `__getstate__`), so reads scale with `num_workers` and stream straight from the underlying object store. JPEG decode overlaps with GPU compute via `pin_memory` + `prefetch_factor`, which is what keeps the loader from becoming the bottleneck on a fast GPU.
+`with_format("arrow")` keeps batches as zero-copy `pa.RecordBatch`es: no per-row Python boxing, no pickling between worker and main. Each DataLoader worker reopens its own `Permutation` after fork (the Rust async handle is cleared in `__getstate__`), so reads scale with `num_workers` and stream straight from the underlying object store. JPEG decode overlaps with GPU compute via `pin_memory` + `prefetch_factor`, which is what keeps the loader from becoming the bottleneck on a fast GPU.
 </Note>
 
 ## 5\. Fine-tune Faster R-CNN {#5-fine-tune-faster-r-cnn}
 
-The training loop is plain PyTorch — the Lance integration ends at the loader. Mixed precision is enabled on CUDA for ~2× speedup on Ampere GPUs.
+The training loop is plain PyTorch: the Lance integration ends at the loader. Mixed precision is enabled on CUDA for ~2× speedup on Ampere GPUs.
 
 ```py Python icon=Python
 import time
@@ -312,7 +312,7 @@ for epoch in range(1, 11):
 
 ## 6\. Pin the checkpoint to a data version {#6-pin-the-checkpoint-to-a-data-version}
 
-Every Lance table — including a materialized view — exposes a monotonically increasing `version`. Logging it next to the weights gives a permanent, deterministic link between a checkpoint and the exact data snapshot that produced it.
+Every Lance table, including a materialized view, exposes a monotonically increasing `version`. Logging it next to the weights gives a permanent, deterministic link between a checkpoint and the exact data snapshot that produced it.
 
 ```py Python icon=Python
 import json
@@ -340,7 +340,7 @@ tbl.checkout(version=7)   # exact snapshot the checkpoint was trained on
 
 ## 7\. Continuous updates {#7-continuous-updates}
 
-When new footage arrives, the same three calls update every downstream view — no view definitions change, no training-script edits required:
+When new footage arrives, the same three calls update every downstream view (no view definitions change, no training-script edits required):
 
 ```py Python icon=Python
 # 1. ingest the new footage into the source table
@@ -361,7 +361,7 @@ for view_name in gconn.table_names():
     print(f"[{view_name}]  {before} → {mv.count_rows()} rows  (version {mv.version})")
 ```
 
-The next training run picks up the new data automatically — and pins itself to the new `version`.
+The next training run picks up the new data automatically and pins itself to the new `version`.
 
 ## Full source {#full-source}
 

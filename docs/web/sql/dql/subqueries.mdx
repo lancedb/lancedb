@@ -6,7 +6,7 @@ icon: code-branch
 keywords: ["subquery", "exists", "in", "correlated", "derived table", "lateral"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 A subquery is allowed anywhere an expression or a relation is.
 
@@ -19,11 +19,11 @@ SELECT * FROM (
 WHERE n > 100
 ```
 
-A derived table needs an alias. It can be [sampled](/sql/dql/sampling) like a base
-table:
+A derived table needs an alias. Its result cannot be
+[sampled](/sql/dql/sampling); sample the table inside it instead:
 
 ```sql
-SELECT * FROM (SELECT * FROM documents) d TABLESAMPLE (10)
+SELECT * FROM (SELECT * FROM documents TABLESAMPLE (10)) d
 ```
 
 ## As a scalar {#scalar}
@@ -33,8 +33,8 @@ SELECT title, (SELECT count(*) FROM revisions r WHERE r.doc_id = d.id) AS revisi
 FROM documents AS d
 ```
 
-A scalar subquery must return one row and one column. Returning more is an
-error rather than a silently-taken first row.
+A scalar subquery returns one column and at most one row. No rows produces
+`NULL`; more than one row is an error.
 
 ## IN and EXISTS {#in-exists}
 
@@ -46,8 +46,9 @@ SELECT title FROM documents AS d
 WHERE EXISTS (SELECT 1 FROM revisions r WHERE r.doc_id = d.id)
 ```
 
-`EXISTS` stops at the first matching row, so it is the cheaper test when you
-only care whether anything matches. `IN` builds the full set.
+Use `EXISTS` to test whether a matching row exists and `IN` to test membership
+in a set of values. The optimizer may rewrite either into a join; inspect
+`EXPLAIN` before choosing one for performance reasons.
 
 `NOT IN` and `NOT EXISTS` differ on nulls: `NOT IN` against a set containing a
 null yields no rows, because the comparison is unknown rather than false. Prefer
@@ -55,8 +56,8 @@ null yields no rows, because the comparison is unknown rather than false. Prefer
 
 ## Correlated subqueries {#correlated}
 
-A subquery referencing a column from the enclosing query — `d.id` above — is
-correlated, and is conceptually evaluated per outer row. The planner usually
+A subquery referencing a column from the enclosing query, such as `d.id` above,
+is correlated, and is conceptually evaluated per outer row. The planner usually
 rewrites it into a join.
 
 <Note>

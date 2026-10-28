@@ -3,6 +3,13 @@ title: "Full-Text Search (FTS) Index"
 sidebarTitle: "FTS Index"
 description: "Create and tune BM25-based full-text search indexes in LanceDB."
 icon: "book"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Full-text indexes are built in the embedded library and in LanceDB Enterprise.
+    The embedded library builds the index before the call returns; a
+    deployment builds it in the background.
 ---
 import { PyFtsIndexAsync as FtsIndexAsync, PyFtsIndexCreate as FtsIndexCreate, PyFtsIndexNested as FtsIndexNested, PyFtsIndexWait as FtsIndexWait } from '/snippets/indexing.mdx';
 
@@ -92,7 +99,7 @@ await async_table.create_index("payload.text", config=FTS(with_position=True))
 | `stem` | bool | `True` | Apply stemming (`running` → `run`) |
 | `remove_stop_words` | bool | `True` | Drop common stop words |
 | `ascii_folding` | bool | `True` | Normalize accented characters |
-| `custom_stop_words` | list[str] | `None` | Extra stop words to drop in addition to the language defaults. Requires `remove_stop_words=True`. |
+| `custom_stop_words` | list[str] | `None` | Explicit stop-word list that replaces the built-in list. Requires `remove_stop_words=True`. |
 | `ngram_min_length` | int | `3` | Minimum n-gram length. Applies only when `base_tokenizer="ngram"`. |
 | `ngram_max_length` | int | `3` | Maximum n-gram length. Applies only when `base_tokenizer="ngram"`. |
 | `prefix_only` | bool | `False` | Index only prefix n-grams rather than all substrings. Applies only when `base_tokenizer="ngram"`. |
@@ -114,9 +121,13 @@ await async_table.create_index("payload.text", config=FTS(with_position=True))
 - `jieba/*` is for Chinese word segmentation with Jieba.
 - `lindera/*` loads a compiled Lindera dictionary, such as `lindera/ipadic` for Japanese or `lindera/ko-dic` for Korean.
 
-Model-backed tokenizers such as `jieba/default`, `lindera/ipadic`, and `lindera/ko-dic` require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to another model root. For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`.
+Model-backed tokenizers such as `jieba/default`, `lindera/ipadic`, and `lindera/ko-dic` require tokenizer model files in Lance's language model home. Lance looks under the default platform data directory for `lance/language_models`, or you can set `LANCE_LANGUAGE_MODEL_HOME` to point to another model root. For example, `jieba/default` is resolved under `<model-home>/jieba/default/...`. For a table in LanceDB Enterprise, the files must be present where the deployment builds and queries the index, so ask its administrator whether they are installed.
 
-`language` is used by token filters, not by the base tokenizer. Stemming supports Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. Built-in stop-word removal supports Danish, Dutch, English, Finnish, French, German, Hungarian, Italian, Norwegian, Portuguese, Russian, Spanish, and Swedish. For other stemming languages, set `remove_stop_words=False` or pass `custom_stop_words`.
+`language` is used by token filters, not by the base tokenizer. Stemming and language-specific stop-word removal support Arabic, Danish, Dutch, English, Finnish, French, German, Greek, Hungarian, Italian, Norwegian, Portuguese, Romanian, Russian, Spanish, Swedish, Tamil, and Turkish. The ICU tokenizer uses a combined multilingual stop-word list. An explicit `custom_stop_words` list replaces the built-in list for either tokenizer.
+
+<Warning title="Rebuild FTS indexes when upgrading to Lance 15">
+Lance `15.0.0-beta.1` revises the built-in stop-word lists, including the multilingual list used by ICU. Existing index metadata records tokenizer settings, but does not freeze these built-in lists. Rebuild affected FTS indexes with the same configuration before serving queries with the updated SDK, so stored terms and query tokens use the same lists. Indexes with stop-word removal disabled or an explicit `custom_stop_words` list are unaffected by this change.
+</Warning>
 
 ### Posting block size {#posting-block-size}
 

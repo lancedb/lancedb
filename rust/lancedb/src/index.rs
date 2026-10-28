@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
+use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -382,8 +383,36 @@ pub enum IndexType {
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
+    /// A registered scalar index plugin's display name, preserved verbatim.
+    ///
+    /// For example, `Custom("Sketch".into()).to_string()` returns `"Sketch"`.
+    Custom(String),
     /// Catch-all for index types not recognized by this version of LanceDB.
     Unknown,
+}
+
+impl IndexType {
+    pub(crate) fn from_description(
+        description: &dyn lance_index::traits::IndexDescription,
+    ) -> Self {
+        let index_type = description.index_type().parse().unwrap_or(Self::Unknown);
+        if index_type != Self::Unknown {
+            return index_type;
+        }
+        let Some(metadata) = description.segments().first() else {
+            return Self::Unknown;
+        };
+        if lance_index::is_system_index(metadata) {
+            return Self::Unknown;
+        }
+        let Some(details) = metadata.index_details.as_ref() else {
+            return Self::Unknown;
+        };
+        IndexDetails(details.clone())
+            .get_plugin()
+            .map(|plugin| Self::Custom(plugin.name().to_string()))
+            .unwrap_or(Self::Unknown)
+    }
 }
 
 impl std::fmt::Display for IndexType {
@@ -405,6 +434,7 @@ impl std::fmt::Display for IndexType {
             Self::BloomFilter => write!(f, "BLOOM_FILTER"),
             Self::RTree => write!(f, "RTREE"),
             Self::FTS => write!(f, "FTS"),
+            Self::Custom(name) => f.write_str(name),
             Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
@@ -467,13 +497,14 @@ pub struct IndexConfig {
     /// The number of rows indexed, across all segments.
     ///
     /// This is approximate and may include rows that have since been deleted.
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. for remote tables whose server does not
+    /// report it).
     pub num_indexed_rows: Option<u64>,
     /// The number of rows in the table that are not yet covered by this index.
     ///
     /// Computed as the table's total row count minus [`Self::num_indexed_rows`].
     /// Optimizing the index will fold these rows into it. `None` if unavailable
-    /// (e.g. for remote tables).
+    /// (e.g. for remote tables whose server does not report it).
     pub num_unindexed_rows: Option<u64>,
     /// The total size in bytes of all index files across all segments.
     ///

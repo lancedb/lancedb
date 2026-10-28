@@ -6,17 +6,18 @@ icon: plus-minus
 keywords: ["operators", "literals", "precedence", "null", "cast", "interval"]
 ---
 
-<Badge color="red">Enterprise</Badge> [SQL runs on a deployment.](/sql)
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
-The operator set is DataFusion's. This page covers what is worth knowing when
-the operands are Lance columns.
+LanceDB uses DataFusion's SQL operators. This page describes comparison,
+logical and arithmetic operators, literal values, type conversions and
+operator precedence.
 
 ## Comparison {#comparison}
 
 | | |
 | --- | --- |
 | `=` `!=` `<>` `<` `<=` `>` `>=` | ordinary comparison |
-| `IS NULL` / `IS NOT NULL` | null test — `= NULL` is never true |
+| `IS NULL` / `IS NOT NULL` | null test (`= NULL` is never true) |
 | `IS DISTINCT FROM` | comparison that treats null as a value |
 | `BETWEEN a AND b` | inclusive range |
 | `IN (...)` | set membership |
@@ -33,7 +34,7 @@ its wildcard semantics.
 
 `AND`, `OR`, `NOT`. Three-valued: a comparison against null is **unknown**, and
 `NOT unknown` is still unknown. A `WHERE` clause keeps only rows where the
-predicate is true, so unknown behaves like false there — but not inside `NOT
+predicate is true, so unknown behaves like false there, but not inside `NOT
 IN`, which is the usual place this bites. See
 [Subqueries](/sql/dql/subqueries#in-exists).
 
@@ -42,17 +43,17 @@ IN`, which is the usual place this bites. See
 `+` `-` `*` `/` `%`, with the usual precedence. String concatenation is `||`.
 
 <Warning>
-Arithmetic over a vector column is **list** arithmetic, not scalar arithmetic —
+Arithmetic over a vector column is **list** arithmetic, not scalar arithmetic:
 a vector is a `FixedSizeList<Float32>`. When the operation you want is a
-similarity comparison, use [vector search](/search/vector-search); there is no
-SQL form for it.
+similarity comparison, use [vector search](/search/vector-search); whether SQL
+can express it [depends on the Enterprise server version](/basics/sql#no-vector-sql).
 </Warning>
 
 ## Literals {#literals}
 
 | | |
 | --- | --- |
-| String | `'text'` — doubled quote to escape: `'it''s'` |
+| String | `'text'`, with a doubled quote to escape: `'it''s'` |
 | Number | `42`, `3.14` |
 | Boolean | `TRUE`, `FALSE` |
 | Null | `NULL` |
@@ -60,16 +61,19 @@ SQL form for it.
 | Interval | `INTERVAL '7 days'` |
 | Array | `[1, 2, 3]` |
 
-Identifiers are quoted with double quotes when they need to be — a reserved word
-or a name with mixed case: `SELECT "order" FROM "MyTable"`.
+Identifiers are quoted with double quotes when they need to be (a reserved word
+or a name with mixed case): `SELECT "order" FROM "MyTable"`.
 
 ## Casting {#casting}
 
 ```sql
-SELECT CAST(identifier AS VARCHAR), identifier::VARCHAR FROM documents
+SELECT CAST(identifier AS VARCHAR) AS with_cast, identifier::VARCHAR AS with_colons
+FROM documents
 ```
 
-Both forms work. `TRY_CAST` returns null instead of erroring on a value that
+Both forms work. Give each its own alias when one projection uses both: they
+produce the same expression name, and a projection refuses two columns with
+one name. `TRY_CAST` returns null instead of erroring on a value that
 will not convert, which is the one to use over a column you do not control.
 
 ## Precedence {#precedence}
