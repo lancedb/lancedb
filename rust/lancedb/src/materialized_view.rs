@@ -1464,7 +1464,7 @@ async fn prepare_with(
 ) -> Result<PreparedDeclaration> {
     let Some(caller_native) = source.as_native() else {
         return Err(Error::NotSupported {
-            message: "materialized views are supported only in LanceDB Embedded".into(),
+            message: "this operation is only supported in LanceDB Embedded".into(),
         });
     };
     let source_namespace = source.namespace().to_vec();
