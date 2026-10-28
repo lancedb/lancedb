@@ -86,7 +86,9 @@ async def test_remote_create_rejects_write_options(storage_options, empty):
     if not empty:
         kwargs["data"] = [{"value": 1}]
     async with mock_lancedb_connection_async(handler) as db:
-        with pytest.raises(NotImplementedError, match="write_options.*LanceDB Distributed"):
+        with pytest.raises(
+            NotImplementedError, match="write_options.*LanceDB Distributed"
+        ):
             await db.create_table("t", storage_options=storage_options, **kwargs)
     assert requests == []
 
