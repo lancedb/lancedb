@@ -1404,3 +1404,10 @@ def test_permutation_over_remote_table():
         ]
 
     assert_server_safe_row_id_requests(server)
+
+
+def test_from_tables_split_without_permutation_table(mem_db):
+    tbl = mem_db.create_table("test_table", pa.table({"id": range(10)}))
+
+    with pytest.raises(ValueError, match="permutation on split `train` because no"):
+        Permutation.from_tables(tbl, split="train")
