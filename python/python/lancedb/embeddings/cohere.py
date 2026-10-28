@@ -32,6 +32,10 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
 
         The v2.0 models (embed-english-v2.0, embed-english-light-v2.0 and
         embed-multilingual-v2.0) were retired by Cohere on April 4, 2026.
+        The previous default produced 768-dimensional vectors, while the new
+        default produces 1024-dimensional vectors. Existing tables containing
+        vectors from a v2.0 model must be re-embedded with an active model into
+        a table whose vector column has the matching dimension.
 
     source_input_type : str, default "search_document"
         The input type for the source column in the database

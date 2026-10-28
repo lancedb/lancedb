@@ -21,6 +21,11 @@ Supported models are:
 
 The v2.0 models (`embed-english-v2.0`, `embed-english-light-v2.0` and `embed-multilingual-v2.0`) were retired by Cohere on April 4, 2026.
 
+The previous default, `embed-multilingual-v2.0`, produced 768-dimensional vectors.
+The new default, `embed-multilingual-v3.0`, produces 1024-dimensional vectors.
+Existing tables containing vectors from a v2.0 model must be re-embedded with an
+active model into a table whose vector column has the matching dimension.
+
 
 Supported parameters (to be passed in `create` method) are:
 
