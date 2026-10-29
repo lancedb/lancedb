@@ -251,7 +251,8 @@
               "architecture",
               "basics/sdk",
               "basics/sql",
-              "basics/agentic-skills"
+              "basics/agentic-skills",
+              "deployment/support"
             ]
           },
           {
@@ -298,10 +299,12 @@
             "group": "Data Curation",
             "pages": [
               "curation/index",
+              "curation/chunking",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
-              "curation/windowing"
+              "curation/windowing",
+              "curation/dedupe"
             ]
           },
           {
@@ -317,7 +320,6 @@
           {
             "group": "Training",
             "pages": [
-              "training/why-lancedb",
               "training/data-loading",
               "training/torch"
             ]
@@ -330,18 +332,23 @@
               "management/namespace",
               "management/table",
               "tables/branching",
-              "management/materialized-view",
-              "management/view"
+              "management/view",
+              "management/materialized-view"
             ]
           },
           {
             "group": "Maintenance",
             "pages": [
-              "indexing/index",
-              "indexing/vector-index",
-              "indexing/fts-index",
-              "indexing/scalar-index",
-              "indexing/reindexing",
+              {
+                "group": "Indexing",
+                "pages": [
+                  "indexing/index",
+                  "indexing/vector-index",
+                  "indexing/fts-index",
+                  "indexing/scalar-index",
+                  "indexing/reindexing"
+                ]
+              },
               "maintenance/compaction",
               "maintenance/cleanup",
               "maintenance/background-jobs"
@@ -357,8 +364,7 @@
               "deployment/storage",
               "deployment/monitoring",
               "enterprise/deployment/azure",
-              "enterprise/benchmarks",
-              "deployment/support"
+              "enterprise/benchmarks"
             ]
           },
           {

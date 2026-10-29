@@ -23,9 +23,9 @@ time stitching infrastructure together and more time improving datasets, testing
 
 Use the same table to curate training data, add derived features, retrieve examples, and feed training jobs that rely on expensive GPUs.
 Training workloads can sample, shuffle, and scan projected columns from local storage or object storage, then assemble
-GPU-ready batches from a tagged dataset version.
-
-For a deeper look at how this works in training pipelines, start with [Why LanceDB for training](/training/why-lancedb).
+GPU-ready batches from a tagged dataset version. Training pipelines need curation, derived features, reproducible
+splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
+through the same table model, whether a workflow uses one table or several related ones.
 
 ## LanceDB suite {#lancedb-suite}
 
@@ -58,12 +58,40 @@ run on the Enterprise service, outside your application.
   </Step>
 </Steps>
 
+## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
+
+<CardGroup cols={1}>
+  <Card
+    title="stable-worldmodel"
+    icon="github"
+    href="https://github.com/galilai-group/stable-worldmodel"
+  >
+    A platform for reproducible world-model research built on a LanceDB data layer, reporting faster data loading on Push-T workloads.
+  </Card>
+  <Card
+    title="le-wm"
+    icon="github"
+    href="https://github.com/lucas-maes/le-wm"
+  >
+    A joint-embedding predictive world model from pixels, trained on the stable-worldmodel platform and its LanceDB data layer.
+  </Card>
+  <Card
+    title="lerobot-lancedb"
+    icon="github"
+    href="https://github.com/lancedb/lerobot-lancedb"
+  >
+    A drop-in LanceDB backend for Hugging Face LeRobot datasets with faster loading across robotics datasets.
+  </Card>
+</CardGroup>
+
+In the world-model ecosystem, [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) reports
+3-4x faster data loading on Push-T versus HDF5 / MP4 at a fraction of the disk footprint. Across these projects,
+LanceDB and Lance provide the multimodal data layer that keeps raw observations, annotations, features, and training
+access patterns in one format instead of scattering them across task-specific stores.
+
 ## Start with your workload {#start-with-your-workload}
 
 <CardGroup cols={2}>
-  <Card title="Train and fine-tune models" icon="fire" href="/training/why-lancedb">
-    Learn why LanceDB works well as the data layer for training workloads.
-  </Card>
   <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
     Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
   </Card>
@@ -72,6 +100,9 @@ run on the Enterprise service, outside your application.
   </Card>
   <Card title="Build search and retrieval" icon="search" href="/search/">
     Use vector search, full-text search, hybrid search, reranking, filtering, and SQL.
+  </Card>
+  <Card title="Curate training data" icon="filter" href="/curation">
+    Profile, sample, chunk, join, and deduplicate records before training on them.
   </Card>
 </CardGroup>
 

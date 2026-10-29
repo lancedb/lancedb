@@ -13,9 +13,10 @@ availability:
 
 LanceDB provides an excellent data backend for training machine learning models. For basic use cases, a `Table` can be fed directly into a data loader. For a more complete solution, a `StreamingDataset` adds prefetching, elastic determinism, resumability, multithreaded transformations, and more.
 
-## Basic Data Loading
+<Tabs>
+<Tab title="Permutation">
 
-Most model training frameworks feed data into a model by sequencing through successive batches, a process 
+Most model training frameworks feed data into a model by sequencing through successive batches, a process
 often referred to as **data loading**. The simplest way to perform data loading is to read a LanceDB table in batches,
 in the order its rows are stored, through an identity `Permutation`. A table itself is not iterable.
 
@@ -32,7 +33,25 @@ for batch in Permutation.identity(table).with_format("arrow").iter(batch_size=10
 ```
 </CodeGroup>
 
-## Advanced Data Loading
+In specific use cases, you may need the flexibility to shuffle, split, and select data without using the full `StreamingDataset` object. In these cases, use `Permutation`, the lower-level functionality on which `StreamingDataset`
+is built. A `Permutation` defines a customizable row ordering, and supports map-style access through `__getitem__()`
+and batched access through `__getitems__()`.
+
+##### Version Pinning
+
+A `Permutation` is pinned to the version of its base table at the time it was constructed, and every read (including future reads
+from a `StreamingDataset` that wraps it, and every DataLoader worker after it starts) resolves against that pinned
+version. This makes iteration deterministic across compactions and worker restarts: the permutation only addresses rows
+that existed when it was built, and rows appended to the base table afterwards are not visible through the existing
+permutation.
+
+To include newly appended rows, build a new `Permutation` (and any `StreamingDataset` that depends on it)
+against the updated table. Permutations written before this behavior shipped continue to
+read as they did before.
+
+</Tab>
+<Tab title="PyTorch Data Loader">
+
 Advanced data loading scenarios can be handled by the `StreamingDataset`. This object allows you to apply preprocessing before training, pipelined reads, and more. Use this when the training data does not fit in memory, or when you need deterministic global batches across cluster sizes.
 
 <CodeGroup>
@@ -56,30 +75,15 @@ for batch in dataloader:
 ```
 </CodeGroup>
 
-The `StreamingDataset` wraps a LanceDB `Table` and yields plain Python dictionaries by default. Whether iterating directly or through a PyTorch `DataLoader`, only one iterator can be simultaneously active on a `StreamingDataset` instance. 
+The `StreamingDataset` wraps a LanceDB `Table` and yields plain Python dictionaries by default. Whether iterating directly or through a PyTorch `DataLoader`, only one iterator can be simultaneously active on a `StreamingDataset` instance.
 
 <Note>
 `StreamingDataset` is built on the `permutation` API and works with both LanceDB Embedded and LanceDB Enterprise. The underlying table data can live on local disk or object storage.
 </Note>
 
-To understand the wide range of scenarios handled by `StreamingDataset`, consider a model trained with stochastic gradient descent (SGD) and distributed data parallelism (DDP). In this example, we need to load batches onto multiple GPUs
-across multiple servers. After each batch is processed, the GPUs exchange weights and the next batch is loaded. We
-fix the following terminology:
-
-- **World size** - The number of GPUs being loaded simultaneously. For example, if we have $2$ servers with $4$
-  GPUs each, the world size is $8$.
-- **Rank** - The identifier of an individual GPU. It is an integer in the range `[0, world_size)`.
-  Each rank is allocated a disjoint portion of the source data.
-- **Batch size** - The number of rows processed by one GPU in a single training step. For example, $128$.
-- **Global batch size** - The total number of rows processed across all GPUs in a training step (sometimes called a "minibatch" in machine learning literature). For
-  example, if we have $8$ GPUs with batch size $128$, the global batch size is $1024$.
-
-
-Other concepts, such as read batch size and `num_workers`, are introduced in the relevant sections below.
-
 ### Filtering
 
-The `StreamingDataset` object allows you to train models on only the subset of rows that satisfy a user-defined filter, specified using the `filter` parameter. This can be useful for removing large rows, badly-sourced data, and a wide range of other applications. 
+The `StreamingDataset` object allows you to train models on only the subset of rows that satisfy a user-defined filter, specified using the `filter` parameter. This can be useful for removing large rows, badly-sourced data, and a wide range of other applications.
 You can also use the `columns` parameter to load only a subset of columns.
 
 <CodeGroup>
@@ -106,17 +110,16 @@ with the same inputs remain reproducible. Set `shuffle_seed = None` to generate 
 
 By default, `shuffle_clump_size` is `None` and rows are shuffled individually: the rows of the source dataset are shuffled according to a pseudorandom permutation, then fed in batches to the accelerator. This gives the best possible randomness, but can exhibit low throughput.
 
-
-<CodeGroup> 
-```py Python icon=Python 
+<CodeGroup>
+```py Python icon=Python
 # 1-phase shuffled read: rows shuffled individually.
-for epoch in range(num_epochs): 
-    ds = StreamingDataset( 
-        table, 
-        shuffle_seed=42, 
-        epoch=epoch, # changes the permutation each epoch 
-    ) 
-    for sample in ds: 
+for epoch in range(num_epochs):
+    ds = StreamingDataset(
+        table,
+        shuffle_seed=42,
+        epoch=epoch, # changes the permutation each epoch
+    )
+    for sample in ds:
         train_step(sample)
 
 #Evaluation: deterministic sequential order, no shuffle.
@@ -124,9 +127,7 @@ eval_ds = StreamingDataset(table, shuffle=False)
 for sample in eval_ds:
     eval_step(sample)
 ```
-
 </CodeGroup>
-
 
 #### Clumped Shuffle {#two-phase-shuffle}
 
@@ -153,56 +154,6 @@ for sample in eval_ds:
 ```
 </CodeGroup>
 
-### Parallelism & Elasticity
-
-When loading data, `StreamingDataset` partitions the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
-
-If using `shuffle=False`, data is allocated to splits naively in ordered contiguous blocks of equal size. With `shuffle=True`
-(the default), the rows of the source dataset are shuffled and distributed among splits such that each split receives the same
-number of rows; with `shuffle_clump_size` set, they are shuffled in clumps of that many contiguous rows.
-
-The number of splits defaults to `world_size` if `num_splits` is omitted during initialization. This is not recommended, as a later run using a different world size will then construct a different layout and structure of global batches.
-
-To get **elastic determinism**, choose a fixed `num_splits` that is compatible with every topology you plan to use.
-For example, a run with `num_splits=8` and $4$ GPUs assigns $2$ splits to each rank. The ranks pull from their splits in
-round-robin order, producing the same global batches as a run with $8$ GPUs and the same `num_splits`, `shuffle_seed`,
-and `epoch`.
-
-The following constraints apply:
-
-- `num_splits` must be divisible by `world_size`.
-- With DataLoader worker processes, `num_splits` must be divisible by `world_size * num_workers`.
-- For the same samples to form each global training step across topologies, `global_batch_size` must be a multiple of
-  `num_splits`.
-- The filtered row count must be at least `num_splits`. If it is not evenly divisible by `num_splits`, up to
-  `num_splits - 1` surplus rows are dropped so that every split has the same length.
-
-For example, to switch between $8$ and $6$ GPUs, use a common multiple such as $24$ for `num_splits`. Highly composite values can support many layouts; for example, `num_splits = 48` is compatible with $10$ distinct possible GPU counts. Remember to include `num_workers` when checking divisibility.
-
-<CodeGroup>
-```py Python icon=Python
-import torch.distributed as dist
-
-dist.init_process_group("nccl")
-rank = dist.get_rank()
-world_size = dist.get_world_size()
-
-# num_splits=48 is divisible by many integers,
-# so this dataset works unchanged as you add or remove GPUs.
-ds = StreamingDataset(
-    table,
-    num_splits=48,
-    shuffle_seed=42,
-    epoch=current_epoch,
-    rank=rank,
-    world_size=world_size,
-)
-
-for sample in ds:
-    train_step(sample)
-```
-</CodeGroup>
-
 ### Fetching
 
 Traditional datasets have often been designed to yield a single sample at a time upon iteration. However, in modern use cases,  accessing data on object storage one row at a time introduces too much per-call overhead. Thus, `StreamingDataset` fetches data in read batches, whose size is controlled by the `read_batch_size` parameter (defaults = `64`).
@@ -222,10 +173,9 @@ ds = StreamingDataset(
 
 ### Transforming
 
-Many model training workloads require performing a transformation to the data after it is loaded from object storage and before it is passed to the GPU. For example, we may need to decode images, tokenize text, or normalize vectors. A transformation function can be provided using the `transform` parameter. 
+Many model training workloads require performing a transformation to the data after it is loaded from object storage and before it is passed to the GPU. For example, we may need to decode images, tokenize text, or normalize vectors. A transformation function can be provided using the `transform` parameter.
 
 A transformation function must receive a PyArrow `RecordBatch` and return an iterable. For example, the default transform function returns a list of Python dictionaries. Furthermore, the input expected by PyTorch must match the collation function used in the PyTorch data loader. PyTorch's default collation function accepts a Python dictionary and several other types, and is thus compatible with the default `StreamingDataset` transform function. If your custom transform function returns something different (for example, Arrow record batches), you may need to provide a compatible PyTorch collation function.
-
 
 <CodeGroup>
 ```py Python icon=Python
@@ -245,7 +195,7 @@ ds = StreamingDataset(table, shuffle_seed=42, transform=normalize)
 </CodeGroup>
 
 `StreamingDataset` manages expensive transforms through a
-`ThreadPoolExecutor` whose worker count equals the number of available CPUs. Furthermore, transformations are applied to batches (instead of individual samples) to amortize per-batch overhead. 
+`ThreadPoolExecutor` whose worker count equals the number of available CPUs. Furthermore, transformations are applied to batches (instead of individual samples) to amortize per-batch overhead.
 
 ##### DataLoader Workers
 
@@ -320,10 +270,77 @@ are cumulative across iterations of the same dataset instance; because work runs
 can exceed wall-clock time. The queue depths report rows currently waiting in the pipeline, and the progress counters
 reflect the latest iterator snapshot.
 
-### Checkpointing 
-`StreamingDataset` provides checkpointing in case your model training fails partway through a run. Use `StreamingDataset.state_dict()` to capture the current number of samples consumed from each split in a Python dictionary, and `load_state_dict()` to restore the last saved position. 
+</Tab>
+<Tab title="Distributed Training">
 
-A stored `StreamingDataset` state reflects only round-robin cycles that have been completed across all splits; samples completed partway through a cycle at the time of saving can be replayed. To ensure efficient saving, make sure `global_batch_size` is a multiple of `num_splits`, as in the example below. 
+To understand the wide range of scenarios handled by `StreamingDataset` across a distributed job, consider a model trained with stochastic gradient descent (SGD) and distributed data parallelism (DDP). In this example, we need to load batches onto multiple GPUs
+across multiple servers. After each batch is processed, the GPUs exchange weights and the next batch is loaded. We
+fix the following terminology:
+
+- **World size** - The number of GPUs being loaded simultaneously. For example, if we have $2$ servers with $4$
+  GPUs each, the world size is $8$.
+- **Rank** - The identifier of an individual GPU. It is an integer in the range `[0, world_size)`.
+  Each rank is allocated a disjoint portion of the source data.
+- **Batch size** - The number of rows processed by one GPU in a single training step. For example, $128$.
+- **Global batch size** - The total number of rows processed across all GPUs in a training step (sometimes called a "minibatch" in machine learning literature). For
+  example, if we have $8$ GPUs with batch size $128$, the global batch size is $1024$.
+
+Other concepts, such as read batch size and `num_workers`, are introduced in [PyTorch Data Loader](#pytorch-data-loader) above.
+
+### Parallelism & Elasticity
+
+When loading data, `StreamingDataset` partitions the source dataset among disjoint parallel threads called **splits**. Each rank is allocated a contiguous group of splits, and each DataLoader worker associated to a rank gets a contiguous subgroup of its rank's splits.
+
+If using `shuffle=False`, data is allocated to splits naively in ordered contiguous blocks of equal size. With `shuffle=True`
+(the default), the rows of the source dataset are shuffled and distributed among splits such that each split receives the same
+number of rows; with `shuffle_clump_size` set, they are shuffled in clumps of that many contiguous rows.
+
+The number of splits defaults to `world_size` if `num_splits` is omitted during initialization. This is not recommended, as a later run using a different world size will then construct a different layout and structure of global batches.
+
+To get **elastic determinism**, choose a fixed `num_splits` that is compatible with every topology you plan to use.
+For example, a run with `num_splits=8` and $4$ GPUs assigns $2$ splits to each rank. The ranks pull from their splits in
+round-robin order, producing the same global batches as a run with $8$ GPUs and the same `num_splits`, `shuffle_seed`,
+and `epoch`.
+
+The following constraints apply:
+
+- `num_splits` must be divisible by `world_size`.
+- With DataLoader worker processes, `num_splits` must be divisible by `world_size * num_workers`.
+- For the same samples to form each global training step across topologies, `global_batch_size` must be a multiple of
+  `num_splits`.
+- The filtered row count must be at least `num_splits`. If it is not evenly divisible by `num_splits`, up to
+  `num_splits - 1` surplus rows are dropped so that every split has the same length.
+
+For example, to switch between $8$ and $6$ GPUs, use a common multiple such as $24$ for `num_splits`. Highly composite values can support many layouts; for example, `num_splits = 48` is compatible with $10$ distinct possible GPU counts. Remember to include `num_workers` when checking divisibility.
+
+<CodeGroup>
+```py Python icon=Python
+import torch.distributed as dist
+
+dist.init_process_group("nccl")
+rank = dist.get_rank()
+world_size = dist.get_world_size()
+
+# num_splits=48 is divisible by many integers,
+# so this dataset works unchanged as you add or remove GPUs.
+ds = StreamingDataset(
+    table,
+    num_splits=48,
+    shuffle_seed=42,
+    epoch=current_epoch,
+    rank=rank,
+    world_size=world_size,
+)
+
+for sample in ds:
+    train_step(sample)
+```
+</CodeGroup>
+
+### Checkpointing
+`StreamingDataset` provides checkpointing in case your model training fails partway through a run. Use `StreamingDataset.state_dict()` to capture the current number of samples consumed from each split in a Python dictionary, and `load_state_dict()` to restore the last saved position.
+
+A stored `StreamingDataset` state reflects only round-robin cycles that have been completed across all splits; samples completed partway through a cycle at the time of saving can be replayed. To ensure efficient saving, make sure `global_batch_size` is a multiple of `num_splits`, as in the example below.
 
 <CodeGroup>
 ```py Python icon=Python
@@ -461,20 +478,5 @@ dataset.load_state_dict(merged)
 ```
 </CodeGroup>
 
-## Permutations
-
-In specific use cases, you may need the flexibility to shuffle, split, and select data without using the full `StreamingDataset` object. In these cases, use `Permutation`, the lower-level functionality on which `StreamingDataset`
-is built. A `Permutation` defines a customizable row ordering, and supports map-style access through `__getitem__()`
-and batched access through `__getitems__()`.
-
-##### Version Pinning
-
-A `Permutation` is pinned to the version of its base table at the time it was constructed, and every read (including future reads
-from a `StreamingDataset` that wraps it, and every DataLoader worker after it starts) resolves against that pinned
-version. This makes iteration deterministic across compactions and worker restarts: the permutation only addresses rows
-that existed when it was built, and rows appended to the base table afterwards are not visible through the existing
-permutation.
-
-To include newly appended rows, build a new `Permutation` (and any `StreamingDataset` that depends on it)
-against the updated table. Permutations written before this behavior shipped continue to
-read as they did before.
+</Tab>
+</Tabs>
