@@ -92,6 +92,7 @@ impl TerminalResult {
         }
     }
 
+    #[cfg(feature = "remote")]
     pub(crate) fn remote(value: Option<Value>, request_id: String) -> Self {
         Self {
             value,
@@ -242,6 +243,7 @@ impl Job<()> {
 
     /// A handle whose record the caller has already fetched, so the detail
     /// accessors answer without a second round trip.
+    #[cfg(feature = "remote")]
     pub(crate) fn opened(handle: Box<dyn JobHandle>, description: JobDescription) -> Self {
         let job = Self::new(handle);
         {

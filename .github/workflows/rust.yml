@@ -404,10 +404,18 @@ jobs:
           # unreadable outside their own branch anyway, since GitHub scopes
           # caches to the creating ref.
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Downgrade dependencies
-        # aws-smithy-types 1.6.1+ requires rustc 1.94.1
-        run: cargo update -p aws-smithy-types --precise 1.5.0
+      - name: Resolve MSRV-compatible dependencies
+        # Resolve the AWS SDK and Smithy crates together: newer SDK releases
+        # require newer Smithy versions, so downgrading only Smithy can fail.
+        run: cargo +${{ matrix.msrv }} update --config 'resolver.incompatible-rust-versions="fallback"'
+      - name: Keep Xet dependencies compatible with the MSRV
+        # Xet 1.7 does not declare its MSRV, but requires sysinfo 0.39 (Rust 1.95).
+        # Downgrade parents before their dependencies to satisfy their constraints.
+        run: |
+          for crate in hf-xet xet-data xet-client xet-core-structures xet-runtime; do
+            cargo +${{ matrix.msrv }} update -p "$crate" --precise 1.6.0
+          done
       - name: cargo +${{ matrix.msrv }} check
         env:
           RUSTUP_TOOLCHAIN: ${{ matrix.msrv }}
-        run: cargo check --profile ci --workspace --tests --benches --all-features
+        run: cargo check --locked --profile ci --workspace --tests --benches --all-features

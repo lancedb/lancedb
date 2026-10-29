@@ -528,6 +528,12 @@ impl Connection {
         ExecuteQueryAsyncBuilder::new(self.internal.clone(), query.into())
     }
 
+    /// Establish the remote SQL transport without executing a statement.
+    /// This checks connectivity and TLS; authentication is checked by subsequent requests.
+    pub async fn check_sql_connection(&self) -> Result<()> {
+        self.internal.check_sql_connection().await
+    }
+
     /// Describe a submitted SQL query by its connection-scoped id.
     ///
     /// This performs one bounded status poll using state retained by this

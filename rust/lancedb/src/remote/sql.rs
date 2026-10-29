@@ -170,6 +170,13 @@ impl std::fmt::Debug for SqlClient {
 }
 
 impl SqlClient {
+    pub(super) async fn check_connection(&self) -> Result<()> {
+        self.inner
+            .connection(&Uuid::new_v4().to_string())
+            .await
+            .map(|_| ())
+    }
+
     pub(super) fn new(
         database: String,
         database_prefix: Option<String>,
@@ -1428,7 +1435,18 @@ async fn connect_channel(
     tokio::time::timeout(connect_timeout, endpoint.connect())
         .await
         .map_err(|_| sql_error(request_id, "SQL connection timed out"))?
-        .map_err(|err| sql_error(request_id, err))
+        .map_err(|err| {
+            // tonic's Display only says "transport error"; preserve the source chain
+            // so callers can distinguish DNS, refused connections, and TLS failures.
+            let mut message = err.to_string();
+            let mut source = std::error::Error::source(&err);
+            while let Some(error) = source {
+                message.push_str(": ");
+                message.push_str(&error.to_string());
+                source = error.source();
+            }
+            sql_error(request_id, message)
+        })
 }
 
 fn tls_config(config: Option<&TlsConfig>) -> Result<ClientTlsConfig> {
