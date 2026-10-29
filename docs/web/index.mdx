@@ -10,28 +10,46 @@ keywords: ["multimodal lakehouse", "training", "feature engineering", "search", 
 one data layer for curation, feature engineering, search and retrieval, and model training.
 It is built on top of [Lance](/basics/lance), an open-source lakehouse format designed for multimodal AI data.
 
-Move from data exploration to model training on one, unified platform without needing to manage a
+Move from data exploration to model training on one unified platform without needing to manage a
 fragmented stack of storage, feature, retrieval, and training systems.
 
-## Build better models, faster {#build-better-models-faster}
+## Train on the right data faster {#train-on-the-right-data-faster}
 
-Training data and experimentation slow down when raw data, metadata, embeddings, features, and governance
+Search, curate, and train at petabyte scale, with all your multimodal data in one table.
+
+Preparing training data and running experiments slow down when raw data, metadata, embeddings, features, and governance
 artifacts live in separate systems. LanceDB keeps them together in one versioned multimodal table, so AI teams spend less
 time stitching infrastructure together and more time improving datasets, testing features, and keeping GPUs fed.
 
+## Accelerate the data flywheel for model research {#accelerate-the-data-flywheel-for-model-research}
+
+Keep your AI data in one table, and give each agent-driven experiment its own isolated branch.
+Find the failure, fix the data, and retrain.
+
 <Steps>
-  <Step title="One table for the whole AI data loop">
-    Store images, video, audio, text, annotations, embeddings, and model-generated features together in one schema-enforced table.
-    The same table can support dataset curation, feature backfills, experiment splits, retrieval, and training.
+  <Step title="Find a curated training subset for every failure case">
+    Start from one failed grasp or evaluation example. [Search](/search/) multimodal data, metadata, and embeddings
+    together, retrieve similar examples, and [curate](/curation) them into a targeted training subset.
   </Step>
-  <Step title="High-throughput data access for training">
-    Training workloads mix fast random access with high-throughput sequential scans. LanceDB is designed for both, so
-    teams can shuffle data into GPU-ready batches more efficiently, improve input throughput, and iterate on experiments faster.
+  <Step title="Data sandboxes for safe agentic experimentation">
+    Don't let an agent silently corrupt your data and ruin a training run. Give each agent its own
+    [branch](/tables/branching), a writable fork of the table, to experiment on, and review the changes before
+    they reach `main`. See [Run experiments on branches](/agent-branch-experiments).
   </Step>
-  <Step title="Fast, versatile search and retrieval">
-    Whether the end user is a human or an agent, LanceDB powers production retrieval workloads such as semantic search,
-    hybrid search, RAG, agent memory, and recommendation systems. Retrieval runs against the same LanceDB tables used
-    for curation, feature engineering, and training workflows.
+  <Step title="A single dataset for every modality">
+    Keep episodes, frames, metadata, features, and embeddings together in one schema-enforced table, without
+    pipelines to keep them in sync. Table [versions](/management/table#versioning) let you trace each training
+    run back to the exact data it used.
+  </Step>
+  <Step title="More hillclimbing, less babysitting preprocessing jobs">
+    Define the [computed columns](/feature-engineering/add-computed-column) and
+    [materialized views](/feature-engineering/materialized-views) your experiment needs, such as extracted features
+    or embeddings, and refresh them as your data changes. On LanceDB Enterprise, column refreshes run as background
+    jobs on the cluster instead of in your code.
+  </Step>
+  <Step title="Higher GPU utilization, faster convergence">
+    Keep GPUs fed. [`StreamingDataset`](/training/data-loading) streams multimodal training data into PyTorch with
+    globally shuffled, deterministic batches, combining fast random access with high-throughput scans.
   </Step>
 </Steps>
 
