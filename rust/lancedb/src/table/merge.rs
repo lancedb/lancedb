@@ -1456,8 +1456,16 @@ mod lsm_tests {
     /// Another process re-initializing the MemWAL retires this process's
     /// cached writer: its rows are not read, and the next write opens a
     /// writer for the new MemWAL.
+    ///
+    /// `disable_rte` refuses while the writer holds rows, so the MemWAL index
+    /// is dropped through Lance directly, standing in for a write that lands
+    /// after that check. The writer's rows are lost to the base table either
+    /// way; what this pins is that they are not served from a directory the
+    /// index no longer names.
     #[tokio::test]
     async fn lsm_writer_of_a_retired_mem_wal_is_replaced() {
+        use lance::index::DatasetIndexExt;
+
         let dir = tempdir().unwrap();
         let uri = dir.path().to_str().unwrap();
         let conn = connect(uri)
@@ -1475,6 +1483,13 @@ mod lsm_tests {
         lsm_upsert(&table, vec![4, 5]).await;
         let retired_dir_id = mem_wal_dir_id(&table).await;
 
+        let mut dataset = lance::Dataset::open(&table.uri().await.unwrap())
+            .await
+            .unwrap();
+        dataset
+            .drop_index(lance_index::mem_wal::MEM_WAL_INDEX_NAME)
+            .await
+            .unwrap();
         let other = connect(uri)
             .execute()
             .await
@@ -1483,7 +1498,6 @@ mod lsm_tests {
             .execute()
             .await
             .unwrap();
-        other.disable_rte().await.unwrap();
         other.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
         let dir_id = mem_wal_dir_id(&table).await;
         assert_ne!(dir_id, retired_dir_id);
@@ -1506,6 +1520,62 @@ mod lsm_tests {
                 .unwrap()
                 .is_some(),
             "the write opened a writer for the new MemWAL"
+        );
+    }
+
+    /// `disable_rte` refuses while the MemWAL holds rows the base table does
+    /// not, since a MemWAL installed later would not read them.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_rows_are_unmerged() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let err = table.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("not been merged into the base table"),
+            "unexpected error: {err}"
+        );
+        assert_eq!(
+            table.get_rte_spec().await.unwrap(),
+            Some(RTEWriteSpec::unsharded())
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
+        );
+    }
+
+    /// Rows another process's writer has acknowledged but not flushed are in
+    /// its WAL only, and still refuse `disable_rte`.
+    #[tokio::test]
+    async fn lsm_disable_is_refused_while_another_writer_holds_rows() {
+        let dir = tempdir().unwrap();
+        let table = id_value_table(&dir).await;
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+
+        let other = connect(dir.path().to_str().unwrap())
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        let err = other.disable_rte().await.unwrap_err();
+        assert!(
+            err.to_string().contains("0 SSTable(s) not merged")
+                && !err.to_string().contains(" 0 WAL entry(ies) not flushed"),
+            "unexpected error: {err}"
+        );
+        let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+        assert_eq!(
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![1, 2, 3, 4, 5]
         );
     }
 
@@ -1784,9 +1854,10 @@ mod lsm_tests {
 
     /// A spec is replaced by unsetting it and setting the new one.
     ///
-    /// `disable_rte` drains the open writer, so the rows it held
-    /// survive the replacement, and the writer the next write opens builds its
-    /// MemTables from the new set.
+    /// The writer the next write opens builds its MemTables from the new set.
+    /// Unsetting is refused while the MemWAL holds unmerged rows (see
+    /// `lsm_disable_is_refused_while_rows_are_unmerged`), so nothing is
+    /// written before the replacement.
     #[tokio::test]
     async fn lsm_spec_is_replaced_by_unsetting_it_first() {
         use crate::index::Index;
@@ -1801,13 +1872,11 @@ mod lsm_tests {
             .unwrap();
         let fts_index = table.list_indices().await.unwrap()[0].name.clone();
 
-        // Installed maintaining nothing, then written to: the writer opens with
-        // no FTS index.
+        // Installed maintaining nothing.
         table
             .enable_rte(RTEWriteSpec::unsharded().with_maintained_indexes(Vec::new()))
             .await
             .unwrap();
-        upsert_text(&table, vec![(99, "zebra")]).await;
 
         // Setting over an installed spec is refused; unset, then set.
         let err = table

@@ -2076,7 +2076,9 @@ impl Table {
     /// Remove the [`RTEWriteSpec`] from this table, reverting to the standard
     /// `merge_insert` write path.
     ///
-    /// Errors if no spec is currently set.
+    /// Errors if no spec is currently set, or if the RTE still holds rows that
+    /// have not been merged into the base table, since removing it would drop
+    /// them.
     pub async fn disable_rte(&self) -> Result<()> {
         self.inner.disable_rte().await
     }
