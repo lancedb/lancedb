@@ -1109,8 +1109,6 @@ def _infer_signature(
     parameters = _callable_parameters(function)
     if method:
         parameters = parameters[1:]
-    if (input_schema is None) != (output_schema is None):
-        raise ValueError("input_schema and output_schema must be provided together")
 
     try:
         annotations = get_type_hints(function, include_extras=True)
@@ -1164,14 +1162,26 @@ def _infer_signature(
                 f"expected {expected!r}, got {actual!r}"
             )
         inputs = tuple(input_parameter(field) for field in input_schema)
-        return FunctionSignature(inputs=inputs, output=_function_output(output_schema))
+    else:
+        inputs = None
 
-    missing = [
-        parameter.name for parameter in parameters if parameter.name not in annotations
-    ]
-    if missing or "return" not in annotations:
-        names = missing + ([] if "return" in annotations else ["return"])
-        raise TypeError(f"missing Function annotations: {names!r}")
+    missing = []
+    if inputs is None:
+        missing += [p.name for p in parameters if p.name not in annotations]
+    if output_schema is None and "return" not in annotations:
+        missing.append("return")
+    if missing:
+        raise TypeError(f"missing Function annotations: {missing!r}")
+    if output_schema is not None:
+        output = _function_output(output_schema)
+    else:
+        output_type, output_nullable = _annotation_type(annotations["return"])
+        if output_nullable:
+            raise ValueError("Function output must be non-nullable")
+        output = _function_output(pa.field("result", output_type, nullable=False))
+    if inputs is not None:
+        return FunctionSignature(inputs=inputs, output=output)
+
     inputs = []
     for parameter in parameters:
         annotation = annotations[parameter.name]
@@ -1190,13 +1200,7 @@ def _infer_signature(
         inputs.append(
             input_parameter(pa.field(parameter.name, data_type, nullable=nullable))
         )
-    output_type, output_nullable = _annotation_type(annotations["return"])
-    if output_nullable:
-        raise ValueError("Function output must be non-nullable")
-    return FunctionSignature(
-        inputs=tuple(inputs),
-        output=_function_output(pa.field("result", output_type, nullable=False)),
-    )
+    return FunctionSignature(inputs=tuple(inputs), output=output)
 
 
 def _is_udf_decorator(node: ast.expr) -> bool:
@@ -2061,11 +2065,20 @@ def udf(
 ):
     """Prepare a Python function or class for remote Function registration.
 
-    Input and output signatures are inferred from supported annotations. For
-    Arrow types annotations cannot express precisely, pass ``input_schema``
-    and ``output_schema`` together. Scalar outputs must be non-nullable. Every
-    named-struct field may be nullable; Enterprise preserves the struct's
-    validity when the result is expanded into sibling columns.
+    Input and output signatures are inferred from supported annotations. A
+    parameter annotated ``T`` is non-nullable and binds only a non-nullable
+    column; annotate ``Optional[T]`` to bind a nullable one, and it receives
+    ``None`` for a null value. PyArrow fields are nullable unless declared
+    otherwise, so most columns need ``Optional``. For Arrow types annotations
+    cannot express precisely, pass ``input_schema``, ``output_schema``, or
+    both; the one omitted is inferred. Scalar outputs must be non-nullable.
+    Every named-struct field may be nullable; Enterprise preserves the
+    struct's validity when the result is expanded into sibling columns.
+
+    **Large values.** A ``bytes`` parameter receives the whole value, which
+    is held in memory with its row and counts against the server's per-row
+    input limit. To pass large binary values, such as video, store them in a
+    Blob V2 column and annotate the parameter ``BlobReader``, which streams.
 
     **Functions and classes.** A decorated function is called once per row,
     or once per batch when its parameters are annotated ``pyarrow.Array`` or
@@ -2125,12 +2138,12 @@ def udf(
         letters, digits, and underscores.
     input_schema : pyarrow.Schema, optional
         Explicit input fields in the exact order of the callable parameters.
-        Required for batch annotations. Must be provided together with
-        ``output_schema``.
+        Required for batch annotations. When omitted, inputs are inferred from
+        the parameter annotations.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Required for batch annotations. Must be provided together
-        with ``input_schema``.
+        non-nullable. Required for batch annotations. When omitted, the output
+        is inferred from the return annotation.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     conda : sequence of str, optional
