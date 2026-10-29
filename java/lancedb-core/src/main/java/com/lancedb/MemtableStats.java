@@ -37,7 +37,7 @@ public class MemtableStats {
     this.indexes = Collections.unmodifiableList(indexes);
   }
 
-  /** The generation this memtable will become once sealed. */
+  /** The generation this memtable will become once frozen. */
   public long generation() {
     return generation;
   }

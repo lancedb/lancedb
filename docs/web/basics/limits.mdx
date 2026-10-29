@@ -1,0 +1,71 @@
+---
+title: "Limits"
+sidebarTitle: "Limits"
+description: "Find fixed constraints, configurable bounds and what happens when you reach them."
+icon: ruler
+keywords: ["limits", "maximum", "quota", "constraints", "bounds"]
+---
+
+<span id="scope" />
+
+This page lists limits for job events, SQL error reports, sampling and
+full-text indexing. Each table identifies the affected API and what happens
+when a request reaches its limit. SQL and server job limits apply to Enterprise.
+
+<span id="names" />
+
+[Naming Rules](/basics/naming) is the reference for name lengths, characters and
+namespace depth. Client and server versions can differ in which rules they
+enforce.
+
+<span id="jobs" />
+<span id="sql" />
+
+## Fixed API limits {#fixed-limits}
+
+| Operation | Scope | Limit and behavior |
+| --- | --- | --- |
+| Job event retrieval | Enterprise | At most 10,000 rows per response. Results can be truncated without a truncation indicator. |
+| `SHOW ERRORS ... LIMIT` | Enterprise SQL | Accepts 1 through 100,000. Values outside the range are rejected. |
+| `SHOW ERRORS` without `FOR JOB` | Enterprise SQL | Inspects up to the 32 most recent failed jobs. Use `FOR JOB` to inspect a specific job. |
+| Percentage sampling | Enterprise SQL | `TABLESAMPLE` accepts percentages from 0 through 100. Values outside the range are rejected. |
+| Row-count sampling | Enterprise SQL | `TABLESAMPLE (... ROWS)` requires a whole number. |
+
+See [SQL job commands](/sql/ddl/job#errors) and
+[Sampling](/sql/dql/sampling) for syntax and restrictions on supported table types.
+
+<span id="schema" />
+
+Data-type and index constraints belong to the operation you choose. Check
+[Data types](/sql/data-types) and [Vector indexes](/indexing/vector-index)
+before choosing a schema or index. For materialized views, check
+[stable row ID requirements](/feature-engineering/materialized-views#stable-row-ids)
+before creating source tables.
+
+## Configurable limits {#not-quotas}
+
+| Setting | What it controls |
+| --- | --- |
+| Job event `limit` | Requests more or fewer event rows. The default is 1,000; the 10,000-row maximum still applies. |
+| FTS `max_token_length` | The maximum indexed token length. The default is 40; longer tokens are excluded from the index. |
+| Enterprise capacity and quotas | Storage, request rate and concurrency are governed by your deployment's resources and configuration. Confirm these with your administrator or LanceDB support. |
+
+## Handling rejected or incomplete results {#behavior}
+
+- **Rejected requests:** correct the input before retrying, such as a sampling
+  percentage outside the accepted range.
+- **Truncated responses:** do not assume that a returned event list is the full
+  history. Increasing `limit` cannot exceed the maximum; use filters to narrow
+  the events you inspect.
+- **Excluded data:** an FTS token-length setting can affect which words are
+  searchable. Choose it for your text and indexing requirements.
+
+<span id="availability" />
+
+## Learn more {#next}
+
+- [Naming Rules](/basics/naming): choose portable names and paths.
+- [Jobs](/basics/jobs): track work and inspect events.
+- [Full-text indexes](/indexing/fts-index): configure tokenization.
+- [SQL](/basics/sql) and [SDKs](/basics/sdk): check interface support.
+- [Enterprise support](/deployment/support): discuss deployment capacity.

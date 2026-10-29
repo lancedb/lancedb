@@ -11,23 +11,29 @@ import types
 from datetime import date
 import http.server
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
+import urllib.parse
 from typing import Optional
 
 import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb import BlobReader
 from lancedb.functions import (
     PythonRuntimeSpec,
+    SecretBinding,
+    SecretReference,
     UdfDefinition,
     _canonical_arrow_type,
     _GRAMMAR_PRIMITIVES,
     udf,
 )
+from lancedb.secrets import EnvVarSecret
+from utils import start_server_thread
 
 THRESHOLD = 20
 _CACHE = None
@@ -44,6 +50,11 @@ FIXTURES = (
 )
 
 
+FUNCTION_VERSION = json.loads(
+    (FIXTURES / "remote_function_version.canonical.json").read_text()
+)["version"]
+
+
 @udf(
     pip=["numpy>=2"],
     env={"MODE": "test"},
@@ -51,6 +62,15 @@ FIXTURES = (
 )
 def normalize_score(value: float) -> float:
     return value / 100.0
+
+
+@udf(
+    pip=["openai==3.7.0"],
+    env={"MODE": "test"},
+    python_version="3.12",
+)
+def analyze_caption(caption: str) -> str:
+    return caption.strip()
 
 
 def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
@@ -67,6 +87,309 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
+
+
+def test_secret_bound_udf_matches_its_shared_registration_golden():
+    assert analyze_caption("  hello  ") == "hello"
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert (
+        bound.to_canonical_json()
+        == (FIXTURES / "remote_function_secret_registration_request.canonical.json")
+        .read_text()
+        .strip()
+    )
+
+
+def test_a_namespaced_binding_records_the_path_and_the_name():
+    """A binding names the parts, so nothing has to be parsed back out.
+
+    A root binding carries no path at all: the field is absent rather than an
+    empty list, so a binding states a namespace only when it has one.
+    """
+    root = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+    assert root.secret_namespace_path == []
+
+    nested = EnvVarSecret(
+        secret_name="openai-prod",
+        env_variable="OPENAI_API_KEY",
+        secret_namespace_path=["prod", "vision"],
+    )
+    assert nested.secret_namespace_path == ["prod", "vision"]
+    assert nested != root
+
+    bound = analyze_caption.bind_secrets([nested])
+    assert list(bound.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(
+                name="openai-prod", namespace_path=("prod", "vision")
+            ),
+        )
+    ]
+
+    at_root = analyze_caption.bind_secrets([root])
+    assert list(at_root.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    # A root binding carries no path at all on the wire.
+    canonical = json.loads(at_root.to_canonical_json())
+    assert canonical["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+
+
+def test_a_namespace_path_is_validated_locally():
+    # The charset is the service's, not a delimiter's: a reference is never
+    # joined, so a segment cannot make anything parse two ways.
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="K",
+            secret_namespace_path=["with$delim"],
+        )
+    with pytest.raises(ValueError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path=["a/b"]
+        )
+    # A bare string is a plausible mistake with the wrong meaning.
+    with pytest.raises(TypeError):
+        EnvVarSecret(
+            secret_name="openai-prod", env_variable="K", secret_namespace_path="prod"
+        )
+
+
+def test_an_unbound_request_carries_no_binding_at_all():
+    """Binding is a registration-time decision, so the definition holds none.
+
+    The decorator declares nothing about secrets, which is what makes the PRD's
+    claim true: a Function's source and its registration request are identical
+    whether or not a credential is later bound to it.
+    """
+    unbound = json.loads(analyze_caption.registration_request.to_canonical_json())
+    assert "secret_bindings" not in unbound
+    assert "OPENAI_API_KEY" not in json.dumps(unbound)
+
+
+def test_binding_a_secret_leaves_the_packaged_artifact_untouched():
+    """The artifact is source bytes and nothing else, with or without secrets."""
+    bound = analyze_caption.bind_secrets(
+        [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+    )
+    assert bound.artifact == analyze_caption.registration_request.artifact
+    assert bound.artifact.digest == analyze_caption.registration_request.artifact.digest
+
+
+def test_a_function_declaring_no_secret_is_registered_exactly_as_before():
+    """The compatibility claim: nothing about the no-secret path moves."""
+    assert (
+        normalize_score.bind_secrets(None).to_canonical_json()
+        == normalize_score.registration_request.to_canonical_json()
+    )
+    assert (
+        "secret_bindings"
+        not in normalize_score.registration_request.to_canonical_json()
+    )
+
+
+def test_a_function_binds_each_variable_once():
+    with pytest.raises(ValueError, match="binds each environment variable once"):
+        analyze_caption.bind_secrets(
+            [
+                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY"),
+                EnvVarSecret(
+                    secret_name="openai-staging", env_variable="OPENAI_API_KEY"
+                ),
+            ]
+        )
+
+
+def test_bindings_may_not_collide_with_plain_configuration():
+    """`env` is stored with the Function; a Secret is not. Refuse, do not pick."""
+    with pytest.raises(ValueError, match="must be disjoint"):
+        analyze_caption.bind_secrets(
+            [EnvVarSecret(secret_name="mode-prod", env_variable="MODE")]
+        )
+
+
+def test_a_binding_envelope_reaches_the_service_for_it_to_judge():
+    """Binding rules are the service's: it owns the runtime the names land in.
+
+    The client sends what it was given, so a rule it duplicated could disagree
+    with the service's without either side noticing. What is checked here is
+    that the envelope arrives intact -- the shape the service judges is the
+    shape the caller wrote.
+    """
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        bindings = [
+            EnvVarSecret(secret_name=f"secret-{index}", env_variable=f"TOKEN_{index}")
+            for index in range(17)
+        ]
+        db.create_function(normalize_score, secrets=bindings)
+
+    sent = state["requests"][0][1]
+    assert len(sent["secret_bindings"]) == 17
+    assert {
+        "kind": "env",
+        "variable": "TOKEN_0",
+        "secret_ref": {"name": "secret-0"},
+    } in sent["secret_bindings"]
+
+
+_SECRET_DEBUG_LOG_SOURCE = """
+import http.server
+import json
+import threading
+
+import lancedb
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        payload = json.dumps({}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(
+    target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+).start()
+try:
+    db = lancedb.connect(
+        "db://dev",
+        api_key="API_KEY_SENTINEL",
+        host_override="http://127.0.0.1:%d" % server.server_address[1],
+        client_config={"retry_config": {"retries": 0}},
+    )
+    db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
+finally:
+    server.shutdown()
+"""
+
+
+def test_a_credential_never_reaches_a_debug_log(tmp_path):
+    """The logger sees the serialized body, so no value-side redaction reaches it.
+
+    Runs in a subprocess because the Rust logger reads ``LANCEDB_LOG`` once, at
+    import.
+    """
+    script = tmp_path / "write_secret.py"
+    script.write_text(_SECRET_DEBUG_LOG_SOURCE)
+
+    result = subprocess.run(
+        [sys.executable, str(script)],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "LANCEDB_LOG": "debug"},
+    )
+    output = result.stdout + result.stderr
+
+    # Without this the test passes when debug logging is simply off.
+    assert "Sending request_id=" in output, output
+    assert "SECRET_VALUE_SENTINEL" not in output
+    assert "API_KEY_SENTINEL" not in output
+
+
+def test_a_credential_value_is_rejected_in_the_binding_position():
+    """The one mistake the typed binding exists to stop."""
+    with pytest.raises(TypeError, match="EnvVarSecret"):
+        analyze_caption.bind_secrets(["sk-live-0001"])
+
+
+@pytest.mark.parametrize(
+    ("secret", "variable", "message"),
+    [
+        ("openai-prod", "not-a-var", "invalid environment variable name"),
+        ("openai-prod", "API-TOKEN", "invalid environment variable name"),
+        ("not a name", "API_TOKEN", "invalid Secret name"),
+        ("openai$prod", "API_TOKEN", "invalid Secret name"),
+    ],
+)
+def test_a_binding_validates_both_names_locally(secret, variable, message):
+    with pytest.raises(ValueError, match=message):
+        EnvVarSecret(secret_name=secret, env_variable=variable)
+
+
+def test_a_secret_name_admits_what_a_namespace_name_does():
+    """A Secret has to be nameable wherever a namespace already is.
+
+    LanceDB namespace and table names are `[A-Za-z0-9_.-]` with no rule about
+    which character comes first, so a name may lead with `_`, `-` or `.`.
+    Anything narrower here would leave Secrets unaddressable inside namespaces
+    that already exist -- the reason periods are admitted is the reason the
+    edges are too.
+    """
+    for name in ["openai.prod.v1", ".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == name
+
+    for name in ["", "with/slash", "with$delimiter", "a" * 256]:
+        with pytest.raises(ValueError, match="invalid Secret name"):
+            EnvVarSecret(secret_name=name, env_variable="OPENAI_API_KEY")
+
+    # A namespace segment follows the same rule, and LanceDB already admits
+    # these shapes as namespace names -- so a Secret is addressable inside one.
+    for segment in [".hidden", "_internal", "-lead", "trailing."]:
+        binding = EnvVarSecret(
+            secret_name="openai-prod",
+            env_variable="OPENAI_API_KEY",
+            secret_namespace_path=[segment],
+        )
+        assert binding.secret_namespace_path == [segment]
+
+    for segment in ["", "with/slash", "with$delimiter"]:
+        with pytest.raises(ValueError, match="invalid namespace path segment"):
+            EnvVarSecret(
+                secret_name="openai-prod",
+                env_variable="OPENAI_API_KEY",
+                secret_namespace_path=[segment],
+            )
 
 
 def _main_udf_source(
@@ -169,6 +492,30 @@ def test_udf_conda_environment():
         udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
     with pytest.raises(ValueError, match="requires conda"):
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+
+
+def test_udf_apt_system_packages():
+    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+    def decode(value: float) -> float:
+        return value
+
+    request = json.loads(decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"] == {
+        "kind": "pip",
+        "packages": ["torchcodec"],
+        "system_packages": ["libavcodec60", "libavutil58"],
+    }
+
+    @udf(conda=["numpy"], apt=["libsndfile1"])
+    def conda_decode(value: float) -> float:
+        return value
+
+    request = json.loads(conda_decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["system_packages"] == ["libsndfile1"]
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "system_packages" not in pip_request["runtime"]["environment"]
+    with pytest.raises(ValueError, match="trimmed"):
+        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
 
 
 def test_udf_gpu_marker_uses_gpu_runtime():
@@ -323,7 +670,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -668,6 +1014,60 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_blob_input_access_is_inferred_from_annotations():
+    @udf
+    def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
+        video.seek(int(timestamp_s))
+        return video.read(4)
+
+    @udf
+    def read_bytes(video: bytes) -> int:
+        return len(video)
+
+    reader = read_blob.registration_request.signature
+    assert reader.inputs[0].arrow_type == "blob_v2"
+    assert reader.inputs[0].blob_access == "reader"
+    assert reader.inputs[1].blob_access is None
+    assert reader.output.arrow_type == "binary"
+    eager = read_bytes.registration_request.signature.inputs[0]
+    assert eager.arrow_type == "binary"
+    assert eager.blob_access == "bytes"
+    encoded = json.loads(read_blob.registration_request.to_canonical_json())
+    assert encoded["signature"]["inputs"][0]["blob_access"] == "reader"
+
+
+def test_nullable_blob_reader_and_explicit_blob_bytes():
+    @udf
+    def nullable(video: Optional[BlobReader]) -> int:
+        return 0 if video is None else video.size()
+
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def eager(video: bytes) -> int:
+        return len(video)
+
+    parameter = nullable.registration_request.signature.inputs[0]
+    assert parameter.nullable is True
+    assert parameter.blob_access == "reader"
+    parameter = eager.registration_request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "bytes"
+
+
+def test_blob_reader_rejects_an_incompatible_explicit_schema():
+    def read(video: BlobReader) -> int:
+        return video.size()
+
+    with pytest.raises(TypeError, match="requires a Blob V2 field"):
+        udf(
+            read,
+            input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+
+
 def test_whole_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -981,6 +1381,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     }
 
 
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
+        ],
+    }
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [
@@ -1099,7 +1521,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def nullable_output(value: int) -> Optional[int]:
             return value
 
-    with pytest.raises(ValueError, match="provided together"):
+    with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
@@ -1198,11 +1620,11 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.create_function_async(normalize_score)
     with pytest.raises(NotImplementedError, match=message):
-        db.get_function("normalize_score", version="fv_exact")
+        db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
-        db.drop_function("normalize_score", version="fv_exact")
+        db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
 
 @contextlib.contextmanager
@@ -1213,24 +1635,51 @@ def _mock_remote_function_catalog():
         def log_message(self, *args):
             pass
 
+        def _write_response(self, status, response):
+            encoded = json.dumps(response).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             body = json.loads(self.rfile.read(length) or b"{}")
             state["requests"].append((self.path, body))
             status = 200
-            if self.path == "/v1/functions/create":
+            # `{id}` is the Function name, so match on the shape rather than on
+            # one name: these tests register more than one Function.
+            parts = self.path.strip("/").split("/")
+            function_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "function"
+                else (None, None)
+            )
+            secret_action = (
+                (urllib.parse.unquote(parts[2]), parts[3])
+                if len(parts) == 4 and parts[0] == "v1" and parts[1] == "secret"
+                else (None, None)
+            )
+            if function_action[1] == "create":
+                *namespace_path, name = function_action[0].split("$")
                 state["version"] = {
-                    "name": body["name"],
-                    "version": "fv_exact",
-                    "artifact": {
-                        key: body["artifact"][key]
-                        for key in ("kind", "digest", "entrypoint")
-                    },
+                    "name": name,
+                    **({"namespace_path": namespace_path} if namespace_path else {}),
+                    "version": FUNCTION_VERSION,
+                    "object_id": "fixture",
+                    "location": "memory:///fixture",
+                    "metadata": {},
+                    "disabled": False,
+                    "image": json.loads(
+                        (
+                            FIXTURES / "remote_function_version.canonical.json"
+                        ).read_text()
+                    )["image"],
                     "signature": body["signature"],
-                    "runtime": body["runtime"],
-                    "runtime_digest": "sha256:runtime",
-                    "environment_digest": "sha256:environment",
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "source_digest": body["artifact"]["digest"],
+                    "secret_bindings": body.get("secret_bindings", []),
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202
@@ -1242,49 +1691,76 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/functions/describe":
-                assert body == {
-                    "name": "normalize_score",
-                    "version": "fv_exact",
-                }
+            # A namespaced Function's id is its namespace path and name joined
+            # by `$`, so the name is the last segment of it.
+            elif (
+                function_action[1] == "describe"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
+                assert body == {"version": FUNCTION_VERSION}
                 response = state["version"]
-            elif self.path == "/v1/functions/list":
-                assert body["include_definition"] is True
-                if "page_token" not in body:
-                    response = {
-                        "functions": [
-                            {
-                                "name": "normalize_score",
-                                "version": "fv_exact",
-                                "definition": state["version"],
-                            }
-                        ],
-                        "page_token": "next",
-                    }
-                else:
-                    assert body["page_token"] == "next"
-                    response = {"functions": []}
-            elif self.path == "/v1/functions/drop":
-                assert body == {
-                    "name": "normalize_score",
-                    "version": "fv_exact",
-                }
+            elif (
+                function_action[1] == "drop"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
+                assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
+            elif secret_action[1] in ("create", "alter"):
+                # The Secret is the path identifier, so the body is the value.
+                assert set(body) == {"value"}
+                assert secret_action[0] == "openai-prod"
+                response = {}
+            elif secret_action[1] == "drop":
+                assert secret_action[0] == "openai-prod"
+                assert body == {}
+                response = {}
             else:
                 status = 404
                 response = {"error": "not found"}
-            encoded = json.dumps(response).encode()
-            self.send_response(status)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(encoded)))
-            self.end_headers()
-            self.wfile.write(encoded)
+            self._write_response(status, response)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+        def do_GET(self):
+            url = urllib.parse.urlsplit(self.path)
+            query = {
+                key: values[-1]
+                for key, values in urllib.parse.parse_qs(url.query).items()
+            }
+            state["requests"].append((url.path, query))
+            if url.path == "/v1/namespace/$/secret/list":
+                if "page_token" not in query:
+                    self._write_response(
+                        200,
+                        {"secrets": [{"name": "openai-prod"}], "page_token": "next"},
+                    )
+                else:
+                    assert query["page_token"] == "next"
+                    self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
+                return
+            parts = url.path.strip("/").split("/")
+            if parts[:2] != ["v1", "namespace"] or parts[3:] != ["function", "list"]:
+                self._write_response(404, {"error": "not found"})
+                return
+            assert query["include_definition"] == "true"
+            if "page_token" not in query:
+                response = {
+                    "functions": [
+                        {
+                            "name": "normalize_score",
+                            "version": FUNCTION_VERSION,
+                            "definition": state["version"],
+                        }
+                    ],
+                    "page_token": "next",
+                }
+            else:
+                assert query["page_token"] == "next"
+                response = {"functions": []}
+            self._write_response(200, response)
+
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", state
+            yield f"http://127.0.0.1:{server.server_address[1]}", state
         finally:
             server.shutdown()
             thread.join()
@@ -1300,16 +1776,111 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
         )
         registration = db.create_function_async(normalize_score)
         assert registration.id == "job-register"
+        assert registration.job_type is None
+        assert registration.status() == "finished"
+        assert registration.job_type == "create_function"
         created = registration.wait()
+        assert registration.job_type == "create_function"
         reopened = db.get_function("normalize_score", version=created.version)
 
     assert created == reopened
     assert reopened.name == "normalize_score"
-    assert reopened.version == "fv_exact"
+    assert reopened.version == FUNCTION_VERSION
+    assert (
+        reopened.source_digest == normalize_score.registration_request.artifact.digest
+    )
     create_request = state["requests"][0][1]
-    assert create_request == json.loads(
+    expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
     )
+    expected_request.pop("name")
+    assert create_request == expected_request
+
+
+def test_remote_registration_sends_bindings_and_never_a_credential():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(
+            analyze_caption,
+            secrets=[
+                EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+            ],
+        )
+
+    assert list(created.secret_bindings) == [
+        SecretBinding(
+            kind="env",
+            variable="OPENAI_API_KEY",
+            secret_ref=SecretReference(name="openai-prod"),
+        )
+    ]
+    path, create_request = state["requests"][0]
+    assert path == "/v1/function/analyze_caption/create"
+    assert create_request["secret_bindings"] == [
+        {
+            "kind": "env",
+            "variable": "OPENAI_API_KEY",
+            "secret_ref": {"name": "openai-prod"},
+        }
+    ]
+    # The request names a Secret and carries nothing that could be one. The
+    # Function's own name is the path identifier rather than a body field, so
+    # it is the one key the body does not repeat.
+    expected = json.loads(
+        analyze_caption.bind_secrets(
+            [EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")]
+        ).to_canonical_json()
+    )
+    assert expected.pop("name") == "analyze_caption"
+    assert create_request == expected
+
+
+def test_remote_secret_verbs_round_trip():
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        assert db.create_secret("openai-prod", "sk-live-0001") is None
+        assert db.alter_secret("openai-prod", "sk-live-0002") is None
+        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
+        assert db.drop_secret("openai-prod") is None
+
+    routes = [path for path, _ in state["requests"]]
+    assert routes == [
+        "/v1/secret/openai-prod/create",
+        "/v1/secret/openai-prod/alter",
+        "/v1/namespace/$/secret/list",
+        "/v1/namespace/$/secret/list",
+        "/v1/secret/openai-prod/drop",
+    ]
+    # The Secret is the path identifier, so the body is the value alone.
+    assert state["requests"][0][1] == {"value": "sk-live-0001"}
+    # Listing is a GET: the first page asks for nothing, the second resumes on
+    # the token the server handed back, and neither carries a body.
+    assert state["requests"][2][1] == {}
+    assert state["requests"][3][1] == {"page_token": "next"}
+
+
+def test_building_a_binding_contacts_no_server():
+    """A binding is a local value: it says nothing about whether the Secret exists.
+
+    Existence is the server's answer at registration, where a mistyped name is a
+    clear error rather than a client-side check that was already stale.
+    """
+    with _mock_remote_function_catalog() as (_host, state):
+        binding = EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")
+        assert binding.secret_name == "openai-prod"
+        assert binding.env_variable == "OPENAI_API_KEY"
+
+    assert state["requests"] == []
 
 
 def test_blocking_remote_registration_returns_function_version():
@@ -1323,9 +1894,10 @@ def test_blocking_remote_registration_returns_function_version():
         created = db.create_function(normalize_score)
 
     assert created.name == "normalize_score"
-    assert created.version == "fv_exact"
+    assert created.version == FUNCTION_VERSION
+    assert created.source_digest == normalize_score.registration_request.artifact.digest
     assert [path for path, _ in state["requests"]] == [
-        "/v1/functions/create",
+        "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
     ]
 
@@ -1340,14 +1912,17 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         )
         created = db.create_function(normalize_score)
         state["requests"].clear()
-        functions = db.list_functions()
+        functions = list(db.list_functions())
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert state["requests"] == [
-        ("/v1/functions/list", {"include_definition": True}),
+        ("/v1/namespace/$/function/list", {"include_definition": "true"}),
         (
-            "/v1/functions/list",
-            {"include_definition": True, "page_token": "next"},
+            "/v1/namespace/$/function/list",
+            {"include_definition": "true", "page_token": "next"},
         ),
     ]
 
@@ -1364,12 +1939,15 @@ async def test_async_remote_list_functions_returns_typed_versions():
         registration = await db.create_function_async(normalize_score)
         created = await registration.wait()
         state["requests"].clear()
-        functions = await db.list_functions()
+        functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert [path for path, _ in state["requests"]] == [
-        "/v1/functions/list",
-        "/v1/functions/list",
+        "/v1/namespace/$/function/list",
+        "/v1/namespace/$/function/list",
     ]
 
 
@@ -1381,12 +1959,12 @@ def test_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert db.drop_function("normalize_score", version="fv_exact") is True
+        assert db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
 
     assert state["requests"] == [
         (
-            "/v1/functions/drop",
-            {"name": "normalize_score", "version": "fv_exact"},
+            "/v1/function/normalize_score/drop",
+            {"version": FUNCTION_VERSION},
         )
     ]
 
@@ -1400,11 +1978,130 @@ async def test_async_remote_drop_function_sends_exact_version():
             host_override=host,
             client_config={"retry_config": {"retries": 0}},
         )
-        assert await db.drop_function("normalize_score", version="fv_exact") is True
+        assert (
+            await db.drop_function("normalize_score", version=FUNCTION_VERSION) is True
+        )
 
     assert state["requests"] == [
         (
-            "/v1/functions/drop",
-            {"name": "normalize_score", "version": "fv_exact"},
+            "/v1/function/normalize_score/drop",
+            {"version": FUNCTION_VERSION},
         )
     ]
+
+
+def test_remote_function_verbs_address_a_namespace_in_the_path():
+    """A Function's namespace is part of the identifier each route addresses;
+    no body carries it, so a namespaced request differs only in its path."""
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(normalize_score, namespace_path=namespace)
+        # The returned parts are what the other verbs take, so a created
+        # Function reopens from its own fields.
+        assert created.name == "normalize_score"
+        assert created.namespace_path == tuple(namespace)
+        reopened = db.get_function(
+            created.name,
+            version=created.version,
+            namespace_path=list(created.namespace_path),
+        )
+        assert reopened == created
+        assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
+            namespace
+        )
+        list(db.list_functions(namespace_path=namespace))
+        assert (
+            db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+        dropped, _ = db.drop_function_async(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        assert dropped is True
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        registration = await db.create_function_async(
+            normalize_score, namespace_path=namespace
+        )
+        await registration.wait()
+        await db.get_function(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        [item async for item in db.list_functions(namespace_path=namespace)]
+        assert (
+            await db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+def test_a_function_namespace_path_must_be_a_list_of_segments():
+    """A bare string is refused rather than read as a sequence of one-character
+    segments, and nothing reaches the service."""
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(TypeError):
+            list(db.list_functions(namespace_path="analytics"))
+
+    assert state["requests"] == []
+
+
+def test_one_explicit_schema_infers_the_other_from_annotations():
+    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    def explicit_input(value) -> float:
+        return float(value or 0)
+
+    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    def explicit_output(value: Optional[int]):
+        return float(value or 0)
+
+    for fn in (explicit_input, explicit_output):
+        signature = fn.registration_request.signature
+        assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+            ("value", "int64", True)
+        ]
+    assert explicit_input.registration_request.signature.output.arrow_type == "float64"
+    assert explicit_output.registration_request.signature.output.arrow_type == "float32"

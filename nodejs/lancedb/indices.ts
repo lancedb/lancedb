@@ -11,8 +11,9 @@ export interface IvfPqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 8192 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
@@ -21,12 +22,27 @@ export interface IvfPqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 8192 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of sub-vectors of PQ.
    *
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -117,8 +133,9 @@ export interface IvfRqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow. If this value is too small then the second
@@ -127,11 +144,27 @@ export interface IvfRqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of bits per dimension for residual quantization.
    *
    * This value controls how much each residual component is compressed. The more
    * bits, the more accurate the index will be but the slower search. Typical values
-   * are small integers; the default is 1 bit per dimension.
+   * are small integers. If unset, uses Lance's default (currently 5 bits per
+   * dimension). Set to 1 for maximum compression.
    */
   numBits?: number;
 
@@ -214,6 +247,8 @@ export interface HnswPqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -223,12 +258,27 @@ export interface HnswPqOptions {
   numPartitions?: number;
 
   /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
+
+  /**
    * Number of sub-vectors of PQ.
    *
    * This value controls how much the vector is compressed during the quantization step.
    * The more sub vectors there are the less the vector is compressed.  The default is
    * the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-   * by 16 we use the dimension divded by 8.
+   * by 16 we use the dimension divided by 8.
    *
    * The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
    * us to use efficient SIMD instructions.
@@ -330,6 +380,8 @@ export interface HnswSqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -337,6 +389,21 @@ export interface HnswSqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Max iterations to train kmeans.
@@ -406,14 +473,30 @@ export interface IvfFlatOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Distance type to use to build the index.
@@ -491,6 +574,7 @@ export type BaseTokenizer =
   | "whitespace"
   | "raw"
   | "ngram"
+  | "code"
   | "icu"
   | "icu/split"
   | `jieba/${string}`
@@ -519,6 +603,8 @@ export interface FtsOptions {
    * "whitespace" - Whitespace tokenizer. This tokenizer splits the text into tokens using whitespace as a delimiter.
    *
    * "raw" - Raw tokenizer. This tokenizer does not split the text into tokens and indexes the entire text as a single token.
+   *
+   * "code" - Code tokenizer. This tokenizer keeps snake_case and camelCase identifiers as single tokens.
    *
    * "icu" - ICU dictionary-based word segmentation.
    *
@@ -629,6 +715,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -657,6 +744,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -684,6 +772,7 @@ export class Index {
         options?.numPartitions,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -794,6 +883,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -816,6 +906,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -825,7 +916,7 @@ export interface IndexOptions {
   /**
    * Advanced index configuration
    *
-   * This option allows you to specify a specfic index to create and also
+   * This option allows you to specify a specific index to create and also
    * allows you to pass in configuration for training the index.
    *
    * See the static methods on Index for details on the various index types.

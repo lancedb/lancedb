@@ -15,6 +15,7 @@ on:
       - .github/workflows/build_linux_wheel/**
       - .github/workflows/build_mac_wheel/**
       - .github/workflows/build_windows_wheel/**
+      - .github/actions/setup-protoc/**
       - .github/workflows/run_tests/**
 
 permissions:
@@ -121,6 +122,10 @@ jobs:
         run: |
           pip install --extra-index-url https://pypi.fury.io/lance-format/ --extra-index-url https://pypi.fury.io/lancedb/ -e .[tests,dev,embeddings]
           pip install mlx
+      - name: Test remote torch data loader
+        run: |
+          python -c "import torch"
+          pytest python/tests/test_torch.py::test_remote_permutation_dataloader_multiprocessing -q -rs
       - name: Doctest
         run: pytest --doctest-modules python/lancedb
   linux:
@@ -156,12 +161,15 @@ jobs:
       - name: Test without pylance or pandas
         run: |
           pip uninstall -y pylance pandas
-          pytest -vv python/tests/test_table.py
+          pytest -vv python/tests/test_table.py python/tests/test_namespace_no_pylance.py
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels
         run: rm -rf target/wheels
   platform:
-    name: "Mac"
+    name: "Mac: ${{ matrix.features }}"
+    strategy:
+      matrix:
+        features: ["default", "experimental-functions"]
     timeout-minutes: 30
     runs-on: macos-14
     defaults:
@@ -187,7 +195,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: ./.github/workflows/build_mac_wheel
         with:
-          args: --profile ci
+          args: --profile ci --features ${{ matrix.features }}
       - uses: ./.github/workflows/run_tests
       # Make sure wheels are not included in the Rust cache
       - name: Delete wheels

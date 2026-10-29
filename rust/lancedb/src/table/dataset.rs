@@ -19,7 +19,7 @@ use crate::{Error, error::Result, utils::background_cache::BackgroundCache};
 pub struct DatasetConsistencyWrapper {
     state: Arc<Mutex<DatasetState>>,
     consistency: ConsistencyMode,
-    /// The single MemWAL `ShardWriter` for this dataset, co-located so it is
+    /// The single RTE `ShardWriter` for this dataset, co-located so it is
     /// cached for the session and shares the dataset's lifecycle. A dataset
     /// writes to one shard at a time. Shared by `Arc` across clones.
     shard_writer: Arc<ShardWriterCache>,
@@ -33,7 +33,7 @@ struct DatasetState {
     /// `None` = tracking latest.
     pinned_version: Option<u64>,
     /// Whether the pin is an internal query snapshot rather than user-visible
-    /// time travel. Query snapshots remain read-only but preserve MemWAL read
+    /// time travel. Query snapshots remain read-only but preserve RTE read
     /// semantics.
     query_snapshot: bool,
 }
@@ -52,7 +52,7 @@ enum ConsistencyMode {
     /// refresh_window = min(3s, TTL/4)
     ///
     /// | t < TTL - refresh_window | t < TTL                           | t >= TTL            |
-    /// |  Return value            | Background refresh & return value |  syncronous refresh |
+    /// |  Return value            | Background refresh & return value |  synchronous refresh |
     Eventual(BackgroundCache<Arc<Dataset>, Error>),
 }
 
@@ -99,7 +99,7 @@ impl DatasetConsistencyWrapper {
     }
 
     /// Create an independent read-only wrapper pinned to the current dataset
-    /// while retaining this wrapper's live MemWAL read context.
+    /// while retaining this wrapper's live RTE read context.
     pub async fn new_query_snapshot(&self) -> Result<Self> {
         // Apply the configured consistency policy before taking the snapshot.
         // The returned dataset is intentionally discarded: a checkout may race
@@ -109,7 +109,7 @@ impl DatasetConsistencyWrapper {
 
         let (dataset, query_snapshot) = {
             let state = self.state.lock()?;
-            // Preserve user time travel so the MemWAL safety guard still sees
+            // Preserve user time travel so the RTE safety guard still sees
             // it. Latest and already-internal snapshots remain internal pins.
             (
                 state.dataset.clone(),
@@ -128,7 +128,7 @@ impl DatasetConsistencyWrapper {
         })
     }
 
-    /// The MemWAL `ShardWriter` cache co-located with this dataset.
+    /// The RTE `ShardWriter` cache co-located with this dataset.
     pub(crate) fn shard_writer(&self) -> &Arc<ShardWriterCache> {
         &self.shard_writer
     }
