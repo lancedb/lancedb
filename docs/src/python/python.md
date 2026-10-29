@@ -508,6 +508,8 @@ and combined with [BooleanQuery][lancedb.query.BooleanQuery].
 
 ::: lancedb.query.MultiMatchQuery
 
+::: lancedb.query.CombinedFieldsQuery
+
 ::: lancedb.query.BooleanQuery
 
 ::: lancedb.query.FullTextOperator
