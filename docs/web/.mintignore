@@ -3,7 +3,7 @@
 # /feature-engineering/functions redirect to /management/function, publish
 # the drafts marked "Draft for the Functions release", and restore
 # `availability` frontmatter (removed while gated, since the comparison
-# table on basics/offerings.mdx links every page that declares one, draft or
+# table on index.mdx links every page that declares one, draft or
 # not) to management/function.mdx and sql/ddl/function.mdx -- each currently
 # carries a plain `<Badge color="red">Enterprise</Badge>` instead.
 management/function.mdx

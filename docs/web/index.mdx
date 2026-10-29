@@ -41,60 +41,86 @@ GPU-ready batches from a tagged dataset version. Training pipelines need curatio
 splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
 through the same table model, whether a workflow uses one table or several related ones.
 
+## Architecture {#architecture}
+
+LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which stores table data, versions, and
+indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
+how storage and compute are organized around them.
+
+Embedded reads and writes tables on local disk or in object storage from inside your application process.
+Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
+requests, and separates query serving, read execution and caching, and indexing and background work into their
+own independently sized components. Caches accelerate reads; they are never the durable source of truth.
+
+```mermaid
+flowchart TB
+    Clients([Clients])
+
+    subgraph QueryFleet["Query Fleet"]
+        QF[Query serving]
+    end
+
+    subgraph ExecutorRing["Executor (Cache) Ring"]
+        EX[Read execution + cache]
+    end
+
+    subgraph Indexer["Indexer"]
+        IDX[Indexing + background work]
+    end
+
+    EventQueue[["Event Queue"]]
+    Storage[("Cloud Object Storage")]
+
+    Clients --> QueryFleet
+    QueryFleet -- reads --> ExecutorRing
+    QueryFleet -- writes --> Storage
+    QueryFleet -- change events --> EventQueue
+    EventQueue --> Indexer
+    ExecutorRing -- reads --> Storage
+    Indexer -- writes --> Storage
+```
+
+Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
+plan how to move or connect your data and configure access for your deployment.
+
 ## Embedded and Enterprise {#embedded-and-enterprise}
 
 LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
 Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
-curation, feature engineering, search and retrieval, and training workflows. See
-[Embedded vs. Enterprise](/basics/offerings#compare) for a feature-by-feature comparison.
+curation, feature engineering, search and retrieval, and training workflows.
+
+### Compare features {#compare}
+
+{/* availability-comparison */}
 
 ### 1\. LanceDB Embedded {#1-lancedb-oss}
 
 **LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
-Rust -- the application itself plans queries, builds indexes, and runs background work. Run it locally in just a
-few steps, which lets you explore datasets, curate data, and run search and retrieval workloads for agents. Start
-here:
-
-<Columns cols={2}>
-  <Card
-    title="Quickstart"
-    icon="rocket"
-    href="/quickstart"
-  >
-    Get started with LanceDB in minutes.
-  </Card>
-  <Card
-    title="Basic Table Operations"
-    icon="table"
-    href="/management/table"
-  >
-    Create tables, evolve schemas, version data, and modify rows in LanceDB.
-  </Card>
-</Columns>
+Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
+server to deploy. This fits local retrieval applications, notebooks, development, and single-node data pipelines,
+where your application controls its own compute resources and [table maintenance](/maintenance/compaction).
 
 ### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
 
 [LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
 built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
-same core table abstraction, without building bespoke infrastructure. Query serving, read execution and caching,
-and indexing and background work run as separate, independently sized components -- see
-[Architecture](/architecture) for how they fit together and what changes in your application. To set up LanceDB
-Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
+same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
+while the service handles requests across a fleet, with query serving, read execution and caching, and indexing
+and background work sized and scaled as separate components. Read the
+[Enterprise architecture](/enterprise/architecture) for the component details and request flows.
 
-<Info>
-**Built with scale, performance, and security in mind.**
+Teams choose Enterprise to:
 
-LanceDB Enterprise is designed for very large-scale, high-performance, distributed workloads in
-private deployments, and can operate under strict [security requirements](/enterprise/security).
-</Info>
+- **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
+  compute as traffic grows.
+- **Reduce operational work** -- let the service handle background [compaction](/maintenance/compaction) and
+  [cleanup](/maintenance/cleanup) instead of scheduling them in application code.
+- **Fit deployment requirements** -- run a managed deployment or bring LanceDB into your own cloud account, with
+  OpenTelemetry metrics and traces.
+- **Connect data workflows** -- use the same tables for retrieval, curation, and training data access, with
+  [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
 
-<Card
-  title="Quickstart"
-  icon="rocket"
-  href="/quickstart"
->
-  Get started with LanceDB in minutes, including Enterprise `db://` connections.
-</Card>
+To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
 
 ## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
 
@@ -130,17 +156,20 @@ access patterns in one format instead of scattering them across task-specific st
 ## Start with your workload {#start-with-your-workload}
 
 <CardGroup cols={2}>
-  <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
-    Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
-  </Card>
-  <Card title="Browse ready-to-use datasets" icon="database" href="/datasets">
-    Explore Lance-formatted multimodal datasets with raw bytes, metadata, embeddings, and indices.
+  <Card title="Ingest your data" icon="inbox" href="/ingestion">
+    Create tables, append records, and update or delete rows as your data changes.
   </Card>
   <Card title="Build search and retrieval" icon="search" href="/search/">
     Use vector search, full-text search, hybrid search, reranking, filtering, and SQL.
   </Card>
   <Card title="Curate training data" icon="filter" href="/curation">
     Profile, sample, chunk, join, and deduplicate records before training on them.
+  </Card>
+  <Card title="Engineer features in place" icon="layer-group" href="/feature-engineering">
+    Derive computed columns and materialized views without moving data elsewhere.
+  </Card>
+  <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
+    Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
   </Card>
 </CardGroup>
 

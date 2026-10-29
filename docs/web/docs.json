@@ -28,6 +28,14 @@
   "favicon": "/static/favicon.ico",
   "redirects": [
     {
+      "source": "/architecture",
+      "destination": "/#architecture"
+    },
+    {
+      "source": "/basics/offerings",
+      "destination": "/#embedded-and-enterprise"
+    },
+    {
       "source": "/tables/update",
       "destination": "/ingestion/update"
     },
@@ -245,9 +253,7 @@
             "group": "Getting Started",
             "pages": [
               "index",
-              "basics/offerings",
               "quickstart",
-              "architecture",
               "basics/sdk",
               "basics/sql",
               "basics/agentic-skills",
