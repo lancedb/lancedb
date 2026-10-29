@@ -98,7 +98,14 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
         name: field.validation_alias or field.alias
         for name, field in model.model_fields.items()
     }
-    taken = {alias for alias in aliases.values() if isinstance(alias, str)}
+    # Every top-level key some field reads, including the first step of an
+    # AliasPath and each choice of an AliasChoices.
+    taken = set()
+    for alias in aliases.values():
+        for option in getattr(alias, "choices", [alias]):
+            key = option.path[0] if isinstance(option, pydantic.AliasPath) else option
+            if isinstance(key, str):
+                taken.add(key)
     renames = {
         name: alias
         for name, alias in aliases.items()

@@ -831,6 +831,26 @@ def test_field_name_that_is_another_fields_alias_keeps_its_meaning(mem_db):
     assert item.model_dump() == {"record_id": 42, "id": -1}
 
 
+@pytest.mark.parametrize(
+    "validation_alias",
+    [
+        pydantic.AliasChoices("id", "recordId"),
+        pydantic.AliasPath("id"),
+        pydantic.AliasChoices(pydantic.AliasPath("id"), "recordId"),
+    ],
+)
+def test_field_name_read_by_another_fields_alias_choices_or_path(
+    mem_db, validation_alias
+):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, validation_alias=validation_alias)
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_choices_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
 @pytest.mark.asyncio
 async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
     class Item(LanceModel):
