@@ -23,6 +23,14 @@ so check its status before
 waiting or requesting cancellation. See the operation's API reference for when
 the method returns.
 
+```python
+job = tbl.create_index_async("vector", replace=True)
+
+print(job.id)
+print(job.job_type)
+print(job.status())
+```
+
 ## Submit and wait for a job {#waiting}
 
 1. **Submit the operation.** Keep the returned job handle. For an Enterprise
@@ -35,6 +43,22 @@ the method returns.
 In Python, `job.status()` reports the current state and `job.wait()` waits for
 completion, raising if the job fails or is cancelled. If `job.wait()` times out, the client stops waiting.
 The timeout does not cancel the server job.
+
+```python
+from datetime import timedelta
+from lancedb.exceptions import JobFailedError, JobCancelledError
+
+job = tbl.create_index_async("vector", replace=True)
+
+try:
+    result = job.wait(timeout=timedelta(minutes=10))
+except JobFailedError:
+    print(f"job failed: {job.failure}")
+except JobCancelledError:
+    print("job was cancelled")
+except TimeoutError:
+    print(f"still running: {job.status()}")
+```
 
 <span id="inspecting" />
 <span id="events" />
@@ -50,6 +74,24 @@ The timeout does not cancel the server job.
 
 Reopening a job retrieves the existing operation; it does not restart failed
 work. Treat the ID as an opaque identifier and pass it unchanged to the jobs API.
+
+```python
+job = db.open_job(job_id)  # raises JobNotFoundError if unknown
+job.refresh()              # pull the latest status from the server
+print(job.status())
+
+events = job.events(limit=100)
+print(events.to_pylist())
+
+job.cancel()
+```
+
+List jobs on a connection, paging through the results:
+
+```python
+for info in db.list_jobs(page_limit=50):
+    print(info.job_id, info.job_type, info.state)
+```
 
 Event responses have [row limits](/basics/limits#jobs). An explicit limit can
 request more than the default, but it does not guarantee a complete event

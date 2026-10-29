@@ -40,6 +40,10 @@
       "destination": "/enterprise/deployment/kubernetes"
     },
     {
+      "source": "/basics/query",
+      "destination": "/basics/sql#results"
+    },
+    {
       "source": "/basics/offerings",
       "destination": "/#embedded-and-enterprise"
     },
@@ -289,7 +293,6 @@
             "pages": [
               "basics/lance",
               "basics/catalog",
-              "basics/query",
               "basics/jobs",
               "tables/realtime-engine",
               "tables/consistency",

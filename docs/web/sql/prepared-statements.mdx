@@ -51,6 +51,13 @@ Do not put untrusted input, such as a value from a user or a request, directly
 into the statement text. Quoting it does not protect the statement the way
 binding a parameter would.
 
+<Note>
+This limitation is specific to the Flight SQL protocol's `PREPARE`/bind step.
+The Python SDK's `execute_query(sql, parameters=...)` binds parameter values
+through a separate, LanceDB-specific mechanism -- see
+[Parameters in SQL queries](/basics/sql#parameters).
+</Note>
+
 ## When to use prepared statements {#when}
 
 Prepare a statement when your client requires it, or to get a statement's
