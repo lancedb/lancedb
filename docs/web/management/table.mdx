@@ -214,14 +214,21 @@ await db.tableNames();
 Each accepts `namespace_path` to act inside a [namespace](/management/namespace)
 rather than at the database root.
 
-To find out whether a table exists, open it and handle the error, or look for
-its name in a listing. A missing table raises `ValueError` on a local directory
-or a deployment, and `lance_namespace.TableNotFoundError` on a connection from
-`connect_namespace`. A listing returns one page of names at a time, so check
-every page. Python's `table_exists` is no substitute: a local directory or a
-deployment raises `NotImplementedError` for it, and on a connection from
-`connect_namespace("dir", ...)` or `connect_namespace("rest", ...)` it fails with
-an `AttributeError`. TypeScript has no `tableExists`.
+For Python remote connections created with `lancedb.connect("db://...")`, use
+`db.table_exists(["documents"])` to check whether a table exists. For an async
+remote connection, use `await db.table_exists(["documents"])`. Include namespace
+segments before the table name, for example `["analytics", "documents"]`. These
+checks return `False` when the table is missing and propagate other errors,
+including permission errors.
+
+Local synchronous directory connections still raise `NotImplementedError` for
+`table_exists`. On a connection from `connect_namespace("dir", ...)` or
+`connect_namespace("rest", ...)`, it fails with an `AttributeError`. For these
+connections, open the table and handle the error, or look for its name in a
+listing. A missing table raises `ValueError` on a local directory and
+`lance_namespace.TableNotFoundError` on a connection from `connect_namespace`.
+A listing returns one page of names at a time, so check every page. TypeScript
+has no `tableExists`.
 
 ## Rename and clone tables {#rename-clone}
 
@@ -248,7 +255,7 @@ set to the exact version a model saw.
 <Warning>
 A shallow clone depends on the source's files continuing to exist. If the source
 is [compacted](/maintenance/compaction) past the retention window, the version
-the clone points at can be pruned. Local OSS connections support shallow clones
+the clone points at can be pruned. LanceDB Embedded connections support shallow clones
 only; `is_shallow=False` is not implemented. If the copy must outlive the
 source's history, copy its data into an independent table instead. A deployment
 that supports cloning also makes shallow clones only, and one whose catalog
@@ -462,8 +469,9 @@ pylance. Pandas conversions that need the Lance scanner, including plain-scan
 `"lazy"` handles and legacy blobs, still require pylance. `to_arrow()`,
 `to_list()`, `to_batches()`, and the fetch methods do not require pylance.
 
-`blob_mode="bytes"` requires a local table snapshot, so remote and in-memory
-tables raise `NotImplementedError`. On a remote table, `Table.to_pandas()` and
+`blob_mode="bytes"` requires a LanceDB Embedded table snapshot, so Enterprise
+and in-memory tables raise `NotImplementedError`. On an Enterprise table,
+`Table.to_pandas()` and
 `Table.to_arrow()` aren't supported, and a query's `to_pandas()` also raises in
 the default `"lazy"` mode because it would open `BlobFile` handles. Query with
 `blob_mode="descriptions"`, then read bytes with `fetch_blobs` or
@@ -495,7 +503,7 @@ descriptors. Both `"bytes"` and `"descriptions"` hide automatic row IDs;
 explicitly requested row IDs remain visible.
 
 Bytes mode has the same restrictions as `to_arrow(blob_mode="bytes")`,
-including no legacy blobs, blobs inside lists, remote tables, or namespace
+including no legacy blobs, blobs inside lists, Enterprise tables, or namespace
 `QueryTable` pushdown. If concurrent writers can overwrite the table, use a
 separate reader checked out to a fixed version before querying. Otherwise,
 an overwrite can invalidate the row IDs used to fetch bytes and raise
@@ -686,7 +694,7 @@ between inline values and Managed objects.
 
 Enterprise Functions can consume blob columns and
 return new blobs. Their output payloads are managed by the destination table.
-Local tables can also derive blob columns with
+LanceDB Embedded tables can also derive blob columns with
 [SQL computed columns](/feature-engineering/add-computed-column).
 
 Deleting a row or replacing its blob does not immediately remove the old
@@ -741,8 +749,8 @@ Write raw bytes to a V1 blob column:
 
 #### 3\. Convert blob tables to pandas {#multimodal-3-convert-blob-tables-to-pandas}
 
-On local tables with V1 blob columns, `to_pandas()` in Python accepts `blob_mode`
-(`"lazy"`, `"bytes"`, or `"descriptions"`). Remote tables raise
+On LanceDB Embedded tables with V1 blob columns, `to_pandas()` in Python accepts
+`blob_mode` (`"lazy"`, `"bytes"`, or `"descriptions"`). Enterprise tables raise
 `NotImplementedError`, and `"bytes"` is not supported on in-memory tables.
 Extra keyword arguments such as `split_blocks` or `self_destruct` are forwarded
 to the PyArrow / Lance pandas conversion:
@@ -1537,7 +1545,7 @@ mixing in lower-level Lance file operations.
 **System Operations**
 
 System operations like `optimize()`, index updates, and table compaction also increment table version numbers.
-In LanceDB OSS, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
+In LanceDB Embedded, `optimize()` can prune older versions based on its retention setting (`cleanup_older_than`, 7 days by default),
 which is when old-version files are removed and disk space is reclaimed. A deployment prunes them in the background
 when its configuration enables [cleanup](/maintenance/cleanup); `optimize()` is not available there.
 

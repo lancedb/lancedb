@@ -22,16 +22,20 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
 
     Parameters
     ----------
-    name : str, default "embed-multilingual-v2.0"
+    name : str, default "embed-multilingual-v3.0"
         The name of the model to use. List of acceptable models:
 
             * embed-english-v3.0
             * embed-multilingual-v3.0
             * embed-english-light-v3.0
             * embed-multilingual-light-v3.0
-            * embed-english-v2.0
-            * embed-english-light-v2.0
-            * embed-multilingual-v2.0
+
+        The v2.0 models (embed-english-v2.0, embed-english-light-v2.0 and
+        embed-multilingual-v2.0) were retired by Cohere on April 4, 2026.
+        The previous default produced 768-dimensional vectors, while the new
+        default produces 1024-dimensional vectors. Existing tables containing
+        vectors from a v2.0 model must be re-embedded with an active model into
+        a table whose vector column has the matching dimension.
 
     source_input_type : str, default "search_document"
         The input type for the source column in the database
@@ -65,7 +69,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
     cohere = EmbeddingFunctionRegistry
         .get_instance()
         .get("cohere")
-        .create(name="embed-multilingual-v2.0")
+        .create(name="embed-multilingual-v3.0")
 
     class TextModel(LanceModel):
         text: str = cohere.SourceField()
@@ -81,7 +85,7 @@ class CohereEmbeddingFunction(TextEmbeddingFunction):
 
     """
 
-    name: str = "embed-multilingual-v2.0"
+    name: str = "embed-multilingual-v3.0"
     source_input_type: str = "search_document"
     query_input_type: str = "search_query"
     client: ClassVar = None

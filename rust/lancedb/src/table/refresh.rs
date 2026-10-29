@@ -368,7 +368,8 @@ fn declared_expression(dataset: &Dataset, column: &str) -> Result<String> {
     match declaration.kind {
         ComputedColumnKind::Sql { expression } => Ok(expression),
         ComputedColumnKind::Function { .. } => Err(Error::NotSupported {
-            message: "registered Function columns are refreshed only by a remote server Job".into(),
+            message: "registered Function columns are refreshed only by a LanceDB Distributed job"
+                .into(),
         }),
         ComputedColumnKind::Unrecognized { kind } => Err(Error::NotSupported {
             message: format!(

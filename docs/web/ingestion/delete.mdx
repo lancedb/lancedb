@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Delete rows through the SDKs in OSS and Enterprise. Storage reclamation follows compaction and retention policy.
+    Delete rows through the SDKs in LanceDB Embedded and LanceDB Enterprise. Storage reclamation follows compaction and retention policy.
 ---
 
 import { RsExample as RsDeleteRows } from '/snippets/ingestion_delete.mdx';
@@ -70,7 +70,7 @@ Compaction rewrites the live data layout; cleanup removes eligible retained
 versions and files. Retained history can continue to reference data that no
 longer appears in the latest table version.
 
-In OSS, `optimize()` provides maintenance operations. In Enterprise, managed
+In LanceDB Embedded, `optimize()` provides maintenance operations. In Enterprise, managed
 maintenance and retention follow the service configuration. Choose retention
 according to the history you need, rather than shortening it as part of a
 routine delete example. See [Compaction](/maintenance/compaction) and

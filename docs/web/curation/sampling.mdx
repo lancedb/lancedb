@@ -8,7 +8,7 @@ availability:
   oss: unavailable
   enterprise: available
   summary: >-
-    Enterprise supports SQL `TABLESAMPLE`. For sampling in OSS and Enterprise through the Python SDK, see [Sample without SQL](#training).
+    Enterprise supports SQL `TABLESAMPLE`. For sampling in LanceDB Embedded and LanceDB Enterprise through the Python SDK, see [Sample without SQL](#training).
 ---
 
 import { PySampleDataset } from '/snippets/curation_sampling.mdx';
@@ -143,7 +143,7 @@ for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 ## Sample without SQL {#training}
 
 The Python SDK provides a permutation builder for selecting and ordering rows
-in OSS and Enterprise. A split selects a subset; a shuffle changes the order
+in LanceDB Embedded and LanceDB Enterprise. A split selects a subset; a shuffle changes the order
 in which records are read. `Permutation.identity(table)` retains stored order.
 
 <Accordion title="Complete Python example: read a random subset">

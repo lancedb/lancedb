@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="800" height="676" viewBox="0 0 800 676" role="img" aria-labelledby="title desc">
-  <title id="title">LanceDB OSS and Enterprise architecture</title>
-  <desc id="desc">OSS runs the application and embedded library in one process with local disk or object storage. Enterprise separates query serving, read execution and caching, and indexing and background workers. The control plane governs the service. Enterprise persists tables in object storage. Both offerings use the Lance format, without automatically sharing storage.</desc>
+  <title id="title">LanceDB Embedded and Enterprise architecture</title>
+  <desc id="desc">LanceDB Embedded runs the application and embedded library in one process with local disk or object storage. Enterprise separates query serving, read execution and caching, and indexing and background workers. The control plane governs the service. Enterprise persists tables in object storage. Both offerings use the Lance format, without automatically sharing storage.</desc>
   <defs>
     <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto" markerUnits="userSpaceOnUse"><path d="M1 1 7 4 1 7" fill="none" stroke="#596776" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></marker>
     <style>
@@ -15,7 +15,7 @@
   <rect width="800" height="676" rx="20" fill="#ffffff"/>
 
   <rect x="12" y="12" width="380" height="580" rx="16" fill="#f3f6f9" stroke="#d4dce6"/>
-  <text class="title" x="36" y="53">LanceDB OSS</text>
+  <text class="title" x="36" y="53">LanceDB Embedded</text>
   <text class="note" x="36" y="83">Embedded library</text>
   <rect x="36" y="110" width="332" height="296" rx="10" fill="#ffffff" stroke="#c4cfdd"/>
   <text class="label" x="202" y="164" text-anchor="middle">Application +</text>

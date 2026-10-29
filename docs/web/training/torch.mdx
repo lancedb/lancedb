@@ -238,7 +238,7 @@ described above.
 
 ## Using multiple DataLoader workers {#using-multiple-dataloader-workers}
 
-Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. `Permutation` objects and tables in LanceDB Enterprise are picklable, so each worker reopens the table after it starts. A local table is not, so wrap it in a `Permutation`, as below, to read it from several workers.
+Set `num_workers > 0` to read from LanceDB in multiple PyTorch worker processes. `Permutation` objects and tables in LanceDB Enterprise are picklable, so each worker reopens the table after it starts. A LanceDB Embedded table is not, so wrap it in a `Permutation`, as below, to read it from several workers.
 
 Prefer the `forkserver` start method when using multiple workers. LanceDB uses internal threads, so the default `fork` method is unsafe; `forkserver` avoids that while being cheaper to start than `spawn`, and became the default on Linux and other supported POSIX platforms in Python
 3.14. macOS and Windows default to `spawn`. See
@@ -263,9 +263,9 @@ dataloader = torch.utils.data.DataLoader(
 )
 ```
 
-### Remote tables in DataLoader workers {#remote-tables-in-dataloader-workers}
+### Enterprise tables in DataLoader workers {#remote-tables-in-dataloader-workers}
 
-Remote LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state. Replace the URI, API key, region and endpoint below with your deployment details. In application code, load credentials from environment variables or a secrets manager.
+LanceDB Enterprise tables (`db://...`) work the same way: workers reopen the table from the pickled connection state. Replace the URI, API key, region and endpoint below with your deployment details. In application code, load credentials from environment variables or a secrets manager.
 
 ```py Python icon=Python 
 import lancedb

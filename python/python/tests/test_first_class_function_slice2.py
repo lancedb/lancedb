@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
 import urllib.parse
 from typing import Optional
 
@@ -34,6 +33,7 @@ from lancedb.functions import (
     udf,
 )
 from lancedb.secrets import EnvVarSecret
+from utils import start_server_thread
 
 THRESHOLD = 20
 _CACHE = None
@@ -87,6 +87,27 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
 
 
 def test_secret_bound_udf_matches_its_shared_registration_golden():
@@ -274,13 +295,15 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-server = http.server.ThreadingHTTPServer(("localhost", 0), Handler)
-threading.Thread(target=server.serve_forever, daemon=True).start()
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+threading.Thread(
+    target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+).start()
 try:
     db = lancedb.connect(
         "db://dev",
         api_key="API_KEY_SENTINEL",
-        host_override="http://localhost:%d" % server.server_address[1],
+        host_override="http://127.0.0.1:%d" % server.server_address[1],
         client_config={"retry_config": {"retries": 0}},
     )
     db.create_secret("openai-prod", "SECRET_VALUE_SENTINEL")
@@ -1498,7 +1521,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def nullable_output(value: int) -> Optional[int]:
             return value
 
-    with pytest.raises(ValueError, match="provided together"):
+    with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
@@ -1654,6 +1677,7 @@ def _mock_remote_function_catalog():
                         ).read_text()
                     )["image"],
                     "signature": body["signature"],
+                    "source_digest": body["artifact"]["digest"],
                     "secret_bindings": body.get("secret_bindings", []),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
@@ -1733,11 +1757,10 @@ def _mock_remote_function_catalog():
                 response = {"functions": []}
             self._write_response(200, response)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", state
+            yield f"http://127.0.0.1:{server.server_address[1]}", state
         finally:
             server.shutdown()
             thread.join()
@@ -1763,6 +1786,9 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
     assert created == reopened
     assert reopened.name == "normalize_score"
     assert reopened.version == FUNCTION_VERSION
+    assert (
+        reopened.source_digest == normalize_score.registration_request.artifact.digest
+    )
     create_request = state["requests"][0][1]
     expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
@@ -1869,6 +1895,7 @@ def test_blocking_remote_registration_returns_function_version():
 
     assert created.name == "normalize_score"
     assert created.version == FUNCTION_VERSION
+    assert created.source_digest == normalize_score.registration_request.artifact.digest
     assert [path for path, _ in state["requests"]] == [
         "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
@@ -1888,6 +1915,9 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         functions = list(db.list_functions())
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert state["requests"] == [
         ("/v1/namespace/$/function/list", {"include_definition": "true"}),
         (
@@ -1912,6 +1942,9 @@ async def test_async_remote_list_functions_returns_typed_versions():
         functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert [path for path, _ in state["requests"]] == [
         "/v1/namespace/$/function/list",
         "/v1/namespace/$/function/list",
@@ -2054,3 +2087,21 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
             list(db.list_functions(namespace_path="analytics"))
 
     assert state["requests"] == []
+
+
+def test_one_explicit_schema_infers_the_other_from_annotations():
+    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    def explicit_input(value) -> float:
+        return float(value or 0)
+
+    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    def explicit_output(value: Optional[int]):
+        return float(value or 0)
+
+    for fn in (explicit_input, explicit_output):
+        signature = fn.registration_request.signature
+        assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+            ("value", "int64", True)
+        ]
+    assert explicit_input.registration_request.signature.output.arrow_type == "float64"
+    assert explicit_output.registration_request.signature.output.arrow_type == "float32"

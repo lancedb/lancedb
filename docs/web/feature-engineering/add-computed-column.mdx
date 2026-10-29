@@ -16,9 +16,9 @@ Declaring it is cheap on any table size, because nothing is evaluated until
 [a refresh](/feature-engineering/refresh-column) asks for it.
 
 <Note>
-In the 0.41 SDK release, local computed-column declaration and refresh require a
+In the 0.41 SDK release, computed-column declaration and refresh in LanceDB Embedded require a
 source build with the `experimental-functions` Cargo feature. Published Python
-and TypeScript packages leave it disabled. Remote Cloud and Enterprise operations
+and TypeScript packages leave it disabled. LanceDB Enterprise operations
 do not require this feature. Ordinary eager `add_columns` transforms remain available.
 </Note>
 
