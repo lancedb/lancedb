@@ -20,15 +20,15 @@ Connect to a LanceDB instance at the given URI.
 
 Accepted formats:
 
-- `/path/to/database` - local database
+- `/path/to/database` - database on the local file system
 - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
-- `db://host:port` - remote database (LanceDB cloud)
+- `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
 
 ### Parameters
 
 * **uri**: `string`
     The uri of the database. If the database uri starts
-    with `db://` then it connects to a remote database.
+    with `db://` then it connects to LanceDB Enterprise or LanceDB Cloud (legacy).
 
 * **options?**: `Partial`&lt;[`ConnectionOptions`](../interfaces/ConnectionOptions.md)&gt;
     The options to use when connecting to the database
@@ -80,9 +80,9 @@ Connect to a LanceDB instance at the given URI.
 
 Accepted formats:
 
-- `/path/to/database` - local database
+- `/path/to/database` - database on the local file system
 - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
-- `db://host:port` - remote database (LanceDB cloud)
+- `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
 
 ### Parameters
 

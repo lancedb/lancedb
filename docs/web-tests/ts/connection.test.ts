@@ -1,65 +1,95 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
-import { expect, jest, test } from "@jest/globals";
-import * as path from "node:path";
-import { withTempDirectory } from "./util.ts";
-// --8<-- [start:connect]
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import * as lancedb from "@lancedb/lancedb";
+import { withTempDirectory } from "./util.ts";
 
-async function connectExample(uri: string) {
-  const db = await lancedb.connect(uri);
-  return db;
+async function collectNames(items: AsyncIterable<string>): Promise<string[]> {
+  const names: string[] = [];
+  for await (const name of items) names.push(name);
+  return names;
 }
-// --8<-- [end:connect]
 
 test("connect to a local database", async () => {
   await withTempDirectory(async (tempDir) => {
-    const uri = path.join(tempDir, "ex_lancedb");
-    const db = await connectExample(uri);
-    expect(db).toBeDefined();
+    const cwd = process.cwd();
+    process.chdir(tempDir);
+    try {
+      // --8<-- [start:connect]
+      const db = await lancedb.connect("ex_lancedb");
+      // --8<-- [end:connect]
+      await db.createTable("probe", [{ id: 1 }]);
+      expect(await collectNames(db.listTables())).toEqual(["probe"]);
+    } finally {
+      process.chdir(cwd);
+    }
+    const reopened = await lancedb.connect(`${tempDir}/ex_lancedb`);
+    expect(await collectNames(reopened.listTables())).toEqual(["probe"]);
   });
 });
 
 async function connectEnterpriseQuickstart() {
   // --8<-- [start:connect_enterprise_quickstart]
-  const uri = "db://your-database-uri";
-  const apiKey = "your-api-key";
-  const region = "us-east-1";
-  const hostOverride = "https://your-enterprise-endpoint.com";
+  const setting = (name: string) => {
+    const value = process.env[name];
+    if (!value) throw new Error(`Set ${name}`);
+    return value;
+  };
 
-  const db = await lancedb.connect(uri, {
-    apiKey,
-    region,
-    hostOverride,
+  const db = await lancedb.connect(setting("LANCEDB_URI"), {
+    apiKey: setting("LANCEDB_API_KEY"),
+    region: process.env.LANCEDB_REGION ?? "us-east-1",
+    hostOverride: setting("LANCEDB_HOST_OVERRIDE"),
   });
   // --8<-- [end:connect_enterprise_quickstart]
   return db;
 }
 
-test("enterprise quickstart connect uses placeholder config", async () => {
-  const mockDb = { __mock: true } as unknown as Awaited<
-    ReturnType<typeof lancedb.connect>
-  >;
-  const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
-
-  const db = await connectEnterpriseQuickstart();
-  expect(db).toBe(mockDb);
-  expect(spy).toHaveBeenCalledWith("db://your-database-uri", {
-    apiKey: "your-api-key",
-    region: "us-east-1",
-    hostOverride: "https://your-enterprise-endpoint.com",
+describe("enterprise quickstart connect", () => {
+  const saved = { ...process.env };
+  afterEach(() => {
+    process.env = { ...saved };
   });
-  spy.mockRestore();
+
+  test("reads the connection from the environment", async () => {
+    const mockDb = { __mock: true } as unknown as Awaited<
+      ReturnType<typeof lancedb.connect>
+    >;
+    const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
+    process.env.LANCEDB_URI = "db://your-database";
+    process.env.LANCEDB_API_KEY = "your-api-key";
+    delete process.env.LANCEDB_REGION;
+    process.env.LANCEDB_HOST_OVERRIDE = "https://your-endpoint";
+
+    const db = await connectEnterpriseQuickstart();
+    expect(db).toBe(mockDb);
+    expect(spy).toHaveBeenCalledWith("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+    spy.mockRestore();
+  });
+
+  test("requires an endpoint", async () => {
+    process.env.LANCEDB_URI = "db://your-database";
+    process.env.LANCEDB_API_KEY = "your-api-key";
+    delete process.env.LANCEDB_HOST_OVERRIDE;
+
+    await expect(connectEnterpriseQuickstart()).rejects.toThrow(
+      "Set LANCEDB_HOST_OVERRIDE",
+    );
+  });
 });
 
-// --8<-- [start:connect_object_storage]
 async function connectObjectStorageExample() {
+  // --8<-- [start:connect_object_storage]
   const uri = "s3://your-bucket/path";
   // You can also use "gs://your-bucket/path" or "az://your-container/path".
   const db = await lancedb.connect(uri);
+  // --8<-- [end:connect_object_storage]
   return db;
 }
-// --8<-- [end:connect_object_storage]
 
 async function namespaceTableOpsExample() {
   // --8<-- [start:namespace_table_ops]
@@ -85,8 +115,8 @@ async function namespaceTableOpsExample() {
   );
 
   // Verify
-  console.log((await db.listNamespaces()).namespaces); // ["prod"]
-  console.log((await db.listNamespaces(["prod"])).namespaces); // ["recommendations", "search"]
+  console.log(await collectNames(db.listNamespaces())); // ["prod"]
+  console.log(await collectNames(db.listNamespaces(["prod"]))); // ["recommendations", "search"]
   console.log(await db.tableNames(["prod", "search"])); // ["user"]
   console.log(await db.tableNames(["prod", "recommendations"])); // ["user"]
   // --8<-- [end:namespace_table_ops]
@@ -100,7 +130,7 @@ async function namespaceAdminOpsExample() {
   await db.createNamespace(["prod"]);
   await db.createNamespace(["prod", "search"]);
 
-  const childNamespaces = (await db.listNamespaces(["prod"])).namespaces;
+  const childNamespaces = await collectNames(db.listNamespaces(["prod"]));
   console.log(`Child namespaces under ${JSON.stringify(namespace)}:`, childNamespaces);
   // Child namespaces under ["prod","search"]: [ 'search' ]
 
@@ -119,3 +149,25 @@ void [
   namespaceTableOpsExample,
   namespaceAdminOpsExample,
 ];
+
+test("enterprise placeholders use an explicit endpoint", async () => {
+  const mockDb = {} as Awaited<ReturnType<typeof lancedb.connect>>;
+  const spy = jest.spyOn(lancedb, "connect").mockResolvedValue(mockDb);
+  try {
+    // --8<-- [start:connect_enterprise_placeholders]
+    const db = await lancedb.connect("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+    // --8<-- [end:connect_enterprise_placeholders]
+    expect(db).toBe(mockDb);
+    expect(spy).toHaveBeenCalledWith("db://your-database", {
+      apiKey: "your-api-key",
+      region: "us-east-1",
+      hostOverride: "https://your-endpoint",
+    });
+  } finally {
+    spy.mockRestore();
+  }
+});

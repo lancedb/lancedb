@@ -4,16 +4,18 @@
 """Examples for docs/web/management/function.mdx.
 
 Registering a Function and filling its column need a LanceDB Enterprise
-deployment, so `test_function_enterprise` runs only when the connection
-variables the Enterprise examples already use are set: LANCEDB_URI,
-LANCEDB_API_KEY and LANCEDB_HOST_OVERRIDE, plus LANCEDB_REGION if the
-deployment needs one. The walkthrough calls its table `function_demo` and its
-Function `double`; the test creates both under names unique to its run, never
-replaces an existing object, and drops only what it created.
+deployment, so `test_function_enterprise` runs only when
+LANCEDB_DOCS_TEST_DEPLOYMENT=1 asks for one, with the connection variables the
+Enterprise examples already use: LANCEDB_URI, LANCEDB_API_KEY and
+LANCEDB_HOST_OVERRIDE, plus LANCEDB_REGION if the deployment needs one. The
+walkthrough calls its table `function_demo` and its Function `double`; the test
+creates both under names unique to its run, never replaces an existing object,
+and drops only what it created.
 
 The other tests run locally and check the client side of the same code: what
-`@udf` sends for registration, how a registered version binds a column, and
-where a local connection stops. They do not run a Function remotely.
+`@udf` sends for registration, how a registered version binds a column, where a
+local connection stops, and when the Enterprise test connects. They do not run
+a Function remotely.
 """
 
 import json
@@ -48,6 +50,25 @@ def describe(value: float):
     return {"half": value / 2, "note": None}
 
 
+# --8<-- [start:function_class_define]
+@udf(pip=["sentence-transformers"])
+class embed:
+    def __init__(self, model: str = "all-MiniLM-L6-v2"):
+        # Runs on the worker, once per instance: only the worker needs the package.
+        from sentence_transformers import SentenceTransformer
+
+        self.model = SentenceTransformer(model)
+
+    def __call__(self, text: str) -> list[float]:
+        return self.model.encode(text).tolist()
+
+    def close(self):
+        del self.model
+
+
+# --8<-- [end:function_class_define]
+
+
 # A Function version as the service returns it after registration: the SDK's
 # shared golden reply, with the name and signature of the definition above.
 SERVICE_REPLY = (
@@ -70,12 +91,17 @@ def registered_version(definition) -> FunctionVersion:
     return FunctionVersion.from_json(json.dumps(reply))
 
 
-def require_env(var_name: str) -> str:
-    """Skip the test unless the required environment variable is provided."""
-    value = os.environ.get(var_name)
-    if not value:
-        pytest.skip(f"Set {var_name} to run this Enterprise example")
-    return value
+DEPLOYMENT = ("LANCEDB_URI", "LANCEDB_HOST_OVERRIDE", "LANCEDB_API_KEY")
+# The connection settings alone never send this test to a deployment.
+OPT_IN = "LANCEDB_DOCS_TEST_DEPLOYMENT"
+
+
+def require_deployment():
+    if os.environ.get(OPT_IN) != "1":
+        pytest.skip(f"set {OPT_IN}=1 and {', '.join(DEPLOYMENT)} to use a deployment")
+    missing = [name for name in DEPLOYMENT if not os.environ.get(name)]
+    if missing:
+        pytest.fail(f"{OPT_IN}=1 needs {', '.join(missing)}")
 
 
 def test_function_runs_locally_as_python():
@@ -159,10 +185,33 @@ def test_function_version_binds_a_column(tmp_path):
         table.add_columns({"doubled": application})
 
 
+def test_class_function_is_constructed_only_where_it_runs():
+    # Registration reads __init__'s signature; it never constructs the class,
+    # so the model's package need not be installed here.
+    assert "sentence_transformers" not in sys.modules
+    signature = embed.registration_request.signature
+    assert [
+        (field.name, field.arrow_type, field.nullable)
+        for field in signature.initialization
+    ] == [("model", "utf8", True)]
+    assert [(p.name, p.arrow_type) for p in signature.inputs] == [("text", "utf8")]
+    assert "sentence_transformers" not in sys.modules
+
+    embedder = registered_version(embed)
+    # --8<-- [start:function_class_apply]
+    from lancedb import col
+
+    application = embedder(text=col("text"), model="all-mpnet-base-v2")
+    # --8<-- [end:function_class_apply]
+    assert application.initialization == {"model": "all-mpnet-base-v2"}
+    # The default applies to an omitted field.
+    assert embedder(text=col("text")).initialization == {}
+    with pytest.raises(TypeError, match="unknown arguments"):
+        embedder(text=col("text"), device="cuda")
+
+
 def test_function_enterprise(monkeypatch):
-    require_env("LANCEDB_URI")
-    require_env("LANCEDB_API_KEY")
-    require_env("LANCEDB_HOST_OVERRIDE")
+    require_deployment()
 
     # --8<-- [start:function_connect]
     import os
@@ -240,3 +289,91 @@ def test_function_enterprise(monkeypatch):
             db.drop_table(table_name)
         if version is not None:
             db.drop_function(version.name, version=version.version)
+
+
+class ReachedConnection(Exception):
+    pass
+
+
+SETTINGS = {
+    "LANCEDB_URI": "db://docs-test",
+    "LANCEDB_HOST_OVERRIDE": "https://deployment.invalid",
+    "LANCEDB_API_KEY": "docs-test-key",
+}
+
+
+@pytest.fixture
+def connect_attempts(monkeypatch):
+    """`lancedb.connect`, replaced so that it records each call and stops."""
+    attempts = []
+
+    def connect(**kwargs):
+        attempts.append(kwargs)
+        raise ReachedConnection
+
+    monkeypatch.setattr(lancedb, "connect", connect)
+    for name in (OPT_IN, *DEPLOYMENT, "LANCEDB_REGION"):
+        monkeypatch.delenv(name, raising=False)
+    return attempts
+
+
+def enterprise_outcome(monkeypatch):
+    try:
+        test_function_enterprise(monkeypatch)
+    except (pytest.skip.Exception, pytest.fail.Exception, ReachedConnection) as outcome:
+        return outcome
+
+
+@pytest.mark.parametrize(
+    "opt_in",
+    [None, "", "0", "true", "TRUE", "yes", "on", " 1", "1 ", "01", "1.0", "11"],
+)
+def test_function_enterprise_needs_the_exact_opt_in(
+    monkeypatch, connect_attempts, opt_in
+):
+    for name, value in SETTINGS.items():
+        monkeypatch.setenv(name, value)
+    if opt_in is not None:
+        monkeypatch.setenv(OPT_IN, opt_in)
+    outcome = enterprise_outcome(monkeypatch)
+    assert isinstance(outcome, pytest.skip.Exception), outcome
+    assert str(outcome).startswith(f"set {OPT_IN}=1 ")
+    assert connect_attempts == []
+
+
+@pytest.mark.parametrize("blank", ["unset", "empty"])
+@pytest.mark.parametrize(
+    "missing", [*([name] for name in DEPLOYMENT), list(DEPLOYMENT)]
+)
+def test_function_enterprise_fails_when_asked_without_settings(
+    monkeypatch, connect_attempts, missing, blank
+):
+    monkeypatch.setenv(OPT_IN, "1")
+    for name, value in SETTINGS.items():
+        if name not in missing:
+            monkeypatch.setenv(name, value)
+        elif blank == "empty":
+            monkeypatch.setenv(name, "")
+    outcome = enterprise_outcome(monkeypatch)
+    assert isinstance(outcome, pytest.fail.Exception), outcome
+    assert str(outcome) == f"{OPT_IN}=1 needs {', '.join(missing)}"
+    assert connect_attempts == []
+
+
+@pytest.mark.parametrize("region", [None, "eu-west-1"])
+def test_function_enterprise_connects_when_asked(monkeypatch, connect_attempts, region):
+    monkeypatch.setenv(OPT_IN, "1")
+    for name, value in SETTINGS.items():
+        monkeypatch.setenv(name, value)
+    if region:
+        monkeypatch.setenv("LANCEDB_REGION", region)
+    outcome = enterprise_outcome(monkeypatch)
+    assert isinstance(outcome, ReachedConnection), outcome
+    assert connect_attempts == [
+        {
+            "uri": "db://docs-test",
+            "api_key": "docs-test-key",
+            "region": region or "us-east-1",
+            "host_override": "https://deployment.invalid",
+        }
+    ]

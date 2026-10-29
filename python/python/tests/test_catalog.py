@@ -85,12 +85,12 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
             connection.execute_query_async("SELECT 1")
     assert restored.table_names() == []
     assert list(catalog.list_databases()) == ["team/search"]
-    catalog.drop_database("team/search", ignore_missing=True)
+    catalog.drop_database("team/search", ignore_missing=True, cascade=True)
     assert requests[0][0] == "/v1/namespace/team%2Fsearch/create"
     assert requests[0][2] == {"mode": "ExistOk"}
     assert requests[1][0] == "/v1/namespace/team%2Fsearch/describe"
     assert requests[4][0] == "/v1/namespace/$/list"
-    assert requests[5][2] == {"mode": "Skip", "behavior": "Restrict"}
+    assert requests[5][2] == {"mode": "Skip", "behavior": "Cascade"}
     for i, (_, headers, _) in enumerate(requests):
         headers = {key.lower(): value for key, value in headers.items()}
         assert headers.get("x-lancedb-database") == (

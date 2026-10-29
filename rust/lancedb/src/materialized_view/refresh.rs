@@ -45,13 +45,16 @@ pub enum RefreshMode {
 /// The result of refreshing a materialized view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date.
-    pub mode: RefreshMode,
-    /// Rows written to the replacement view.
-    pub rows_written: u64,
-    /// The source table version the view reflects.
-    pub source_version: u64,
-    /// The view table version after the refresh.
+    /// How the view was brought up to date, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub mode: Option<RefreshMode>,
+    /// Rows written by this refresh, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub rows_written: Option<u64>,
+    /// The source table version the view reflects, or `None` when unavailable.
+    /// Remote SQL refreshes currently do not expose this metric.
+    pub source_version: Option<u64>,
+    /// The view table version observed after the refresh.
     pub version: u64,
 }
 
@@ -72,8 +75,9 @@ pub(crate) async fn execute_refresh(
     view: &Table,
     pinned: Option<u64>,
 ) -> Result<RefreshMaterializedViewResult> {
+    crate::require_experimental_functions()?;
     let native = view.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only on local tables".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     native.dataset.ensure_mutable()?;
     let lock = refresh_lock(native.dataset.get().await?.uri());
@@ -181,9 +185,9 @@ pub(crate) async fn execute_refresh(
     let version = committed.version().version;
     native.dataset.update(committed);
     Ok(RefreshMaterializedViewResult {
-        mode: RefreshMode::Rebuild,
-        rows_written: rows_written.load(Ordering::Relaxed),
-        source_version,
+        mode: Some(RefreshMode::Rebuild),
+        rows_written: Some(rows_written.load(Ordering::Relaxed)),
+        source_version: Some(source_version),
         version,
     })
 }
@@ -195,7 +199,7 @@ pub async fn replace_materialized_view_fragments(
     stream: SendableRecordBatchStream,
 ) -> Result<u64> {
     let native = view.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only on local tables".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     native.dataset.ensure_mutable()?;
     let lock = refresh_lock(native.dataset.get().await?.uri());
@@ -288,13 +292,13 @@ fn refresh_conflict_filter(dataset: &Dataset) -> Result<KeyExistenceFilter> {
     Ok(filter.build())
 }
 
-/// Reject MemWAL/LSM state because an ordinary dataset scan cannot see its
+/// Reject RTE/RTE state because an ordinary dataset scan cannot see its
 /// un-compacted tiers.
 pub(crate) async fn ensure_no_mem_wal(dataset: &Dataset, role: &str, name: &str) -> Result<()> {
     let retained = !dataset.list_mem_wal_latest_shard_ids().await?.is_empty();
     if retained || dataset.mem_wal_index_details().await?.is_some() {
         return Err(Error::NotSupported {
-            message: format!("{role} '{name}' has an LSM write spec or retained un-compacted rows"),
+            message: format!("{role} '{name}' has an RTE write spec or retained un-compacted rows"),
         });
     }
     Ok(())
@@ -316,7 +320,7 @@ async fn open_source(view: &Table, definition: &MaterializedViewDefinition) -> R
         })
         .await?;
     let native = source.as_native().ok_or_else(|| Error::NotSupported {
-        message: "materialized views are supported only on local tables".into(),
+        message: "this operation is only supported on LanceDB Embedded".into(),
     })?;
     Ok(native.dataset.get().await?.as_ref().clone())
 }
@@ -576,6 +580,10 @@ mod tests {
     use crate::connect;
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn raced_first_full_refresh_lands_one_result() {
         let directory = tempfile::tempdir().unwrap();
         let connection = connect(directory.path().to_str().unwrap())

@@ -226,7 +226,14 @@ impl Catalog for RemoteCatalog {
                     }
                     .into(),
                 ),
-                behavior: Some("Restrict".into()),
+                behavior: Some(
+                    if request.cascade {
+                        "Cascade"
+                    } else {
+                        "Restrict"
+                    }
+                    .into(),
+                ),
                 ..Default::default()
             })
             .await;
@@ -474,7 +481,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_preserves_errors_and_never_cascades() {
+    async fn catalog_preserves_errors_and_restricts_drops_by_default() {
         let (endpoint, task) = server(vec![
             (404, json!({"error": "missing"})),
             (409, json!({"error": "exists"})),
@@ -519,6 +526,26 @@ mod tests {
         assert_eq!(
             requests[2].body,
             json!({"mode": "Fail", "behavior": "Restrict"})
+        );
+    }
+
+    #[tokio::test]
+    async fn drop_database_cascades_only_when_asked() {
+        let (endpoint, task) = server(vec![(200, json!({})), (200, json!({}))]).await;
+        let catalog = RemoteCatalog::try_new(endpoint, RemoteCatalogOptions::default()).unwrap();
+        catalog.drop_database("db".into()).await.unwrap();
+        catalog
+            .drop_database(DropDatabaseRequest::new("db").cascade(true))
+            .await
+            .unwrap();
+        let requests = task.await.unwrap();
+        assert_eq!(
+            requests[0].body,
+            json!({"mode": "Fail", "behavior": "Restrict"})
+        );
+        assert_eq!(
+            requests[1].body,
+            json!({"mode": "Fail", "behavior": "Cascade"})
         );
     }
 

@@ -835,31 +835,31 @@ def test_update_optimize_cleanup_snippet(tmp_db):
 # ============================================================================
 
 
-def _setup_schema_add_table(tmp_db, data=None):
+def _setup_schema_add_table(db):
     # --8<-- [start:schema_add_setup]
-    table_name = "schema_evolution_add_example"
-    if data is None:
-        data = [
-            {
-                "id": 1,
-                "name": "Laptop",
-                "price": 1200.00,
-                "vector": np.random.random(128).tolist(),
-            },
-            {
-                "id": 2,
-                "name": "Smartphone",
-                "price": 800.00,
-                "vector": np.random.random(128).tolist(),
-            },
-            {
-                "id": 3,
-                "name": "Headphones",
-                "price": 150.00,
-                "vector": np.random.random(128).tolist(),
-            },
-        ]
-    table = tmp_db.create_table(table_name, data, mode="overwrite")
+    import numpy as np
+
+    data = [
+        {
+            "id": 1,
+            "name": "Laptop",
+            "price": 1200.00,
+            "vector": np.random.random(128).tolist(),
+        },
+        {
+            "id": 2,
+            "name": "Smartphone",
+            "price": 800.00,
+            "vector": np.random.random(128).tolist(),
+        },
+        {
+            "id": 3,
+            "name": "Headphones",
+            "price": 150.00,
+            "vector": np.random.random(128).tolist(),
+        },
+    ]
+    table = db.create_table("schema_evolution_add_example", data, mode="overwrite")
     # --8<-- [end:schema_add_setup]
     return table
 
@@ -953,17 +953,7 @@ def test_add_columns_default_values(tmp_db):
 
 
 def test_add_columns_nullable(tmp_db):
-    table = _setup_schema_add_table(
-        tmp_db,
-        data=[
-            {
-                "id": 1,
-                "name": "Laptop",
-                "price": 1200.00,
-                "vector": np.random.random(128).tolist(),
-            }
-        ],
-    )
+    table = _setup_schema_add_table(tmp_db)
 
     # --8<-- [start:add_columns_nullable]
     # Add a nullable timestamp column

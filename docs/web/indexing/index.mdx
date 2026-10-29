@@ -3,26 +3,36 @@ title: "Indexing Data"
 sidebarTitle: "Overview"
 description: "Optimize search performance with LanceDB using vector indexes, full-text search, scalar indexes, and more."
 icon: "list"
+availability:
+  oss: available
+  enterprise: available
+  summary: >-
+    Indexes are built in the embedded library and in LanceDB Enterprise. Enterprise builds them in the background, and builds fewer vector index types than the
+    embedded library.
 ---
 
-An **index** is a data structure that facilitates efficient scans and lookups on an embedded dataset. 
-LanceDB provides a comprehensive suite of indexes to optimize performance across different use cases and data types:
+Indexes speed up searches and filters by organizing data for specific query
+patterns. LanceDB supports three main index families:
 
 - **Vector Index**: Efficiently searches for similar vectors across high-dimensional data (e.g. images, audio, or text embeddings)
 - **Full-Text Search Index**: Enables fast keyword-based searches by indexing words and phrases
-- **Scalar Index**: Accelerates filtering and sorting of structured numeric or categorical data
+- **Scalar Index**: Accelerates filtering of structured numeric or categorical data
 
 ## Supported Indexes
 
 | Index | Use Case | Description |
 | :--------- | :------- | :---------- |
-| `IVF` (Vector) | Large-scale vector search with configurable accuracy/speed trade-offs. | Inverted File Index—a partition-based approximate nearest neighbor algorithm that groups similar vectors into partitions for efficient search. <br />**Quantizations**: `None/Flat` `PQ` `SQ` `RQ`|
+| `IVF` (Vector) | Large-scale vector search with configurable accuracy/speed trade-offs. | Inverted File Index: a partition-based approximate nearest neighbor algorithm that groups similar vectors into partitions for efficient search. <br />**Quantizations**: `None/Flat` `PQ` `SQ` `RQ`|
 | `IVF_HNSW` (Vector) | Large-scale vector search requiring both high recall and efficient partitioning. Combines the scalability of IVF with the search quality of HNSW. | Hybrid index combining IVF partitioning with HNSW graphs in each partition. Provides improved search quality over pure IVF while maintaining scalability.<br />**Quantizations**: `None/Flat` `SQ` `PQ`|
 | `FTS` (Full-text search) | String columns (e.g., title, description, content) requiring keyword-based search with BM25 ranking. | Full-text search index using BM25 ranking algorithm. Tokenizes text with configurable tokenization, stemming, stop word removal, and language-specific processing. |
 | `BTree` (Scalar) | Numeric, temporal, and string columns with mostly distinct values. Best for selective equality, inequality, and range predicates. | Sorted index storing sorted copies of scalar columns with block headers in a btree cache. Header entries map to blocks of rows (4096 rows per block) for efficient disk reads. |
 | `Bitmap` (Scalar) | Low-cardinality columns with few thousand or fewer distinct values. Accelerates equality and range filters. | Stores a bitmap for each distinct value in the column, with one bit per row indicating presence. Memory-efficient for low-cardinality data. |
 | `LabelList` (Scalar) | List columns (e.g., tags, categories, keywords) requiring `array_contains_all` or `array_contains_any` filters. | Scalar index for `List<T>` and `LargeList<T>` columns of primitive values, using an underlying bitmap index structure to enable fast array membership lookups. |
 | `FM` (Scalar) | String or binary columns that need raw substring search. | FM-Index over `Utf8`, `LargeUtf8`, `Binary`, or `LargeBinary` data for filters such as `contains(path, 'needle')`. Use FTS instead for tokenized word search and BM25 ranking. |
+
+A deployment builds the vector indexes `IVF_FLAT`, `IVF_PQ`, `IVF_RQ` and
+`IVF_HNSW_SQ`. `IVF_SQ`, `IVF_HNSW_FLAT` and `IVF_HNSW_PQ` are built only by the
+embedded library.
 
 ## Quantization
 LanceDB also supports several [quantization](/indexing/vector-index) methods, used by vector indexes to compress vectors and reduce storage requirements:
@@ -32,26 +42,30 @@ LanceDB also supports several [quantization](/indexing/vector-index) methods, us
 | `PQ` (Product Quantization) | Default choice for most vector search scenarios. Use when you need to balance index size and recall. | Divides vectors into subvectors and quantizes each subvector independently. Provides a good balance between compression ratio and search accuracy. |
 | `RQ` (RabitQ Quantization) | Use when you need maximum compression or have specific per-dimension requirements. | Per-dimension quantization using a RabitQ codebook. Provides fine-grained control over compression per dimension. For `IVF_RQ`, vector dimensions must be divisible by `8`. |
 | `SQ` (Scalar Quantization) | Use when you need faster indexing or when vector dimensions have consistent value ranges. | Quantizes each dimension independently. Simpler than PQ but typically provides less compression. |
-| `None/Flat` | Use for binary vectors (with `hamming` distance) or when you need maximum recall and have sufficient storage. | No quantization—stores raw vectors. Provides the highest accuracy but requires more storage and memory. |
+| `None/Flat` | Use for binary vectors (with `hamming` distance) or when you need maximum recall and have sufficient storage. | No quantization; stores raw vectors. Provides the highest accuracy but requires more storage and memory. |
 
 ## Performance {#performance}
 
 #### Vector indexes {#vector-indexes}
 
-If vector search latency climbs with table size (i.e., queries that ran in milliseconds on a small table take seconds as it grows to millions of rows), the cause is the default brute-force scan over every vector. That works fine below ~100K vectors, but past that you should build a dedicated vector index. Pick the type by your data shape:
+If vector search latency climbs with table size (i.e., queries that ran in milliseconds on a small table take seconds as it grows to millions of rows), check whether the query is scanning every vector without an index. The point at which an index helps depends on vector dimensions, hardware and
+your latency target. Measure your workload before choosing an index. Pick the type by your data shape:
 
 | Index | When to use |
 |-------|-------------|
-| `IVF_PQ` | General-purpose default; what Enterprise builds automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
+| `IVF_PQ` | General-purpose default, and what a deployment builds when it is set to index a column automatically. Higher accuracy than RQ at small dimensions (≤ 256). |
 | `IVF_RQ` | Maximum compression on high-dim vectors, faster builds than PQ. |
 | `IVF_HNSW_SQ` | Best recall/latency for unfiltered search; higher latency variance under selective filters. |
 | `IVF_FLAT` | Required for binary vectors with `hamming`. |
 
-The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). If a query explicitly requests a different metric, the index cannot be used and the query falls back to a brute-force scan; LanceDB Enterprise may reject that scan on a large table. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
+The distance metric is fixed once the index is built. Pick the distance metric based on how the embedding model was trained: `cosine` (unnormalized), `dot` (already-normalized, best performance), `l2` (general-purpose, default), `hamming` (binary). If a query explicitly requests a different metric, the index cannot be used and the query falls back to a brute-force scan; a deployment can be configured to reject that scan on a large table. For parameter tuning, see [Vector Indexing](/indexing/vector-index).
 
 #### Scalar indexes {#scalar-indexes}
 
-If filtered queries slow down as the table grows — even when the filter is selective — the cause is a full column scan: without a scalar index, LanceDB evaluates the `where(...)` predicate on every row, and the same applies to `merge_insert` join keys. The best practice is to build a scalar index on every column you filter or join on, picking the type by the column's shape:
+Scalar indexes can reduce the rows scanned for selective filters and speed up
+`merge_insert` key lookups. Start with columns used frequently in those operations,
+then use [query plans](/search/explain) to check whether the index helps. Choose
+the index type based on the column's values:
 
 | Index | Best for |
 |-------|----------|
@@ -63,4 +77,6 @@ See [Scalar Indexing](/indexing/scalar-index).
 
 #### Full-text search {#full-text-search}
 
-If your full-text index is much larger than expected, or takes longer than expected to build, the cause is usually phrase-query flags being enabled when they aren't needed: `with_position=True` and `remove_stop_words=False` both significantly inflate index size and build time. The best practice is to keep the defaults for most workloads, and only enable those flags when you actually need to search for phrases. See [FTS Indexing](/indexing/fts-index) configuration options for the full set of options.
+Token positions and retained stop words increase the information stored in a
+full-text index. Keep the defaults for basic keyword search; enable
+`with_position=True` and retain the needed stop words for phrase queries. See [FTS Indexing](/indexing/fts-index) configuration options for the full set of options.

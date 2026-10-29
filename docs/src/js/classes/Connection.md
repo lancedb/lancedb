@@ -180,6 +180,10 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
+LanceDB Embedded creation and refresh require a source build with the
+`experimental-functions` Cargo feature, disabled in published packages.
+LanceDB Distributed operations do not require this feature.
+
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
@@ -432,8 +436,8 @@ abstract dropMaterializedView(name, namespacePath?): Promise<void>
 
 Drop the materialized view named `name`.
 
-The view may become unavailable before physical cleanup finishes. Use
-[dropMaterializedViewAsync](Connection.md#dropmaterializedviewasync) to retain and wait for the cleanup job.
+Remote drops wait for the SQL command to remove the catalog binding.
+Physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -455,8 +459,9 @@ Rejects a table that exists but is not a materialized view.
 abstract dropMaterializedViewAsync(name, namespacePath?): Promise<Job>
 ```
 
-Start dropping the materialized view named `name` and return its cleanup
-job without waiting for completion.
+Start dropping the materialized view named `name` and return its job.
+Remote jobs have type `query` and use the SQL query ID as `id`. Waiting
+confirms catalog removal; physical cleanup continues in the background.
 
 Rejects a table that exists but is not a materialized view.
 
@@ -653,94 +658,48 @@ See [Listing](Listing.md) for pagination state and error behavior.
 ### listNamespaces()
 
 ```ts
-abstract listNamespaces(namespacePath?, options?): Promise<ListNamespacesResponse>
+abstract listNamespaces(namespacePath?, options?): Listing<string>
 ```
 
-List the immediate child namespaces under the given parent.
-
-Results may be paginated. To retrieve subsequent pages, pass the
-`pageToken` returned by a previous call.
+Lazily list immediate child namespaces, 100 per page by default.
 
 #### Parameters
 
 * **namespacePath?**: `string`[]
-    The parent namespace path. Defaults
-    to the root namespace if omitted.
 
-* **options?**: `Partial`&lt;[`ListNamespacesOptions`](../interfaces/ListNamespacesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
 #### Returns
 
-`Promise`&lt;[`ListNamespacesResponse`](../interfaces/ListNamespacesResponse.md)&gt;
-
-Child namespace names and
-  an optional token for fetching the next page.
+[`Listing`](Listing.md)&lt;`string`&gt;
 
 ***
 
 ### listTables()
 
-#### listTables(options)
-
 ```ts
-abstract listTables(options?): Promise<ListTablesResponse>
+abstract listTables(namespacePath?, options?): Listing<string>
 ```
 
-List a page of the tables in this database.
+Lazily list tables in a namespace, requesting 100 per page by default.
 
-To retrieve the tables after the page, pass the `pageToken` the response
-carries back in. A page can be shorter than `limit` without being the last
-one, so walk until a response carries no page token:
-
-```ts
-const names = [];
-let pageToken = undefined;
-do {
-  const page = await conn.listTables({ pageToken, limit: 100 });
-  names.push(...page.tables);
-  pageToken = page.pageToken;
-} while (pageToken);
-```
-
-##### Parameters
-
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
-
-##### Returns
-
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
-
-A page of table names and an
-  optional token for the tables after it.
-
-#### listTables(namespacePath, options)
-
-```ts
-abstract listTables(namespacePath?, options?): Promise<ListTablesResponse>
-```
-
-List a page of the tables in this database.
-
-##### Parameters
+#### Parameters
 
 * **namespacePath?**: `string`[]
-    The namespace path to list tables from
-    (defaults to root namespace)
 
-* **options?**: `Partial`&lt;[`ListTablesOptions`](../interfaces/ListTablesOptions.md)&gt;
-    Pagination options
-    (`pageToken`, `limit`).
+* **options?**: [`ListingOptions`](../interfaces/ListingOptions.md)
 
-##### Returns
+#### Returns
 
-`Promise`&lt;[`ListTablesResponse`](../interfaces/ListTablesResponse.md)&gt;
+[`Listing`](Listing.md)&lt;`string`&gt;
 
-A page of table names and an
-  optional token for the tables after it.
+#### Example
+
+```ts
+for await (const name of conn.listTables([], { pageLimit: 20 })) {
+  console.log(name);
+}
+```
 
 ***
 
@@ -868,7 +827,7 @@ abstract renameTable(
 
 Rename a table.
 
-Currently only supported by LanceDB Cloud. Local OSS connections and
+Currently only supported in LanceDB Distributed. LanceDB Embedded connections and
 namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
 a "not supported" error.
 
