@@ -13,6 +13,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use tokio::sync::watch;
 use tokio::task::{AbortHandle, JoinHandle};
+use uuid::Uuid;
 
 use crate::database::JobDescription;
 use crate::error::{Error, JobFailure, Result};
@@ -55,8 +56,11 @@ fn job_detail_not_supported<T>(what: &str) -> Result<T> {
 /// Backend-specific tracking for an asynchronous operation.
 #[async_trait]
 pub(crate) trait JobHandle: Send + Sync {
-    /// Server-assigned id, when the backend has one.
+    /// Backend-specific id, when the operation has one.
     fn id(&self) -> Option<&str> {
+        None
+    }
+    fn job_type(&self) -> Option<&str> {
         None
     }
     async fn status(&self) -> Result<String>;
@@ -101,25 +105,45 @@ impl TerminalResult {
 
     fn decode<T: DeserializeOwned>(self) -> Result<T> {
         let value = self.value.ok_or_else(|| match &self.request_id {
-            Some(request_id) => Error::Http {
-                source: "successful typed job response did not contain a result".into(),
-                request_id: request_id.clone(),
-                status_code: None,
-            },
+            Some(request_id) => remote_job_error(
+                request_id.clone(),
+                "successful typed job response did not contain a result".to_string(),
+            ),
             None => Error::Runtime {
                 message: "successful typed job did not contain a result".to_string(),
             },
         })?;
         serde_json::from_value(value).map_err(|error| match self.request_id {
-            Some(request_id) => Error::Http {
-                source: format!("failed to parse typed job result: {error}").into(),
+            Some(request_id) => remote_job_error(
                 request_id,
-                status_code: None,
-            },
+                format!("failed to parse typed job result: {error}"),
+            ),
             None => Error::Runtime {
                 message: format!("failed to parse typed job result: {error}"),
             },
         })
+    }
+}
+
+/// Build the error for a failed remote typed-job result.
+///
+/// The `Error::Http` variant is gated behind the `remote` feature, so without
+/// it we fall back to `Error::Runtime`. A `request_id` is only ever `Some`
+/// for remote jobs, making the fallback unreachable in practice without the
+/// feature.
+#[cfg(feature = "remote")]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Http {
+        source: source.into(),
+        request_id,
+        status_code: None,
+    }
+}
+
+#[cfg(not(feature = "remote"))]
+fn remote_job_error(request_id: String, source: String) -> Error {
+    Error::Runtime {
+        message: format!("{source} (request_id={request_id})"),
     }
 }
 
@@ -147,14 +171,15 @@ struct JobCache {
 /// the endpoint's successful terminal result; unit-result operations use the
 /// default `Job<()>`.
 ///
-/// The detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
+/// Registry detail accessors ([`Job::state`], [`Job::job_type`], ...) read what the
 /// handle last observed. Submitting an operation returns only a job id, so
 /// populating them eagerly would cost an extra round trip on every call:
 ///
 /// - [`Job::refresh`] and [`Job::status`] fetch the whole record.
 /// - [`Job::wait`] records the terminal state it establishes, but not the rest
 ///   of the record; call [`Job::refresh`] for that.
-/// - Everything is `None` until one of those runs.
+/// - Registry details are `None` until one of those runs. Query-backed handles
+///   report [`Job::job_type`] as `"query"` immediately.
 pub struct Job<T = ()>
 where
     T: Clone + Send + Sync + 'static,
@@ -253,13 +278,18 @@ where
         Self::new_typed(Box::new(SpawnedJob::new(task)))
     }
 
-    pub(crate) fn spawned_with_cancellation<F, Fut>(task: JoinHandle<Result<T>>, cancel: F) -> Self
+    pub(crate) fn from_query_task<F, Fut>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancel: F,
+    ) -> Self
     where
         F: Fn() -> Fut + Send + Sync + 'static,
         Fut: Future<Output = Result<()>> + Send + 'static,
     {
         let cancellation: Cancellation = Arc::new(move || Box::pin(cancel()));
         Self::new_typed(Box::new(SpawnedJob::new_with_cancellation(
+            query_id,
             task,
             cancellation,
         )))
@@ -270,12 +300,10 @@ impl<T> Job<T>
 where
     T: Clone + Send + Sync + 'static,
 {
-    /// Identifies the operation on the server that is running it.
-    ///
-    /// Returned for correlating with server logs or the jobs API. Operations
-    /// that run in this process have no server id and return `None`. The
-    /// value is opaque: parsing it or storing it to resume the job later is
-    /// not supported.
+    /// The operation's opaque identity, interpreted according to [`Job::job_type`].
+    /// Registry handles expose a registry job ID; query handles expose the
+    /// connection-scoped SQL query UUID as a string. Local handles return None.
+    /// A query ID cannot be used with registry APIs or to resume after restart.
     pub fn id(&self) -> Option<&str> {
         match &self.inner {
             JobInner::Handle { handle, .. } => handle.id(),
@@ -349,8 +377,14 @@ where
         self.cache_read().description.clone()
     }
 
-    /// The job's type, as the server names it. `None` for an in-process job.
+    /// The job's type: `"query"` for SQL-backed handles, otherwise the cached
+    /// server-reported kind of work. `None` for an in-process job.
     pub fn job_type(&self) -> Option<String> {
+        if let JobInner::Handle { handle, .. } = &self.inner
+            && let Some(job_type) = handle.job_type()
+        {
+            return Some(job_type.to_string());
+        }
         self.with_description(|description| description.job_type.clone())
     }
 
@@ -516,6 +550,7 @@ struct SpawnedJob {
     outcome: watch::Receiver<Option<Outcome>>,
     abort: AbortHandle,
     cancellation: Option<Cancellation>,
+    id: Option<String>,
 }
 
 type CancellationFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
@@ -529,11 +564,17 @@ impl SpawnedJob {
         Self::new_inner(task, None)
     }
 
-    fn new_with_cancellation<T>(task: JoinHandle<Result<T>>, cancellation: Cancellation) -> Self
+    fn new_with_cancellation<T>(
+        query_id: Uuid,
+        task: JoinHandle<Result<T>>,
+        cancellation: Cancellation,
+    ) -> Self
     where
         T: Serialize + Send + 'static,
     {
-        Self::new_inner(task, Some(cancellation))
+        let mut handle = Self::new_inner(task, Some(cancellation));
+        handle.id = Some(query_id.to_string());
+        handle
     }
 
     fn new_inner<T>(task: JoinHandle<Result<T>>, cancellation: Option<Cancellation>) -> Self
@@ -562,12 +603,21 @@ impl SpawnedJob {
             outcome,
             abort,
             cancellation,
+            id: None,
         }
     }
 }
 
 #[async_trait]
 impl JobHandle for SpawnedJob {
+    fn id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+
+    fn job_type(&self) -> Option<&str> {
+        self.id.as_ref().map(|_| "query")
+    }
+
     async fn status(&self) -> Result<String> {
         let label = match &*self.outcome.borrow() {
             None => "running",
@@ -616,13 +666,41 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn local_typed_result_decode_errors_are_runtime_errors() {
+        assert!(matches!(
+            TerminalResult::local(Value::Null).decode::<u64>(),
+            Err(Error::Runtime { .. })
+        ));
+    }
+
     #[tokio::test]
     async fn mapped_spawned_job_reuses_outcome() {
         let job = Job::spawned(tokio::spawn(async { Ok(41_u64) })).map(|value| value + 1);
 
+        assert_eq!(job.job_type(), None);
+        assert_eq!(job.id(), None);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.wait().await.unwrap(), 42);
         assert_eq!(job.status().await.unwrap(), "finished");
+    }
+
+    #[tokio::test]
+    async fn mapped_query_job_preserves_identity_and_type() {
+        let query_id = Uuid::new_v4();
+        let job = Job::from_query_task(query_id, tokio::spawn(async { Ok(41_u64) }), || async {
+            Ok(())
+        })
+        .map(|value| value + 1);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.wait().await.unwrap(), 42);
+        assert_eq!(job.job_type().as_deref(), Some("query"));
+        assert_eq!(job.id(), Some(query_id.to_string().as_str()));
+        let completed = Job::new_done();
+        assert_eq!(completed.job_type(), None);
+        assert_eq!(completed.id(), None);
     }
 
     #[tokio::test]
@@ -633,5 +711,47 @@ mod tests {
         job.cancel().await.unwrap();
         assert!(matches!(job.wait().await, Err(Error::JobCancelled { .. })));
         assert_eq!(job.status().await.unwrap(), "cancelled");
+    }
+
+    #[test]
+    fn decode_missing_result_uses_feature_appropriate_error() {
+        // A `request_id` is only `Some` for remote jobs. The error for a
+        // missing result must use `Error::Http` with the `remote` feature and
+        // fall back to `Error::Runtime` without it (where `Error::Http`
+        // does not exist). See https://github.com/lancedb/lancedb/issues/4142.
+        let result = TerminalResult {
+            value: None,
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<Value>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn decode_unparsable_result_uses_feature_appropriate_error() {
+        let result = TerminalResult {
+            value: Some(Value::String("not a u64".to_string())),
+            request_id: Some("req-1".to_string()),
+        };
+        let err = result.decode::<u64>().unwrap_err();
+        #[cfg(feature = "remote")]
+        assert!(
+            matches!(err, Error::Http { .. }),
+            "expected Error::Http, got {err:?}"
+        );
+        #[cfg(not(feature = "remote"))]
+        assert!(
+            matches!(err, Error::Runtime { .. }),
+            "expected Error::Runtime, got {err:?}"
+        );
     }
 }

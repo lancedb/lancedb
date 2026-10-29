@@ -103,7 +103,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
             }
             "PhraseQuery" => {
                 let query = ob.getattr("query")?.extract()?;
-                let column = ob.getattr("column")?.extract()?;
+                let column = ob.getattr("column")?.extract::<Option<String>>()?;
                 let slop = ob.getattr("slop")?.extract()?;
                 let document_granularity = ob
                     .getattr("document_granularity")?
@@ -114,9 +114,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for PyLanceDB<FtsQuery> {
                     })
                     .transpose()?;
 
-                let mut query = PhraseQuery::new(query)
-                    .with_column(Some(column))
-                    .with_slop(slop);
+                let mut query = PhraseQuery::new(query).with_column(column).with_slop(slop);
                 if let Some(document_granularity) = document_granularity {
                     query = query.with_document_granularity(document_granularity);
                 }
@@ -213,7 +211,7 @@ impl<'py> IntoPyObject<'py> for PyLanceDB<FtsQuery> {
                 }
                 namespace
                     .getattr(intern!(py, "PhraseQuery"))?
-                    .call((query.terms, query.column.unwrap()), Some(&kwargs))
+                    .call((query.terms, query.column), Some(&kwargs))
             }
             FtsQuery::Boost(query) => {
                 let positive = Self(query.positive.as_ref().clone()).into_pyobject(py)?;
@@ -333,7 +331,7 @@ pub struct PyQueryRequest {
     pub select_source_columns: Option<HashMap<String, String>>,
     pub fast_search: Option<bool>,
     pub with_row_id: Option<bool>,
-    pub use_memwal: Option<bool>,
+    pub use_rte: Option<bool>,
     pub column: Option<String>,
     pub query_vector: Option<PyQueryVectors>,
     pub nprobes: Option<usize>,
@@ -366,7 +364,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(query_request.select),
                 fast_search: Some(query_request.fast_search),
                 with_row_id: Some(query_request.with_row_id),
-                use_memwal: query_request.use_memwal,
+                use_rte: query_request.use_rte,
                 column: None,
                 query_vector: None,
                 nprobes: None,
@@ -379,7 +377,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 refine_factor: None,
                 distance_type: None,
                 bypass_vector_index: None,
-                postfilter: None,
+                postfilter: (!query_request.prefilter).then_some(true),
                 norm: None,
                 order_by: query_request
                     .order_by
@@ -395,7 +393,7 @@ impl From<AnyQuery> for PyQueryRequest {
                 select: PySelect(vector_query.base.select),
                 fast_search: Some(vector_query.base.fast_search),
                 with_row_id: Some(vector_query.base.with_row_id),
-                use_memwal: vector_query.base.use_memwal,
+                use_rte: vector_query.base.use_rte,
                 column: vector_query.column,
                 query_vector: Some(PyQueryVectors(vector_query.query_vector)),
                 nprobes: vector_query.nprobes,
@@ -540,8 +538,8 @@ impl Query {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -706,8 +704,8 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[pyo3(signature = ())]
@@ -819,8 +817,8 @@ impl FTSQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -970,8 +968,8 @@ impl VectorQuery {
         self.inner = self.inner.clone().fast_search();
     }
 
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     pub fn with_row_id(&mut self) {
@@ -1178,9 +1176,9 @@ impl HybridQuery {
         self.inner_fts.postfilter();
     }
 
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner_vec.use_memwal(enable);
-        self.inner_fts.use_memwal(enable);
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner_vec.use_rte(enable);
+        self.inner_fts.use_rte(enable);
     }
 
     pub fn add_query_vector(&mut self, vector: Bound<'_, PyAny>) -> PyResult<()> {

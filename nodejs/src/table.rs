@@ -470,11 +470,12 @@ impl Table {
     pub async fn refresh_materialized_view(
         &self,
         source_version: Option<i64>,
+        full: Option<bool>,
     ) -> napi::Result<RefreshMaterializedViewResult> {
         let view = lancedb::MaterializedView::from_table(self.inner_ref()?.clone())
             .await
             .default_error()?;
-        let mut builder = view.refresh();
+        let mut builder = view.refresh().full(full.unwrap_or(false));
         if let Some(version) = source_version {
             let version = u64::try_from(version).map_err(|_| {
                 napi::Error::from_reason("sourceVersion must be a non-negative integer")
@@ -580,60 +581,57 @@ impl Table {
             .default_error()
     }
 
-    #[napi(catch_unwind, js_name = "enableMemWal")]
-    pub async fn enable_memwal(&self, spec: MemWalWriteSpec) -> napi::Result<()> {
-        let native_spec = lancedb::table::MemWalWriteSpec::try_from(spec)?;
+    #[napi(catch_unwind, js_name = "enableRTE")]
+    pub async fn enable_rte(&self, spec: RTEWriteSpec) -> napi::Result<()> {
+        let native_spec = lancedb::table::RTEWriteSpec::try_from(spec)?;
         self.inner_ref()?
-            .enable_memwal(native_spec)
+            .enable_rte(native_spec)
             .await
             .default_error()
     }
 
-    #[napi(catch_unwind, js_name = "disableMemWal")]
-    pub async fn disable_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.disable_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "disableRTE")]
+    pub async fn disable_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.disable_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "getMemWalSpec")]
-    pub async fn get_memwal_spec(&self) -> napi::Result<Option<MemWalWriteSpec>> {
-        let spec = self.inner_ref()?.get_memwal_spec().await.default_error()?;
-        Ok(spec.map(MemWalWriteSpec::from))
+    #[napi(catch_unwind, js_name = "getRTESpec")]
+    pub async fn get_rte_spec(&self) -> napi::Result<Option<RTEWriteSpec>> {
+        let spec = self.inner_ref()?.get_rte_spec().await.default_error()?;
+        Ok(spec.map(RTEWriteSpec::from))
     }
 
-    #[napi(catch_unwind, js_name = "closeMemWalWriters")]
-    pub async fn close_memwal_writers(&self) -> napi::Result<()> {
-        self.inner_ref()?
-            .close_memwal_writers()
-            .await
-            .default_error()
+    #[napi(catch_unwind, js_name = "closeRTEWriters")]
+    pub async fn close_rte_writers(&self) -> napi::Result<()> {
+        self.inner_ref()?.close_rte_writers().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "flushMemWal")]
-    pub async fn flush_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.flush_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "flushRTE")]
+    pub async fn flush_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.flush_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "compactMemWal")]
-    pub async fn compact_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.compact_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "compactRTE")]
+    pub async fn compact_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.compact_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "checkpointMemWal")]
-    pub async fn checkpoint_memwal(&self) -> napi::Result<()> {
-        self.inner_ref()?.checkpoint_memwal().await.default_error()
+    #[napi(catch_unwind, js_name = "checkpointRTE")]
+    pub async fn checkpoint_rte(&self) -> napi::Result<()> {
+        self.inner_ref()?.checkpoint_rte().await.default_error()
     }
 
-    #[napi(catch_unwind, js_name = "getMemWalStats")]
-    pub async fn get_memwal_stats(
+    #[napi(catch_unwind, js_name = "getRTEStats")]
+    pub async fn get_rte_stats(
         &self,
         include_sstable_rows: bool,
-    ) -> napi::Result<Option<MemWalStats>> {
+    ) -> napi::Result<Option<RTEStats>> {
         let stats = self
             .inner_ref()?
-            .get_memwal_stats(include_sstable_rows)
+            .get_rte_stats(include_sstable_rows)
             .await
             .default_error()?;
-        Ok(stats.map(MemWalStats::from))
+        Ok(stats.map(RTEStats::from))
     }
 
     #[napi(catch_unwind)]
@@ -833,7 +831,7 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "uses_v2_manifest_paths is not supported for remote tables.".into(),
+                message: "uses_v2_manifest_paths is not supported in LanceDB Distributed.".into(),
             })
             .default_error()?
             .uses_v2_manifest_paths()
@@ -846,7 +844,8 @@ impl Table {
         self.inner_ref()?
             .as_native()
             .ok_or_else(|| lancedb::Error::NotSupported {
-                message: "migrate_manifest_paths_v2 is not supported for remote tables.".into(),
+                message: "migrate_manifest_paths_v2 is not supported in LanceDB Distributed."
+                    .into(),
             })
             .default_error()?
             .migrate_manifest_paths_v2()
@@ -869,40 +868,40 @@ pub struct IndexConfig {
     pub columns: Vec<String>,
     /// The UUID of the first segment of the index.
     ///
-    /// `undefined` for remote tables, which do not yet surface this.
+    /// `undefined` in LanceDB Distributed, which does not yet surface this.
     pub index_uuid: Option<String>,
     /// The protobuf type URL, a precise type identifier for the index.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub type_url: Option<String>,
     /// When the index was created.
     ///
-    /// `undefined` for remote tables or indices created before timestamps were tracked.
+    /// `undefined` in LanceDB Distributed or indices created before timestamps were tracked.
     pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` in LanceDB Distributed if the server does not report it.
     pub num_indexed_rows: Option<i64>,
     /// The number of rows not yet covered by this index.
     ///
-    /// `undefined` for remote tables.
+    /// May be `undefined` in LanceDB Distributed if the server does not report it.
     pub num_unindexed_rows: Option<i64>,
     /// The total size in bytes of all index files across all segments.
     ///
-    /// `undefined` for remote tables or indices without size tracking.
+    /// `undefined` in LanceDB Distributed or indices without size tracking.
     pub size_bytes: Option<i64>,
     /// The number of segments that make up the index.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub num_segments: Option<i32>,
     /// The on-disk index format version.
     ///
-    /// `undefined` for remote tables.
+    /// `undefined` in LanceDB Distributed.
     pub index_version: Option<i32>,
     /// Index-type-specific details parsed as a JavaScript object.
     ///
-    /// Falls back to a raw string if JSON parsing fails. `undefined` for
-    /// remote tables or when details are unavailable.
+    /// Falls back to a raw string if JSON parsing fails. `undefined` in
+    /// LanceDB Distributed or when details are unavailable.
     pub index_details: Option<serde_json::Value>,
 }
 
@@ -946,53 +945,53 @@ impl From<LanceDbFtsToken> for FtsToken {
     }
 }
 
-/// Specification selecting Lance's MemWAL LSM-style write path for
-/// `mergeInsert`.
+/// Specification enabling the realtime engine (RTE), which routes
+/// `mergeInsert` through Lance's MemWAL LSM-style write path.
 ///
 /// `specType` must be `"bucket"`, `"identity"`, or `"unsharded"`. For
 /// `"bucket"`, `column` and `numBuckets` are required; for `"identity"`,
 /// `column` is required.
-#[napi(object)]
+#[napi(object, js_name = "RTEWriteSpec")]
 #[derive(Clone, Debug)]
-pub struct MemWalWriteSpec {
+pub struct RTEWriteSpec {
     /// One of `"bucket"`, `"identity"`, or `"unsharded"`.
     pub spec_type: String,
     /// Bucket and identity variants: the sharding column.
     pub column: Option<String>,
     /// Bucket variant: the number of buckets, in `[1, 1024]`.
     pub num_buckets: Option<u32>,
-    /// Indexes the MemWAL keeps up to date. Omitted resolves every
+    /// Indexes the RTE keeps up to date. Omitted resolves every
     /// maintainable index on install; an empty array means none.
     pub maintained_indexes: Option<Vec<String>>,
     /// Default `ShardWriter` configuration recorded in the MemWAL index.
     pub writer_config_defaults: Option<HashMap<String, String>>,
 }
 
-impl TryFrom<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
+impl TryFrom<RTEWriteSpec> for lancedb::table::RTEWriteSpec {
     type Error = napi::Error;
 
-    fn try_from(value: MemWalWriteSpec) -> napi::Result<Self> {
+    fn try_from(value: RTEWriteSpec) -> napi::Result<Self> {
         let writer_config_defaults = value.writer_config_defaults.unwrap_or_default();
         let spec = match value.spec_type.as_str() {
             "bucket" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec bucket requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `column`")
                 })?;
                 let num_buckets = value.num_buckets.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec bucket requires `numBuckets`")
+                    napi::Error::from_reason("RTEWriteSpec bucket requires `numBuckets`")
                 })?;
                 Self::bucket(column, num_buckets)
             }
             "identity" => {
                 let column = value.column.ok_or_else(|| {
-                    napi::Error::from_reason("MemWalWriteSpec identity requires `column`")
+                    napi::Error::from_reason("RTEWriteSpec identity requires `column`")
                 })?;
                 Self::identity(column)
             }
             "unsharded" => Self::unsharded(),
             other => {
                 return Err(napi::Error::from_reason(format!(
-                    "MemWalWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
+                    "RTEWriteSpec `specType` must be 'bucket', 'identity', or 'unsharded', got '{}'",
                     other
                 )));
             }
@@ -1003,9 +1002,9 @@ impl TryFrom<MemWalWriteSpec> for lancedb::table::MemWalWriteSpec {
     }
 }
 
-impl From<lancedb::table::MemWalWriteSpec> for MemWalWriteSpec {
-    fn from(spec: lancedb::table::MemWalWriteSpec) -> Self {
-        use lancedb::table::MemWalWriteSpec as Native;
+impl From<lancedb::table::RTEWriteSpec> for RTEWriteSpec {
+    fn from(spec: lancedb::table::RTEWriteSpec) -> Self {
+        use lancedb::table::RTEWriteSpec as Native;
         match spec {
             Native::Bucket {
                 column,
@@ -1148,19 +1147,19 @@ impl From<lancedb::table::TableShardStats> for TableShardStats {
     }
 }
 
-/// Live per-table-shard MemWAL state, as returned by `Table#getMemWalStats`.
+/// Live per-table-shard RTE state, as returned by `Table#getRTEStats`.
 ///
 /// Nothing here is derived: sums and differences (total SSTable bytes, WAL lag) are
 /// the caller's to compute.
-#[napi(object)]
+#[napi(object, js_name = "RTEStats")]
 #[derive(Clone, Debug)]
-pub struct MemWalStats {
+pub struct RTEStats {
     /// One entry per table shard backing this table.
     pub table_shards: Vec<TableShardStats>,
 }
 
-impl From<lancedb::table::MemWalStats> for MemWalStats {
-    fn from(stats: lancedb::table::MemWalStats) -> Self {
+impl From<lancedb::table::RTEStats> for RTEStats {
+    fn from(stats: lancedb::table::RTEStats) -> Self {
         Self {
             table_shards: stats.table_shards.into_iter().map(Into::into).collect(),
         }
@@ -1618,22 +1617,24 @@ impl From<lancedb::function::FunctionErrors> for FunctionErrors {
 
 #[napi(object)]
 pub struct RefreshMaterializedViewResult {
-    /// How the view was brought up to date: "rebuild".
-    pub mode: String,
-    pub rows_written: i64,
-    pub source_version: i64,
+    /// How the view was brought up to date: "rebuild", or absent for LanceDB Distributed SQL refreshes.
+    pub mode: Option<String>,
+    /// Rows written by this refresh, or absent for LanceDB Distributed SQL refreshes.
+    pub rows_written: Option<i64>,
+    /// Source version refreshed to, or absent for LanceDB Distributed SQL refreshes.
+    pub source_version: Option<i64>,
     pub version: i64,
 }
 
 impl From<lancedb::RefreshMaterializedViewResult> for RefreshMaterializedViewResult {
     fn from(value: lancedb::RefreshMaterializedViewResult) -> Self {
-        let mode = match value.mode {
+        let mode = value.mode.map(|mode| match mode {
             lancedb::RefreshMode::Rebuild => "rebuild",
-        };
+        });
         Self {
-            mode: mode.to_string(),
-            rows_written: value.rows_written as i64,
-            source_version: value.source_version as i64,
+            mode: mode.map(str::to_string),
+            rows_written: value.rows_written.map(|rows| rows as i64),
+            source_version: value.source_version.map(|version| version as i64),
             version: value.version as i64,
         }
     }

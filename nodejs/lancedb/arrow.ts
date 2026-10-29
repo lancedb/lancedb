@@ -61,6 +61,7 @@ import {
 import { inferSchema } from "./schema";
 
 export * from "apache-arrow";
+export type { Data as ArrowData } from "apache-arrow";
 export type SchemaLike =
   | Schema
   | {

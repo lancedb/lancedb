@@ -29,13 +29,16 @@ For a deeper look at how this works in training pipelines, start with [Why Lance
 
 ## LanceDB suite {#lancedb-suite}
 
-The LanceDB suite includes LanceDB OSS, an open-source embedded retrieval library, and LanceDB Enterprise,
+The LanceDB suite includes LanceDB Embedded (open source), a retrieval library, and LanceDB Enterprise,
 a multimodal lakehouse platform for the full AI data lifecycle.
-OSS is easy to set up on a local machine for search and regular-scale workflows. LanceDB Enterprise is built
+LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
+It is easy to set up on a local machine for search and regular-scale workflows. LanceDB Enterprise is built
 for teams that need scale without building bespoke infrastructure for curation,
 feature engineering, search and retrieval, and efficient training data access.
+LanceDB Enterprise runs LanceDB Distributed: query execution, indexing and maintenance
+run on the Enterprise service, outside your application.
 
-![LanceDB suite: OSS search and Enterprise multimodal lakehouse on Lance format](/static/assets/images/overview/lancedb-suite.svg)
+![LanceDB suite: LanceDB Embedded search and Enterprise multimodal lakehouse on Lance format](/static/assets/images/overview/lancedb-suite.svg)
 
 ## Why teams use LanceDB {#why-teams-use-lancedb}
 
@@ -74,11 +77,11 @@ feature engineering, search and retrieval, and efficient training data access.
 
 ## From local development to production scale {#from-local-development-to-production-scale}
 
-LanceDB OSS and LanceDB Enterprise share the same Lance format and table model. Start locally with the embedded OSS
-library, then move to Enterprise when your team needs distributed scale, managed infrastructure, private deployment,
+LanceDB Embedded and LanceDB Enterprise share the same Lance format and table model. Start locally with
+LanceDB Embedded, then move to Enterprise when your team needs distributed scale, managed infrastructure, private deployment,
 or higher-throughput curation, feature engineering, search and retrieval, and training workflows.
 
-### 1\. LanceDB OSS {#1-lancedb-oss}
+### 1\. LanceDB Embedded {#1-lancedb-oss}
 The fastest way to get started is the open-source embedded library, with client SDKs in Python, TypeScript
 and Rust. Run it locally in just a few steps, which lets you explore datasets, curate data, and run search and retrieval workloads
 for agents. Start here:

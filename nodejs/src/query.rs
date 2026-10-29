@@ -168,9 +168,9 @@ impl Query {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi(js_name = "useMemWal")]
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[napi]
@@ -399,9 +399,9 @@ impl VectorQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi(js_name = "useMemWal")]
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[napi]
@@ -514,9 +514,9 @@ impl TakeQuery {
         self.inner = self.inner.clone().with_row_id();
     }
 
-    #[napi(js_name = "useMemWal")]
-    pub fn use_memwal(&mut self, enable: bool) {
-        self.inner = self.inner.clone().use_memwal(enable);
+    #[napi(js_name = "useRTE")]
+    pub fn use_rte(&mut self, enable: bool) {
+        self.inner = self.inner.clone().use_rte(enable);
     }
 
     #[napi(catch_unwind)]

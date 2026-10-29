@@ -425,16 +425,16 @@ Empty results retain the query's output schema.
 
 ***
 
-### useMemWal()
+### useRTE()
 
 ```ts
-useMemWal(enable): this
+useRTE(enable): this
 ```
 
-Control MemWAL read routing for this query.
+Control RTE read routing for this query.
 
-By default (unset), when the table carries a MemWAL write spec (see
-[Table#enableMemWal](Table.md#enablememwal)), reads are routed through the LSM scanner so
+By default (unset), when the table carries an RTE write spec (see
+[Table#enableRTE](Table.md#enablerte)), reads are routed through the LSM scanner so
 they also return data written via the `mergeInsert` LSM path that has not yet
 been compacted into the base table (the active/frozen in-memory memtables and
 the SSTables), deduplicated by primary key; a table without a spec
@@ -444,12 +444,12 @@ reads the base table.
 
 * **enable**: `boolean`
     `true` forces the LSM scanner and errors if the table has no
-    MemWAL write spec. `false` bypasses the MemWAL and reads the base table only,
+    RTE write spec. `false` bypasses the RTE and reads the base table only,
     even when a spec is present.
     Note: the LSM scanner does not support every query shape (e.g. reranking,
-    hybrid search, `orderBy`). On a MemWAL table those shapes error unless
-    `useMemWal(false)` is set, because a base-only read would silently exclude
-    un-compacted MemWAL data.
+    hybrid search, `orderBy`). On an RTE table those shapes error unless
+    `useRTE(false)` is set, because a base-only read would silently exclude
+    un-compacted RTE data.
 
 #### Returns
 
@@ -457,7 +457,7 @@ reads the base table.
 
 #### Inherited from
 
-`StandardQueryBase.useMemWal`
+`StandardQueryBase.useRTE`
 
 ***
 
@@ -469,29 +469,34 @@ where(predicate): this
 
 A filter statement to be applied to this query.
 
-The filter should be supplied as an SQL query string.  For example:
+The filter may be an SQL query string or an expression built with `col`,
+which preserves case-sensitive column names. For example:
 
 #### Parameters
 
-* **predicate**: `string`
+* **predicate**: `string` \| [`Expr`](Expr.md)
 
 #### Returns
 
 `this`
 
-#### Example
+#### Examples
 
 ```ts
 x > 10
 y > 0 AND y < 100
 x > 5 OR y = 'test'
+```
+
+```ts
+table.query().where(col("firstName").eq("Alice"));
+```
 
 Filtering performance can often be improved by creating a scalar index
 on the filter column(s).
 
 Calling this multiple times combines the filters with a logical AND rather
 than replacing the previous filter.
-```
 
 #### Inherited from
 

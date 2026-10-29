@@ -1,14 +1,17 @@
 ---
 title: "Architecture"
 sidebarTitle: "Architecture"
-description: "How LanceDB Enterprise separates query serving, background work, and storage, and how it compares with embedded LanceDB OSS."
+description: "How LanceDB Enterprise separates query serving, background work, and storage, and how it compares with LanceDB Embedded."
 icon: cubes
 keywords: ["architecture", "embedded", "distributed", "object storage", "compute", "deployment"]
 ---
 
-LanceDB OSS is an embedded library for working with Lance tables. LanceDB
-Enterprise is a multimodal lakehouse for data curation, feature engineering,
-search, and training data access. Its architecture separates query serving,
+LanceDB Embedded is an open-source library for working with Lance tables. It runs
+in your application's process; your data can live on local disk or in object
+storage. LanceDB Enterprise is a multimodal lakehouse for data curation, feature
+engineering, search, and training data access. LanceDB Enterprise runs LanceDB
+Distributed: query execution, indexing and maintenance run on the Enterprise
+service, outside your application. Its architecture separates query serving,
 read execution, caching, and background work. Both use the open
 [Lance](/basics/lance) format.
 
@@ -17,23 +20,23 @@ read the resulting tables into training frameworks. Enterprise separates the
 resources that serve shared data from those that build indexes and run
 background work, so teams can size them for these different workloads.
 
-![LanceDB OSS runs the application and embedded library in one process, using local disk or object storage. Enterprise applications connect to query serving, with separate read execution and caching, indexing and background workers, and durable object storage. Both use the Lance format, but they do not share a storage location automatically.](/static/assets/images/overview/lancedb-architecture.svg)
+![LanceDB Embedded runs the application and embedded library in one process, using local disk or object storage. Enterprise applications connect to query serving, with separate read execution and caching, indexing and background workers, and durable object storage. Both use the Lance format, but they do not share a storage location automatically.](/static/assets/images/overview/lancedb-architecture.svg)
 
 The diagram shows the main compute and storage boundaries, not every request
 path. The control plane governs the Enterprise service.
 
 ## A shared format, different storage choices {#storage}
 
-Lance stores table data, versions, and indexes. OSS can read and write tables on
+Lance stores table data, versions, and indexes. LanceDB Embedded can read and write tables on
 local disk or in object storage. Enterprise keeps durable table data and index
 artifacts in object storage, independently of the machines serving requests.
 Its caches accelerate reads; they are not the durable source of truth.
 
 Sharing a format does not mean that an Enterprise deployment automatically
-opens an existing OSS database. Plan how to move or connect your data and
+opens an existing LanceDB Embedded database. Plan how to move or connect your data and
 configure access for your deployment.
 
-## OSS: an embedded library inside your application {#embedded}
+## LanceDB Embedded: a library inside your application {#embedded}
 
 With an embedded connection, the LanceDB library plans and executes queries,
 builds indexes, and updates tables inside your process. There is no separate
@@ -44,9 +47,10 @@ single-node data pipelines. Your application controls the compute resources and
 when to run [table maintenance](/maintenance/compaction). You also manage access
 to the local files or object storage that hold your tables.
 
-## Enterprise: a multimodal lakehouse for shared workloads {#distributed}
+## LanceDB Enterprise: distributed execution for shared workloads {#distributed}
 
-Applications connect to remote tables through a LanceDB SDK. The service handles
+A LanceDB SDK connects to LanceDB Enterprise, and the service runs operations
+with LanceDB Distributed. The service handles
 requests across a fleet, with components sized for different kinds of work:
 
 - **Query serving** receives requests, resolves tables, and plans operations.
@@ -81,20 +85,20 @@ and request flows.
 ## Application changes for Enterprise {#differences}
 
 Core operations remain familiar: create a table, add data, and run a search.
-With OSS, the application executes those operations. With Enterprise, the SDK
+With LanceDB Embedded, the application executes those operations. With Enterprise, the SDK
 sends requests to the service, and the service manages execution and configured
 background maintenance.
 
 To use Enterprise, configure the cluster endpoint, database URI and credentials,
 and make your data available in the Enterprise database. Review SDK methods
-that behave differently on remote tables, including result retrieval and
+that behave differently with LanceDB Distributed, including result retrieval and
 background jobs. [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise)
 describes these application changes. If you plan to use materialized views, check the
 [stable row ID requirements](/basics/limits#schema) before creating source tables.
 
 ## Choose for the workload you need to run {#choosing}
 
-Choose OSS when you want an embedded library and can manage its resources and
+Choose LanceDB Embedded when you want an embedded library and can manage its resources and
 maintenance in your application.
 
 Choose Enterprise when multiple applications or teams need a shared multimodal
