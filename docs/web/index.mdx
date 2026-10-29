@@ -50,11 +50,11 @@ how storage and compute are organized around them.
 ```mermaid
 flowchart TB
     subgraph Embedded["LanceDB Embedded"]
-        EmbApp(["Your application"])
+        EmbApp(["Your application<br/>+ LanceDB SDK"])
     end
 
     subgraph Enterprise["LanceDB Enterprise"]
-        EntSdk(["LanceDB SDK"]) --> EntSvc{{"Query serving, caching, indexing"}}
+        EntSdk(["LanceDB SDK"]) --> EntEngine{{"Enterprise Distributed Engine"}}
     end
 
     Lance[("Lance format<br/>table data, versions, indexes")]
@@ -66,26 +66,7 @@ flowchart TB
 Embedded reads and writes tables on local disk or in object storage from inside your application process.
 Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
 requests, and separates query serving, read execution and caching, and indexing and background work into their
-own independently sized components. Caches accelerate reads; they are never the durable source of truth. Here is
-how Enterprise organizes those components internally:
-
-```mermaid
-flowchart TB
-    Clients(["Clients"])
-    QueryFleet{{"Query Fleet<br/>query serving"}}
-    ExecutorRing{{"Executor Ring<br/>read execution + cache"}}
-    Indexer{{"Indexer<br/>background work"}}
-    EventQueue[["Event Queue"]]
-    Storage[("Cloud Object Storage")]
-
-    Clients --> QueryFleet
-    QueryFleet -- reads --> ExecutorRing
-    QueryFleet -- writes --> Storage
-    QueryFleet -- change events --> EventQueue
-    EventQueue --> Indexer
-    ExecutorRing -- reads --> Storage
-    Indexer -- writes --> Storage
-```
+own independently sized components. Caches accelerate reads; they are never the durable source of truth.
 
 Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
 plan how to move or connect your data and configure access for your deployment.
@@ -112,6 +93,24 @@ while the service handles requests across a fleet, with query serving, read exec
 and background work sized and scaled as separate components. Read the
 [Enterprise architecture](/enterprise/architecture) for the component details and request flows.
 
+```mermaid
+flowchart TB
+    Clients(["Clients"])
+    QueryFleet{{"Query Fleet<br/>query serving"}}
+    ExecutorRing{{"Executor Ring<br/>read execution + cache"}}
+    MonitoringFleet{{"Monitoring Fleet"}}
+    JobWorkerFleet{{"Job Worker Fleet<br/>indexing, column + MV refresh, compaction"}}
+    Storage[("Cloud Object Storage")]
+
+    Clients --> QueryFleet
+    QueryFleet -- reads --> ExecutorRing
+    QueryFleet -- writes --> Storage
+    QueryFleet -- notifies --> MonitoringFleet
+    MonitoringFleet -- creates jobs --> JobWorkerFleet
+    ExecutorRing -- reads --> Storage
+    JobWorkerFleet -- writes --> Storage
+```
+
 Teams choose Enterprise to:
 
 - **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
@@ -129,36 +128,30 @@ To set up LanceDB Enterprise in your organization, [reach out to us](https://www
 
 {/* availability-comparison */}
 
-## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
+## Projects using LanceDB {#projects-using-lancedb}
 
-<CardGroup cols={1}>
-  <Card
-    title="stable-worldmodel"
-    icon="github"
-    href="https://github.com/galilai-group/stable-worldmodel"
-  >
-    A platform for reproducible world-model research built on a LanceDB data layer, reporting faster data loading on Push-T workloads.
-  </Card>
-  <Card
-    title="le-wm"
-    icon="github"
-    href="https://github.com/lucas-maes/le-wm"
-  >
-    A joint-embedding predictive world model from pixels, trained on the stable-worldmodel platform and its LanceDB data layer.
-  </Card>
-  <Card
-    title="lerobot-lancedb"
-    icon="github"
-    href="https://github.com/lancedb/lerobot-lancedb"
-  >
-    A drop-in LanceDB backend for Hugging Face LeRobot datasets with faster loading across robotics datasets.
-  </Card>
-</CardGroup>
+### Training {#training}
 
-In the world-model ecosystem, [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) reports
-3-4x faster data loading on Push-T versus HDF5 / MP4 at a fraction of the disk footprint. Across these projects,
-LanceDB and Lance provide the multimodal data layer that keeps raw observations, annotations, features, and training
-access patterns in one format instead of scattering them across task-specific stores.
+- [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) -- a platform for reproducible world-model
+  research built on a LanceDB data layer, reporting 3-4x faster data loading on Push-T versus HDF5 / MP4 at a
+  fraction of the disk footprint.
+- [le-wm](https://github.com/lucas-maes/le-wm) -- a joint-embedding predictive world model from pixels, trained on
+  the stable-worldmodel platform and its LanceDB data layer.
+- [lerobot-lancedb](https://github.com/lancedb/lerobot-lancedb) -- a drop-in LanceDB backend for Hugging Face
+  LeRobot datasets with faster loading across robotics datasets.
+
+### Agentic applications {#agentic-applications}
+
+- [OpenClaw LanceDB Plugin](https://docs.openclaw.ai/plugins/memory-lancedb) -- stores an agent's long-term memory
+  in LanceDB, automatically recalling relevant memories before a model turn and capturing new facts afterward.
+- [Cognee](https://github.com/topoteretes/cognee) -- an open-source AI memory platform that gives agents persistent
+  memory across sessions, using LanceDB as one of its vector store backends.
+- [CrewAI](https://github.com/crewAIInc/crewAI) -- a multi-agent framework that
+  [rebuilt its agent memory on LanceDB](https://www.lancedb.com/blog/crewai-rebuilt-agent-memory-on-lancedb).
+
+Across these projects, LanceDB and Lance provide the multimodal data layer that keeps raw observations, annotations,
+features, and training or memory access patterns in one format instead of scattering them across task-specific
+stores.
 
 ## Start with your workload {#start-with-your-workload}
 
@@ -177,6 +170,9 @@ access patterns in one format instead of scattering them across task-specific st
   </Card>
   <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
     Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
+  </Card>
+  <Card title="Manage catalog objects" icon="folder-tree" href="/management">
+    Create, list, and drop tables, namespaces, and views from Python, TypeScript, or SQL.
   </Card>
 </CardGroup>
 

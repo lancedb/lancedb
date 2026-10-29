@@ -24,6 +24,16 @@ Both interfaces work with LanceDB tables. Choose the one that supports your
 operation and fits your application. See [SQL](/basics/sql) for connection
 instructions and SQL search support, and [Search](/search) for the query builders.
 
+## Shared data across languages {#invariants}
+
+LanceDB uses Arrow schemas across its SDKs. A fixed-size vector column stores
+vectors of a consistent dimension; the [data types reference](/sql/data-types)
+describes the supported element types and other column types.
+
+Applications in different languages can work with the same tables. Connect to
+the same database and namespace, use the appropriate credentials, and account
+for [read consistency](/tables/consistency) when another process writes data.
+
 ## Collect or stream results {#results}
 
 - **Collect the results** when you want a list, Arrow table or DataFrame that
