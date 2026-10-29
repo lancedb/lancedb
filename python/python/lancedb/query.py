@@ -81,6 +81,28 @@ if TYPE_CHECKING:
         from typing_extensions import Self
 
 T = TypeVar("T", bound="LanceModel")
+
+
+def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
+    """Build ``model`` instances from result rows.
+
+    A table created from a LanceModel stores each field under its name, while
+    pydantic validates an aliased field by its alias. Pass a row's value under
+    the alias when the row has the field name but not the alias, so a model
+    with aliases can read the tables it wrote; rows keyed by alias still work.
+    """
+    renames = {}
+    for name, field in model.model_fields.items():
+        alias = field.validation_alias or field.alias
+        if isinstance(alias, str) and alias != name:
+            renames[name] = alias
+    for row in rows:
+        for name, alias in renames.items():
+            if name in row and alias not in row:
+                row[alias] = row.pop(name)
+    return [model(**row) for row in rows]
+
+
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
 _SYNC_VECTOR_QUERY_TYPES = (list, tuple, np.ndarray, pa.Array, pa.ChunkedArray)
 
@@ -1303,7 +1325,7 @@ class LanceQueryBuilder(ABC):
         -------
         List[LanceModel]
         """
-        return [model(**row) for row in self.to_arrow(timeout=timeout).to_pylist()]
+        return _rows_to_models(model, self.to_arrow(timeout=timeout).to_pylist())
 
     def to_polars(self, *, timeout: Optional[timedelta] = None) -> "pl.DataFrame":
         """
@@ -3733,9 +3755,9 @@ class AsyncQueryBase(object):
         -------
         list[LanceModel]
         """
-        return [
-            model(**row) for row in (await self.to_arrow(timeout=timeout)).to_pylist()
-        ]
+        return _rows_to_models(
+            model, (await self.to_arrow(timeout=timeout)).to_pylist()
+        )
 
     async def explain_plan(self, verbose: Optional[bool] = False):
         """Return the execution plan for this query.
