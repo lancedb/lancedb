@@ -304,12 +304,12 @@ def test_table_setup_load_then_index(db_path_factory):
     db = lancedb.connect(db_path_factory("table_setup_load"))
 
     # --8<-- [start:table_setup_load_then_index]
-    from lancedb.index import FTS, Bitmap, BTree, IvfPq
+    from lancedb.index import FTS, Bitmap, BTree, IvfRq
 
     tbl = db.create_table("scenes", make_scenes(0, 5_000))
     tbl.create_index(
         "embedding",
-        config=IvfPq(distance_type="cosine", target_partition_size=8192),
+        config=IvfRq(distance_type="cosine", target_partition_size=8192),
     )
     tbl.create_index("camera_id", config=BTree())
     tbl.create_index("weather", config=Bitmap())
@@ -337,12 +337,12 @@ def test_table_setup_stream(db_path_factory):
     db = lancedb.connect(db_path_factory("table_setup_stream"))
 
     # --8<-- [start:table_setup_stream]
-    from lancedb.index import FTS, Bitmap, BTree, IvfPq
+    from lancedb.index import FTS, Bitmap, BTree, IvfRq
 
     tbl = db.create_table("scenes", schema=schema)
     tbl.create_index(
         "embedding",
-        config=IvfPq(distance_type="cosine", target_partition_size=8192),
+        config=IvfRq(distance_type="cosine", target_partition_size=8192),
         train=False,
     )
     tbl.create_index("scene_id", config=BTree(), train=False)

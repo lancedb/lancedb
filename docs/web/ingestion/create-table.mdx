@@ -63,8 +63,8 @@ values, and set the size of your vectors.
 
 A table created from data alone has no indexes, so every vector search,
 keyword search and filter reads every row. That is fast enough for a few
-thousand rows and slow for millions. Decide which indexes the table needs when
-you create it, together with how data will arrive.
+thousand rows, but is slow for millions. When you create a new table, consider
+adding indexes up front to make your planned workloads fast.
 
 ### Choose indexes {#choose-indexes}
 
@@ -72,7 +72,7 @@ Index each column your application searches, filters or merges on:
 
 | Your workload | Index | Python config |
 | :------------ | :---- | :------------ |
-| Vector similarity search on an embedding column | IVF_PQ, or another [vector index](/indexing/vector-index) | `IvfPq(distance_type=...)` |
+| Vector similarity search on an embedding column | IVF_RQ, or another [vector index](/indexing/vector-index) | `IvfRq(distance_type=...)` |
 | Keyword search over a text column | [Full-text](/indexing/fts-index) | `FTS()` |
 | Exact-match filters on a column with few distinct values, such as a status or category | [Bitmap](/indexing/scalar-index) | `Bitmap()` |
 | Exact-match or range filters on a column with many distinct values, such as an ID, timestamp or price | [BTree](/indexing/scalar-index) | `BTree()` |
@@ -82,7 +82,8 @@ Index each column your application searches, filters or merges on:
 Index only the columns your workload uses, since each index costs build time
 and slows writes. Set the vector index's distance type to the one your
 embedding model was trained for: a query that asks for a different metric
-can't use the index. Size IVF partitions with `target_partition_size` instead
+can't use the index. IVF_RQ needs a vector dimension that is a multiple of 8.
+Size IVF partitions with `target_partition_size` instead
 of `num_partitions`, so the number of partitions follows the table as it grows.
 
 Then choose how to create the indexes, based on how data arrives.
@@ -141,10 +142,6 @@ queries return correct results by reading the rows it doesn't cover.
 LanceDB Enterprise trains and maintains the declared indexes with background
 jobs as data arrives. In LanceDB Embedded, `optimize()` trains them on the rows
 written so far, the same way it updates indexes in the previous pattern.
-
-A vector index is trained on the rows that exist when it's trained. If the
-first rows don't represent the rest of the data, load a representative batch
-before training it, or [rebuild it](/indexing/reindexing) later.
 
 #### Turn on the real time engine for frequent writes {#stream-with-rte}
 
