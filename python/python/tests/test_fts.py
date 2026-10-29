@@ -1441,6 +1441,31 @@ async def test_combined_fields_query_round_trip(mem_db_async):
     assert query_obj.full_text_query.query == query
 
 
+@pytest.mark.asyncio
+async def test_combined_fields_query_nested_round_trip(mem_db_async):
+    table = await mem_db_async.create_table(
+        "docs", pa.table({"title": ["hello"], "body": ["world"]})
+    )
+    query = BooleanQuery(
+        [
+            (
+                Occur.MUST,
+                CombinedFieldsQuery(
+                    "hello world",
+                    ["title", "body"],
+                    boosts=[2.0, 1.0],
+                    operator=FullTextOperator.AND,
+                ),
+            ),
+            (Occur.MUST_NOT, MatchQuery("draft", "body")),
+        ]
+    )
+
+    query_obj = table.query().nearest_to_text(query).to_query_object()
+
+    assert query_obj.full_text_query.query == query
+
+
 def test_fts_query_to_json():
     """Test that FTS query to_json() produces valid JSON strings with exact format."""
 
