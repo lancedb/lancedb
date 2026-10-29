@@ -2137,7 +2137,7 @@ mod lsm_tests {
         }
         fn training_criteria(&self) -> lance_index::scalar::registry::TrainingCriteria {
             use lance_index::scalar::registry::{TrainingCriteria, TrainingOrdering};
-            TrainingCriteria::new(TrainingOrdering::Values).with_row_addr()
+            TrainingCriteria::new(TrainingOrdering::Values).with_row_id()
         }
         fn validate(
             &self,
@@ -2181,8 +2181,24 @@ mod lsm_tests {
             &self,
             ctx: &lance::dataset::mem_wal::index::FlushContext<'_>,
         ) -> lance_core::Result<lance::dataset::mem_wal::index::FlushOutcome> {
+            // BTree now trains on row addresses, while Bitmap still takes row IDs.
+            // These coincide in the flushed generation, which uses physical IDs.
+            assert!(!ctx.generation()?.dataset.manifest().uses_stable_row_ids());
+            let batches = self
+                .0
+                .to_training_batches(ctx.batch_size)?
+                .into_iter()
+                .map(|batch| {
+                    assert_eq!(batch.schema().field(1).name(), lance_core::ROW_ADDR);
+                    let schema = Arc::new(Schema::new(vec![
+                        batch.schema().field(0).clone(),
+                        Field::new(lance_core::ROW_ID, DataType::UInt64, false),
+                    ]));
+                    RecordBatch::try_new(schema, batch.columns().to_vec())
+                })
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             Ok(lance::dataset::mem_wal::index::FlushOutcome::from_batches(
-                self.0.to_training_batches(ctx.batch_size)?,
+                batches,
             ))
         }
     }
