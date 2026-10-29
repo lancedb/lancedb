@@ -307,6 +307,7 @@
             "group": "Data Curation",
             "pages": [
               "curation/index",
+              "curation/create-function",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",

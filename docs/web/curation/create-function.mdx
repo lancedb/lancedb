@@ -1,0 +1,213 @@
+---
+title: "Create a Function"
+sidebarTitle: "Create Function"
+description: "Register Python as a column: CPU, GPU, and remote-service Functions, called once per row or once per batch."
+icon: code
+keywords: ["function", "udf", "cpu", "gpu", "batch", "scalar", "blob", "remote api", "embedding", "rate limiter"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+Some curation steps cannot be written as a SQL expression: an embedding
+model, an image decode, a call to an external service. A Function is a
+Python callable registered with the database, versioned, and then applied as
+a column or called in a query -- the code runs where the data is, not pulled
+into your process first. This page covers how to shape one; later curation
+tasks such as [Chunking](/curation/chunking) assume you have read it.
+
+## Scalar: once per row {#scalar}
+
+The plain form takes one row's values and returns one result. Types are
+inferred from the annotations:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import udf
+
+@udf(pip=["numpy==2.2.0"])
+def score(value: float) -> float:
+    return value * 2
+
+version = db.create_function_async(score).wait()
+table.add_columns({"doubled": version(value=col("value"))})
+```
+</CodeGroup>
+
+`pip` declares the worker's dependencies; they are part of the function's
+immutable version, so changing one produces a new version rather than
+altering rows a previous version already filled.
+
+## Batch: once per call, many rows at a time {#batch}
+
+A function is called once per batch instead of once per row when its
+parameters are annotated `pyarrow.Array`, or when it takes a single
+`pyarrow.RecordBatch` parameter to read more than one column together. The
+same doubling logic, vectorized over a whole batch at once:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+import pyarrow.compute as pc
+from lancedb import udf
+
+@udf(pip=["numpy==2.2.0"])
+def score_batch(value: pa.Array) -> pa.Array:
+    return pc.multiply(value, 2)
+```
+</CodeGroup>
+
+Batching amortizes per-call overhead across many rows, which matters most
+once a function also does something with real fixed cost per call -- loading
+a model, opening a connection, making a network round trip.
+
+## Stateful Functions: load once, call many times {#stateful}
+
+A `@udf`-decorated **class** is the same callable with state. Each remote
+instance calls `__init__` once, calls `__call__` for every row or batch it
+processes, and calls `close()`, if defined, once when it retires:
+
+<CodeGroup>
+```python Python icon="python"
+from lancedb import udf
+
+@udf
+class scale:
+    def __init__(self, factor: float, offset: float = 0.0):
+        self.factor = factor
+        self.offset = offset
+
+    def __call__(self, value: float) -> float:
+        return value * self.factor + self.offset
+```
+</CodeGroup>
+
+Constructor parameters are **initialization fields**, bound once per binding
+rather than read per row -- mixed with per-row columns in the same call:
+`version(value=col("value"), factor=2.0)`. Load models, open clients, and
+build rate limiters in `__init__`; every batch the instance serves then
+reuses them, since an instance's state is shared across its own batches but
+never across other instances or workers. This is the pattern GPU inference
+and remote-API Functions both build on below.
+
+## GPU: batch inference, loaded once {#gpu}
+
+`gpu=True` requires a GPU-capable worker for every execution. Combined with
+the batch and stateful forms above, a realistic embedding model loads once
+in `__init__` and runs one forward pass per batch, not one per row:
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+from lancedb import udf
+
+@udf(gpu=True, pip=["torch==2.12.0", "sentence-transformers==5.7.0"])
+class embed_text:
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = SentenceTransformer(model_name, device=device)
+
+    def __call__(self, text: pa.Array) -> pa.Array:
+        texts = [t or "" for t in text.to_pylist()]
+        embeddings = self.model.encode(texts)
+        return pa.array(embeddings.tolist(), type=pa.list_(pa.float32(), list_size=384))
+
+version = db.create_function_async(embed_text).wait()
+table.add_columns({"embedding": version(text=col("caption"))})
+```
+</CodeGroup>
+
+The model loads once per worker instance, in `__init__`; `__call__` only
+encodes the batch it was handed. Registering the same logic as a plain
+function instead would reload the model on every single row.
+
+## Calling a remote service {#remote}
+
+A function that calls an external API needs a credential without putting it
+in the function's source. A Secret is a database-scoped named credential:
+`db.create_secret` stores the value once, and binding it at registration time
+puts it in the environment variable the function reads, without ever
+returning it from any API or recording it in the function's own definition.
+Combine it with the stateful form so the HTTP client -- and any rate limiter
+around it -- is built once, not reopened on every row:
+
+<CodeGroup>
+```python Python icon="python"
+import os
+from lancedb import EnvVarSecret, udf
+
+db.create_secret("openai-prod", os.environ["OPENAI_API_KEY"])
+
+@udf
+class embed_remote:
+    def __init__(self, model: str = "text-embedding-3-small"):
+        import os
+        from openai import OpenAI
+
+        self.client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+        self.model = model
+
+    def __call__(self, text: str) -> list[float]:
+        response = self.client.embeddings.create(input=text, model=self.model)
+        return response.data[0].embedding
+
+version = db.create_function_async(
+    embed_remote,
+    secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
+).wait()
+```
+</CodeGroup>
+
+A mistyped Secret name is caught at registration; a mistyped environment
+variable name only surfaces on the first rows, since nothing records which
+variables a function reads. There is no built-in retry or per-row
+error-skip policy -- a function that calls a flaky service should handle
+timeouts and retries itself, inside `__call__`.
+
+## Blob v2 input and output {#blob}
+
+A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
+return another one, including a blob nested inside a struct field, not only
+at the top level. In row mode, a blob parameter arrives as Python `bytes`
+(or a `BlobReader` for incremental, seekable access, so a function never
+has to materialize a payload it only partially needs):
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+import lancedb
+from lancedb import BlobReader, udf
+
+@udf(
+    gpu=True,
+    pip=["av==13.1.0", "pillow==11.0.0"],
+    input_schema=pa.schema([
+        lancedb.blob("video"),
+        pa.field("ts", pa.float64(), nullable=False),
+    ]),
+    output_schema=lancedb.blob("jpeg", nullable=False),
+)
+def extract_frame(video: BlobReader, ts: float) -> bytes:
+    ...  # decode the frame at ts, encode as JPEG, return its bytes
+```
+</CodeGroup>
+
+`output_schema=lancedb.blob(...)` is what makes the result Blob v2 rather
+than plain Arrow `binary` -- returning `bytes` with no explicit blob output
+schema still holds the right bytes, but skips the Managed storage path and
+`fetch_blobs`. Declare it explicitly on every function whose output should
+be a blob.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Chunk records into multiple rows" icon="diagram-subtask" href="/curation/chunking">
+    A Function whose output is a list, exploded into one row per element.
+  </Card>
+  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+    Filling the column a Function is bound to, and re-filling it as inputs change.
+  </Card>
+</CardGroup>

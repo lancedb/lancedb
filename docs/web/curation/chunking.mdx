@@ -19,7 +19,10 @@ embedding, a video into clips, or an image into tiles.
 
 A Function that returns a `list` produces more than one value per input row.
 A chunker is a Function whose output is a list -- of structs, of strings, of
-anything -- registered like any other Function.
+anything -- registered like any other Function. See
+[Create a Function](/curation/create-function) for CPU, GPU and remote-service
+Functions, and scalar versus batch calling, if you have not registered one
+before.
 
 A function that splits text into fixed-size passages turns a `documents`
 table into one row per passage:
