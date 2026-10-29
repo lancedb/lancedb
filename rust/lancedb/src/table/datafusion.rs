@@ -167,6 +167,15 @@ impl ExecutionPlan for MetadataEraserExec {
         )
     }
 
+    fn child_stats_requests(
+        &self,
+        partition: Option<usize>,
+    ) -> Vec<datafusion_physical_plan::statistics::ChildStats> {
+        vec![datafusion_physical_plan::statistics::ChildStats::At(
+            partition,
+        )]
+    }
+
     fn statistics_from_inputs(
         &self,
         input_stats: &[Arc<Statistics>],
