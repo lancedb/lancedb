@@ -2290,19 +2290,30 @@ mod lsm_tests {
 
     /// The SSTables each shard's manifest publishes.
     async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
-        use lance::dataset::mem_wal::ShardManifestStore;
+        use lance::dataset::mem_wal::{DatasetMemWalExt, ShardManifestStore};
 
         let uri = table.uri().await.unwrap();
         let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
             .await
             .unwrap();
-        let mem_wal = std::path::Path::new(&uri).join("_mem_wal");
+        let dataset = lance::Dataset::open(&uri).await.unwrap();
+        let dir_id = dataset
+            .mem_wal_index_details()
+            .await
+            .unwrap()
+            .unwrap()
+            .dir_id;
+        let mem_wal = std::path::Path::new(&uri).join(if dir_id.is_empty() {
+            "_mem_wal".to_string()
+        } else {
+            format!("_{dir_id}_mem_wal")
+        });
         let mut sstables = Vec::new();
         for shard in std::fs::read_dir(&mem_wal).unwrap() {
             let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
                 continue;
             };
-            let manifest = ShardManifestStore::new(store.clone(), &base, shard_id, 2)
+            let manifest = ShardManifestStore::new(store.clone(), &base, &dir_id, shard_id, 2)
                 .latest()
                 .await
                 .unwrap()
