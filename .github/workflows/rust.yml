@@ -46,7 +46,8 @@ jobs:
           from pathlib import Path
 
           manifest = tomllib.loads(Path("Cargo.toml").read_text())
-          tag = manifest["workspace"]["dependencies"]["lance"]["tag"]
+          dependency = manifest["workspace"]["dependencies"]["lance"]
+          tag = dependency.get("tag") or f"v{dependency['version'].removeprefix('=')}"
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write(f"tag={tag}\n")
           PYTHON
@@ -72,6 +73,9 @@ jobs:
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
 
           [patch."https://github.com/lance-format/lance.git"]
+          lance-arrow = { path = "../local-lance/rust/lance-arrow" }
+
+          [patch.crates-io]
           lance-arrow = { path = "../local-lance/rust/lance-arrow" }
           TOML
           cargo metadata --manifest-path downstream/Cargo.toml --format-version 1 > downstream/graph.json
