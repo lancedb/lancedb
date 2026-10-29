@@ -103,7 +103,7 @@ pub use computed_columns::{
     ComputedColumn, ComputedColumnKind, computed_column_from_field, computed_columns,
 };
 pub use delete::DeleteResult;
-use futures::future::join_all;
+use futures::future::{BoxFuture, FutureExt, join_all};
 pub use lance::dataset::refs::{BranchContents, Ref, TagContents, Tags as LanceTags};
 pub use lance::dataset::scanner::DatasetRecordBatchStream;
 pub use lance_index::optimize::OptimizeOptions;
@@ -550,11 +550,33 @@ pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToke
         .collect())
 }
 
+// A free function rather than inline in `BaseTable::explain_plan` so the
+// future is built without the trait's `Self: BaseTable` where-clause.
+fn format_plan(
+    plan: BoxFuture<'_, Result<Arc<dyn ExecutionPlan>>>,
+    verbose: bool,
+) -> BoxFuture<'_, Result<String>> {
+    async move {
+        let plan = plan.await?;
+        let display = DisplayableExecutionPlan::new(plan.as_ref());
+        Ok(format!("{}", display.indent(verbose)))
+    }
+    .boxed()
+}
+
 /// A trait for anything "table-like".  This is used for both native tables (which target
 /// Lance datasets) and remote tables (which target LanceDB Enterprise)
 ///
 /// This trait is still EXPERIMENTAL and subject to change in the future
-#[async_trait]
+//
+// Methods return `BoxFuture` rather than using `#[async_trait]` to keep compile
+// times down. Proving these futures `Send` walks large type graphs (DataFusion's
+// `Expr`/`LogicalPlan`, Lance's scanner futures), and rustc only reuses that
+// proof between functions with identical where-clauses. `#[async_trait]` gives
+// every method its own (`Self: 'async_trait`, `'life0: 'async_trait`, ...), so
+// each method re-proved it, costing up to a second of compile time apiece. With
+// elided or argument-only lifetimes an impl has no where-clauses, and the proof
+// is shared across the whole crate.
 pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get a reference to std::any::Any
     fn as_any(&self) -> &dyn std::any::Any;
@@ -568,28 +590,35 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// separated by $
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
-    async fn schema(&self) -> Result<SchemaRef>;
+    fn schema(&self) -> BoxFuture<'_, Result<SchemaRef>>;
     /// Read this table's materialized-view definition.
     #[doc(hidden)]
-    async fn materialized_view_info(
+    fn materialized_view_info(
         &self,
-    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
-        let schema = self.schema().await?;
-        crate::materialized_view::materialized_view_info_from_metadata(
-            self.name(),
-            schema.metadata(),
-        )
+    ) -> BoxFuture<'_, Result<crate::materialized_view::MaterializedViewInfo>> {
+        async move {
+            let schema = self.schema().await?;
+            crate::materialized_view::materialized_view_info_from_metadata(
+                self.name(),
+                schema.metadata(),
+            )
+        }
+        .boxed()
     }
     /// Submit a materialized-view refresh.
     #[doc(hidden)]
-    async fn refresh_materialized_view_async(
+    fn refresh_materialized_view_async(
         &self,
         _source_version: Option<u64>,
         _full: bool,
-    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
-        Err(Error::NotSupported {
-            message: "remote materialized-view refresh is not supported on this table type".into(),
-        })
+    ) -> BoxFuture<'_, Result<Job<crate::materialized_view::RefreshMaterializedViewResult>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "remote materialized-view refresh is not supported on this table type"
+                    .into(),
+            })
+        }
+        .boxed()
     }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
@@ -597,33 +626,34 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// this handle.  This is used by bindings that must prepare client-side
     /// query state from the same revision that the query will execute against.
     #[doc(hidden)]
-    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
+    fn query_snapshot(&self) -> BoxFuture<'_, Result<Arc<dyn BaseTable>>>;
     /// Count the number of rows in this table.
-    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
+    fn count_rows(&self, filter: Option<Filter>) -> BoxFuture<'_, Result<usize>>;
     /// Create a physical plan for the query.
-    async fn create_plan(
-        &self,
-        query: &AnyQuery,
+    fn create_plan<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>>;
+    ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>>;
     /// Execute a query and return the results as a stream of RecordBatches.
-    async fn query(
-        &self,
-        query: &AnyQuery,
+    fn query<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream>;
+    ) -> BoxFuture<'a, Result<DatasetRecordBatchStream>>;
     /// Explain the plan for a query.
-    async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
-        let plan = self.create_plan(query, Default::default()).await?;
-        let display = DisplayableExecutionPlan::new(plan.as_ref());
-
-        Ok(format!("{}", display.indent(verbose)))
+    fn explain_plan<'a>(
+        &'a self,
+        query: &'a AnyQuery,
+        verbose: bool,
+    ) -> BoxFuture<'a, Result<String>> {
+        format_plan(self.create_plan(query, Default::default()), verbose)
     }
-    async fn analyze_plan(
-        &self,
-        query: &AnyQuery,
+    fn analyze_plan<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<String>;
+    ) -> BoxFuture<'a, Result<String>>;
     /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
     ///
     /// Client-side query wrappers use this to preserve backend metrics and
@@ -634,35 +664,38 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
 
     /// Add new records to the table.
-    async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
+    fn add(&self, add: AddDataBuilder) -> BoxFuture<'_, Result<AddResult>>;
     /// Delete rows from the table matching the given [`Predicate`].
-    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult>;
+    fn delete<'a>(&'a self, predicate: Predicate<'a>) -> BoxFuture<'a, Result<DeleteResult>>;
     /// Update rows in the table.
-    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
+    fn update(&self, update: UpdateBuilder) -> BoxFuture<'_, Result<UpdateResult>>;
     /// Create an index on the provided column(s).
-    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    fn create_index(&self, index: IndexBuilder) -> BoxFuture<'_, Result<()>>;
 
     /// Starts index creation, returning a handle to the resulting job.
-    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job>;
+    fn create_index_async(&self, index: IndexBuilder) -> BoxFuture<'_, Result<Job>>;
     /// List the indices on the table.
-    async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    fn list_indices(&self) -> BoxFuture<'_, Result<Vec<IndexConfig>>>;
     /// Drop an index from the table.
-    async fn drop_index(&self, name: &str) -> Result<()>;
+    fn drop_index<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Prewarm an index in the table.
-    async fn prewarm_index(&self, name: &str) -> Result<()>;
+    fn prewarm_index<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Prewarm data for the table.
     ///
     /// Currently only supported in LanceDB Distributed.
     /// If `columns` is `None`, all columns are prewarmed.
-    async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
+    fn prewarm_data(&self, columns: Option<Vec<String>>) -> BoxFuture<'_, Result<()>>;
     /// Get statistics about the index.
-    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
+    fn index_stats<'a>(
+        &'a self,
+        index_name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<IndexStatistics>>>;
     /// Merge insert new records into the table.
-    async fn merge_insert(
+    fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeResult>;
+    ) -> BoxFuture<'_, Result<MergeResult>>;
     /// Set the unenforced primary key for the table to a single column.
     ///
     /// "Unenforced" means LanceDB does not check uniqueness on writes; the
@@ -672,10 +705,16 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`; table types
     /// backed by a Lance dataset override it.
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported on this table type".into(),
-        })
+    fn set_unenforced_primary_key<'a>(
+        &'a self,
+        _columns: &'a [&'a str],
+    ) -> BoxFuture<'a, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "set_unenforced_primary_key is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Install an [`RTEWriteSpec`] on this table.
     ///
@@ -684,10 +723,13 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`. Implementations
     /// that support the RTE write path must override this.
-    async fn enable_rte(&self, _spec: RTEWriteSpec) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "enable_rte is not supported on this table type".into(),
-        })
+    fn enable_rte(&self, _spec: RTEWriteSpec) -> BoxFuture<'_, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "enable_rte is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Remove the [`RTEWriteSpec`] from this table.
     ///
@@ -695,20 +737,26 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`. Implementations
     /// that support the RTE write path must override this.
-    async fn disable_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "disable_rte is not supported on this table type".into(),
-        })
+    fn disable_rte(&self) -> BoxFuture<'_, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "disable_rte is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Read the [`RTEWriteSpec`] currently installed on this table, returning
     /// `None` when the RTE write path is not enabled.
     ///
     /// The default implementation returns `NotSupported`. Implementations that
     /// support the RTE write path must override this.
-    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
-        Err(Error::NotSupported {
-            message: "get_rte_spec is not supported on this table type".into(),
-        })
+    fn get_rte_spec(&self) -> BoxFuture<'_, Result<Option<RTEWriteSpec>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "get_rte_spec is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Whether a hybrid query on this table has already been told it cannot
     /// join its legs on `_rowid`.
@@ -738,163 +786,224 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Freeze every table shard's active memtable into an SSTable.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn flush_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "flush_rte is not supported on this table type".into(),
-        })
+    fn flush_rte(&self) -> BoxFuture<'_, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "flush_rte is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Trigger a background SSTable compaction pass per table shard.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn compact_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "compact_rte is not supported on this table type".into(),
-        })
+    fn compact_rte(&self) -> BoxFuture<'_, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "compact_rte is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Read live RTE state, or `None` when the RTE write path is not
     /// enabled for this table.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn get_rte_stats(&self, _include_sstable_rows: bool) -> Result<Option<RTEStats>> {
-        Err(Error::NotSupported {
-            message: "get_rte_stats is not supported on this table type".into(),
-        })
+    fn get_rte_stats(
+        &self,
+        _include_sstable_rows: bool,
+    ) -> BoxFuture<'_, Result<Option<RTEStats>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "get_rte_stats is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Drain and close any cached RTE shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
     /// RTE shard writers override it.
-    async fn close_rte_writers(&self) -> Result<()> {
-        Ok(())
+    fn close_rte_writers(&self) -> BoxFuture<'_, Result<()>> {
+        async move { Ok(()) }.boxed()
     }
     /// Names of the blob v1 and v2 columns in this table, in declaration order.
-    async fn blob_columns(&self) -> Result<Vec<String>> {
-        Err(Error::NotSupported {
-            message: "blob_columns is not supported on this table type".into(),
-        })
+    fn blob_columns(&self) -> BoxFuture<'_, Result<Vec<String>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "blob_columns is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
-    async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
-        Err(Error::NotSupported {
-            message: "fetch_blobs is not supported on this table type".into(),
-        })
+    fn fetch_blobs<'a>(
+        &'a self,
+        _column: &'a str,
+        _row_ids: &'a [u64],
+    ) -> BoxFuture<'a, Result<LargeBinaryArray>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blobs is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
-    async fn fetch_blob_ranges(
-        &self,
-        _column: &str,
-        _requests: &[BlobRangeRequest],
-    ) -> Result<LargeBinaryArray> {
-        Err(Error::NotSupported {
-            message: "fetch_blob_ranges is not supported on this table type".into(),
-        })
+    fn fetch_blob_ranges<'a>(
+        &'a self,
+        _column: &'a str,
+        _requests: &'a [BlobRangeRequest],
+    ) -> BoxFuture<'a, Result<LargeBinaryArray>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blob_ranges is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
-    async fn fetch_blob_files(
-        &self,
-        _column: &str,
-        _row_ids: &[u64],
-    ) -> Result<Vec<Option<BlobFile>>> {
-        Err(Error::NotSupported {
-            message: "fetch_blob_files is not supported on this table type".into(),
-        })
+    fn fetch_blob_files<'a>(
+        &'a self,
+        _column: &'a str,
+        _row_ids: &'a [u64],
+    ) -> BoxFuture<'a, Result<Vec<Option<BlobFile>>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blob_files is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Open a descriptor at its pinned source version. See [`Table::open_blob_file`].
-    async fn open_blob_file(&self, _descriptor: &BlobDescriptor) -> Result<BlobFile> {
-        Err(Error::NotSupported {
-            message: "open_blob_file is not supported on this table type".into(),
-        })
+    fn open_blob_file<'a>(
+        &'a self,
+        _descriptor: &'a BlobDescriptor,
+    ) -> BoxFuture<'a, Result<BlobFile>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "open_blob_file is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Gets the table tag manager.
-    async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
+    fn tags<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn Tags + 'a>>>;
     /// Optimize the dataset.
-    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    fn optimize(&self, action: OptimizeAction) -> BoxFuture<'_, Result<OptimizeStats>>;
     /// Add columns to the table.
-    async fn add_columns(
+    fn add_columns(
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<AddColumnsResult>;
+    ) -> BoxFuture<'_, Result<AddColumnsResult>>;
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a LanceDB Embedded
     /// table validates and types the expression itself, while a LanceDB Distributed
     /// table sends the expression for the server to plan.
-    async fn add_computed_columns(
-        &self,
-        _columns: &[(String, String)],
+    fn add_computed_columns<'a>(
+        &'a self,
+        _columns: &'a [(String, String)],
         _options: computed_columns::ComputedColumnOptions,
-    ) -> Result<AddColumnsResult> {
-        Err(Error::NotSupported {
-            message: "computed columns are not supported on this table type".into(),
-        })
+    ) -> BoxFuture<'a, Result<AddColumnsResult>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "computed columns are not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Declare one immutable registered-Function binding.
-    async fn add_function_columns(
-        &self,
-        _application: &crate::function::FunctionApplication,
-        _output_name: Option<&str>,
+    fn add_function_columns<'a>(
+        &'a self,
+        _application: &'a crate::function::FunctionApplication,
+        _output_name: Option<&'a str>,
         _options: computed_columns::ComputedColumnOptions,
-    ) -> Result<AddColumnsResult> {
-        Err(Error::NotSupported {
-            message: "Function columns are supported only in LanceDB Distributed".into(),
-        })
+    ) -> BoxFuture<'a, Result<AddColumnsResult>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "Function columns are supported only in LanceDB Distributed".into(),
+            })
+        }
+        .boxed()
     }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
-    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
-        Err(Error::NotSupported {
-            message: "this operation is only supported on LanceDB Embedded".into(),
-        })
+    fn refresh_column<'a>(
+        &'a self,
+        _column: &'a str,
+    ) -> BoxFuture<'a, Result<RefreshColumnResult>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "this operation is only supported on LanceDB Embedded".into(),
+            })
+        }
+        .boxed()
     }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed, returning a [`Job`] tracking the operation.
-    async fn refresh_column_async(
-        &self,
-        _column: &str,
-    ) -> Result<Job<crate::function::RefreshColumnResult>> {
-        Err(Error::NotSupported {
-            message: "this operation is only supported on LanceDB Embedded".into(),
-        })
+    fn refresh_column_async<'a>(
+        &'a self,
+        _column: &'a str,
+    ) -> BoxFuture<'a, Result<Job<crate::function::RefreshColumnResult>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "this operation is only supported on LanceDB Embedded".into(),
+            })
+        }
+        .boxed()
     }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
-    async fn function_errors(
-        &self,
-        _request: &crate::function::FunctionErrorsRequest,
-    ) -> Result<crate::function::FunctionErrors> {
-        Err(Error::NotSupported {
-            message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
-        })
+    fn function_errors<'a>(
+        &'a self,
+        _request: &'a crate::function::FunctionErrorsRequest,
+    ) -> BoxFuture<'a, Result<crate::function::FunctionErrors>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
+            })
+        }
+        .boxed()
     }
     /// Alter columns in the table.
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
+    fn alter_columns<'a>(
+        &'a self,
+        alterations: &'a [ColumnAlteration],
+    ) -> BoxFuture<'a, Result<AlterColumnsResult>>;
     /// Drop columns from the table.
-    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
+    fn drop_columns<'a>(
+        &'a self,
+        columns: &'a [&'a str],
+    ) -> BoxFuture<'a, Result<DropColumnsResult>>;
     /// Get the version of the table.
-    async fn version(&self) -> Result<u64>;
+    fn version(&self) -> BoxFuture<'_, Result<u64>>;
     /// Return a new table handle pinned to the exact revision currently visible.
-    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
-        Err(Error::NotSupported {
-            message: "checkout_current is not supported on this table type".into(),
-        })
+    fn checkout_current(&self) -> BoxFuture<'_, Result<Arc<dyn BaseTable>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "checkout_current is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
     /// Checkout a specific version of the table.
-    async fn checkout(&self, version: u64) -> Result<()>;
+    fn checkout(&self, version: u64) -> BoxFuture<'_, Result<()>>;
     /// Checkout a table version referenced by a tag.
     /// Tags provide a human-readable way to reference specific versions of the table.
-    async fn checkout_tag(&self, tag: &str) -> Result<()>;
+    fn checkout_tag<'a>(&'a self, tag: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Checkout the latest version of the table.
-    async fn checkout_latest(&self) -> Result<()>;
+    fn checkout_latest(&self) -> BoxFuture<'_, Result<()>>;
     /// Return an independent handle pinned to the version currently selected.
     ///
     /// Backends that can advance between requests should override this for
     /// multi-request operations that need snapshot consistency. Backends whose
     /// existing handles already provide the desired behavior return `None`.
-    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
-        Ok(None)
+    fn snapshot_at_current_version(&self) -> BoxFuture<'_, Result<Option<Arc<dyn BaseTable>>>> {
+        async move { Ok(None) }.boxed()
     }
     /// Whether repeated identical scans return rows in the same order.
     ///
@@ -904,103 +1013,122 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         false
     }
     /// Restore the table to the currently checked out version.
-    async fn restore(&self) -> Result<()>;
+    fn restore(&self) -> BoxFuture<'_, Result<()>>;
     /// List the versions of the table.
-    async fn list_versions(&self) -> Result<Vec<Version>>;
+    fn list_versions(&self) -> BoxFuture<'_, Result<Vec<Version>>>;
     /// Create a new branch from `from` and return a handle scoped to it.
-    async fn create_branch(
-        &self,
-        name: &str,
+    fn create_branch<'a>(
+        &'a self,
+        name: &'a str,
         from: lance::dataset::refs::Ref,
-    ) -> Result<Arc<dyn BaseTable>>;
+    ) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>>;
     /// Check out an existing branch and return a handle scoped to it.
-    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>>;
+    fn checkout_branch<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>>;
     /// Check out an existing branch at an optional version, returning a handle.
     ///
     /// `None` tracks the branch's latest; `Some(v)` pins it to that version
     /// (read-only). The default implementation composes [`Self::checkout_branch`]
     /// and [`Self::checkout`]; implementations may override it to resolve the
     /// `(branch, version)` coordinate in a single manifest read.
-    async fn checkout_branch_version(
-        &self,
-        name: &str,
+    fn checkout_branch_version<'a>(
+        &'a self,
+        name: &'a str,
         version: Option<u64>,
-    ) -> Result<Arc<dyn BaseTable>> {
-        let branch = self.checkout_branch(name).await?;
-        if let Some(version) = version {
-            branch.checkout(version).await?;
+    ) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>> {
+        async move {
+            let branch = self.checkout_branch(name).await?;
+            if let Some(version) = version {
+                branch.checkout(version).await?;
+            }
+            Ok(branch)
         }
-        Ok(branch)
+        .boxed()
     }
     /// List the branches of the table.
-    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
+    fn list_branches(&self) -> BoxFuture<'_, Result<HashMap<String, BranchContents>>>;
     /// Delete a branch.
-    async fn delete_branch(&self, name: &str) -> Result<()>;
+    fn delete_branch<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<()>>;
     /// Diff a branch against main. Remote only.
-    async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
-        Err(Error::NotSupported {
-            message: "Branch diffs are only supported on Enterprise tables.".into(),
-        })
+    fn diff_branch<'a>(&'a self, _from_branch: &'a str) -> BoxFuture<'a, Result<BranchDiff>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "Branch diffs are only supported on Enterprise tables.".into(),
+            })
+        }
+        .boxed()
     }
     /// Cherry-pick a branch onto main, or dry-run. Remote only.
     /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
-    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
-        Err(Error::NotSupported {
-            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
-        })
+    fn cherry_pick<'a>(
+        &'a self,
+        _from_branch: &'a str,
+        _dry_run: bool,
+    ) -> BoxFuture<'a, Result<CherryPickResult>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
+            })
+        }
+        .boxed()
     }
     /// The branch this handle is scoped to, or `None` for `main`.
     fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
-    async fn table_definition(&self) -> Result<TableDefinition>;
+    fn table_definition(&self) -> BoxFuture<'_, Result<TableDefinition>>;
     /// Get the table URI (storage location)
-    async fn uri(&self) -> Result<String>;
+    fn uri(&self) -> BoxFuture<'_, Result<String>>;
     /// Get the storage options used when opening this table, if any.
     #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
-    async fn storage_options(&self) -> Option<HashMap<String, String>>;
+    fn storage_options(&self) -> BoxFuture<'_, Option<HashMap<String, String>>>;
     /// Get the initial storage options that were passed in when opening this table.
     ///
     /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
-    async fn initial_storage_options(&self) -> Option<HashMap<String, String>>;
+    fn initial_storage_options(&self) -> BoxFuture<'_, Option<HashMap<String, String>>>;
     /// Get the latest storage options, refreshing from provider if configured.
     ///
     /// Returns `Ok(Some(options))` if storage options are available (static or refreshed),
     /// `Ok(None)` if no storage options were configured, or `Err(...)` if refresh failed.
-    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>>;
+    fn latest_storage_options(&self) -> BoxFuture<'_, Result<Option<HashMap<String, String>>>>;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
-    async fn wait_for_index(
-        &self,
-        index_names: &[&str],
+    fn wait_for_index<'a>(
+        &'a self,
+        index_names: &'a [&'a str],
         timeout: std::time::Duration,
-    ) -> Result<()>;
+    ) -> BoxFuture<'a, Result<()>>;
     /// Get statistics on the table
-    async fn stats(&self) -> Result<TableStatistics>;
+    fn stats(&self) -> BoxFuture<'_, Result<TableStatistics>>;
     /// Create an ExecutionPlan for inserting data into the table.
     ///
     /// This is used by the DataFusion TableProvider implementation to support
     /// INSERT INTO statements.
-    async fn create_insert_exec(
+    fn create_insert_exec(
         &self,
         _input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         _write_params: WriteParams,
-    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-        Err(Error::NotSupported {
-            message: "create_insert_exec not implemented".to_string(),
-        })
+    ) -> BoxFuture<'_, Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "create_insert_exec not implemented".to_string(),
+            })
+        }
+        .boxed()
     }
     /// Update per-field metadata. Merges into existing metadata by default;
     /// [`FieldMetadataUpdate::remove`] deletes a key and
     /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
     ///
     /// The default returns `NotSupported`; Lance-backed and LanceDB Distributed tables override it.
-    async fn update_field_metadata(
-        &self,
-        _updates: &[FieldMetadataUpdate],
-    ) -> Result<UpdateFieldMetadataResult> {
-        Err(Error::NotSupported {
-            message: "update_field_metadata is not supported on this table type".into(),
-        })
+    fn update_field_metadata<'a>(
+        &'a self,
+        _updates: &'a [FieldMetadataUpdate],
+    ) -> BoxFuture<'a, Result<UpdateFieldMetadataResult>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "update_field_metadata is not supported on this table type".into(),
+            })
+        }
+        .boxed()
     }
 }
 
@@ -3375,7 +3503,6 @@ impl NativeTable {
     }
 }
 
-#[async_trait::async_trait]
 impl BaseTable for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -3399,788 +3526,930 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
-    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
-        let snapshot = self.dataset.new_query_snapshot().await?;
-        let mut table = self.with_dataset(snapshot);
-        // QueryTable requests do not carry a revision. A pinned snapshot must
-        // execute locally until the namespace API can accept that revision.
-        table
-            .pushdown_operations
-            .remove(&NamespaceClientPushdownOperation::QueryTable);
-        Ok(Arc::new(table))
-    }
-
-    async fn version(&self) -> Result<u64> {
-        Ok(self.dataset.get().await?.version().version)
-    }
-
-    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
-        let current = self.dataset.get().await?;
-        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
-            current.as_ref().clone(),
-            self.read_consistency_interval,
-        );
-        Ok(Arc::new(Self {
-            dataset,
-            ..self.clone()
-        }))
-    }
-
-    async fn checkout(&self, version: u64) -> Result<()> {
-        self.dataset.as_time_travel(version).await
-    }
-
-    async fn checkout_tag(&self, tag: &str) -> Result<()> {
-        self.dataset.as_time_travel(tag).await
-    }
-
-    async fn checkout_latest(&self) -> Result<()> {
-        // Bump before resolving "latest" so that request carries the floor.
-        self.bump_freshness();
-        self.dataset.as_latest().await?;
-        self.dataset.reload().await
-    }
-
-    async fn create_branch(
-        &self,
-        name: &str,
-        from: lance::dataset::refs::Ref,
-    ) -> Result<Arc<dyn BaseTable>> {
-        Self::validate_branch_name(name, "branch name")?;
-        if let lance::dataset::refs::Ref::Version(Some(from_branch), _) = &from {
-            Self::validate_branch_name(from_branch, "from_ref")?;
+    fn query_snapshot(&self) -> BoxFuture<'_, Result<Arc<dyn BaseTable>>> {
+        async move {
+            let snapshot = self.dataset.new_query_snapshot().await?;
+            let mut table = self.with_dataset(snapshot);
+            // QueryTable requests do not carry a revision. A pinned snapshot must
+            // execute locally until the namespace API can accept that revision.
+            table
+                .pushdown_operations
+                .remove(&NamespaceClientPushdownOperation::QueryTable);
+            Ok(Arc::new(table) as Arc<dyn BaseTable>)
         }
-        let mut ds = (*self.dataset.get().await?).clone();
-        let branch_ds = ds.create_branch(name, from, None).await?;
-        let dataset = dataset::DatasetConsistencyWrapper::new_latest(
-            branch_ds,
-            self.read_consistency_interval,
-        );
-        Ok(Arc::new(self.with_dataset(dataset)))
+        .boxed()
     }
 
-    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
-        Self::validate_branch_name(name, "branch name")?;
-        let branch_ds = self.dataset.get().await?.checkout_branch(name).await?;
-        let dataset = dataset::DatasetConsistencyWrapper::new_latest(
-            branch_ds,
-            self.read_consistency_interval,
-        );
-        Ok(Arc::new(self.with_dataset(dataset)))
+    fn version(&self) -> BoxFuture<'_, Result<u64>> {
+        async move { Ok(self.dataset.get().await?.version().version) }.boxed()
     }
 
-    async fn checkout_branch_version(
-        &self,
-        name: &str,
+    fn checkout_current(&self) -> BoxFuture<'_, Result<Arc<dyn BaseTable>>> {
+        async move {
+            let current = self.dataset.get().await?;
+            let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+                current.as_ref().clone(),
+                self.read_consistency_interval,
+            );
+            Ok(Arc::new(Self {
+                dataset,
+                ..self.clone()
+            }) as Arc<dyn BaseTable>)
+        }
+        .boxed()
+    }
+
+    fn checkout(&self, version: u64) -> BoxFuture<'_, Result<()>> {
+        async move { self.dataset.as_time_travel(version).await }.boxed()
+    }
+
+    fn checkout_tag<'a>(&'a self, tag: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move { self.dataset.as_time_travel(tag).await }.boxed()
+    }
+
+    fn checkout_latest(&self) -> BoxFuture<'_, Result<()>> {
+        async move {
+            // Bump before resolving "latest" so that request carries the floor.
+            self.bump_freshness();
+            self.dataset.as_latest().await?;
+            self.dataset.reload().await
+        }
+        .boxed()
+    }
+
+    fn create_branch<'a>(
+        &'a self,
+        name: &'a str,
+        from: lance::dataset::refs::Ref,
+    ) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>> {
+        async move {
+            Self::validate_branch_name(name, "branch name")?;
+            if let lance::dataset::refs::Ref::Version(Some(from_branch), _) = &from {
+                Self::validate_branch_name(from_branch, "from_ref")?;
+            }
+            let mut ds = (*self.dataset.get().await?).clone();
+            let branch_ds = ds.create_branch(name, from, None).await?;
+            let dataset = dataset::DatasetConsistencyWrapper::new_latest(
+                branch_ds,
+                self.read_consistency_interval,
+            );
+            Ok(Arc::new(self.with_dataset(dataset)) as Arc<dyn BaseTable>)
+        }
+        .boxed()
+    }
+
+    fn checkout_branch<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>> {
+        async move {
+            Self::validate_branch_name(name, "branch name")?;
+            let branch_ds = self.dataset.get().await?.checkout_branch(name).await?;
+            let dataset = dataset::DatasetConsistencyWrapper::new_latest(
+                branch_ds,
+                self.read_consistency_interval,
+            );
+            Ok(Arc::new(self.with_dataset(dataset)) as Arc<dyn BaseTable>)
+        }
+        .boxed()
+    }
+
+    fn checkout_branch_version<'a>(
+        &'a self,
+        name: &'a str,
         version: Option<u64>,
-    ) -> Result<Arc<dyn BaseTable>> {
-        let Some(version) = version else {
-            return self.checkout_branch(name).await;
-        };
-        Self::validate_branch_name(name, "branch name")?;
-        // Resolve (branch, version) in a single manifest read.
-        let branch_ds = self
-            .dataset
-            .get()
-            .await?
-            .checkout_version((name, version))
-            .await?;
-        let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
-            branch_ds,
-            self.read_consistency_interval,
-        );
-        Ok(Arc::new(self.with_dataset(dataset)))
+    ) -> BoxFuture<'a, Result<Arc<dyn BaseTable>>> {
+        async move {
+            let Some(version) = version else {
+                return self.checkout_branch(name).await;
+            };
+            Self::validate_branch_name(name, "branch name")?;
+            // Resolve (branch, version) in a single manifest read.
+            let branch_ds = self
+                .dataset
+                .get()
+                .await?
+                .checkout_version((name, version))
+                .await?;
+            let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
+                branch_ds,
+                self.read_consistency_interval,
+            );
+            Ok(Arc::new(self.with_dataset(dataset)))
+        }
+        .boxed()
     }
 
-    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
-        Ok(self.dataset.get().await?.list_branches().await?)
+    fn list_branches(&self) -> BoxFuture<'_, Result<HashMap<String, BranchContents>>> {
+        async move { Ok(self.dataset.get().await?.list_branches().await?) }.boxed()
     }
 
-    async fn delete_branch(&self, name: &str) -> Result<()> {
-        Self::validate_branch_name(name, "branch name")?;
-        let mut ds = (*self.dataset.get().await?).clone();
-        ds.delete_branch(name).await?;
-        Ok(())
+    fn delete_branch<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move {
+            Self::validate_branch_name(name, "branch name")?;
+            let mut ds = (*self.dataset.get().await?).clone();
+            ds.delete_branch(name).await?;
+            Ok(())
+        }
+        .boxed()
     }
 
     fn current_branch(&self) -> Option<String> {
         self.dataset.current_branch()
     }
 
-    async fn list_versions(&self) -> Result<Vec<Version>> {
-        Ok(self.dataset.get().await?.versions().await?)
+    fn list_versions(&self) -> BoxFuture<'_, Result<Vec<Version>>> {
+        async move { Ok(self.dataset.get().await?.versions().await?) }.boxed()
     }
 
-    async fn restore(&self) -> Result<()> {
-        let version = self
-            .dataset
-            .time_travel_version()
-            .ok_or_else(|| Error::InvalidInput {
-                message: "you must run checkout before running restore".to_string(),
-            })?;
-        {
-            // restore is the only "write" operation allowed in time travel mode
-            let mut dataset = (*self.dataset.get().await?).clone();
-            debug_assert_eq!(dataset.version().version, version);
-            dataset.restore().await?;
-        }
-        // Restore moves "latest", so bump before resolving it (as RemoteTable does).
-        self.bump_freshness();
-        self.dataset.as_latest().await?;
-        Ok(())
-    }
-
-    async fn schema(&self) -> Result<SchemaRef> {
-        let lance_schema = self.dataset.get().await?.schema().clone();
-        Ok(Arc::new(Schema::from(&lance_schema)))
-    }
-
-    async fn table_definition(&self) -> Result<TableDefinition> {
-        let schema = self.schema().await?;
-        TableDefinition::try_from_rich_schema(schema)
-    }
-
-    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize> {
-        let dataset = self.dataset.get().await?;
-        match filter {
-            None => Ok(dataset.count_rows(None).await?),
-            Some(Filter::Sql(sql)) => {
-                let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
-                Ok(dataset.count_rows(Some(sql)).await?)
+    fn restore(&self) -> BoxFuture<'_, Result<()>> {
+        async move {
+            let version =
+                self.dataset
+                    .time_travel_version()
+                    .ok_or_else(|| Error::InvalidInput {
+                        message: "you must run checkout before running restore".to_string(),
+                    })?;
+            {
+                // restore is the only "write" operation allowed in time travel mode
+                let mut dataset = (*self.dataset.get().await?).clone();
+                debug_assert_eq!(dataset.version().version, version);
+                dataset.restore().await?;
             }
-            Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
-                message: "Datafusion filters are not yet supported".to_string(),
-            }),
+            // Restore moves "latest", so bump before resolving it (as RemoteTable does).
+            self.bump_freshness();
+            self.dataset.as_latest().await?;
+            Ok(())
         }
+        .boxed()
     }
 
-    async fn add(&self, mut add: AddDataBuilder) -> Result<AddResult> {
-        let table_def = self.table_definition().await?;
-
-        self.dataset.ensure_mutable()?;
-        let ds_wrapper = self.dataset.clone();
-        let ds = self.dataset.get().await?;
-        crate::materialized_view::ensure_not_a_view(&self.name, &ds.schema().metadata, "add to")?;
-
-        let table_schema = Schema::from(&ds.schema().clone());
-        computed_columns::ensure_supported_function_metadata(&table_schema)?;
-        computed_columns::ensure_not_written(
-            &table_schema,
-            add.data.schema().fields().iter().map(|f| f.name().as_str()),
-        )?;
-        if matches!(add.mode, AddDataMode::Overwrite) {
-            computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+    fn schema(&self) -> BoxFuture<'_, Result<SchemaRef>> {
+        async move {
+            let lance_schema = self.dataset.get().await?.schema().clone();
+            Ok(Arc::new(Schema::from(&lance_schema)))
         }
+        .boxed()
+    }
 
-        let num_partitions = if let Some(parallelism) = add.write_parallelism {
-            parallelism
-        } else {
-            // Peek at the first batch to estimate a good partition count for
-            // write parallelism.
-            let mut peeked = PeekedScannable::new(add.data);
-            let n = if let Some(first_batch) = peeked.peek().await {
-                let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
-                estimate_write_partitions(
-                    first_batch.get_array_memory_size(),
-                    first_batch.num_rows(),
-                    peeked.num_rows(),
-                    max_partitions,
-                )
-            } else {
-                1
-            };
-            add.data = Box::new(peeked);
-            n
-        };
-
-        let output = add.into_plan(&table_schema, &table_def)?;
-
-        let mut lance_params = output
-            .write_options
-            .lance_write_params
-            .unwrap_or(WriteParams {
-                mode: match output.mode {
-                    AddDataMode::Append => WriteMode::Append,
-                    AddDataMode::Overwrite => WriteMode::Overwrite,
-                },
-                ..Default::default()
-            });
-        if output.allow_external_blob_outside_bases {
-            lance_params.allow_external_blob_outside_bases = true;
+    fn table_definition(&self) -> BoxFuture<'_, Result<TableDefinition>> {
+        async move {
+            let schema = self.schema().await?;
+            TableDefinition::try_from_rich_schema(schema)
         }
+        .boxed()
+    }
 
-        // Repartition for write parallelism if beneficial.
-        let plan = if num_partitions > 1 {
-            Arc::new(
-                datafusion_physical_plan::repartition::RepartitionExec::try_new(
-                    output.plan,
-                    datafusion_physical_plan::Partitioning::RoundRobinBatch(num_partitions),
-                )?,
-            ) as Arc<dyn ExecutionPlan>
-        } else {
-            output.plan
-        };
-
-        let insert_exec = Arc::new(InsertExec::new_with_tracker(
-            ds_wrapper.clone(),
-            ds,
-            plan,
-            lance_params,
-            output.tracker.clone(),
-        ));
-
-        let tracker_for_tasks = output.tracker.clone();
-        if let Some(ref t) = tracker_for_tasks {
-            t.set_total_tasks(num_partitions);
-        }
-        let _finish = write_progress::FinishOnDrop(output.tracker);
-
-        // Execute all partitions in parallel.
-        let task_ctx = Arc::new(TaskContext::default());
-        let handles = FuturesUnordered::new();
-        for partition in 0..num_partitions {
-            let exec = insert_exec.clone();
-            let ctx = task_ctx.clone();
-            let tracker = tracker_for_tasks.clone();
-            handles.push(tokio::spawn(async move {
-                let _guard = tracker.as_ref().map(|t| t.track_task());
-                let mut stream = exec
-                    .execute(partition, ctx)
-                    .map_err(|e| -> Error { e.into() })?;
-                while let Some(batch) = stream.next().await {
-                    batch.map_err(|e| -> Error { e.into() })?;
+    fn count_rows(&self, filter: Option<Filter>) -> BoxFuture<'_, Result<usize>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            match filter {
+                None => Ok(dataset.count_rows(None).await?),
+                Some(Filter::Sql(sql)) => {
+                    let sql = crate::expr::canonicalize_sql_predicate(&sql)?;
+                    Ok(dataset.count_rows(Some(sql)).await?)
                 }
-                Ok::<_, Error>(())
-            }));
+                Some(Filter::Datafusion(_)) => Err(Error::NotSupported {
+                    message: "Datafusion filters are not yet supported".to_string(),
+                }),
+            }
         }
-        for handle in handles {
-            handle.await.map_err(|e| Error::Runtime {
-                message: format!("Insert task panicked: {}", e),
-            })??;
+        .boxed()
+    }
+
+    fn add(&self, mut add: AddDataBuilder) -> BoxFuture<'_, Result<AddResult>> {
+        async move {
+            let table_def = self.table_definition().await?;
+
+            self.dataset.ensure_mutable()?;
+            let ds_wrapper = self.dataset.clone();
+            let ds = self.dataset.get().await?;
+            crate::materialized_view::ensure_not_a_view(
+                &self.name,
+                &ds.schema().metadata,
+                "add to",
+            )?;
+
+            let table_schema = Schema::from(&ds.schema().clone());
+            computed_columns::ensure_supported_function_metadata(&table_schema)?;
+            computed_columns::ensure_not_written(
+                &table_schema,
+                add.data.schema().fields().iter().map(|f| f.name().as_str()),
+            )?;
+            if matches!(add.mode, AddDataMode::Overwrite) {
+                computed_columns::ensure_no_foreign_declarations(add.data.schema().fields())?;
+            }
+
+            let num_partitions = if let Some(parallelism) = add.write_parallelism {
+                parallelism
+            } else {
+                // Peek at the first batch to estimate a good partition count for
+                // write parallelism.
+                let mut peeked = PeekedScannable::new(add.data);
+                let n = if let Some(first_batch) = peeked.peek().await {
+                    let max_partitions = lance_core::utils::tokio::get_num_compute_intensive_cpus();
+                    estimate_write_partitions(
+                        first_batch.get_array_memory_size(),
+                        first_batch.num_rows(),
+                        peeked.num_rows(),
+                        max_partitions,
+                    )
+                } else {
+                    1
+                };
+                add.data = Box::new(peeked);
+                n
+            };
+
+            let output = add.into_plan(&table_schema, &table_def)?;
+
+            let mut lance_params = output
+                .write_options
+                .lance_write_params
+                .unwrap_or(WriteParams {
+                    mode: match output.mode {
+                        AddDataMode::Append => WriteMode::Append,
+                        AddDataMode::Overwrite => WriteMode::Overwrite,
+                    },
+                    ..Default::default()
+                });
+            if output.allow_external_blob_outside_bases {
+                lance_params.allow_external_blob_outside_bases = true;
+            }
+
+            // Repartition for write parallelism if beneficial.
+            let plan = if num_partitions > 1 {
+                Arc::new(
+                    datafusion_physical_plan::repartition::RepartitionExec::try_new(
+                        output.plan,
+                        datafusion_physical_plan::Partitioning::RoundRobinBatch(num_partitions),
+                    )?,
+                ) as Arc<dyn ExecutionPlan>
+            } else {
+                output.plan
+            };
+
+            let insert_exec = Arc::new(InsertExec::new_with_tracker(
+                ds_wrapper.clone(),
+                ds,
+                plan,
+                lance_params,
+                output.tracker.clone(),
+            ));
+
+            let tracker_for_tasks = output.tracker.clone();
+            if let Some(ref t) = tracker_for_tasks {
+                t.set_total_tasks(num_partitions);
+            }
+            let _finish = write_progress::FinishOnDrop(output.tracker);
+
+            // Execute all partitions in parallel.
+            let task_ctx = Arc::new(TaskContext::default());
+            let handles = FuturesUnordered::new();
+            for partition in 0..num_partitions {
+                let exec = insert_exec.clone();
+                let ctx = task_ctx.clone();
+                let tracker = tracker_for_tasks.clone();
+                handles.push(tokio::spawn(async move {
+                    let _guard = tracker.as_ref().map(|t| t.track_task());
+                    let mut stream = exec
+                        .execute(partition, ctx)
+                        .map_err(|e| -> Error { e.into() })?;
+                    while let Some(batch) = stream.next().await {
+                        batch.map_err(|e| -> Error { e.into() })?;
+                    }
+                    Ok::<_, Error>(())
+                }));
+            }
+            for handle in handles {
+                handle.await.map_err(|e| Error::Runtime {
+                    message: format!("Insert task panicked: {}", e),
+                })??;
+            }
+
+            let version = ds_wrapper.get().await?.manifest().version;
+            self.bump_freshness();
+            Ok(AddResult { version })
         }
-
-        let version = ds_wrapper.get().await?.manifest().version;
-        self.bump_freshness();
-        Ok(AddResult { version })
+        .boxed()
     }
 
-    async fn create_index(&self, opts: IndexBuilder) -> Result<()> {
-        let prepared = self.prepare_index(&opts).await?;
-        self.build_index(opts, prepared).await
+    fn create_index(&self, opts: IndexBuilder) -> BoxFuture<'_, Result<()>> {
+        async move {
+            let prepared = self.prepare_index(&opts).await?;
+            self.build_index(opts, prepared).await
+        }
+        .boxed()
     }
 
-    async fn create_index_async(&self, opts: IndexBuilder) -> Result<Job> {
-        // Prepare before spawning so bad input is reported by this call rather
-        // than only by the job.
-        let prepared = self.prepare_index(&opts).await?;
-        let table = self.clone();
-        Ok(Job::spawned(tokio::spawn(async move {
-            table.build_index(opts, prepared).await
-        })))
+    fn create_index_async(&self, opts: IndexBuilder) -> BoxFuture<'_, Result<Job>> {
+        async move {
+            // Prepare before spawning so bad input is reported by this call rather
+            // than only by the job.
+            let prepared = self.prepare_index(&opts).await?;
+            let table = self.clone();
+            Ok(Job::spawned(tokio::spawn(async move {
+                table.build_index(opts, prepared).await
+            })))
+        }
+        .boxed()
     }
 
-    async fn drop_index(&self, index_name: &str) -> Result<()> {
-        self.dataset.ensure_mutable()?;
-        let mut dataset = (*self.dataset.get().await?).clone();
-        dataset.drop_index(index_name).await?;
-        self.dataset.update(dataset);
-        Ok(())
+    fn drop_index<'a>(&'a self, index_name: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move {
+            self.dataset.ensure_mutable()?;
+            let mut dataset = (*self.dataset.get().await?).clone();
+            dataset.drop_index(index_name).await?;
+            self.dataset.update(dataset);
+            Ok(())
+        }
+        .boxed()
     }
 
-    async fn prewarm_index(&self, index_name: &str) -> Result<()> {
-        let dataset = self.dataset.get().await?;
-        Ok(dataset.prewarm_index(index_name).await?)
+    fn prewarm_index<'a>(&'a self, index_name: &'a str) -> BoxFuture<'a, Result<()>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            Ok(dataset.prewarm_index(index_name).await?)
+        }
+        .boxed()
     }
 
-    async fn prewarm_data(&self, _columns: Option<Vec<String>>) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "prewarm_data is currently only supported in LanceDB Distributed.".into(),
-        })
+    fn prewarm_data(&self, _columns: Option<Vec<String>>) -> BoxFuture<'_, Result<()>> {
+        async move {
+            Err(Error::NotSupported {
+                message: "prewarm_data is currently only supported in LanceDB Distributed.".into(),
+            })
+        }
+        .boxed()
     }
 
-    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult> {
-        // Delegate to the submodule implementation
-        let result = update::execute_update(self, update).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn update(&self, update: UpdateBuilder) -> BoxFuture<'_, Result<UpdateResult>> {
+        async move {
+            // Delegate to the submodule implementation
+            let result = update::execute_update(self, update).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn create_plan(
-        &self,
-        query: &AnyQuery,
+    fn create_plan<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>> {
-        query::create_plan(self, query, options).await
+    ) -> BoxFuture<'a, Result<Arc<dyn ExecutionPlan>>> {
+        query::create_plan(self, query, options).boxed()
     }
 
-    async fn query(
-        &self,
-        query: &AnyQuery,
+    fn query<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream> {
-        query::execute_query(self, query, options).await
+    ) -> BoxFuture<'a, Result<DatasetRecordBatchStream>> {
+        query::execute_query(self, query, options).boxed()
     }
 
-    async fn analyze_plan(
-        &self,
-        query: &AnyQuery,
+    fn analyze_plan<'a>(
+        &'a self,
+        query: &'a AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<String> {
-        query::analyze_query_plan(self, query, options).await
+    ) -> BoxFuture<'a, Result<String>> {
+        query::analyze_query_plan(self, query, options).boxed()
     }
 
-    async fn merge_insert(
+    fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeResult> {
-        let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
-        self.ensure_not_a_view("merge insert into").await?;
-        computed_columns::ensure_not_written(
-            &Schema::from(self.dataset.get().await?.schema()),
-            source_schema.fields().iter().map(|f| f.name().as_str()),
-        )?;
-        let result = merge::execute_merge_insert(self, params, new_data).await?;
-        self.bump_freshness();
-        Ok(result)
+    ) -> BoxFuture<'_, Result<MergeResult>> {
+        async move {
+            let source_schema = arrow_array::RecordBatchReader::schema(&new_data);
+            self.ensure_not_a_view("merge insert into").await?;
+            computed_columns::ensure_not_written(
+                &Schema::from(self.dataset.get().await?.schema()),
+                source_schema.fields().iter().map(|f| f.name().as_str()),
+            )?;
+            let result = merge::execute_merge_insert(self, params, new_data).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn set_unenforced_primary_key(&self, columns: &[&str]) -> Result<()> {
-        primary_key::set_unenforced_primary_key(self, columns).await
+    fn set_unenforced_primary_key<'a>(
+        &'a self,
+        columns: &'a [&'a str],
+    ) -> BoxFuture<'a, Result<()>> {
+        async move { primary_key::set_unenforced_primary_key(self, columns).await }.boxed()
     }
 
-    async fn enable_rte(&self, spec: RTEWriteSpec) -> Result<()> {
-        merge::lsm::enable_rte(self, spec).await
+    fn enable_rte(&self, spec: RTEWriteSpec) -> BoxFuture<'_, Result<()>> {
+        async move { merge::lsm::enable_rte(self, spec).await }.boxed()
     }
 
-    async fn disable_rte(&self) -> Result<()> {
-        merge::lsm::disable_rte(self).await
+    fn disable_rte(&self) -> BoxFuture<'_, Result<()>> {
+        async move { merge::lsm::disable_rte(self).await }.boxed()
     }
 
-    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
-        merge::lsm::get_rte_spec(self).await
+    fn get_rte_spec(&self) -> BoxFuture<'_, Result<Option<RTEWriteSpec>>> {
+        async move { merge::lsm::get_rte_spec(self).await }.boxed()
     }
 
-    async fn close_rte_writers(&self) -> Result<()> {
-        merge::lsm::close_rte_writers(self).await
+    fn close_rte_writers(&self) -> BoxFuture<'_, Result<()>> {
+        async move { merge::lsm::close_rte_writers(self).await }.boxed()
     }
 
-    async fn blob_columns(&self) -> Result<Vec<String>> {
-        let schema = self.schema().await?;
-        Ok(crate::blob::blob_column_names(schema.as_ref()))
+    fn blob_columns(&self) -> BoxFuture<'_, Result<Vec<String>>> {
+        async move {
+            let schema = self.schema().await?;
+            Ok(crate::blob::blob_column_names(schema.as_ref()))
+        }
+        .boxed()
     }
 
-    async fn fetch_blobs(&self, column: &str, row_ids: &[u64]) -> Result<LargeBinaryArray> {
-        let dataset = self.dataset.get().await?;
-        crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
+    fn fetch_blobs<'a>(
+        &'a self,
+        column: &'a str,
+        row_ids: &'a [u64],
+    ) -> BoxFuture<'a, Result<LargeBinaryArray>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            crate::blob::take_blobs_aligned(&dataset, column, row_ids).await
+        }
+        .boxed()
     }
 
-    async fn fetch_blob_ranges(
-        &self,
-        column: &str,
-        requests: &[BlobRangeRequest],
-    ) -> Result<LargeBinaryArray> {
-        let dataset = self.dataset.get().await?;
-        crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
+    fn fetch_blob_ranges<'a>(
+        &'a self,
+        column: &'a str,
+        requests: &'a [BlobRangeRequest],
+    ) -> BoxFuture<'a, Result<LargeBinaryArray>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            crate::blob::take_blob_ranges_aligned(&dataset, column, requests).await
+        }
+        .boxed()
     }
 
-    async fn fetch_blob_files(
-        &self,
-        column: &str,
-        row_ids: &[u64],
-    ) -> Result<Vec<Option<BlobFile>>> {
-        let dataset = self.dataset.get().await?;
-        crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
+    fn fetch_blob_files<'a>(
+        &'a self,
+        column: &'a str,
+        row_ids: &'a [u64],
+    ) -> BoxFuture<'a, Result<Vec<Option<BlobFile>>>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            crate::blob::take_blob_files_aligned(&dataset, column, row_ids).await
+        }
+        .boxed()
     }
 
-    async fn open_blob_file(&self, descriptor: &BlobDescriptor) -> Result<BlobFile> {
-        let dataset = self.dataset.get().await?;
-        crate::blob::open_native_blob_file(&dataset, descriptor).await
+    fn open_blob_file<'a>(
+        &'a self,
+        descriptor: &'a BlobDescriptor,
+    ) -> BoxFuture<'a, Result<BlobFile>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            crate::blob::open_native_blob_file(&dataset, descriptor).await
+        }
+        .boxed()
     }
 
     /// Delete rows from the table
-    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult> {
-        let result = delete::execute_delete(self, predicate).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn delete<'a>(&'a self, predicate: Predicate<'a>) -> BoxFuture<'a, Result<DeleteResult>> {
+        async move {
+            let result = delete::execute_delete(self, predicate).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn tags(&self) -> Result<Box<dyn Tags + '_>> {
-        Ok(Box::new(NativeTags {
-            dataset: self.dataset.clone(),
-        }))
+    fn tags<'a>(&'a self) -> BoxFuture<'a, Result<Box<dyn Tags + 'a>>> {
+        async move {
+            Ok(Box::new(NativeTags {
+                dataset: self.dataset.clone(),
+            }) as Box<dyn Tags + 'a>)
+        }
+        .boxed()
     }
 
-    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats> {
-        // Delegate to the submodule implementation
-        optimize::execute_optimize(self, action).await
+    fn optimize(&self, action: OptimizeAction) -> BoxFuture<'_, Result<OptimizeStats>> {
+        async move {
+            // Delegate to the submodule implementation
+            optimize::execute_optimize(self, action).await
+        }
+        .boxed()
     }
 
-    async fn add_columns(
+    fn add_columns(
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<AddColumnsResult> {
-        let result = schema_evolution::execute_add_columns(self, transforms, read_columns).await?;
-        self.bump_freshness();
-        Ok(result)
+    ) -> BoxFuture<'_, Result<AddColumnsResult>> {
+        async move {
+            let result =
+                schema_evolution::execute_add_columns(self, transforms, read_columns).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn add_computed_columns(
-        &self,
-        columns: &[(String, String)],
+    fn add_computed_columns<'a>(
+        &'a self,
+        columns: &'a [(String, String)],
         options: computed_columns::ComputedColumnOptions,
-    ) -> Result<AddColumnsResult> {
-        let result = schema_evolution::execute_declare(self, columns, options).await?;
-        self.bump_freshness();
-        Ok(result)
+    ) -> BoxFuture<'a, Result<AddColumnsResult>> {
+        async move {
+            let result = schema_evolution::execute_declare(self, columns, options).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn refresh_column(&self, column: &str) -> Result<RefreshColumnResult> {
-        let result = refresh::execute_refresh_column(self, column).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn refresh_column<'a>(&'a self, column: &'a str) -> BoxFuture<'a, Result<RefreshColumnResult>> {
+        async move {
+            let result = refresh::execute_refresh_column(self, column).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn refresh_column_async(
-        &self,
-        column: &str,
-    ) -> Result<Job<crate::function::RefreshColumnResult>> {
-        refresh::execute_refresh_column_async(self, column).await
+    fn refresh_column_async<'a>(
+        &'a self,
+        column: &'a str,
+    ) -> BoxFuture<'a, Result<Job<crate::function::RefreshColumnResult>>> {
+        async move { refresh::execute_refresh_column_async(self, column).await }.boxed()
     }
 
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult> {
-        let result = schema_evolution::execute_alter_columns(self, alterations).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn alter_columns<'a>(
+        &'a self,
+        alterations: &'a [ColumnAlteration],
+    ) -> BoxFuture<'a, Result<AlterColumnsResult>> {
+        async move {
+            let result = schema_evolution::execute_alter_columns(self, alterations).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn update_field_metadata(
-        &self,
-        updates: &[FieldMetadataUpdate],
-    ) -> Result<UpdateFieldMetadataResult> {
-        let result = schema_evolution::execute_update_field_metadata(self, updates).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn update_field_metadata<'a>(
+        &'a self,
+        updates: &'a [FieldMetadataUpdate],
+    ) -> BoxFuture<'a, Result<UpdateFieldMetadataResult>> {
+        async move {
+            let result = schema_evolution::execute_update_field_metadata(self, updates).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult> {
-        let result = schema_evolution::execute_drop_columns(self, columns).await?;
-        self.bump_freshness();
-        Ok(result)
+    fn drop_columns<'a>(
+        &'a self,
+        columns: &'a [&'a str],
+    ) -> BoxFuture<'a, Result<DropColumnsResult>> {
+        async move {
+            let result = schema_evolution::execute_drop_columns(self, columns).await?;
+            self.bump_freshness();
+            Ok(result)
+        }
+        .boxed()
     }
 
-    async fn list_indices(&self) -> Result<Vec<IndexConfig>> {
-        let dataset = self.dataset.get().await?;
-        let total_rows = dataset.count_rows(None).await? as u64;
-        let descriptions = dataset.describe_indices(None).await?;
-        let mut indices: Vec<IndexConfig> = descriptions
-            .iter()
-            .filter_map(|idx_desc| {
-                let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
-                if index_type == crate::index::IndexType::Unknown {
-                    // Internal or future index types that this version doesn't recognize
-                    // (e.g. Lance's internal FragReuseIndex) are silently excluded from
-                    // the user-visible index listing.
-                    log::debug!(
-                        "Skipping unrecognized index '{}' (type '{}') in list_indices",
-                        idx_desc.name(),
-                        idx_desc.index_type(),
-                    );
-                    return None;
-                }
-
-                let field_ids = idx_desc.field_ids();
-                let mut columns = Vec::with_capacity(field_ids.len());
-                for field_id in field_ids {
-                    let field_path = match if index_type == crate::index::IndexType::FTS {
-                        public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
-                    } else {
-                        dataset
-                            .schema()
-                            .field_path(*field_id as i32)
-                            .map_err(Into::into)
-                    } {
-                        Ok(field_path) => field_path,
-                        Err(e) => {
-                            log::warn!(
-                                "Failed to resolve field path for index {} field id {}: {}",
-                                idx_desc.name(),
-                                field_id,
-                                e
-                            );
-                            return None;
-                        }
-                    };
-                    columns.push(field_path);
-                }
-
-                let segments = idx_desc.segments();
-                let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
-                let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
-                let index_version = segments.first().map(|seg| seg.index_version);
-                let num_indexed_rows = idx_desc.rows_indexed();
-
-                Some(IndexConfig {
-                    name: idx_desc.name().to_string(),
-                    index_type,
-                    columns,
-                    index_uuid,
-                    type_url: Some(idx_desc.type_url().to_string()),
-                    created_at,
-                    num_indexed_rows: Some(num_indexed_rows),
-                    num_unindexed_rows: Some(total_rows.saturating_sub(num_indexed_rows)),
-                    size_bytes: idx_desc.total_size_bytes(),
-                    num_segments: Some(segments.len() as u32),
-                    index_version,
-                    index_details: idx_desc.details().ok(),
-                })
-            })
-            .collect();
-
-        for index in indices
-            .iter_mut()
-            .filter(|index| index.index_type == crate::index::IndexType::FTS)
-        {
-            let Some(description) = descriptions
+    fn list_indices(&self) -> BoxFuture<'_, Result<Vec<IndexConfig>>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            let total_rows = dataset.count_rows(None).await? as u64;
+            let descriptions = dataset.describe_indices(None).await?;
+            let mut indices: Vec<IndexConfig> = descriptions
                 .iter()
-                .find(|description| description.name() == index.name)
-            else {
-                continue;
-            };
-            let segments = description.segments();
-            let Some(segment) = segments.first() else {
-                continue;
-            };
-            // The listing itself only needs the manifest. Missing index files must
-            // not hide every other index, or callers cannot find the one to repair.
-            let params = match load_segment_params(&dataset, segment).await {
-                Ok(params) => params,
-                Err(err) => {
-                    log::warn!(
-                        "Failed to read full text search configuration for index '{}': {}",
-                        index.name,
-                        err
-                    );
-                    index.index_details = None;
-                    continue;
-                }
-            };
-            let details = serde_json::to_string(&params).map_err(|source| Error::Other {
-                message: format!(
-                    "Failed to serialize full text search configuration for index '{}'",
-                    index.name
-                ),
-                source: Some(Box::new(source)),
-            })?;
-            index.index_details = Some(details);
-        }
-        Ok(indices)
-    }
+                .filter_map(|idx_desc| {
+                    let index_type = crate::index::IndexType::from_description(idx_desc.as_ref());
+                    if index_type == crate::index::IndexType::Unknown {
+                        // Internal or future index types that this version doesn't recognize
+                        // (e.g. Lance's internal FragReuseIndex) are silently excluded from
+                        // the user-visible index listing.
+                        log::debug!(
+                            "Skipping unrecognized index '{}' (type '{}') in list_indices",
+                            idx_desc.name(),
+                            idx_desc.index_type(),
+                        );
+                        return None;
+                    }
 
-    async fn uri(&self) -> Result<String> {
-        Ok(self.uri.clone())
-    }
+                    let field_ids = idx_desc.field_ids();
+                    let mut columns = Vec::with_capacity(field_ids.len());
+                    for field_id in field_ids {
+                        let field_path = match if index_type == crate::index::IndexType::FTS {
+                            public_fts_field_path_by_id(dataset.schema(), *field_id as i32)
+                        } else {
+                            dataset
+                                .schema()
+                                .field_path(*field_id as i32)
+                                .map_err(Into::into)
+                        } {
+                            Ok(field_path) => field_path,
+                            Err(e) => {
+                                log::warn!(
+                                    "Failed to resolve field path for index {} field id {}: {}",
+                                    idx_desc.name(),
+                                    field_id,
+                                    e
+                                );
+                                return None;
+                            }
+                        };
+                        columns.push(field_path);
+                    }
 
-    async fn storage_options(&self) -> Option<HashMap<String, String>> {
-        self.initial_storage_options().await
-    }
+                    let segments = idx_desc.segments();
+                    let index_uuid = segments.first().map(|seg| seg.uuid.to_string());
+                    let created_at = segments.iter().filter_map(|seg| seg.created_at).min();
+                    let index_version = segments.first().map(|seg| seg.index_version);
+                    let num_indexed_rows = idx_desc.rows_indexed();
 
-    async fn initial_storage_options(&self) -> Option<HashMap<String, String>> {
-        self.dataset
-            .get()
-            .await
-            .ok()
-            .and_then(|dataset| dataset.initial_storage_options().cloned())
-    }
-
-    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>> {
-        let dataset = self.dataset.get().await?;
-        Ok(dataset.latest_storage_options().await?.map(|o| o.0))
-    }
-
-    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>> {
-        // describe_indices() reads only manifest-level metadata (no index file I/O).
-        // VectorIndexDetails in the manifest carries distance_type for indices written
-        // by recent Lance versions. For older datasets that didn't write those details
-        // we fall back to index_statistics() for vector index types.
-        let dataset = self.dataset.get().await?;
-
-        let mut descriptions = dataset
-            .describe_indices(Some(IndexCriteria::default().with_name(index_name)))
-            .await?;
-        let Some(description) = descriptions.pop() else {
-            return Ok(None);
-        };
-
-        let index_type = crate::index::IndexType::from_description(description.as_ref());
-
-        let is_vector = matches!(
-            index_type,
-            crate::index::IndexType::IvfFlat
-                | crate::index::IndexType::IvfSq
-                | crate::index::IndexType::IvfPq
-                | crate::index::IndexType::IvfRq
-                | crate::index::IndexType::IvfHnswPq
-                | crate::index::IndexType::IvfHnswSq
-                | crate::index::IndexType::IvfHnswFlat
-        );
-
-        // details() serializes VectorIndexDetails to JSON with an uppercase "metric_type"
-        // field (e.g. "L2", "COSINE"). Parse it with a case-insensitive match.
-        let distance_type = description.details().ok().and_then(|json| {
-            #[derive(serde::Deserialize)]
-            struct Details {
-                metric_type: Option<String>,
-            }
-            serde_json::from_str::<Details>(&json)
-                .ok()
-                .and_then(|d| d.metric_type)
-                .and_then(|m| match m.to_uppercase().as_str() {
-                    "L2" => Some(DistanceType::L2),
-                    "COSINE" => Some(DistanceType::Cosine),
-                    "DOT" => Some(DistanceType::Dot),
-                    "HAMMING" => Some(DistanceType::Hamming),
-                    _ => None,
+                    Some(IndexConfig {
+                        name: idx_desc.name().to_string(),
+                        index_type,
+                        columns,
+                        index_uuid,
+                        type_url: Some(idx_desc.type_url().to_string()),
+                        created_at,
+                        num_indexed_rows: Some(num_indexed_rows),
+                        num_unindexed_rows: Some(total_rows.saturating_sub(num_indexed_rows)),
+                        size_bytes: idx_desc.total_size_bytes(),
+                        num_segments: Some(segments.len() as u32),
+                        index_version,
+                        index_details: idx_desc.details().ok(),
+                    })
                 })
-        });
+                .collect();
 
-        // Older Lance datasets didn't write VectorIndexDetails, so distance_type won't
-        // be in the manifest. Fall back to index_statistics() only in that case.
-        if is_vector && distance_type.is_none() {
-            let stats = dataset.index_statistics(index_name).await?;
-            let mut stats: IndexStatisticsImpl =
-                serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
-                    message: format!("error deserializing index statistics: {}", e),
+            for index in indices
+                .iter_mut()
+                .filter(|index| index.index_type == crate::index::IndexType::FTS)
+            {
+                let Some(description) = descriptions
+                    .iter()
+                    .find(|description| description.name() == index.name)
+                else {
+                    continue;
+                };
+                let segments = description.segments();
+                let Some(segment) = segments.first() else {
+                    continue;
+                };
+                // The listing itself only needs the manifest. Missing index files must
+                // not hide every other index, or callers cannot find the one to repair.
+                let params = match load_segment_params(&dataset, segment).await {
+                    Ok(params) => params,
+                    Err(err) => {
+                        log::warn!(
+                            "Failed to read full text search configuration for index '{}': {}",
+                            index.name,
+                            err
+                        );
+                        index.index_details = None;
+                        continue;
+                    }
+                };
+                let details = serde_json::to_string(&params).map_err(|source| Error::Other {
+                    message: format!(
+                        "Failed to serialize full text search configuration for index '{}'",
+                        index.name
+                    ),
+                    source: Some(Box::new(source)),
                 })?;
-            let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
-                message: "index statistics is empty".to_string(),
-            })?;
-            return Ok(Some(IndexStatistics {
-                num_indexed_rows: stats.num_indexed_rows,
-                num_unindexed_rows: stats.num_unindexed_rows,
-                index_type,
-                distance_type: first_index.metric_type,
-                num_indices: stats.num_indices,
-            }));
+                index.index_details = Some(details);
+            }
+            Ok(indices)
         }
+        .boxed()
+    }
 
-        let num_indexed_rows = description.rows_indexed() as usize;
-        let total_rows = dataset.count_rows(None).await?;
-        let num_unindexed_rows = total_rows.saturating_sub(num_indexed_rows);
-        Ok(Some(IndexStatistics {
-            num_indexed_rows,
-            num_unindexed_rows,
-            index_type,
-            distance_type,
-            num_indices: Some(description.metadata().len() as u32),
-        }))
+    fn uri(&self) -> BoxFuture<'_, Result<String>> {
+        async move { Ok(self.uri.clone()) }.boxed()
+    }
+
+    fn storage_options(&self) -> BoxFuture<'_, Option<HashMap<String, String>>> {
+        async move { self.initial_storage_options().await }.boxed()
+    }
+
+    fn initial_storage_options(&self) -> BoxFuture<'_, Option<HashMap<String, String>>> {
+        async move {
+            self.dataset
+                .get()
+                .await
+                .ok()
+                .and_then(|dataset| dataset.initial_storage_options().cloned())
+        }
+        .boxed()
+    }
+
+    fn latest_storage_options(&self) -> BoxFuture<'_, Result<Option<HashMap<String, String>>>> {
+        async move {
+            let dataset = self.dataset.get().await?;
+            Ok(dataset.latest_storage_options().await?.map(|o| o.0))
+        }
+        .boxed()
+    }
+
+    fn index_stats<'a>(
+        &'a self,
+        index_name: &'a str,
+    ) -> BoxFuture<'a, Result<Option<IndexStatistics>>> {
+        async move {
+            // describe_indices() reads only manifest-level metadata (no index file I/O).
+            // VectorIndexDetails in the manifest carries distance_type for indices written
+            // by recent Lance versions. For older datasets that didn't write those details
+            // we fall back to index_statistics() for vector index types.
+            let dataset = self.dataset.get().await?;
+
+            let mut descriptions = dataset
+                .describe_indices(Some(IndexCriteria::default().with_name(index_name)))
+                .await?;
+            let Some(description) = descriptions.pop() else {
+                return Ok(None);
+            };
+
+            let index_type = crate::index::IndexType::from_description(description.as_ref());
+
+            let is_vector = matches!(
+                index_type,
+                crate::index::IndexType::IvfFlat
+                    | crate::index::IndexType::IvfSq
+                    | crate::index::IndexType::IvfPq
+                    | crate::index::IndexType::IvfRq
+                    | crate::index::IndexType::IvfHnswPq
+                    | crate::index::IndexType::IvfHnswSq
+                    | crate::index::IndexType::IvfHnswFlat
+            );
+
+            // details() serializes VectorIndexDetails to JSON with an uppercase "metric_type"
+            // field (e.g. "L2", "COSINE"). Parse it with a case-insensitive match.
+            let distance_type = description.details().ok().and_then(|json| {
+                #[derive(serde::Deserialize)]
+                struct Details {
+                    metric_type: Option<String>,
+                }
+                serde_json::from_str::<Details>(&json)
+                    .ok()
+                    .and_then(|d| d.metric_type)
+                    .and_then(|m| match m.to_uppercase().as_str() {
+                        "L2" => Some(DistanceType::L2),
+                        "COSINE" => Some(DistanceType::Cosine),
+                        "DOT" => Some(DistanceType::Dot),
+                        "HAMMING" => Some(DistanceType::Hamming),
+                        _ => None,
+                    })
+            });
+
+            // Older Lance datasets didn't write VectorIndexDetails, so distance_type won't
+            // be in the manifest. Fall back to index_statistics() only in that case.
+            if is_vector && distance_type.is_none() {
+                let stats = dataset.index_statistics(index_name).await?;
+                let mut stats: IndexStatisticsImpl =
+                    serde_json::from_str(&stats).map_err(|e| Error::InvalidInput {
+                        message: format!("error deserializing index statistics: {}", e),
+                    })?;
+                let first_index = stats.indices.pop().ok_or_else(|| Error::InvalidInput {
+                    message: "index statistics is empty".to_string(),
+                })?;
+                return Ok(Some(IndexStatistics {
+                    num_indexed_rows: stats.num_indexed_rows,
+                    num_unindexed_rows: stats.num_unindexed_rows,
+                    index_type,
+                    distance_type: first_index.metric_type,
+                    num_indices: stats.num_indices,
+                }));
+            }
+
+            let num_indexed_rows = description.rows_indexed() as usize;
+            let total_rows = dataset.count_rows(None).await?;
+            let num_unindexed_rows = total_rows.saturating_sub(num_indexed_rows);
+            Ok(Some(IndexStatistics {
+                num_indexed_rows,
+                num_unindexed_rows,
+                index_type,
+                distance_type,
+                num_indices: Some(description.metadata().len() as u32),
+            }))
+        }
+        .boxed()
     }
 
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
-    async fn wait_for_index(
-        &self,
-        index_names: &[&str],
+    fn wait_for_index<'a>(
+        &'a self,
+        index_names: &'a [&'a str],
         timeout: std::time::Duration,
-    ) -> Result<()> {
-        wait_for_index(self, index_names, timeout).await
+    ) -> BoxFuture<'a, Result<()>> {
+        async move { wait_for_index(self, index_names, timeout).await }.boxed()
     }
 
-    async fn stats(&self) -> Result<TableStatistics> {
-        let num_rows = self.count_rows(None).await?;
-        let num_indices = self.list_indices().await?.len();
-        let ds = self.dataset.get().await?;
-        let num_deleted_rows = Some(ds.count_deleted_rows().await?);
-        // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
-        // would open every data file to read its column metadata, which costs one
-        // IO per fragment and reports 0 for legacy v1 storage.
-        //
-        // The manifest summary covers only the fragments' base data files, so
-        // overlay files (recorded on each fragment) and index files (recorded in
-        // the manifest's index section) are added separately.
-        let mut total_bytes = ds.manifest().summary().total_files_size as usize;
-        for frag in ds.manifest().fragments.iter() {
-            for overlay in &frag.overlays {
-                if let Some(size) = overlay.data_file.file_size_bytes.get() {
-                    total_bytes += size.get() as usize;
+    fn stats(&self) -> BoxFuture<'_, Result<TableStatistics>> {
+        async move {
+            let num_rows = self.count_rows(None).await?;
+            let num_indices = self.list_indices().await?.len();
+            let ds = self.dataset.get().await?;
+            let num_deleted_rows = Some(ds.count_deleted_rows().await?);
+            // Sizes come from the manifest. Summing per-field `bytes_on_disk` instead
+            // would open every data file to read its column metadata, which costs one
+            // IO per fragment and reports 0 for legacy v1 storage.
+            //
+            // The manifest summary covers only the fragments' base data files, so
+            // overlay files (recorded on each fragment) and index files (recorded in
+            // the manifest's index section) are added separately.
+            let mut total_bytes = ds.manifest().summary().total_files_size as usize;
+            for frag in ds.manifest().fragments.iter() {
+                for overlay in &frag.overlays {
+                    if let Some(size) = overlay.data_file.file_size_bytes.get() {
+                        total_bytes += size.get() as usize;
+                    }
                 }
             }
-        }
-        for index in ds.load_indices().await?.iter() {
-            total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
-        }
+            for index in ds.load_indices().await?.iter() {
+                total_bytes += index.total_size_bytes().unwrap_or(0) as usize;
+            }
 
-        let frags = ds.get_fragments();
-        let mut sorted_sizes = join_all(
-            frags
+            let frags = ds.get_fragments();
+            let mut sorted_sizes = join_all(
+                frags
+                    .iter()
+                    .map(|frag| async move { frag.physical_rows().await.unwrap_or(0) }),
+            )
+            .await;
+            sorted_sizes.sort();
+
+            let small_frag_threshold = 100000;
+            let num_fragments = sorted_sizes.len();
+            let num_small_fragments = sorted_sizes
                 .iter()
-                .map(|frag| async move { frag.physical_rows().await.unwrap_or(0) }),
-        )
-        .await;
-        sorted_sizes.sort();
+                .filter(|&&size| size < small_frag_threshold)
+                .count();
 
-        let small_frag_threshold = 100000;
-        let num_fragments = sorted_sizes.len();
-        let num_small_fragments = sorted_sizes
-            .iter()
-            .filter(|&&size| size < small_frag_threshold)
-            .count();
+            let p25 = *sorted_sizes.get(num_fragments / 4).unwrap_or(&0);
+            let p50 = *sorted_sizes.get(num_fragments / 2).unwrap_or(&0);
+            let p75 = *sorted_sizes.get(num_fragments * 3 / 4).unwrap_or(&0);
+            let p99 = *sorted_sizes.get(num_fragments * 99 / 100).unwrap_or(&0);
+            let min = sorted_sizes.first().copied().unwrap_or(0);
+            let max = sorted_sizes.last().copied().unwrap_or(0);
+            let mean = sorted_sizes
+                .iter()
+                .copied()
+                .sum::<usize>()
+                .checked_div(num_fragments)
+                .unwrap_or(0);
 
-        let p25 = *sorted_sizes.get(num_fragments / 4).unwrap_or(&0);
-        let p50 = *sorted_sizes.get(num_fragments / 2).unwrap_or(&0);
-        let p75 = *sorted_sizes.get(num_fragments * 3 / 4).unwrap_or(&0);
-        let p99 = *sorted_sizes.get(num_fragments * 99 / 100).unwrap_or(&0);
-        let min = sorted_sizes.first().copied().unwrap_or(0);
-        let max = sorted_sizes.last().copied().unwrap_or(0);
-        let mean = sorted_sizes
-            .iter()
-            .copied()
-            .sum::<usize>()
-            .checked_div(num_fragments)
-            .unwrap_or(0);
-
-        let frag_stats = FragmentStatistics {
-            num_fragments,
-            num_small_fragments,
-            lengths: FragmentSummaryStats {
-                min,
-                max,
-                mean,
-                p25,
-                p50,
-                p75,
-                p99,
-            },
-        };
-        let stats = TableStatistics {
-            total_bytes,
-            num_rows,
-            num_deleted_rows,
-            num_indices,
-            fragment_stats: frag_stats,
-        };
-        Ok(stats)
+            let frag_stats = FragmentStatistics {
+                num_fragments,
+                num_small_fragments,
+                lengths: FragmentSummaryStats {
+                    min,
+                    max,
+                    mean,
+                    p25,
+                    p50,
+                    p75,
+                    p99,
+                },
+            };
+            let stats = TableStatistics {
+                total_bytes,
+                num_rows,
+                num_deleted_rows,
+                num_indices,
+                fragment_stats: frag_stats,
+            };
+            Ok(stats)
+        }
+        .boxed()
     }
 
-    async fn create_insert_exec(
+    fn create_insert_exec(
         &self,
         input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         write_params: WriteParams,
-    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-        let ds = self.dataset.get().await?;
-        crate::materialized_view::ensure_not_a_view(
-            &self.name,
-            &ds.schema().metadata,
-            "insert into",
-        )?;
-        let dataset = Arc::new((*ds).clone());
-        Ok(Arc::new(datafusion::insert::InsertExec::new(
-            self.dataset.clone(),
-            dataset,
-            input,
-            write_params,
-        )))
+    ) -> BoxFuture<'_, Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>>> {
+        async move {
+            let ds = self.dataset.get().await?;
+            crate::materialized_view::ensure_not_a_view(
+                &self.name,
+                &ds.schema().metadata,
+                "insert into",
+            )?;
+            let dataset = Arc::new((*ds).clone());
+            Ok(Arc::new(datafusion::insert::InsertExec::new(
+                self.dataset.clone(),
+                dataset,
+                input,
+                write_params,
+            ))
+                as Arc<dyn datafusion_physical_plan::ExecutionPlan>)
+        }
+        .boxed()
     }
 }
 
