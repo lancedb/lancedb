@@ -1357,6 +1357,16 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         })
     }
 
+    async fn check_sql_connection(&self) -> Result<()> {
+        self.sql_client
+            .as_ref()
+            .ok_or_else(|| Error::NotSupported {
+                message: "SQL is unavailable for this remote database client".into(),
+            })?
+            .check_connection()
+            .await
+    }
+
     async fn execute_query_async(&self, request: ExecuteQueryRequest) -> Result<crate::sql::Query> {
         let client = self
             .sql_client
