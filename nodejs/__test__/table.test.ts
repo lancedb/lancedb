@@ -47,6 +47,7 @@ import {
   register,
 } from "../lancedb/embedding";
 import { Index } from "../lancedb/indices";
+import { experimentalFunctionsEnabled } from "../lancedb/native";
 import {
   BooleanQuery,
   Occur,
@@ -1704,6 +1705,38 @@ describe("When creating an index", () => {
         numBits: 1,
       }),
     });
+  });
+
+  it.each([
+    ["IvfPq", Index.ivfPq({ targetPartitionSize: 100 })],
+    ["IvfFlat", Index.ivfFlat({ targetPartitionSize: 100 })],
+    ["IvfRq", Index.ivfRq({ targetPartitionSize: 100 })],
+    ["IvfHnswPq", Index.hnswPq({ targetPartitionSize: 100 })],
+    ["IvfHnswSq", Index.hnswSq({ targetPartitionSize: 100 })],
+  ])("should create %s with targetPartitionSize", async (indexType, config) => {
+    await tbl.createIndex("vec", { config });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe(indexType);
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBe(100);
+  });
+
+  it("should prefer numPartitions over targetPartitionSize", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfFlat({ numPartitions: 2, targetPartitionSize: 100 }),
+    });
+
+    const indices = await tbl.listIndices();
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBeUndefined();
   });
 
   it("should allow me to replace (or not) an existing index", async () => {
@@ -4525,14 +4558,14 @@ describe.each(arrowVersions)(
       ];
       const table = await db.createTable("prewarm_data_test", data);
 
-      // prewarmData is only supported on remote tables. We verify the call
+      // prewarmData is only supported in LanceDB Distributed. We verify the call
       // is wired through napi and surfaces the expected error for both
       // arg shapes (undefined and string[]).
       await expect(table.prewarmData()).rejects.toThrow(
-        "prewarm_data is currently only supported on remote tables",
+        "prewarm_data is currently only supported in LanceDB Distributed",
       );
       await expect(table.prewarmData(["text"])).rejects.toThrow(
-        "prewarm_data is currently only supported on remote tables",
+        "prewarm_data is currently only supported in LanceDB Distributed",
       );
     });
 
@@ -5477,13 +5510,14 @@ describe("LSM convergence and stats", () => {
 });
 
 describe("computed columns", () => {
+  const experimentalTest = experimentalFunctionsEnabled() ? it : it.skip;
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
   });
   afterEach(() => tmpDir.removeCallback());
 
-  it("declares a column and fills it on refresh", async () => {
+  experimentalTest("declares a column and fills it on refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed", [{ x: 1 }, { x: 2 }]);
 
@@ -5504,11 +5538,11 @@ describe("computed columns", () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("errors_local", [{ x: 1 }]);
     await expect(table.functionErrors()).rejects.toThrow(
-      "LanceDB Cloud and Enterprise",
+      "recorded only in LanceDB Distributed",
     );
   });
 
-  it("returns a job handle from refreshColumnAsync", async () => {
+  experimentalTest("returns a job handle from refreshColumnAsync", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_job", [{ x: 1 }, { x: 2 }]);
 
@@ -5530,7 +5564,7 @@ describe("computed columns", () => {
     );
   });
 
-  it("fills rows added since the last refresh", async () => {
+  experimentalTest("fills rows added since the last refresh", async () => {
     const db = await connect(tmpDir.name);
     const table = await db.createTable("computed_append", [{ x: 1 }]);
 

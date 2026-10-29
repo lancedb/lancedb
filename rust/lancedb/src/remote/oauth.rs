@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
-//! OAuth authentication for LanceDB Cloud connections.
+//! OAuth authentication for LanceDB Enterprise connections.
 //!
 //! Protocol mechanics (authorization URL and CSRF state, PKCE, token
 //! exchanges, refresh, device authorization and polling, standard response

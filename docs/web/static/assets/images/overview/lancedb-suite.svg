@@ -1,6 +1,6 @@
 <svg width="2048" height="540" viewBox="0 0 2048 540" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
   <title id="title">LanceDB suite</title>
-  <desc id="desc">LanceDB OSS supports search. LanceDB Enterprise is a multimodal lakehouse for curation, feature engineering, search and retrieval, and training. Both are built on the Lance open lakehouse format for multimodal AI.</desc>
+  <desc id="desc">LanceDB Embedded supports search. LanceDB Enterprise is a multimodal lakehouse for curation, feature engineering, search and retrieval, and training. Both are built on the Lance open lakehouse format for multimodal AI.</desc>
   <defs>
     <linearGradient id="enterpriseGradient" x1="512" y1="90" x2="2020" y2="90" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#E9C9F6"/>
@@ -54,7 +54,7 @@
     <circle cx="94" cy="126" r="9"/>
     <circle cx="126" cy="126" r="9"/>
   </g>
-  <text x="162" y="117" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="44" font-weight="760">LanceDB OSS</text>
+  <text x="162" y="113" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="34" font-weight="760">LanceDB Embedded</text>
   <text x="260" y="291" text-anchor="middle" style="fill:#241712 !important;" font-family="Inter, Arial, sans-serif" font-size="42" font-weight="500">Search</text>
 
   <g style="fill:#241712 !important;">

@@ -1675,7 +1675,7 @@ class AsyncLanceNamespaceDBConnection:
     ) -> AsyncSqlQuery:
         """Start executing SQL when supported by the underlying connection.
 
-        Namespace-backed local connections do not support SQL.
+        Namespace-backed LanceDB Embedded connections do not support SQL.
         """
         return await self._inner.execute_query_async(
             query,
@@ -1683,7 +1683,7 @@ class AsyncLanceNamespaceDBConnection:
             parameters=parameters,
         )
 
-    async def describe_query(self, query_id: UUID) -> QueryDescription:
+    async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query when supported."""
         return await self._inner.describe_query(query_id)
 

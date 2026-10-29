@@ -146,6 +146,27 @@ def test_function_version_identity_is_immutable_and_exact():
             FunctionVersion(**{**value, "version": invalid})
 
 
+@pytest.mark.parametrize("source_digest", [None, "sha256:source-artifact"])
+def test_function_version_preserves_source_digest(source_digest):
+    value = job_result("remote_function_job.json")
+    legacy = FunctionVersion.from_json(json.dumps(value))
+    assert legacy.source_digest is None
+    assert "source_digest" not in json.loads(legacy.to_canonical_json())
+
+    value["source_digest"] = source_digest
+    version = FunctionVersion.from_json(json.dumps(value))
+    assert version.source_digest == source_digest
+    assert version.image == legacy.image
+    encoded = version.to_canonical_json()
+    if source_digest is None:
+        assert "source_digest" not in json.loads(encoded)
+    else:
+        assert json.loads(encoded)["source_digest"] == source_digest
+    assert FunctionVersion.from_json(encoded) == version
+    with pytest.raises((TypeError, ValueError)):
+        version.source_digest = "sha256:changed"
+
+
 def test_function_version_binds_named_columns_as_one_immutable_application():
     version = FunctionVersion.from_json(
         json.dumps(job_result("remote_function_job.json"))

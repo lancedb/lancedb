@@ -3,13 +3,13 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
-from threading import Thread
 
 import pytest
 
 import lancedb
 from lancedb.db import AsyncConnection, DBConnection
 from lancedb.remote.errors import HttpError
+from utils import start_server_thread
 
 
 @pytest.fixture
@@ -38,8 +38,7 @@ def catalog_server():
         do_POST = handle_request
 
     with ThreadingHTTPServer(("127.0.0.1", 0), Handler) as server:
-        thread = Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        thread = start_server_thread(server, daemon=True)
         try:
             yield f"http://127.0.0.1:{server.server_port}", requests, responses
         finally:
@@ -86,12 +85,12 @@ def test_catalog_sync_scope_and_serialization(catalog_server):
             connection.execute_query_async("SELECT 1")
     assert restored.table_names() == []
     assert list(catalog.list_databases()) == ["team/search"]
-    catalog.drop_database("team/search", ignore_missing=True)
+    catalog.drop_database("team/search", ignore_missing=True, cascade=True)
     assert requests[0][0] == "/v1/namespace/team%2Fsearch/create"
     assert requests[0][2] == {"mode": "ExistOk"}
     assert requests[1][0] == "/v1/namespace/team%2Fsearch/describe"
     assert requests[4][0] == "/v1/namespace/$/list"
-    assert requests[5][2] == {"mode": "Skip", "behavior": "Restrict"}
+    assert requests[5][2] == {"mode": "Skip", "behavior": "Cascade"}
     for i, (_, headers, _) in enumerate(requests):
         headers = {key.lower(): value for key, value in headers.items()}
         assert headers.get("x-lancedb-database") == (
