@@ -15,6 +15,11 @@ patterns. LanceDB supports three main index families:
 - **Full-Text Search Index**: Enables fast keyword-based searches by indexing words and phrases
 - **Scalar Index**: Accelerates filtering of structured numeric or categorical data
 
+A table has no indexes until you create them, so plan them together with the
+table: index the columns your application searches, filters and upserts on. See
+[Set up the table for your workload](/ingestion/create-table#set-up-for-your-workload)
+for how to choose them and when to build them.
+
 ## Supported Indexes
 
 | Index | Use Case | Description |
@@ -66,7 +71,7 @@ the index type based on the column's values:
 
 | Index | Best for |
 |-------|----------|
-| `BTREE` (default) | Numeric, string, temporal columns with mostly distinct values |
+| `BTREE` (default) | Numeric, string, temporal columns with mostly distinct values, and `merge_insert` keys |
 | `BITMAP` | Boolean and low-cardinality columns (< ~1,000 distinct values) |
 | `LABEL_LIST` | `List<T>` columns queried with `array_has_any` / `array_has_all` |
 
