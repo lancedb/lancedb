@@ -9,10 +9,9 @@ export const DEFINITION_META_KEY = "mv.definition";
 
 /**
  * The newest stored layout this version reads: `{"format": N, "query": "<SQL>"}`,
- * format 2 being a query with `GROUP BY`, format 3 native pairs and format 4
- * native dedup results.
+ * format 2 being a query with `GROUP BY`.
  */
-export const DEFINITION_FORMAT = 4;
+export const DEFINITION_FORMAT = 2;
 
 /**
  * The query that defines a materialized view, as stored:
@@ -187,15 +186,13 @@ export class MaterializedView {
 
   /**
    * Recompute the view from its source.
+   * Local refresh requires a source build with `experimental-functions`.
    *
-   * The refresh is incremental when the source's changes can be reconciled
-   * into the view -- rows added, changed or removed since the last one --
-   * and otherwise rebuilds. `full` forces a rebuild; `sourceVersion`
-   * refreshes to that source version instead of the latest.
-   *
-   * Concurrent refreshes of one view do not duplicate its rows. Two that
-   * plan the same source rows conflict on commit, and the loser throws
-   * rather than writing them a second time.
+   * `full: true` forces a remote rebuild; otherwise the server chooses the
+   * refresh mode. Local views always rebuild, and `sourceVersion` selects a
+   * source version instead of the latest. Remote SQL refreshes do not support
+   * source-version pinning. Their results leave `mode`, `rowsWritten`, and
+   * `sourceVersion` absent because the SQL job adapter does not expose these metrics.
    */
   async refresh(options?: {
     full?: boolean;
@@ -203,8 +200,8 @@ export class MaterializedView {
   }): Promise<RefreshMaterializedViewResult> {
     validateNonNegativeInteger(options?.sourceVersion, "sourceVersion");
     return await this.inner.refreshMaterializedView(
-      options?.full,
       options?.sourceVersion,
+      options?.full,
     );
   }
 }

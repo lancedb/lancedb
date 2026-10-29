@@ -15,7 +15,12 @@
 //! ```
 
 use std::fmt;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
+
+use futures::future::BoxFuture;
+use futures::{FutureExt, Stream};
 
 use crate::Result;
 use crate::connection::Connection;
@@ -54,7 +59,7 @@ impl<T: Into<String>> From<T> for CreateDatabaseRequest {
     }
 }
 
-/// Options for restricted database deletion. Tables must be removed first.
+/// Options for database deletion. The database must be empty unless `cascade` is set.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub struct DropDatabaseRequest {
@@ -62,6 +67,8 @@ pub struct DropDatabaseRequest {
     pub name: String,
     /// Succeed if the database is absent.
     pub ignore_missing: bool,
+    /// Drop everything in the database first.
+    pub cascade: bool,
 }
 
 impl DropDatabaseRequest {
@@ -70,12 +77,20 @@ impl DropDatabaseRequest {
         Self {
             name: name.into(),
             ignore_missing: false,
+            cascade: false,
         }
     }
 
     /// Succeed when the database does not exist.
     pub fn ignore_missing(mut self, value: bool) -> Self {
         self.ignore_missing = value;
+        self
+    }
+
+    /// Drop every table, view, function, secret and namespace in the database first. The
+    /// server cleans up their storage in the background, and the name stays taken until then.
+    pub fn cascade(mut self, value: bool) -> Self {
+        self.cascade = value;
         self
     }
 }
@@ -118,14 +133,88 @@ pub struct ListDatabasesResponse {
     pub page_token: Option<String>,
 }
 
+/// A lazy stream of database names with inspectable pagination state.
+///
+/// The continuation token advances when a page is fetched, so resuming from it
+/// skips any names still cached in this stream. Drain the cache before saving a
+/// token if those names must be included. Errors terminate the stream; the token
+/// for the failed request remains available for resuming with a new stream.
+pub struct DatabaseNames {
+    catalog: Arc<dyn Catalog>,
+    names: std::vec::IntoIter<String>,
+    page_token: Option<String>,
+    page_limit: Option<u32>,
+    done: bool,
+    pending: Option<BoxFuture<'static, Result<ListDatabasesResponse>>>,
+}
+
+impl DatabaseNames {
+    /// Number of names available without another REST request.
+    pub fn num_page_results(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Token for the next REST request, or `None` after the last page is fetched.
+    ///
+    /// Before the first request, returns the supplied starting token (`None`
+    /// means start from the beginning). A final page can still have cached names.
+    pub fn page_token(&self) -> Option<&str> {
+        self.page_token.as_deref()
+    }
+}
+
+impl Stream for DatabaseNames {
+    type Item = Result<String>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if let Some(name) = this.names.next() {
+                return Poll::Ready(Some(Ok(name)));
+            }
+            if this.done {
+                return Poll::Ready(None);
+            }
+            let pending = this.pending.get_or_insert_with(|| {
+                let catalog = this.catalog.clone();
+                let request = ListDatabasesRequest {
+                    page_token: this.page_token.clone(),
+                    limit: this.page_limit,
+                };
+                async move { catalog.list_databases(request).await }.boxed()
+            });
+            let response = futures::ready!(pending.as_mut().poll(cx));
+            this.pending = None;
+            match response {
+                Ok(response) => {
+                    this.page_token = response.page_token.filter(|token| !token.is_empty());
+                    this.done = this.page_token.is_none();
+                    this.names = response.databases.into_iter();
+                }
+                Err(error) => {
+                    this.done = true;
+                    return Poll::Ready(Some(Err(error)));
+                }
+            }
+        }
+    }
+}
+
 /// A backend that manages databases. Implementations own database lifecycle semantics.
 #[async_trait::async_trait]
 pub trait Catalog: Send + Sync + std::fmt::Debug + 'static {
+    /// Obtain deployment-wide authorization, if supported by this backend.
+    fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        Err(crate::Error::NotSupported {
+            message: "Authorization administration is not supported by this catalog".into(),
+        })
+    }
+
     /// Catalog endpoint or location.
     fn uri(&self) -> &str;
     /// Create a database, or open it when `exist_ok` permits.
     async fn create_database(&self, request: CreateDatabaseRequest) -> Result<Arc<dyn Database>>;
-    /// Drop an empty database. This must not cascade to tables.
+    /// Drop a database, which must be empty unless the request cascades.
     async fn drop_database(&self, request: DropDatabaseRequest) -> Result<()>;
     /// List a page of database names.
     async fn list_databases(&self, request: ListDatabasesRequest) -> Result<ListDatabasesResponse>;
@@ -167,6 +256,11 @@ impl CatalogConnection {
     pub fn uri(&self) -> &str {
         self.catalog.uri()
     }
+    /// Obtain a handle sharing this catalog's deployment scope and credentials.
+    pub fn authz(&self) -> Result<Arc<dyn crate::authz::Authorization>> {
+        self.catalog.authz()
+    }
+
     /// Access the underlying backend.
     pub fn catalog(&self) -> &Arc<dyn Catalog> {
         &self.catalog
@@ -183,17 +277,40 @@ impl CatalogConnection {
         ))
     }
 
-    /// Drop an empty database; pass a name or [`DropDatabaseRequest`] for additional options.
+    /// Drop a database; pass a name or [`DropDatabaseRequest`] for options such as `cascade`.
     pub async fn drop_database(&self, request: impl Into<DropDatabaseRequest>) -> Result<()> {
         self.catalog.drop_database(request.into()).await
     }
 
-    /// List a page of databases. Pass [`ListDatabasesRequest::default`] for the first page.
-    pub async fn list_databases(
+    /// Iterate lazily over all database names, fetching more results as needed.
+    ///
+    /// `page_token` starts at a saved continuation token; `None` starts at the
+    /// beginning. `page_limit` limits each REST response (not the whole stream);
+    /// `None` uses the server default. Errors terminate the listing.
+    ///
+    /// ```
+    /// # async fn example(catalog: &lancedb::catalog::CatalogConnection) -> lancedb::Result<()> {
+    /// use futures::TryStreamExt;
+    /// let mut names = catalog.list_databases(None, None);
+    /// while let Some(name) = names.try_next().await? {
+    ///     println!("{name}");
+    /// }
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn list_databases(
         &self,
-        request: ListDatabasesRequest,
-    ) -> Result<ListDatabasesResponse> {
-        self.catalog.list_databases(request).await
+        page_token: Option<String>,
+        page_limit: Option<u32>,
+    ) -> DatabaseNames {
+        DatabaseNames {
+            catalog: self.catalog.clone(),
+            names: Vec::new().into_iter(),
+            page_token,
+            page_limit,
+            done: false,
+            pending: None,
+        }
     }
 
     /// Connect to a database without creating it if it is missing.

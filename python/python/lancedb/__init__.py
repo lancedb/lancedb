@@ -2,20 +2,18 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 
-import importlib.metadata
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from typing import Dict, Optional, Union, Any, List, Iterable, TYPE_CHECKING
 
-__version__ = importlib.metadata.version("lancedb")
-
+from ._lancedb import __version__ as __version__
 from ._lancedb import connect as lancedb_connect
 from ._lancedb import FtsToken
 from ._lancedb import FunctionErrorFragment as FunctionErrorFragment
 from ._lancedb import FunctionErrorRecord as FunctionErrorRecord
 from ._lancedb import FunctionErrors as FunctionErrors
-from ._lancedb import LsmWriteSpec
+from ._lancedb import RTEWriteSpec
 from ._lancedb import tokenize as _tokenize
 from .common import URI, sanitize_uri
 from urllib.parse import urlparse
@@ -24,6 +22,7 @@ from .remote import ClientConfig
 from .remote.db import RemoteDBConnection
 from .expr import Expr, col, lit, func
 from .schema import blob, vector
+from ._blob_reader import BlobReader as BlobReader
 from .job import AsyncJob, Job
 from .sql import AsyncQuery as AsyncSqlQuery
 from .sql import Query as SqlQuery
@@ -46,10 +45,9 @@ from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,
     MaterializedViewDefinition,
-    vector_dedup as vector_dedup,
 )
 from .view import ViewDescription as ViewDescription
-from .table import AsyncTable, Table
+from .table import AsyncTable, CompactionOptions, Table
 from .types import BaseTokenizerType
 from ._lancedb import Session
 from .namespace import (
@@ -62,7 +60,6 @@ from .namespace import (
 from .catalog import (
     AsyncCatalog,
     Catalog,
-    ListDatabasesResponse,
     connect_catalog,
     connect_catalog_async,
 )
@@ -140,18 +137,18 @@ def connect(
         The uri of the database. When ``namespace_client_impl`` is provided you may
         omit ``uri`` and connect through a namespace client instead.
     api_key: str, optional
-        If presented, connect to LanceDB cloud.
+        If presented, connect to LanceDB Enterprise or LanceDB Cloud (legacy).
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
         OAuth configuration is currently supported only by ``connect_async``;
-        synchronous LanceDB Cloud connections require an API key.
+        synchronous ``db://`` connections require an API key.
     region: str, default "us-east-1"
-        The region to use for LanceDB Cloud.
+        The region to use for LanceDB Cloud (legacy).
     host_override: str, optional
-        The override url for LanceDB Cloud.
+        The URL of the LanceDB Enterprise deployment to connect to.
     sql_host_override: str, optional
-        The remote SQL service endpoint override. The client connects lazily when SQL
-        is first executed and retains that connection.
+        The LanceDB Enterprise SQL service endpoint override. The client
+        connects lazily when SQL is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -167,18 +164,19 @@ def connect(
         often each read pays the cost of checking for updates against object
         storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
-        Configuration options for the LanceDB Cloud HTTP client. If a dict, then
+        Configuration options for the HTTP client used by ``db://`` connections.
+        If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
     manifest_enabled : bool, default False
-        When true for local/native connections, use directory namespace
+        When true for LanceDB Embedded connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
         directory-listed root tables are migrated into the manifest on access.
     session: Session, optional
-        (For LanceDB OSS only)
+        (For LanceDB Embedded only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
@@ -234,7 +232,7 @@ def connect(
     In-memory databases are not persisted. Tables are dropped when the last
     connection or table handle referencing them is closed.
 
-    Connect to LanceDB cloud:
+    Connect to LanceDB Enterprise or LanceDB Cloud (legacy):
 
     >>> db = lancedb.connect("db://my_database", api_key="ldb_...",
     ...                      client_config={"retry_config": {"retries": 5}})
@@ -282,10 +280,27 @@ def connect(
             "uri is required when not connecting through a namespace client"
         )
     if isinstance(uri, str) and uri.startswith("db://"):
+        # Preserve the deprecated remote timeout options, but validate all other
+        # unknown keywords just as the local connection does.
+        unknown_kwargs = {
+            key: value
+            for key, value in kwargs.items()
+            if key not in ("connection_timeout", "read_timeout")
+        }
+        if unknown_kwargs:
+            raise ValueError(f"Unknown keyword arguments: {unknown_kwargs}")
+        if session is not None:
+            raise NotImplementedError(
+                "session is not supported for LanceDB Distributed connections"
+            )
+        if manifest_enabled:
+            raise NotImplementedError(
+                "manifest_enabled is not supported for LanceDB Distributed connections"
+            )
         if api_key is None:
             api_key = os.environ.get("LANCEDB_API_KEY")
         if api_key is None:
-            raise ValueError(f"api_key is required to connect to LanceDB cloud: {uri}")
+            raise ValueError(f"api_key is required to connect to {uri}")
         if isinstance(request_thread_pool, int):
             request_thread_pool = ThreadPoolExecutor(request_thread_pool)
         return RemoteDBConnection(
@@ -323,8 +338,8 @@ def tokenize(
     language: str = "English",
     max_token_length: Optional[int] = 40,
     lower_case: bool = True,
-    stem: bool = True,
-    remove_stop_words: bool = True,
+    stem: Optional[bool] = None,
+    remove_stop_words: Optional[bool] = None,
     custom_stop_words: Optional[List[str]] = None,
     ascii_folding: bool = True,
     ngram_min_length: int = 3,
@@ -335,6 +350,8 @@ def tokenize(
 
     This does not require an FTS index. The tokenizer options match
     :class:`lancedb.index.FTS`. ``custom_stop_words`` accepts a list of strings.
+    When ``stem`` or ``remove_stop_words`` is None, the base tokenizer's default
+    applies: False for ``code`` and ``ngram``, True otherwise.
     """
 
     return _tokenize(
@@ -466,16 +483,16 @@ async def connect_async(
     uri: str or Path
         The uri of the database.
     api_key: str, optional
-        If present, connect to LanceDB cloud.
+        If present, connect to LanceDB Enterprise or LanceDB Cloud (legacy).
         Otherwise, connect to a database on file system or cloud storage.
         Can be set via environment variable `LANCEDB_API_KEY`.
     region: str, default "us-east-1"
-        The region to use for LanceDB Cloud.
+        The region to use for LanceDB Cloud (legacy).
     host_override: str, optional
-        The override url for LanceDB Cloud.
+        The URL of the LanceDB Enterprise deployment to connect to.
     sql_host_override: str, optional
-        The remote SQL service endpoint override. The client connects lazily when SQL
-        is first executed and retains that connection.
+        The LanceDB Enterprise SQL service endpoint override. The client
+        connects lazily when SQL is first executed and retains that connection.
     read_consistency_interval: timedelta, default None
         The interval at which to check for updates to the table from other
         processes. If None, then consistency is not checked. For performance
@@ -491,27 +508,28 @@ async def connect_async(
         often each read pays the cost of checking for updates against object
         storage, raising per-read latency and cost.
     client_config: ClientConfig or dict, optional
-        Configuration options for the LanceDB Cloud HTTP client. If a dict, then
+        Configuration options for the HTTP client used by ``db://`` connections.
+        If a dict, then
         the keys are the attributes of the ClientConfig class. If None, then the
         default configuration is used.
     storage_options: dict, optional
         Additional options for the storage backend. See available options at
         <https://docs.lancedb.com/storage/>
     session: Session, optional
-        (For LanceDB OSS only)
+        (For LanceDB Embedded only)
         A session to use for this connection. Sessions allow you to configure
         cache sizes for index and metadata caches, which can significantly
         impact memory use and performance. They can also be re-used across
         multiple connections to share the same cache state.
     manifest_enabled : bool, default False
-        When true for local/native connections, use directory namespace
+        When true for LanceDB Embedded connections, use directory namespace
         manifests as the source of truth for table metadata. Existing
         directory-listed root tables are migrated into the manifest on access.
     namespace_client_properties : dict, optional
         Additional directory namespace client properties to use with
         ``manifest_enabled=True``.
     oauth_config : OAuthConfig, optional
-        OAuth configuration for LanceDB Cloud/Enterprise. This is supported by
+        OAuth configuration for LanceDB Enterprise. This is supported by
         ``connect_async`` only; synchronous ``connect`` uses API key
         authentication for ``db://`` URIs.
 
@@ -537,7 +555,7 @@ async def connect_async(
     ...     )
     ...     # For tests and temporary data, use an in-memory database
     ...     db = await lancedb.connect_async("memory://")
-    ...     # Connect to LanceDB cloud
+    ...     # Connect to LanceDB Enterprise or LanceDB Cloud (legacy)
     ...     db = await lancedb.connect_async("db://my_database", api_key="ldb_...",
     ...                                      client_config={
     ...                                          "retry_config": {"retries": 5}})
@@ -578,7 +596,6 @@ async def connect_async(
 __all__ = [
     "Catalog",
     "AsyncCatalog",
-    "ListDatabasesResponse",
     "connect_catalog",
     "connect_catalog_async",
     "AsyncMaterializedView",
@@ -595,6 +612,7 @@ __all__ = [
     "AsyncSqlQuery",
     "AsyncLanceNamespaceDBConnection",
     "AsyncTable",
+    "CompactionOptions",
     "FtsToken",
     "col",
     "Expr",
@@ -611,7 +629,7 @@ __all__ = [
     "SqlQuery",
     "LanceDBConnection",
     "LanceNamespaceDBConnection",
-    "LsmWriteSpec",
+    "RTEWriteSpec",
     "RemoteDBConnection",
     "Session",
     "Table",

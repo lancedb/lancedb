@@ -38,6 +38,7 @@ jobs:
         uses: actions/checkout@v6
       - name: Install dependencies needed for ubuntu
         run: |
+          sudo apt update
           sudo apt install -y protobuf-compiler libssl-dev
           rustup update && rustup default
       - name: Set up Python

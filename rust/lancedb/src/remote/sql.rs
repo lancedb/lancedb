@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -11,6 +12,7 @@ use arrow_array::RecordBatch;
 use arrow_flight::decode::FlightRecordBatchStream;
 use arrow_flight::error::FlightError;
 use arrow_flight::flight_service_client::FlightServiceClient;
+#[cfg(test)]
 use arrow_flight::sql::{CommandStatementQuery, ProstMessageExt};
 use arrow_flight::{
     Action, CancelFlightInfoRequest, CancelFlightInfoResult, CancelStatus, FlightClient,
@@ -20,15 +22,23 @@ use arrow_schema::{Schema, SchemaRef};
 use futures::TryStreamExt;
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use prost::Message;
+use serde::{Serialize, de::DeserializeOwned};
 use tokio::sync::{Mutex, Notify, OnceCell, mpsc};
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use uuid::Uuid;
 
 use crate::arrow::{SendableRecordBatchStream, SimpleRecordBatchStream};
+use crate::database::ExecuteQueryRequest;
 use crate::error::{Error, Result};
+use crate::job::Job;
 use crate::remote::client::{ClientConfig, TlsConfig};
 use crate::remote::retry::ResolvedRetryConfig;
 use crate::sql::{Query, QueryDescription, QueryHandle, QueryStatus};
+
+pub(super) mod materialized_view;
+mod stream;
+
+use stream::{StreamingQuery, StreamingQueryHandle, Submission};
 
 const DEFAULT_SQL_PORT: u16 = 10025;
 const DEFAULT_SQL_TLS_PORT: u16 = 10026;
@@ -182,6 +192,43 @@ impl SqlClient {
         }
     }
 
+    pub(super) async fn execute(&self, request: ExecuteQueryRequest) -> Result<Query> {
+        let timeout = self.inner.overall_timeout()?;
+        with_overall_timeout(timeout, "SQL query submission", async {
+            validate_namespace_path(&request.default_namespace_path)?;
+            let query_id = Uuid::now_v7();
+            let submission = StreamingQuery::open(
+                self.inner.clone(),
+                &request.query,
+                request.parameters,
+                &request.default_namespace_path,
+            )
+            .await?;
+            match submission {
+                Submission::Stream(response) => {
+                    let query =
+                        Arc::new(StreamingQuery::new(query_id, self.inner.clone(), response));
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Streamed(query.clone()));
+                    Ok(Query::new(Arc::new(StreamingQueryHandle::new(query))))
+                }
+                Submission::Deferred(poll_info) => {
+                    let query = Arc::new(RemoteQuery::new(
+                        query_id,
+                        self.inner.clone(),
+                        request.default_namespace_path,
+                        poll_info,
+                    )?);
+                    self.queries
+                        .insert(query_id, RegisteredQuery::Polled(query.clone()));
+                    Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
+                }
+            }
+        })
+        .await
+    }
+
+    #[cfg(test)]
     pub(super) async fn submit(
         &self,
         query: &str,
@@ -203,10 +250,43 @@ impl SqlClient {
                 default_namespace_path.to_vec(),
                 poll_info,
             )?);
-            self.queries.insert(query_id, query.clone());
+            self.queries
+                .insert(query_id, RegisteredQuery::Polled(query.clone()));
             Ok(Query::new(Arc::new(RemoteQueryHandle::new(query))))
         })
         .await
+    }
+
+    pub(super) async fn submit_as_job<T, F, Fut>(
+        &self,
+        statement: String,
+        namespace: Vec<String>,
+        finish: F,
+    ) -> Result<Job<T>>
+    where
+        T: Clone + Serialize + DeserializeOwned + Send + Sync + 'static,
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+    {
+        let query = Arc::new(
+            self.execute(ExecuteQueryRequest {
+                query: statement,
+                default_namespace_path: namespace,
+                parameters: None,
+            })
+            .await?,
+        );
+        let query_id = query.id();
+        let execution = query.clone();
+        let task = tokio::spawn(async move {
+            let mut reader = execution.reader().await?;
+            while reader.try_next().await?.is_some() {}
+            finish().await
+        });
+        Ok(Job::from_query_task(query_id, task, move || {
+            let query = query.clone();
+            async move { query.cancel().await }
+        }))
     }
 
     pub(super) async fn describe(&self, query_id: Uuid) -> Result<QueryDescription> {
@@ -234,6 +314,7 @@ impl SqlClientInner {
         )
     }
 
+    #[cfg(test)]
     async fn poll(
         &self,
         descriptor: FlightDescriptor,
@@ -491,8 +572,40 @@ impl SqlClientInner {
     }
 }
 
+/// A submitted query as the connection remembers it.
+#[derive(Clone)]
+enum RegisteredQuery {
+    Polled(Arc<RemoteQuery>),
+    Streamed(Arc<StreamingQuery>),
+}
+
+impl RegisteredQuery {
+    fn touch(&self) {
+        match self {
+            Self::Polled(query) => query.touch(),
+            Self::Streamed(query) => query.touch(),
+        }
+    }
+
+    /// Whether the registry may forget this query. It is abandoned when the
+    /// registry holds the only reference to it.
+    fn registry_expired(&self) -> bool {
+        match self {
+            Self::Polled(query) => query.registry_expired(Arc::strong_count(query) == 1),
+            Self::Streamed(query) => query.registry_expired(Arc::strong_count(query) == 1),
+        }
+    }
+
+    async fn describe(&self) -> Result<QueryDescription> {
+        match self {
+            Self::Polled(query) => query.describe().await,
+            Self::Streamed(query) => query.describe(),
+        }
+    }
+}
+
 struct QueryRegistry {
-    queries: StdMutex<HashMap<Uuid, Arc<RemoteQuery>>>,
+    queries: StdMutex<HashMap<Uuid, RegisteredQuery>>,
 }
 
 impl QueryRegistry {
@@ -502,12 +615,12 @@ impl QueryRegistry {
         }
     }
 
-    fn insert(&self, id: Uuid, query: Arc<RemoteQuery>) {
+    fn insert(&self, id: Uuid, query: RegisteredQuery) {
         self.remove_expired();
         self.queries.lock().unwrap().insert(id, query);
     }
 
-    fn get(&self, id: Uuid) -> Option<Arc<RemoteQuery>> {
+    fn get(&self, id: Uuid) -> Option<RegisteredQuery> {
         self.remove_expired();
         let query = self.queries.lock().unwrap().get(&id).cloned();
         if let Some(query) = &query {
@@ -520,7 +633,7 @@ impl QueryRegistry {
         self.queries
             .lock()
             .unwrap()
-            .retain(|_, query| !query.registry_expired(Arc::strong_count(query) == 1));
+            .retain(|_, query| !query.registry_expired());
     }
 }
 

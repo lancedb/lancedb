@@ -23,7 +23,7 @@
         "nullable": false
       }
     },
-    "created_at": "2026-08-21T00:00:00Z",
+    "created_at_millis": 1787270400000,
     "image": {
       "manifest_digest": "sha256:7e22f815b6648e14f093a3979a8e5a2082fa773ebe1ec84b135cae7e84d6f8e6",
       "descriptor": {

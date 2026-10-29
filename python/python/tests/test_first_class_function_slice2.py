@@ -23,6 +23,7 @@ import pyarrow as pa
 import pytest
 
 import lancedb
+from lancedb import BlobReader
 from lancedb.functions import (
     PythonRuntimeSpec,
     SecretBinding,
@@ -86,6 +87,27 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
 
 
 def test_secret_bound_udf_matches_its_shared_registration_golden():
@@ -622,7 +644,6 @@ def test_canonical_arrow_type_prefers_the_compact_grammar():
     for outside in [
         pa.timestamp("us"),
         pa.decimal128(10, 2),
-        pa.large_binary(),
         pa.binary(4),
         pa.duration("s"),
         pa.list_(pa.float32(), 0),
@@ -967,6 +988,60 @@ def test_blob_fields_use_the_scalar_function_semantic_type():
     assert signature.output.arrow_type == "blob_v2"
 
 
+def test_blob_input_access_is_inferred_from_annotations():
+    @udf
+    def read_blob(video: BlobReader, timestamp_s: float) -> bytes:
+        video.seek(int(timestamp_s))
+        return video.read(4)
+
+    @udf
+    def read_bytes(video: bytes) -> int:
+        return len(video)
+
+    reader = read_blob.registration_request.signature
+    assert reader.inputs[0].arrow_type == "blob_v2"
+    assert reader.inputs[0].blob_access == "reader"
+    assert reader.inputs[1].blob_access is None
+    assert reader.output.arrow_type == "binary"
+    eager = read_bytes.registration_request.signature.inputs[0]
+    assert eager.arrow_type == "binary"
+    assert eager.blob_access == "bytes"
+    encoded = json.loads(read_blob.registration_request.to_canonical_json())
+    assert encoded["signature"]["inputs"][0]["blob_access"] == "reader"
+
+
+def test_nullable_blob_reader_and_explicit_blob_bytes():
+    @udf
+    def nullable(video: Optional[BlobReader]) -> int:
+        return 0 if video is None else video.size()
+
+    @udf(
+        input_schema=pa.schema([lancedb.blob("video", nullable=False)]),
+        output_schema=pa.field("size", pa.int64(), nullable=False),
+    )
+    def eager(video: bytes) -> int:
+        return len(video)
+
+    parameter = nullable.registration_request.signature.inputs[0]
+    assert parameter.nullable is True
+    assert parameter.blob_access == "reader"
+    parameter = eager.registration_request.signature.inputs[0]
+    assert parameter.arrow_type == "blob_v2"
+    assert parameter.blob_access == "bytes"
+
+
+def test_blob_reader_rejects_an_incompatible_explicit_schema():
+    def read(video: BlobReader) -> int:
+        return video.size()
+
+    with pytest.raises(TypeError, match="requires a Blob V2 field"):
+        udf(
+            read,
+            input_schema=pa.schema([pa.field("video", pa.int64(), nullable=False)]),
+            output_schema=pa.field("size", pa.int64(), nullable=False),
+        )
+
+
 def test_whole_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1280,6 +1355,28 @@ def test_explicit_large_utf8_schemas_use_the_canonical_function_name():
     }
 
 
+def test_large_binary_schemas_use_the_canonical_function_name():
+    payload = pa.field("data", pa.large_binary(), nullable=True)
+
+    @udf(
+        input_schema=pa.schema([payload]),
+        output_schema=pa.field("result", pa.large_binary(), nullable=False),
+    )
+    def preserve(data):
+        return data
+
+    signature = preserve.registration_request.signature
+    assert signature.inputs[0].arrow_type == "large_binary"
+    assert signature.output.arrow_type == "large_binary"
+    cells = pa.large_list(pa.field("item", pa.struct([payload]), nullable=True))
+    assert json.loads(_canonical_arrow_type(cells))["fields"][0]["type"] == {
+        "type": "struct",
+        "fields": [
+            {"name": "data", "nullable": True, "type": {"type": "large_binary"}}
+        ],
+    }
+
+
 def test_nested_struct_output_uses_canonical_exact_json():
     token = pa.struct(
         [
@@ -1499,7 +1596,7 @@ def test_local_function_catalog_operations_are_not_supported(tmp_path):
     with pytest.raises(NotImplementedError, match=message):
         db.get_function("normalize_score", version=FUNCTION_VERSION)
     with pytest.raises(NotImplementedError, match=message):
-        db.list_functions()
+        list(db.list_functions())
     with pytest.raises(NotImplementedError, match=message):
         db.drop_function("normalize_score", version=FUNCTION_VERSION)
 
@@ -1539,8 +1636,10 @@ def _mock_remote_function_catalog():
                 else (None, None)
             )
             if function_action[1] == "create":
+                *namespace_path, name = function_action[0].split("$")
                 state["version"] = {
-                    "name": "normalize_score",
+                    "name": name,
+                    **({"namespace_path": namespace_path} if namespace_path else {}),
                     "version": FUNCTION_VERSION,
                     "object_id": "fixture",
                     "location": "memory:///fixture",
@@ -1552,8 +1651,9 @@ def _mock_remote_function_catalog():
                         ).read_text()
                     )["image"],
                     "signature": body["signature"],
+                    "source_digest": body["artifact"]["digest"],
                     "secret_bindings": body.get("secret_bindings", []),
-                    "created_at": "2026-08-21T00:00:00Z",
+                    "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
                 response = {"job_id": "job-register"}
                 status = 202
@@ -1565,10 +1665,18 @@ def _mock_remote_function_catalog():
                     "job_state": "DONE",
                     "result": state["version"],
                 }
-            elif self.path == "/v1/function/normalize_score/describe":
+            # A namespaced Function's id is its namespace path and name joined
+            # by `$`, so the name is the last segment of it.
+            elif (
+                function_action[1] == "describe"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
                 assert body == {"version": FUNCTION_VERSION}
                 response = state["version"]
-            elif self.path == "/v1/function/normalize_score/drop":
+            elif (
+                function_action[1] == "drop"
+                and function_action[0].split("$")[-1] == "normalize_score"
+            ):
                 assert body == {"version": FUNCTION_VERSION}
                 response = {"dropped": True}
             elif secret_action[1] in ("create", "alter"):
@@ -1602,7 +1710,8 @@ def _mock_remote_function_catalog():
                     assert query["page_token"] == "next"
                     self._write_response(200, {"secrets": [{"name": "hf-prod"}]})
                 return
-            if url.path != "/v1/namespace/$/function/list":
+            parts = url.path.strip("/").split("/")
+            if parts[:2] != ["v1", "namespace"] or parts[3:] != ["function", "list"]:
                 self._write_response(404, {"error": "not found"})
                 return
             assert query["include_definition"] == "true"
@@ -1642,12 +1751,19 @@ def test_remote_registration_job_and_exact_version_reopen_round_trip():
         )
         registration = db.create_function_async(normalize_score)
         assert registration.id == "job-register"
+        assert registration.job_type is None
+        assert registration.status() == "finished"
+        assert registration.job_type == "create_function"
         created = registration.wait()
+        assert registration.job_type == "create_function"
         reopened = db.get_function("normalize_score", version=created.version)
 
     assert created == reopened
     assert reopened.name == "normalize_score"
     assert reopened.version == FUNCTION_VERSION
+    assert (
+        reopened.source_digest == normalize_score.registration_request.artifact.digest
+    )
     create_request = state["requests"][0][1]
     expected_request = json.loads(
         normalize_score.registration_request.to_canonical_json()
@@ -1709,7 +1825,7 @@ def test_remote_secret_verbs_round_trip():
         )
         assert db.create_secret("openai-prod", "sk-live-0001") is None
         assert db.alter_secret("openai-prod", "sk-live-0002") is None
-        assert db.list_secrets() == ["openai-prod", "hf-prod"]
+        assert list(db.list_secrets()) == ["openai-prod", "hf-prod"]
         assert db.drop_secret("openai-prod") is None
 
     routes = [path for path, _ in state["requests"]]
@@ -1754,6 +1870,7 @@ def test_blocking_remote_registration_returns_function_version():
 
     assert created.name == "normalize_score"
     assert created.version == FUNCTION_VERSION
+    assert created.source_digest == normalize_score.registration_request.artifact.digest
     assert [path for path, _ in state["requests"]] == [
         "/v1/function/normalize_score/create",
         "/v1/jobs/describe",
@@ -1770,9 +1887,12 @@ def test_remote_list_functions_paginates_and_returns_typed_versions():
         )
         created = db.create_function(normalize_score)
         state["requests"].clear()
-        functions = db.list_functions()
+        functions = list(db.list_functions())
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert state["requests"] == [
         ("/v1/namespace/$/function/list", {"include_definition": "true"}),
         (
@@ -1794,9 +1914,12 @@ async def test_async_remote_list_functions_returns_typed_versions():
         registration = await db.create_function_async(normalize_score)
         created = await registration.wait()
         state["requests"].clear()
-        functions = await db.list_functions()
+        functions = [item async for item in db.list_functions()]
 
     assert functions == [created]
+    assert functions[0].source_digest == (
+        normalize_score.registration_request.artifact.digest
+    )
     assert [path for path, _ in state["requests"]] == [
         "/v1/namespace/$/function/list",
         "/v1/namespace/$/function/list",
@@ -1840,3 +1963,102 @@ async def test_async_remote_drop_function_sends_exact_version():
             {"version": FUNCTION_VERSION},
         )
     ]
+
+
+def test_remote_function_verbs_address_a_namespace_in_the_path():
+    """A Function's namespace is part of the identifier each route addresses;
+    no body carries it, so a namespaced request differs only in its path."""
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        created = db.create_function(normalize_score, namespace_path=namespace)
+        # The returned parts are what the other verbs take, so a created
+        # Function reopens from its own fields.
+        assert created.name == "normalize_score"
+        assert created.namespace_path == tuple(namespace)
+        reopened = db.get_function(
+            created.name,
+            version=created.version,
+            namespace_path=list(created.namespace_path),
+        )
+        assert reopened == created
+        assert reopened(value=lancedb.col("score")).function.namespace_path == tuple(
+            namespace
+        )
+        list(db.list_functions(namespace_path=namespace))
+        assert (
+            db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+        dropped, _ = db.drop_function_async(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        assert dropped is True
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_remote_function_verbs_address_a_namespace_in_the_path():
+    namespace = ["analytics", "features"]
+    with _mock_remote_function_catalog() as (host, state):
+        db = await lancedb.connect_async(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        registration = await db.create_function_async(
+            normalize_score, namespace_path=namespace
+        )
+        await registration.wait()
+        await db.get_function(
+            "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+        )
+        [item async for item in db.list_functions(namespace_path=namespace)]
+        assert (
+            await db.drop_function(
+                "normalize_score", version=FUNCTION_VERSION, namespace_path=namespace
+            )
+            is True
+        )
+
+    assert [path for path, _ in state["requests"]] == [
+        "/v1/function/analytics$features$normalize_score/create",
+        "/v1/jobs/describe",
+        "/v1/function/analytics$features$normalize_score/describe",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/namespace/analytics$features/function/list",
+        "/v1/function/analytics$features$normalize_score/drop",
+    ]
+
+
+def test_a_function_namespace_path_must_be_a_list_of_segments():
+    """A bare string is refused rather than read as a sequence of one-character
+    segments, and nothing reaches the service."""
+    with _mock_remote_function_catalog() as (host, state):
+        db = lancedb.connect(
+            "db://dev",
+            api_key="fake",
+            host_override=host,
+            client_config={"retry_config": {"retries": 0}},
+        )
+        with pytest.raises(TypeError):
+            list(db.list_functions(namespace_path="analytics"))
+
+    assert state["requests"] == []

@@ -315,13 +315,53 @@ def test_hybrid_query_offset(sync_table: Table):
     assert offset_result["_rowid"].to_pylist() == full["_rowid"].to_pylist()[2:]
 
 
+@pytest.mark.parametrize(
+    "query_vector",
+    [
+        pytest.param((0.0, 0.4), id="tuple"),
+        pytest.param(pa.array([0.0, 0.4], type=pa.float32()), id="pa-array"),
+        pytest.param(
+            pa.chunked_array([[0.0], [0.4]], type=pa.float32()), id="pa-chunked-array"
+        ),
+    ],
+)
+def test_hybrid_query_accepts_every_vector_container(sync_table: Table, query_vector):
+    # Vector search and the async hybrid API both accept tuples and pyarrow
+    # arrays for the query vector (``VEC`` in ``lancedb/common.py``), so the
+    # sync hybrid builder must accept them too.
+    expected = (
+        sync_table.search(query_type="hybrid")
+        .vector([0.0, 0.4])
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    result = (
+        sync_table.search(query_type="hybrid")
+        .vector(query_vector)
+        .text("dog")
+        .limit(2)
+        .with_row_id(True)
+        .to_arrow()
+    )
+
+    assert result["_rowid"].to_pylist() == expected["_rowid"].to_pylist()
+
+
 def test_hybrid_query_default_limit(sync_table: Table):
     # The vector and FTS legs match disjoint rows, so fusing their results
     # yields more rows than the default limit.
     new_rows = []
+    # Distinct distances and document lengths avoid ties in either leg,
+    # so comparing offset windows does not depend on tie ordering.
     for i in range(20):
-        new_rows.append({"text": "close_vec", "vector": [0.1, 0.1]})
-        new_rows.append({"text": "dog", "vector": [50.0 + i, 50.0 + i]})
+        coordinate = 0.11 + i * 0.001
+        new_rows.append({"text": "close_vec", "vector": [coordinate, coordinate]})
+        new_rows.append(
+            {"text": "dog " + "padding " * (i + 1), "vector": [50.0 + i, 50.0 + i]}
+        )
     sync_table.add(new_rows)
 
     def query():
@@ -353,6 +393,20 @@ def test_hybrid_query_minimum_nprobes_zero_raises(sync_table: Table):
             .minimum_nprobes(0)
             .to_arrow()
         )
+
+
+def test_hybrid_query_nprobes_remains_independent(sync_table: Table):
+    query = sync_table.search(query_type="hybrid").nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes is None
+    assert query._maximum_nprobes is None
+
+    query = query.minimum_nprobes(5).nprobes(20)
+
+    assert query._nprobes == 20
+    assert query._minimum_nprobes == 5
+    assert query._maximum_nprobes is None
 
 
 def test_hybrid_query_distance_range(sync_table: Table):
@@ -522,3 +576,15 @@ def test_normalize_scores():
             assert pc.equal(result, expected), (
                 f"Expected {expected} but got {result} for invert={invert}"
             )
+
+
+def test_hybrid_query_rejects_query_with_vector(sync_table: Table):
+    # Pins the full message: the space between "hybrid search." and "But" is
+    # load-bearing (see the _validate_query literal concatenation).
+    with pytest.raises(ValueError) as excinfo:
+        sync_table.search("dog", query_type="hybrid").vector([0.5, -0.5]).to_arrow()
+    assert str(excinfo.value) == (
+        "You can either provide a string query in search() method "
+        "or set `vector()` and `text()` explicitly for hybrid search. "
+        "But not both."
+    )

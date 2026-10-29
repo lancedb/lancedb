@@ -1,0 +1,25 @@
+---
+title: "Hybrid search and reranking on BEIR"
+sidebarTitle: "Hybrid Search on BEIR"
+description: "Combine semantic and keyword search on the BEIR benchmark, then rerank the results."
+---
+
+Uses LanceDB's built-in [hybrid search](/search/hybrid-search), which combines the
+strengths of semantic and full-text search. Working against the BEIR dataset, it
+shows how searching for both the meaning of a query and the specific keywords in
+it produces more relevant results than either alone, and how a
+[reranker](/reranking) refines what comes back.
+
+<Note>
+This example is a runnable notebook in the
+[vectordb-recipes](https://github.com/lancedb/vectordb-recipes) repository rather than a page here.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Open in Colab" icon="google" href="https://colab.research.google.com/github/lancedb/vectordb-recipes/blob/main/examples/Inbuilt-Hybrid-Search/Inbuilt_Hybrid_Search_with_LanceDB.ipynb">
+    Run it end to end in the browser.
+  </Card>
+  <Card title="View on GitHub" icon="github" href="https://github.com/lancedb/vectordb-recipes/tree/main/examples/Inbuilt-Hybrid-Search">
+    Read the source.
+  </Card>
+</CardGroup>

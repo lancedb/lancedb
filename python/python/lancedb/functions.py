@@ -4,7 +4,7 @@
 """Canonical Function values exchanged with LanceDB Enterprise services.
 
 These immutable models contain client/wire state only. Catalog persistence,
-environment bake, secret resolution, and execution are owned by Sophon.
+environment bake, secret resolution, and execution are owned by LanceDB Enterprise.
 ``RefreshColumnResult`` is also the backend-neutral result of a local
 expression-backed refresh job.
 """
@@ -33,6 +33,7 @@ from typing import (
     Annotated,
     Any,
     Callable,
+    Literal,
     Optional,
     Union,
     get_args,
@@ -52,7 +53,9 @@ from pydantic import (
     model_validator,
 )
 
+from .schema import blob as _blob_field
 from .schema import is_blob_v2_field as _is_blob_v2_field
+from ._blob_reader import BlobReader
 from .secrets import EnvVarSecret
 
 _Int32 = conint(strict=True, ge=-(2**31), le=2**31 - 1)
@@ -213,6 +216,7 @@ class FunctionParameter(_RemoteValue):
     name: str
     arrow_type: str
     nullable: bool
+    blob_access: Optional[Literal["bytes", "reader"]] = None
 
 
 class FunctionResultField(_OpenRemoteValue):
@@ -271,7 +275,7 @@ class FunctionSignature(_RemoteValue):
 
 
 class PythonEnvironmentSpec(_RemoteValue):
-    """One Sophon-managed Python environment source."""
+    """One LanceDB Enterprise-managed Python environment source."""
 
     kind: str
     packages: tuple[str, ...] = ()
@@ -356,16 +360,30 @@ _ObjectVersion = Annotated[
 
 
 class FunctionVersion(_RemoteValue):
-    """A pinned object revision, independent of its executable image digest."""
+    """A pinned object revision, independent of its executable image digest.
+
+    ``name`` and ``namespace_path`` are the Function's parts, as a
+    [SecretReference][lancedb.functions.SecretReference] carries a Secret's;
+    they are what [get_function][lancedb.db.DBConnection.get_function] takes.
+    An empty ``namespace_path`` is the root namespace.
+
+    ``source_digest`` identifies the registered source artifact, independently
+    of the built ``image``. Compare it with
+    ``udf_def.registration_request.artifact.digest`` to check whether a local
+    [UdfDefinition][lancedb.functions.UdfDefinition] has the same source.
+    It is ``None`` when the server does not provide a source digest.
+    """
 
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
     image: FunctionImage
+    source_digest: Optional[str] = None
     signature: FunctionSignature
     secret_bindings: tuple[SecretBinding, ...] = ()
-    created_at: str
+    created_at_millis: int
     metadata: Mapping[str, str]
     disabled: bool
 
@@ -444,6 +462,7 @@ class FunctionVersion(_RemoteValue):
         return FunctionApplication(
             function=FunctionVersionRef(
                 name=self.name,
+                namespace_path=self.namespace_path,
                 object_id=self.object_id,
                 location=self.location,
                 version=self.version,
@@ -502,6 +521,7 @@ class FunctionRegistrationRequest(_RemoteValue):
 
 class FunctionVersionRef(_OpenRemoteValue):
     name: str
+    namespace_path: tuple[str, ...] = ()
     object_id: str
     location: str
     version: _ObjectVersion
@@ -640,8 +660,8 @@ class FunctionBinding(_RemoteValue):
 class RefreshColumnResult(_RemoteValue):
     """Terminal result of an expression-backed or Function-backed refresh Job.
 
-    Local jobs produce this value in process. LanceDB Cloud and Enterprise
-    decode the same value from the durable server-job terminal payload.
+    LanceDB Embedded jobs produce this value in process. LanceDB Distributed
+    decodes the same value from the durable server-job terminal payload.
     """
 
     rows_assigned: _UInt64
@@ -661,7 +681,7 @@ class RefreshColumnResult(_RemoteValue):
         return self.published_version
 
 
-_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
+_FUNCTION_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _FUNCTION_BLOB_V2_TYPE = "blob_v2"
 _ARROW_EXTENSION_NAME_KEY = "ARROW:extension:name"
@@ -688,6 +708,7 @@ _GRAMMAR_PRIMITIVES = (
     (pa.string(), "utf8"),
     (pa.large_string(), "large_utf8"),
     (pa.binary(), "binary"),
+    (pa.large_binary(), "large_binary"),
     (pa.date32(), "date32"),
     (pa.date64(), "date64"),
 )
@@ -837,11 +858,7 @@ def _exact_blob_storage_type(field: pa.Field) -> dict[str, Any]:
             {
                 "name": child.name,
                 "nullable": child.nullable,
-                "type": (
-                    {"type": "large_binary"}
-                    if pa.types.is_large_binary(child.type)
-                    else _exact_arrow_type(child.type)
-                ),
+                "type": _exact_arrow_type(child.type),
             }
             for child in storage
         ],
@@ -983,6 +1000,11 @@ def _annotation_type(annotation: Any) -> tuple[pa.DataType, bool]:
 
     if isinstance(annotation, pa.DataType):
         return annotation, nullable
+    if annotation is pa.Array or annotation is pa.RecordBatch:
+        raise TypeError(
+            f"cannot infer Arrow types from Function annotation {annotation!r}; "
+            "provide input_schema and output_schema together for batch callables"
+        )
     if annotation is bool:
         return pa.bool_(), nullable
     if annotation is int:
@@ -1090,6 +1112,43 @@ def _infer_signature(
     if (input_schema is None) != (output_schema is None):
         raise ValueError("input_schema and output_schema must be provided together")
 
+    try:
+        annotations = get_type_hints(function, include_extras=True)
+    except Exception as error:
+        raise TypeError(f"failed to resolve Function annotations: {error}") from error
+
+    def input_parameter(field):
+        annotation = annotations.get(field.name)
+        if get_origin(annotation) in (Union, types.UnionType):
+            choices = [
+                value for value in get_args(annotation) if value is not type(None)
+            ]
+            if len(choices) == 1:
+                annotation = choices[0]
+        arrow_type = _canonical_arrow_field(field)
+        if annotation is BlobReader:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE:
+                raise TypeError(
+                    f"BlobReader input '{field.name}' requires a Blob V2 field"
+                )
+            access = "reader"
+        elif annotation is bytes:
+            if arrow_type != _FUNCTION_BLOB_V2_TYPE and not (
+                pa.types.is_binary(field.type) or pa.types.is_large_binary(field.type)
+            ):
+                raise TypeError(
+                    f"bytes input '{field.name}' requires binary or Blob V2"
+                )
+            access = "bytes"
+        else:
+            access = "bytes" if arrow_type == _FUNCTION_BLOB_V2_TYPE else None
+        return FunctionParameter(
+            name=field.name,
+            arrow_type=arrow_type,
+            nullable=field.nullable,
+            blob_access=access,
+        )
+
     if input_schema is not None:
         if not isinstance(input_schema, pa.Schema):
             raise TypeError("input_schema must be a PyArrow Schema")
@@ -1104,20 +1163,9 @@ def _infer_signature(
                 "input_schema fields must exactly match callable parameters in order: "
                 f"expected {expected!r}, got {actual!r}"
             )
-        inputs = tuple(
-            FunctionParameter(
-                name=field.name,
-                arrow_type=_canonical_arrow_field(field),
-                nullable=field.nullable,
-            )
-            for field in input_schema
-        )
+        inputs = tuple(input_parameter(field) for field in input_schema)
         return FunctionSignature(inputs=inputs, output=_function_output(output_schema))
 
-    try:
-        annotations = get_type_hints(function, include_extras=True)
-    except Exception as error:
-        raise TypeError(f"failed to resolve Function annotations: {error}") from error
     missing = [
         parameter.name for parameter in parameters if parameter.name not in annotations
     ]
@@ -1126,15 +1174,21 @@ def _infer_signature(
         raise TypeError(f"missing Function annotations: {names!r}")
     inputs = []
     for parameter in parameters:
-        data_type, nullable = _annotation_type(annotations[parameter.name])
-        inputs.append(
-            FunctionParameter(
-                name=parameter.name,
-                arrow_type=_canonical_arrow_field(
-                    pa.field(parameter.name, data_type, nullable=nullable)
-                ),
-                nullable=nullable,
+        annotation = annotations[parameter.name]
+        base = annotation
+        nullable = False
+        if get_origin(base) in (Union, types.UnionType):
+            choices = [value for value in get_args(base) if value is not type(None)]
+            if len(choices) == 1:
+                base, nullable = choices[0], True
+        if base is BlobReader:
+            inputs.append(
+                input_parameter(_blob_field(parameter.name, nullable=nullable))
             )
+            continue
+        data_type, nullable = _annotation_type(annotation)
+        inputs.append(
+            input_parameter(pa.field(parameter.name, data_type, nullable=nullable))
         )
     output_type, output_nullable = _annotation_type(annotations["return"])
     if output_nullable:
@@ -1233,7 +1287,7 @@ _PYTHON_CALLABLE_ARTIFACT = "python_callable"
 _PYTHON_BUNDLE_ARTIFACT = "python_bundle"
 # Modules the Function image places beside user code.
 _RESERVED_SOURCE_MODULES = frozenset(
-    {"user_function", "lance_source", "lance_callable"}
+    {"user_function", "lance_source", "lance_callable", "lance_blob"}
 )
 # The service accepts bundle paths made of these components only.
 _SOURCE_PATH_COMPONENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -1420,8 +1474,8 @@ class _SourcePackager:
         self._packaged: set[int] = set()
         self._names: dict[str, Any] = {}
 
-    def package(self, target: Any) -> str:
-        entry = self._definition(target, entry=True)
+    def package(self, target: Any, signature: FunctionSignature) -> str:
+        entry = self._definition(target, entry=True, signature=signature)
         parts = [_SOURCE_HEADER]
         if self._imports:
             parts.extend(["", *(self._imports[name] for name in sorted(self._imports))])
@@ -1430,12 +1484,20 @@ class _SourcePackager:
         parts.extend(["", entry, ""])
         return "\n".join(parts)
 
-    def _definition(self, target: Any, *, entry: bool) -> str:
+    def _definition(
+        self, target: Any, *, entry: bool, signature: Optional[FunctionSignature] = None
+    ) -> str:
         definition = _definition_node(target, entry=entry)
         if not inspect.isclass(target) and inspect.getclosurevars(target).nonlocals:
             raise ValueError(
                 "@udf cannot package functions that capture closure values"
             )
+        namespace = _definition_namespace(target)
+        reader_name = (
+            self._blob_annotations(definition, signature, namespace)
+            if signature is not None
+            else None
+        )
         source = ast.unparse(definition)
         references = _module_references(f"{_SOURCE_HEADER}\n\n{source}\n")
         dynamic = _namespace_acquisition(definition, references)
@@ -1443,9 +1505,10 @@ class _SourcePackager:
             raise ValueError(
                 f"@udf cannot package dynamic namespace access: {dynamic!r}"
             )
-        namespace = _definition_namespace(target)
         self._packaged.add(id(target))
         self._claim(target.__name__, ("definition", id(target)))
+        if reader_name is not None:
+            self._bind(reader_name, BlobReader)
         unresolved = []
         for name in sorted(references):
             if name == target.__name__:
@@ -1465,6 +1528,44 @@ class _SourcePackager:
                 f"@udf source contains unresolved global names: {unresolved!r}"
             )
         return source
+
+    def _blob_annotations(
+        self,
+        definition: Union[ast.FunctionDef, ast.ClassDef],
+        signature: FunctionSignature,
+        namespace: Mapping[str, Any],
+    ) -> Optional[str]:
+        """Bind reader inputs to the worker type, including postponed aliases."""
+        readers = {
+            parameter.name: parameter
+            for parameter in signature.inputs
+            if parameter.blob_access == "reader"
+        }
+        if not readers:
+            return None
+        call = definition
+        if isinstance(definition, ast.ClassDef):
+            call = next(
+                (
+                    member
+                    for member in definition.body
+                    if isinstance(member, ast.FunctionDef) and member.name == "__call__"
+                ),
+                None,
+            )
+        if call is None:
+            return None
+        # Avoid shadowing globals used by the body or other packaged definitions.
+        name = "_lance_blob_reader"
+        while name in namespace or name in self._names or name == definition.name:
+            name += "_"
+        for argument in (*call.args.args, *call.args.kwonlyargs):
+            if argument.arg in readers:
+                annotation = name
+                if readers[argument.arg].nullable:
+                    annotation += " | None"
+                argument.annotation = ast.parse(annotation, mode="eval").body
+        return name
 
     def _claim(self, name: str, meaning: Any) -> None:
         claimed = self._names.setdefault(name, meaning)
@@ -1493,6 +1594,8 @@ class _SourcePackager:
         """One module-level line that rebinds `name` to `value` in the artifact:
         an import for modules and importable classes/functions, a literal
         otherwise."""
+        if value is BlobReader:
+            return f"from lance_blob import BlobReader as {name}"
         if isinstance(value, types.ModuleType):
             if value.__name__.split(".")[0] in _NAMESPACE_MODULES:
                 raise ValueError(
@@ -1801,7 +1904,7 @@ class UdfDefinition:
         code_files, code_modules = _code_files(code)
         entry_source = _SourcePackager(
             code_modules, frozenset(_requirement_name(package) for package in packages)
-        ).package(function)
+        ).package(function, signature)
         if code_files:
             kind = _PYTHON_BUNDLE_ARTIFACT
             source = json.dumps(
@@ -1966,8 +2069,11 @@ def udf(
 
     **Functions and classes.** A decorated function is called once per row,
     or once per batch when its parameters are annotated ``pyarrow.Array`` or
-    it takes one ``pyarrow.RecordBatch``. A decorated class is the same
-    callable with state: each remote instance calls ``__init__`` once, calls
+    it takes one ``pyarrow.RecordBatch``. These batch annotations require both
+    ``input_schema`` and ``output_schema`` explicitly: the annotations do not
+    specify Arrow element types or fields. This also applies to a class's
+    ``__call__`` method. A decorated class is the same callable with state:
+    each remote instance calls ``__init__`` once, calls
     ``__call__`` for every row or batch of every input it processes, and calls
     ``close()``, if defined, once when it retires. Load models, open clients,
     and build rate limiters in ``__init__``; every batch of the instance then
@@ -2015,12 +2121,16 @@ def udf(
         The synchronous callable, or the class whose instances are called.
     name : str, optional
         The remote Function name. Defaults to the callable name.
+        Must start with an ASCII letter or underscore and contain only ASCII
+        letters, digits, and underscores.
     input_schema : pyarrow.Schema, optional
         Explicit input fields in the exact order of the callable parameters.
-        Must be provided together with ``output_schema``.
+        Required for batch annotations. Must be provided together with
+        ``output_schema``.
     output_schema : pyarrow.DataType, pyarrow.Field, or pyarrow.Schema, optional
         Explicit scalar or named-struct output. Scalar outputs must be
-        non-nullable. Must be provided together with ``input_schema``.
+        non-nullable. Required for batch annotations. Must be provided together
+        with ``input_schema``.
     pip : sequence of str, optional
         Pip requirements for the remote environment.
     conda : sequence of str, optional
@@ -2058,6 +2168,15 @@ def udf(
     ...     return value * 2
     >>> score(1.5)
     3.0
+    >>> import pyarrow as pa
+    >>> @udf(
+    ...     input_schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    ...     output_schema=pa.int64(),
+    ... )
+    ... def batch_identity(value: pa.Array) -> pa.Array:
+    ...     return value
+    >>> batch_identity(pa.array([1, 2, 3])).to_pylist()
+    [1, 2, 3]
     >>> @udf(pip=["cupy-cuda12x"], gpu=True)
     ... def gpu_score(value: int) -> int:
     ...     return value * 2
