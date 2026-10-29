@@ -328,8 +328,11 @@ async fn build_read_context(
     // Override the active shard with the cached writer's in-memory view.
     let mut in_memory: HashMap<Uuid, InMemoryMemTables> = HashMap::new();
     if !wal_only
-        && let Some((shard_id, manifest, memtables)) =
-            table.dataset.shard_writer().read_snapshot().await?
+        && let Some((shard_id, manifest, memtables)) = table
+            .dataset
+            .shard_writer()
+            .read_snapshot(&details.dir_id)
+            .await?
     {
         if let Some(manifest) = manifest {
             let snapshot = snapshot_from_manifest(shard_id, &manifest, &exclude);

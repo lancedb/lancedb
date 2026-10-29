@@ -1453,6 +1453,62 @@ mod lsm_tests {
         );
     }
 
+    /// Another process re-initializing the MemWAL retires this process's
+    /// cached writer: its rows are not read, and the next write opens a
+    /// writer for the new MemWAL.
+    #[tokio::test]
+    async fn lsm_writer_of_a_retired_mem_wal_is_replaced() {
+        let dir = tempdir().unwrap();
+        let uri = dir.path().to_str().unwrap();
+        let conn = connect(uri)
+            .read_consistency_interval(std::time::Duration::ZERO)
+            .execute()
+            .await
+            .unwrap();
+        let table = conn
+            .create_table("t", id_value_reader(vec![1, 2, 3]))
+            .execute()
+            .await
+            .unwrap();
+        table.set_unenforced_primary_key(["id"]).await.unwrap();
+        table.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        lsm_upsert(&table, vec![4, 5]).await;
+        let retired_dir_id = mem_wal_dir_id(&table).await;
+
+        let other = connect(uri)
+            .execute()
+            .await
+            .unwrap()
+            .open_table("t")
+            .execute()
+            .await
+            .unwrap();
+        other.disable_rte().await.unwrap();
+        other.enable_rte(RTEWriteSpec::unsharded()).await.unwrap();
+        let dir_id = mem_wal_dir_id(&table).await;
+        assert_ne!(dir_id, retired_dir_id);
+
+        let ids = || async {
+            let rows = collect_id_value(table.query().execute().await.unwrap()).await;
+            rows.into_iter().map(|(id, _)| id).collect::<Vec<_>>()
+        };
+        assert_eq!(ids().await, vec![1, 2, 3]);
+
+        lsm_upsert(&table, vec![6]).await;
+        assert_eq!(ids().await, vec![1, 2, 3, 6]);
+        let native = table.as_native().unwrap();
+        assert!(
+            native
+                .dataset
+                .shard_writer()
+                .read_snapshot(&dir_id)
+                .await
+                .unwrap()
+                .is_some(),
+            "the write opened a writer for the new MemWAL"
+        );
+    }
+
     #[tokio::test]
     async fn base_table_adapter_use_rte_false_scans_the_base_only() {
         use crate::table::datafusion::BaseTableAdapter;
@@ -2269,7 +2325,7 @@ mod lsm_tests {
             .unwrap()
             .dataset
             .shard_writer()
-            .read_snapshot()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
             .await
             .unwrap()
             .expect("the merge opened a writer");
@@ -2288,22 +2344,29 @@ mod lsm_tests {
         assert_sstables_answer_through_region_bitmap(&table, vec![10, 11]).await;
     }
 
-    /// The SSTables each shard's manifest publishes.
-    async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
-        use lance::dataset::mem_wal::{DatasetMemWalExt, ShardManifestStore};
+    /// The `dir_id` of the table's current MemWAL, read from storage.
+    async fn mem_wal_dir_id(table: &Table) -> String {
+        use lance::dataset::mem_wal::DatasetMemWalExt;
 
-        let uri = table.uri().await.unwrap();
-        let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
-            .await
-            .unwrap();
-        let dir_id = lance::Dataset::open(&uri)
+        lance::Dataset::open(&table.uri().await.unwrap())
             .await
             .unwrap()
             .mem_wal_index_details()
             .await
             .unwrap()
             .expect("the table has a MemWAL")
-            .dir_id;
+            .dir_id
+    }
+
+    /// The SSTables each shard's manifest publishes.
+    async fn published_sstables(table: &Table) -> Vec<lance::Dataset> {
+        use lance::dataset::mem_wal::ShardManifestStore;
+
+        let uri = table.uri().await.unwrap();
+        let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
+            .await
+            .unwrap();
+        let dir_id = mem_wal_dir_id(table).await;
         let mem_wal = std::path::Path::new(&uri)
             .join(lance::dataset::mem_wal::util::mem_wal_dir_name(&dir_id));
         let mut sstables = Vec::new();
@@ -2426,7 +2489,7 @@ mod lsm_tests {
             .unwrap()
             .dataset
             .shard_writer()
-            .read_snapshot()
+            .read_snapshot(&mem_wal_dir_id(&table).await)
             .await
             .unwrap()
             .expect("the merge opened a writer");

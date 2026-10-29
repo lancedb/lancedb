@@ -351,12 +351,17 @@ impl std::fmt::Debug for ShardWriterCache {
 }
 
 struct ShardWriterEntry {
+    /// The `dir_id` of the MemWAL the writer was opened for. Another process
+    /// can drop and re-initialize the MemWAL under this one, leaving the cached
+    /// writer bound to a directory the index no longer names.
+    dir_id: String,
     inner: RwLock<Option<ShardWriter>>,
 }
 
 impl ShardWriterEntry {
     fn new(writer: ShardWriter) -> Self {
         Self {
+            dir_id: writer.config().dir_id.clone(),
             inner: RwLock::new(Some(writer)),
         }
     }
@@ -420,37 +425,57 @@ impl ShardWriterCache {
     /// Return the cached writer, opening one for `shard_id` with `config` if
     /// the slot is empty. Errors if a writer is already open for a *different*
     /// shard — the caller must close it first.
+    ///
+    /// A cached writer opened for a MemWAL other than `dir_id` is retired and
+    /// replaced: the MemWAL it wrote to was dropped by another process, so its
+    /// rows are no longer part of the table and its commits would be fenced.
     async fn writer_for_shard(
         &self,
         dataset: &Dataset,
+        dir_id: &str,
         shard_id: Uuid,
         config: ShardWriterConfig,
     ) -> Result<Arc<ShardWriterEntry>> {
         {
             let guard = self.slot.read().await;
-            if let Some((cached, entry)) = guard.as_ref() {
+            if let Some((cached, entry)) = guard.as_ref()
+                && entry.dir_id == dir_id
+            {
                 check_shard_match(*cached, shard_id)?;
                 return Ok(entry.clone());
             }
         }
         let mut guard = self.slot.write().await;
         // Re-check: another caller may have opened the writer meanwhile.
-        if let Some((cached, entry)) = guard.as_ref() {
+        if let Some((cached, entry)) = guard.as_ref()
+            && entry.dir_id == dir_id
+        {
             check_shard_match(*cached, shard_id)?;
             return Ok(entry.clone());
         }
-        let writer = dataset
+        let retired = guard.take();
+        let opened = dataset
             .mem_wal_writer(shard_id, config)
             .await
-            .map_err(|e| Error::Runtime {
-                message: format!(
-                    "merge_insert: failed to open RTE shard writer for shard {}: {}",
-                    shard_id, e
-                ),
-            })?;
-        let entry = Arc::new(ShardWriterEntry::new(writer));
-        *guard = Some((shard_id, entry.clone()));
-        Ok(entry)
+            .map(|writer| Arc::new(ShardWriterEntry::new(writer)));
+        if let Ok(entry) = &opened {
+            *guard = Some((shard_id, entry.clone()));
+        }
+        drop(guard);
+        if let Some((retired_shard, retired)) = retired
+            && let Err(error) = retired.close().await
+        {
+            log::warn!(
+                "the MemWAL was re-initialized, and the writer this process held for \
+                 shard {retired_shard} of the retired MemWAL could not be closed: {error}"
+            );
+        }
+        opened.map_err(|e| Error::Runtime {
+            message: format!(
+                "merge_insert: failed to open RTE shard writer for shard {}: {}",
+                shard_id, e
+            ),
+        })
     }
 
     /// Install `dataset`'s maintained index set on the cached writer, if one is
@@ -505,10 +530,12 @@ impl ShardWriterCache {
     /// Snapshot the cached writer's shard for the RTE read path: its shard id,
     /// authoritative in-memory manifest, and active + frozen memtable refs.
     /// Returns `None` when no writer is currently cached (e.g. nothing has been
-    /// written this session, or the writer was closed).
+    /// written this session, or the writer was closed), or when the cached
+    /// writer belongs to a MemWAL other than `dir_id`.
     #[allow(clippy::redundant_pub_crate)]
     pub(crate) async fn read_snapshot(
         &self,
+        dir_id: &str,
     ) -> Result<
         Option<(
             Uuid,
@@ -523,6 +550,10 @@ impl ShardWriterCache {
         let Some((shard_id, entry)) = cached else {
             return Ok(None);
         };
+        // A writer for a retired MemWAL holds no rows of the current one.
+        if entry.dir_id != dir_id {
+            return Ok(None);
+        }
         // Capture memtables before the manifest. If a flush interleaves, dedup
         // tolerates the same rows appearing in both a memtable and a freshly
         // flushed generation, but would drop rows present in neither. Manifest
@@ -576,6 +607,8 @@ enum LsmMode {
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) struct LsmPlan {
     mode: LsmMode,
+    /// The `dir_id` of the MemWAL the write targets.
+    dir_id: String,
     writer_config_defaults: HashMap<String, String>,
 }
 
@@ -644,6 +677,7 @@ pub(crate) async fn lsm_dispatch_decision(
     let mode = resolve_lsm_mode(&details)?;
     Ok(LsmDispatch::Lsm(LsmPlan {
         mode,
+        dir_id: details.dir_id,
         writer_config_defaults: details.writer_config_defaults,
     }))
 }
@@ -745,7 +779,7 @@ pub(crate) async fn execute_lsm_merge_insert(
     let writer = table
         .dataset
         .shard_writer()
-        .writer_for_shard(dataset.as_ref(), shard_id, config)
+        .writer_for_shard(dataset.as_ref(), &plan.dir_id, shard_id, config)
         .await?;
     writer.put(batches).await?;
 
