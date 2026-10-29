@@ -49,7 +49,7 @@ Here is an example of the end-to-end workflow:
 
     ```bash
     synthetic-data-kit create data/parsed/report.lance --type multimodal-qa
-    # This writes data/generated/report_qa_pairs.json
+    # This writes data/generated/report.json
     ```
 
 3.  **Curate the data**
@@ -57,7 +57,7 @@ Here is an example of the end-to-end workflow:
     This step uses a language model to curate the generated data and ensure its quality.
 
     ```bash
-    synthetic-data-kit curate data/generated/report_qa_pairs.json
+    synthetic-data-kit curate data/generated/report.json
     # This writes data/curated/report_cleaned.json
     ```
 
