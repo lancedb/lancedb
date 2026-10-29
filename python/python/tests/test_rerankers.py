@@ -836,8 +836,11 @@ def test_empty_hybrid_result_reranker():
     assert "_rowid" in result.column_names
 
 
+@pytest.mark.parametrize("reranker_cls", [LinearCombinationReranker, RRFReranker])
 @pytest.mark.parametrize("return_score", ["relevance", "all"])
-def test_empty_hybrid_result_keeps_reranker_columns(tmp_path, return_score):
+def test_empty_hybrid_result_keeps_reranker_columns(
+    tmp_path, reranker_cls, return_score
+):
     # A filter that matches nothing must not change which columns come back.
     db = lancedb.connect(tmp_path)
     table = db.create_table(
@@ -850,7 +853,7 @@ def test_empty_hybrid_result_keeps_reranker_columns(tmp_path, return_score):
         ),
     )
     table.create_fts_index("text")
-    reranker = LinearCombinationReranker(return_score=return_score)
+    reranker = reranker_cls(return_score=return_score)
 
     def columns(where):
         query = table.search(query_type="hybrid").vector([1.0, 2.0]).text("fox")
