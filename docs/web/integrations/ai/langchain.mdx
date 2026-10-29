@@ -72,7 +72,7 @@ This method turn texts into embedding and add it to the database.
 |`texts`|`Iterable` of strings to add to the vectorstore.|Provided by user|
 |`metadatas`|Optional `list[dict()]` of metadatas associated with the texts.|`None`|
 |`ids`|Optional `list` of ids to associate with the texts.|`None`|
-|`kwargs`| Other keyworded arguments provided by the user. |-|
+| `kwargs` | `Any` | Other keyworded arguments provided by the user. | N/A |
 
 It returns list of ids of the added texts.
 
@@ -200,7 +200,7 @@ Maximal marginal relevance optimizes for similarity to query AND diversity among
 | `fetch_k`| `Optional[int]`| Number of Documents to fetch to pass to MMR algorithm.| `None`    |
 | `lambda_mult` | `float`                   | Number between 0 and 1 that determines the degree of diversity among the results with 0 corresponding to maximum diversity and 1 to minimum diversity. | `0.5`     |
 | `filter`| `Optional[Dict[str, str]]`| Filter by metadata. | `None`    |
-|`kwargs`| Other keyworded arguments provided by the user. |-|
+| `kwargs` | `Any` | Other keyworded arguments provided by the user. | N/A |
 
 Similarly, `max_marginal_relevance_search_by_vector()` function returns docs most similar to the embedding passed to the function using MMR. instead of a string query you need to pass the embedding to be searched for. 
 
