@@ -3576,9 +3576,8 @@ mod tests {
         assert!(matches!(err, Error::NotSupported { .. }), "declare won");
     }
 
-    /// The gate's reproducer: after catch-up activation, an LSM write, and
-    /// unset, retained SSTable rows survive without a live spec. The catch-up
-    /// flag is the durable marker; declaration refuses on it.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so declaration refuses.
     #[tokio::test]
     #[cfg_attr(
         not(feature = "experimental-functions"),
@@ -3622,9 +3621,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        crate::table::merge::lsm::disable_rte_unchecked(table.as_native().unwrap())
-            .await
-            .unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await

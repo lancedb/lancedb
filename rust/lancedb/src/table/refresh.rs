@@ -1805,8 +1805,8 @@ mod tests {
         assert!(matches!(err, Error::NotSupported { .. }));
     }
 
-    /// After catch-up activation and unset, no spec remains but the catch-up
-    /// flag still marks retained SSTable rows; refresh refuses on the flag.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so refresh refuses.
     #[tokio::test]
     #[cfg_attr(
         not(feature = "experimental-functions"),
@@ -1849,9 +1849,8 @@ mod tests {
             )))
             .await
             .unwrap();
-        crate::table::merge::lsm::disable_rte_unchecked(table.as_native().unwrap())
-            .await
-            .unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();
