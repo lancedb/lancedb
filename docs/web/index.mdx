@@ -47,22 +47,7 @@ LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which 
 indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
 how storage and compute are organized around them.
 
-```mermaid
-%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 45, "rankSpacing": 55, "padding": 12}}}%%
-flowchart TB
-    subgraph Embedded["LanceDB Embedded"]
-        EmbApp(["Your application<br/>+ LanceDB SDK"])
-    end
-
-    subgraph Enterprise["LanceDB Enterprise"]
-        EntSdk(["LanceDB SDK"]) --> EntEngine{{"Enterprise Distributed Engine"}}
-    end
-
-    Lance[("Lance format<br/>table data, versions, indexes")]
-
-    Embedded --> Lance
-    Enterprise --> Lance
-```
+![LanceDB suite: LanceDB Embedded for search, and LanceDB Enterprise for search, data exploration and curation, feature engineering, and training, both on the Lance format](/static/assets/images/overview/lancedb-suite.svg)
 
 Embedded reads and writes tables on local disk or in object storage from inside your application process.
 Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
@@ -87,6 +72,8 @@ Rust -- the application itself plans queries, builds indexes, and runs backgroun
 server to deploy. This fits local retrieval applications, notebooks, development, and single-node data pipelines,
 where your application controls its own compute resources and [table maintenance](/maintenance/compaction).
 
+![LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.](/static/assets/images/overview/lancedb-embedded.png)
+
 ### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
 
 [LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
@@ -97,24 +84,7 @@ and background work sized and scaled as separate components. A control plane gov
 and cluster lifecycle, separately from the data-plane components in the diagram below. See
 [Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
 
-```mermaid
-%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 45, "rankSpacing": 55, "padding": 12}}}%%
-flowchart TB
-    Clients(["Clients"])
-    QueryFleet{{"Query Fleet<br/>query serving"}}
-    ExecutorRing{{"Executor Ring<br/>read execution + cache"}}
-    MonitoringFleet{{"Monitoring Fleet"}}
-    JobWorkerFleet{{"Job Worker Fleet<br/>indexing, column + MV refresh, compaction"}}
-    Storage[("Cloud Object Storage")]
-
-    Clients --> QueryFleet
-    QueryFleet -- reads --> ExecutorRing
-    QueryFleet -- writes --> Storage
-    QueryFleet -- notifies --> MonitoringFleet
-    MonitoringFleet -- creates jobs --> JobWorkerFleet
-    ExecutorRing -- reads --> Storage
-    JobWorkerFleet -- writes --> Storage
-```
+![LanceDB Distributed: the LanceDB SDK connects to LanceDB Enterprise, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.](/static/assets/images/overview/lancedb-distributed.png)
 
 Teams choose Enterprise to:
 
