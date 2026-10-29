@@ -48,14 +48,27 @@ fixes should arrive through reviewed PRs into the release branch and be validate
 2. Wait for the RC artifacts needed by each SDK to be available, then run the
    relevant Rust, Python, Node.js, Java, and packaging checks. Resolve compatibility
    failures and rerun CI after changes to the PR or its release-branch base.
-3. Before the Lance vote is closed, report the exact Lance tag and peeled SHA,
+3. Complete code and compatibility review on the RC pin PR. If draft status
+   skips Gatekeeper or another applicable review, mark the PR ready for review or
+   explicitly run the review. Read the recommendation and inline findings even
+   when GitHub records them as comments. Passing CI or a skipped review does not
+   clear an unresolved blocking finding.
+4. Before the Lance vote is closed and Lance stable is published, the pin PR
+   must be **ready to merge**: all relevant CI and reviews are complete, with no
+   unresolved blocking findings at its current head and release-branch base.
+   Refresh reviews and comments immediately before reporting readiness.
+5. Report the exact Lance tag and peeled SHA,
    SDK release-branch base and PR head SHAs (and tested merge commit, when
-   applicable), and full CI results to the release manager. Label local source
-   checks separately from checks consuming the published RC artifacts.
+   applicable), full CI results and review outcomes to the release manager.
+   Label local source checks separately from checks consuming the published RC
+   artifacts.
 
-Keep the RC validation PR unmerged until Lance is approved. Once the official
-stable Lance artifacts are available, update the PR to that stable dependency and
-rerun the relevant checks. In particular, verify that the Rust package resolves
+Keep the RC validation PR unmerged until Lance is approved, while completing all
+substantive compatibility and review work before Lance stable publication. Once
+the official stable Lance artifacts are available, only the mechanical
+RC-to-stable dependency update and validation of those packages should remain.
+Update the PR, rerun the relevant checks and refresh reviews. In particular,
+verify that the Rust package resolves
 published dependencies: Cargo only reads [`[patch]` settings at the workspace root](https://doc.rust-lang.org/cargo/reference/overriding-dependencies.html#the-patch-section),
 so package consumers do not inherit a dependency's workspace override. Merge the
 validated stable update into the SDK release branch.
