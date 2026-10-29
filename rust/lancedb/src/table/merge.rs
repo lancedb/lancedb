@@ -2296,18 +2296,16 @@ mod lsm_tests {
         let (store, base) = lance_io::object_store::ObjectStore::from_uri(&uri)
             .await
             .unwrap();
-        let dataset = lance::Dataset::open(&uri).await.unwrap();
-        let dir_id = dataset
+        let dir_id = lance::Dataset::open(&uri)
+            .await
+            .unwrap()
             .mem_wal_index_details()
             .await
             .unwrap()
-            .unwrap()
+            .expect("the table has a MemWAL")
             .dir_id;
-        let mem_wal = std::path::Path::new(&uri).join(if dir_id.is_empty() {
-            "_mem_wal".to_string()
-        } else {
-            format!("_{dir_id}_mem_wal")
-        });
+        let mem_wal = std::path::Path::new(&uri)
+            .join(lance::dataset::mem_wal::util::mem_wal_dir_name(&dir_id));
         let mut sstables = Vec::new();
         for shard in std::fs::read_dir(&mem_wal).unwrap() {
             let Ok(shard_id) = shard.unwrap().file_name().to_string_lossy().parse() else {
