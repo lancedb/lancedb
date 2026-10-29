@@ -167,6 +167,10 @@ variables a function reads. There is no built-in retry or per-row
 error-skip policy -- a function that calls a flaky service should handle
 timeouts and retries itself, inside `__call__`.
 
+See [Vend a Secret to a Function](/curation/vend-secret) for how the bound
+value actually reaches a running evaluation, and how that differs from
+rotating or revoking it later.
+
 ## Blob v2 input and output {#blob}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
@@ -204,6 +208,9 @@ be a blob.
 ## What to read next {#next}
 
 <CardGroup cols={2}>
+  <Card title="Vend a Secret to a Function" icon="key" href="/curation/vend-secret">
+    Bind a credential by reference instead of putting it in the function's source.
+  </Card>
   <Card title="Chunk records into multiple rows" icon="diagram-subtask" href="/curation/chunking">
     A Function whose output is a list, exploded into one row per element.
   </Card>
