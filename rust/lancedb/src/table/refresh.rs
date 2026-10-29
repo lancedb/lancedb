@@ -1849,7 +1849,9 @@ mod tests {
             )))
             .await
             .unwrap();
-        table.disable_rte().await.unwrap();
+        crate::table::merge::lsm::disable_rte_unchecked(table.as_native().unwrap())
+            .await
+            .unwrap();
         super::super::computed_columns::add_foreign_kind(&table, "doubled", "sql").await;
 
         let err = table.refresh_column("doubled").await.unwrap_err();

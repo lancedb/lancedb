@@ -3622,7 +3622,9 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        table.disable_rte().await.unwrap();
+        crate::table::merge::lsm::disable_rte_unchecked(table.as_native().unwrap())
+            .await
+            .unwrap();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await

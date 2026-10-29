@@ -226,6 +226,20 @@ pub(crate) async fn disable_rte(table: &NativeTable) -> Result<()> {
     Ok(())
 }
 
+/// [`disable_rte`] without the unmerged-rows check, leaving the RTE's rows
+/// orphaned the way a write that lands after the check would.
+#[cfg(test)]
+#[allow(clippy::redundant_pub_crate)]
+pub(crate) async fn disable_rte_unchecked(table: &NativeTable) -> Result<()> {
+    table.dataset.shard_writer().drain_and_close().await?;
+    let mut dataset = (*table.dataset.get().await?).clone();
+    dataset
+        .drop_index(lance_index::mem_wal::MEM_WAL_INDEX_NAME)
+        .await?;
+    table.dataset.update(dataset);
+    Ok(())
+}
+
 /// Error if any shard of the MemWAL holds rows the base table does not: an
 /// SSTable past the shard's compaction watermark, or a WAL entry past the
 /// position its flushed SSTables cover.
