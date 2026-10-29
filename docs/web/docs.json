@@ -32,6 +32,14 @@
       "destination": "/#architecture"
     },
     {
+      "source": "/enterprise/architecture",
+      "destination": "/#architecture"
+    },
+    {
+      "source": "/enterprise/deployment/azure",
+      "destination": "/enterprise/deployment/kubernetes"
+    },
+    {
       "source": "/basics/offerings",
       "destination": "/#embedded-and-enterprise"
     },
@@ -312,7 +320,8 @@
               "search/filtering",
               "reranking/index",
               "search/explain",
-              "search/realtime-read"
+              "search/realtime-read",
+              "enterprise/distributed-search"
             ]
           },
           {
@@ -382,11 +391,9 @@
             "group": "Deployment",
             "pages": [
               "enterprise/index",
-              "enterprise/architecture",
-              "enterprise/distributed-search",
               "deployment/storage",
               "deployment/monitoring",
-              "enterprise/deployment/azure",
+              "enterprise/deployment/kubernetes",
               "enterprise/benchmarks"
             ]
           },

@@ -67,7 +67,9 @@ flowchart TB
 Embedded reads and writes tables on local disk or in object storage from inside your application process.
 Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
 requests, and separates query serving, read execution and caching, and indexing and background work into their
-own independently sized components. Caches accelerate reads; they are never the durable source of truth.
+own independently sized components. Caches accelerate reads; they are never the durable source of truth. With
+multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache node
+temporarily raises latency while its replacement warms, rather than causing an outage.
 
 Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
 plan how to move or connect your data and configure access for your deployment.
@@ -91,8 +93,9 @@ where your application controls its own compute resources and [table maintenance
 built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
 same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
 while the service handles requests across a fleet, with query serving, read execution and caching, and indexing
-and background work sized and scaled as separate components. Read the
-[Enterprise architecture](/enterprise/architecture) for the component details and request flows.
+and background work sized and scaled as separate components. A control plane governs configuration, identity
+and cluster lifecycle, separately from the data-plane components in the diagram below. See
+[Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 45, "rankSpacing": 55, "padding": 12}}}%%
