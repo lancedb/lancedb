@@ -4,6 +4,7 @@
 
 """Schema helpers for Lance blob columns."""
 
+import ctypes
 import importlib
 from typing import TYPE_CHECKING, Optional
 
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
 _BLOB_EXTENSION_NAME = "lance.blob.v2"
 _BLOB_V1_KEY = "lance-encoding:blob"
 _ARROW_EXT_NAME_KEY = "ARROW:extension:name"
+_MAX_RUST_USIZE = ctypes.c_size_t(-1).value
 _BLOB_V2_STORAGE_TYPE = pa.struct(
     [
         pa.field("data", pa.large_binary(), nullable=True),
@@ -30,8 +32,8 @@ _resolved_blob_type = None
 class _FallbackBlobType(pa.ExtensionType):
     """lance.blob.v2 extension type used when pylance is not installed."""
 
-    def __init__(self) -> None:
-        pa.ExtensionType.__init__(self, _BLOB_V2_STORAGE_TYPE, _BLOB_EXTENSION_NAME)
+    def __init__(self, storage_type: pa.DataType = _BLOB_V2_STORAGE_TYPE) -> None:
+        pa.ExtensionType.__init__(self, storage_type, _BLOB_EXTENSION_NAME)
 
     def __arrow_ext_serialize__(self) -> bytes:
         return b""
@@ -40,7 +42,7 @@ class _FallbackBlobType(pa.ExtensionType):
     def __arrow_ext_deserialize__(
         cls, storage_type: pa.DataType, serialized: bytes
     ) -> "_FallbackBlobType":
-        return cls()
+        return cls(storage_type)
 
     def __reduce__(self):
         return type(self).__arrow_ext_deserialize__, (
@@ -181,6 +183,24 @@ def _resolve_blob_type():
     return _resolved_blob_type
 
 
+def _restore_blob_extensions(schema: pa.Schema) -> pa.Schema:
+    """Restore blob fields read before their extension type was registered."""
+    unrestored = _collect_blob_paths(
+        schema,
+        lambda field: (
+            not isinstance(field.type, pa.ExtensionType)
+            and _metadata_marks_blob_v2(field.metadata or {})
+        ),
+    )
+    if not unrestored:
+        return schema
+
+    _resolve_blob_type()
+    # Arrow's deserializer uses the registered class and preserves nested fields,
+    # storage layouts, nullability, and unrelated metadata. Only the schema is read.
+    return pa.ipc.read_schema(schema.serialize())
+
+
 def blob(
     name: str,
     nullable: bool = True,
@@ -209,32 +229,44 @@ def blob(
         Maximum size in bytes of a single packed blob sidecar file before
         a new one is started. Must be positive.
 
-    The thresholds are forwarded to ``lance.blob_field``, which validates
-    them and stores them as field metadata, so pylance is required whenever
-    any threshold is set. When all thresholds are omitted the behavior is
-    unchanged.
+    Thresholds are validated and stored as Arrow field metadata, with the
+    same format as ``lance.blob_field``. They do not require pylance.
     """
-    if (
-        inline_size_threshold is None
-        and dedicated_size_threshold is None
-        and pack_file_size_threshold is None
+    metadata = {}
+    for threshold, value, allow_zero, key in (
+        (
+            "inline_size_threshold",
+            inline_size_threshold,
+            True,
+            "lance-encoding:blob-inline-size-threshold",
+        ),
+        (
+            "dedicated_size_threshold",
+            dedicated_size_threshold,
+            False,
+            "lance-encoding:blob-dedicated-size-threshold",
+        ),
+        (
+            "pack_file_size_threshold",
+            pack_file_size_threshold,
+            False,
+            "lance-encoding:blob-pack-file-size-threshold",
+        ),
     ):
-        blob_type = _resolve_blob_type()
-        return pa.field(name, blob_type(), nullable=nullable)
-    try:
-        lance = importlib.import_module("lance")
-    except ModuleNotFoundError as err:
-        raise ValueError(
-            "Setting blob tier thresholds requires pylance to be installed"
-        ) from err
-    _resolve_blob_type()
-    return lance.blob_field(
-        name,
-        nullable=nullable,
-        inline_size_threshold=inline_size_threshold,
-        dedicated_size_threshold=dedicated_size_threshold,
-        pack_file_size_threshold=pack_file_size_threshold,
-    )
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError(f"{threshold} must be an int, got {type(value).__name__}")
+        if value < 0 or (value == 0 and not allow_zero):
+            bound = "non-negative" if allow_zero else "positive"
+            raise ValueError(f"{threshold} must be {bound}")
+        if value > _MAX_RUST_USIZE:
+            raise OverflowError(f"{threshold} must fit in a Rust usize")
+        metadata[key] = str(value)
+
+    blob_type = _resolve_blob_type()
+    field = pa.field(name, blob_type(), nullable=nullable)
+    return field.with_metadata(metadata) if metadata else field
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:

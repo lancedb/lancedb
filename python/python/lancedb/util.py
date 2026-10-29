@@ -34,20 +34,20 @@ def safe_import_adlfs():
 adlfs = safe_import_adlfs()
 
 
-def get_uri_scheme(uri: str) -> str:
+def get_uri_scheme(uri: Union[str, pathlib.Path]) -> str:
     """
     Get the scheme of a URI. If the URI does not have a scheme, assume it is a file URI.
 
     Parameters
     ----------
-    uri : str
+    uri : str or pathlib.Path
         The URI to parse.
 
     Returns
     -------
     str: The scheme of the URI.
     """
-    parsed = urlparse(uri)
+    parsed = urlparse(str(uri))
     scheme = parsed.scheme
     if not scheme:
         scheme = "file"
@@ -61,25 +61,26 @@ def get_uri_scheme(uri: str) -> str:
     return scheme
 
 
-def get_uri_location(uri: str) -> str:
+def get_uri_location(uri: Union[str, pathlib.Path]) -> str:
     """
     Get the location of a URI. If the parameter is not a url, assumes it is just a path
 
     Parameters
     ----------
-    uri : str
+    uri : str or pathlib.Path
         The URI to parse.
 
     Returns
     -------
     str: Location part of the URL, without scheme
     """
-    parsed = urlparse(uri)
+    uri_str = str(uri)
+    parsed = urlparse(uri_str)
     if len(parsed.scheme) == 1:
         # Windows drive names are parsed as the scheme
         # e.g. "c:\path" -> ParseResult(scheme="c", netloc="", path="/path", ...)
         # So we add special handling here for schemes that are a single character
-        return uri
+        return uri_str
 
     if not parsed.netloc:
         return parsed.path
@@ -309,7 +310,16 @@ def _query_vector_dim(query: Optional[Any]) -> Optional[int]:
         if query.ndim == 0:
             return None
         return query.shape[-1]
-    if isinstance(query, list) and query:
+    if isinstance(query, (pa.Array, pa.ChunkedArray)):
+        if len(query) == 0:
+            return None
+        if pa.types.is_fixed_size_list(query.type):
+            return query.type.list_size
+        if pa.types.is_list(query.type) or pa.types.is_large_list(query.type):
+            first = query[0].as_py()
+            return len(first) if first is not None else None
+        return len(query)
+    if isinstance(query, (list, tuple)) and query:
         first = query[0]
         if isinstance(first, (list, tuple, np.ndarray)):
             return len(first)
@@ -416,7 +426,8 @@ def _(value: date):
 
 
 @value_to_sql.register(list)
-def _(value: list):
+@value_to_sql.register(tuple)
+def _(value: Union[list, tuple]):
     return "[" + ", ".join(map(value_to_sql, value)) + "]"
 
 
@@ -441,6 +452,15 @@ def _(value: pa.Scalar):
     return value_to_sql(value.as_py())
 
 
+@value_to_sql.register(pa.MapScalar)
+def _(value: pa.MapScalar):
+    if not value.is_valid:
+        return value_to_sql(None)
+    keys = value_to_sql(list(value.values.field(0)))
+    values = value_to_sql(list(value.values.field(1)))
+    return f"map({keys}, {values})"
+
+
 @value_to_sql.register(np.ndarray)
 def _(value: np.ndarray):
     return value_to_sql(value.tolist())
@@ -459,6 +479,15 @@ def _(value: np.integer):
 @value_to_sql.register(np.floating)
 def _(value: np.floating):
     return value_to_sql(float(value))
+
+
+@value_to_sql.register(np.datetime64)
+def _(value: np.datetime64):
+    if np.isnat(value):
+        return value_to_sql(None)
+    if np.datetime_data(value.dtype)[0] in ("ps", "fs", "as"):
+        raise ValueError("SQL timestamps cannot preserve sub-nanosecond precision")
+    return value_to_sql(str(np.datetime_as_string(value, unit="ns", timezone="UTC")))
 
 
 def deprecated(func):

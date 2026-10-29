@@ -538,11 +538,17 @@ describe("IVF search effort", () => {
     const db = await connect(directory.name);
     const rows = Array.from({ length: 512 }, (_, id) => ({
       id,
-      vector: Array.from(
-        { length: 16 },
-        (_, j) =>
-          (Math.floor(id / 32) === j ? 1 : 0) + Math.sin(id * 17 + j) * 0.001,
-      ),
+      // Keep all eight exact neighbors together even if random IVF training
+      // splits the first cluster. This tests effort, not training recall.
+      vector:
+        id < 8
+          ? [...vector]
+          : Array.from(
+              { length: 16 },
+              (_, j) =>
+                (Math.floor(id / 32) === j ? 1 : 0) +
+                Math.sin(id * 17 + j) * 0.001,
+            ),
     }));
     table = await db.createTable("effort", rows.slice(0, 256));
     await table.add(rows.slice(256));

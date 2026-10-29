@@ -24,7 +24,7 @@ then refresh the derived data when its inputs change.
 */}
 
 <Note>
-In LanceDB Enterprise, every operation here also has a SQL form -- see [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
+In LanceDB Enterprise, every operation here also has a SQL form. See [DDL](/sql/ddl/table#alter) to declare a column and [REFRESH](/sql/dml/refresh) to fill it.
 </Note>
 
 ## Computed columns and materialized views {#the-shape}
@@ -70,7 +70,7 @@ changes incrementally for supported queries; other queries require a full rebuil
 See [refresh behavior](/feature-engineering/materialized-views#incremental) for
 version-specific details.
 
-Enterprise runs materialization on remote compute. Use the SDK and refresh
+Enterprise runs materialization on the Enterprise service. Use the SDK and refresh
 options supported by your server version; see
 [Enterprise refreshes](/feature-engineering/materialized-views#availability).
 
@@ -78,8 +78,8 @@ options supported by your server version; see
 
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
-| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | OSS and Enterprise |
-| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | OSS and Enterprise |
+| [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | Embedded and Enterprise |
+| [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | Embedded and Enterprise |
 | [Geneva](/geneva) | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 
 {/*
@@ -91,8 +91,8 @@ Draft for the Functions release. Replace the Geneva row of the table above with:
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).
 
-**Materialized views** derive a whole table -- a filtered, projected, or
-aggregated view of a source -- and bring it up to date on each refresh. The
+**Materialized views** derive a whole table (a filtered, projected, or
+aggregated view of a source) and bring it up to date on each refresh. The
 result is an ordinary table: queryable, indexable, searchable.
 
 **Geneva** is LanceDB Enterprise's Python package for work SQL cannot express:
@@ -128,7 +128,7 @@ result.rows_assigned
 ```
 
 A backfill over a large table can therefore be started, left, and checked on
-from a different process -- the connection does not have to stay open.
+from a different process: the connection does not have to stay open.
 
 Enterprise manages the compute for the refresh. You still control when to
 submit it; declaring a computed column does not schedule recurring refreshes.

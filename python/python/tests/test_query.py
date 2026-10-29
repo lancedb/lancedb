@@ -675,10 +675,10 @@ def test_blob_v2_vector_projection_and_plain_scan_options(tmp_db, monkeypatch):
 
     query = table.search().where("id = 1")
 
-    def fail_to_arrow(*args, **kwargs):
-        raise AssertionError("the native scanner should handle bytes with flatten")
+    def fail_to_lance(*args, **kwargs):
+        raise AssertionError("blob v2 bytes should not open a pylance dataset")
 
-    monkeypatch.setattr(query, "to_arrow", fail_to_arrow)
+    monkeypatch.setattr(table, "to_lance", fail_to_lance)
     assert query.to_pandas(blob_mode="bytes", flatten=True)["blob"].tolist() == [b"one"]
 
     flattened_lazy = table.search().where("id = 1").to_pandas(flatten=True)
@@ -831,6 +831,28 @@ def test_with_row_id(table: lancedb.table.Table):
     rs = table.search().with_row_id(True).to_arrow()
     assert "_rowid" in rs.column_names
     assert rs["_rowid"].to_pylist() == [0, 1]
+
+
+def test_filter_preserves_deeply_nested_struct_fields(tmp_db):
+    # Regression test for https://github.com/lancedb/lancedb/issues/2217.
+    data = [
+        {
+            "item": "test",
+            "sub_obj": {
+                "second_sub_obj": [
+                    {
+                        "third_sub_obj": {"int_val": 1},
+                        "str_val": "test",
+                    }
+                ]
+            },
+        }
+    ]
+    table = tmp_db.create_table("deeply_nested_struct", data=data)
+
+    result = table.search().where("item = 'test'").limit(1).to_arrow()
+
+    assert result.to_pylist() == data
 
 
 def test_blob_v2_query_omits_auto_row_id(tmp_db):
@@ -1956,6 +1978,56 @@ def test_query_serialization_sync(table: lancedb.table.Table):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("query_type", ["plain", "fts", "vector"])
+@pytest.mark.parametrize("fast_search", [False, True])
+@pytest.mark.parametrize("postfilter", [False, True])
+async def test_query_serialization_async_search_options(
+    table_async: AsyncTable, query_type, fast_search, postfilter
+):
+    query = table_async.query().where("id = 1")
+    if query_type == "fts":
+        query = query.nearest_to_text(MatchQuery("dog", "text"))
+    elif query_type == "vector":
+        query = query.nearest_to([1.0, 2.0])
+    if fast_search:
+        query = query.fast_search()
+    if postfilter:
+        query = query.postfilter()
+
+    serialized = query.to_query_object()
+    assert serialized.fast_search is (True if fast_search else None)
+    default_postfilter = False if query_type == "vector" else None
+    assert serialized.postfilter is (True if postfilter else default_postfilter)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fast_search", [False, True])
+async def test_query_serialization_async_fast_search_execution(
+    table_async, fast_search
+):
+    await table_async.create_index("text", config=FTS())
+    await table_async.add(
+        [
+            {
+                "id": 3,
+                "vector": [5.0, 6.0],
+                "str_field": "c",
+                "float_field": 3.0,
+                "text": "unindexed dog",
+            }
+        ]
+    )
+    query = table_async.query().nearest_to_text(MatchQuery("unindexed", "text"))
+    if fast_search:
+        query = query.fast_search()
+
+    expected_ids = [] if fast_search else [3]
+    assert [row["id"] for row in await query.to_list()] == expected_ids
+    restored = table_async._sync_query_to_async(query.to_query_object())
+    assert [row["id"] for row in await restored.to_list()] == expected_ids
+
+
+@pytest.mark.asyncio
 async def test_query_serialization_async(table_async: AsyncTable):
     # Simple queries
     q = table_async.query().where("id = 1").limit(500).offset(10).to_query_object()
@@ -2300,6 +2372,33 @@ def test_take_queries(tmp_path):
         5,
         17,
     ]
+
+
+def test_take_queries_with_row_id(tmp_path):
+    db = lancedb.connect(tmp_path)
+    table = db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    # The column is opt-in and must stay out of the default projection.
+    assert "_rowid" not in table.take_row_ids([5, 2, 17]).to_arrow().column_names
+
+
+@pytest.mark.asyncio
+async def test_take_queries_with_row_id_async(tmp_path):
+    db = await lancedb.connect_async(tmp_path)
+    table = await db.create_table("test", pa.table({"idx": range(100)}))
+
+    by_row_id = await table.take_row_ids([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_row_id.column_names
+    by_offset = await table.take_offsets([5, 2, 17], with_row_id=True).to_arrow()
+    assert "_rowid" in by_offset.column_names
+
+    default = await table.take_row_ids([5, 2, 17]).to_arrow()
+    assert "_rowid" not in default.column_names
 
 
 def test_take_queries_to_batches(tmp_path):

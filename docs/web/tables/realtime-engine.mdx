@@ -1,0 +1,229 @@
+---
+title: "Realtime engine (RTE)"
+sidebarTitle: "Realtime Engine"
+description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
+icon: "bolt"
+keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+---
+
+<Badge color="red">Enterprise</Badge>
+
+## What is the realtime engine? {#what-is-rte}
+
+Every write to a LanceDB table is normally a commit to the underlying Lance
+dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
+stream of small commits, and each write is only visible once its commit lands.
+
+The realtime engine (RTE) puts an LSM-style write tier in front of the table.
+It turns many small writes into a few large commits, and makes each write
+**searchable within milliseconds** of being acknowledged. It is enabled per
+table, and nothing about how you query that table changes.
+
+## How it works {#how-it-works}
+
+- **Writes.** A `merge_insert` or `delete` lands in an in-memory **memtable**
+  and is acknowledged once it is durable in the write-ahead log on object
+  storage.
+- **Flush and compaction.** Memtables freeze into **SSTables**, which background
+  jobs compact into the base table, catching its indexes up as they go. See
+  [Background jobs](/maintenance/background-jobs#wal).
+- **Reads.** Every query runs against the base table and the fresh tier
+  (memtables and SSTables) in parallel. Fresh rows supersede base rows with the
+  same primary key, and the two are merged into one result.
+- **Indexes stay fresh.** Vector, full-text, BTree, bitmap, and most other
+  scalar indexes are maintained on the memtable, so new rows are searchable
+  through the index as soon as they are written.
+
+## Getting started {#getting-started}
+
+### 1. Create a table with a primary key {#primary-key}
+
+RTE deduplicates writes by primary key. Create the table with a non-nullable
+key column, then declare it with `set_unenforced_primary_key`. The key is a
+single `int32`, `int64`, string, or binary column, and cannot be changed once
+set.
+
+```python
+from datetime import timedelta
+
+import lancedb
+import numpy as np
+import pyarrow as pa
+from lancedb import RTEWriteSpec
+from lancedb.index import FTS, BTree, IvfPq
+
+db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
+
+n, dim = 1024, 128
+schema = pa.schema([
+    pa.field("id", pa.int64(), nullable=False),
+    pa.field("vector", pa.list_(pa.float32(), dim)),
+    pa.field("text", pa.utf8()),
+])
+initial_data = pa.table({
+    "id": pa.array(range(n), pa.int64()),
+    "vector": pa.FixedSizeListArray.from_arrays(
+        pa.array(np.random.rand(n * dim).astype("float32")), dim),
+    "text": pa.array([f"doc {i} alpha bravo" for i in range(n)]),
+}, schema=schema)
+table = db.create_table("docs", initial_data, schema=schema)
+table.set_unenforced_primary_key("id")
+```
+
+Or in SQL:
+
+```sql
+ALTER TABLE docs SET UNENFORCED PRIMARY KEY (id)
+```
+
+### 2. Create indexes {#indexes}
+
+By default, RTE maintains every supported index on the table, including
+indexes created after it is enabled. A scalar index on the primary key is
+required for partial updates and deletes.
+
+```python
+table.create_index("vector", config=IvfPq())
+table.create_index("text", config=FTS())
+table.create_index("id", config=BTree())
+table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(minutes=5))
+```
+
+### 3. Enable RTE {#enable}
+
+```python
+table.enable_rte(RTEWriteSpec.unsharded())
+```
+
+Or in SQL:
+
+```sql
+ALTER TABLE docs SET RTE
+```
+
+### 4. Write and query {#write-and-query}
+
+<Warning>
+On an RTE table, an upsert through `merge_insert` is the only way to write
+rows. Use the form below exactly: `when_matched_update_all()` with no filter,
+plus `when_not_matched_insert_all()`. Other `merge_insert` forms, such as
+conditional updates or deleting rows missing from the source, are rejected.
+</Warning>
+
+Writes go through `merge_insert` on the primary key, and are visible to queries
+immediately:
+
+```python
+new_rows = pa.table({
+    "id": pa.array([2000, 2001], pa.int64()),
+    "vector": pa.FixedSizeListArray.from_arrays(
+        pa.array(np.random.rand(2 * dim).astype("float32")), dim),
+    "text": pa.array(["fresh charlie delta", "fresh echo foxtrot"]),
+}, schema=schema)
+query_vector = np.random.rand(dim).astype("float32")
+
+table.merge_insert("id") \
+    .when_matched_update_all() \
+    .when_not_matched_insert_all() \
+    .execute(new_rows)
+
+table.search(query_vector).limit(10).to_list()
+table.search("charlie").limit(10).to_list()
+```
+
+**Partial updates.** Send the primary key plus only the columns you want to
+change; omitted columns keep their current values. This requires a scalar
+index on the primary key.
+
+```python
+patch = pa.table(
+    {"id": [0, 1], "text": ["doc 0 revised", "doc 1 revised"]},
+    schema=pa.schema([schema.field("id"), schema.field("text")]),
+)
+table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
+```
+
+**Deletes.** The predicate must bind the primary key to literal values. Ranges,
+`OR`, and filters on other columns are rejected. Deletes require a scalar index
+on the primary key.
+
+```python
+table.delete("id IN (2000, 2001)")
+```
+
+### Disabling RTE {#disable}
+
+Stop writes and wait for in-flight writes to finish, then flush pending writes
+into the base table and disable. `checkpoint_rte()` only drains writes that
+existed when it started, so anything written during the checkpoint can be left
+behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
+so run `checkpoint_rte()` first.
+
+```python
+table.checkpoint_rte()
+table.disable_rte()
+```
+
+## Performance {#performance}
+
+### Writes {#write-performance}
+
+RTE acknowledges a write as soon as it is durable in the write-ahead log, so
+ingest is no longer limited by how fast the table can commit.
+
+**Compared with writing directly to the table.** On tables ranging from
+hundreds of thousands to tens of millions of rows, RTE delivered 4–12× the
+write throughput and 24–52× lower p99 write latency, depending on the mix of
+inserts, updates, and deletes.
+
+**Scaling with shards.** An RTE table can be split into
+[shards](/sql/ddl/table#properties) that write independently, and a single
+table's ingest grows with its shard count. In our testing on AWS, with every
+index on the table (vector, full-text, and BTree) kept current, a single table
+reached these peak rates:
+
+| Shards | Peak ingest |
+| --: | --: |
+| 1 | 90 MB/s |
+| 2 | 170 MB/s |
+| 4 | 340 MB/s |
+| 8 | 625 MB/s |
+| 16 | 690 MB/s |
+| 32 | 885 MB/s |
+
+Adding shards scales a table's ingest nearly linearly.
+
+### Reads {#read-performance}
+
+Reads on an RTE table stay close to those on a fully compacted table, even
+with the fresh tier at its fullest before compaction.
+
+The table below compares a 5M-row table with a 128-dimension IVF-PQ index plus
+BTree and FTS indexes, with and without RTE. The RTE table holds one
+unflushed memtable and three SSTables, each from a 100k-row write wave, half of
+which are updates to existing rows. Latencies are p50 in milliseconds.
+
+| Query | Without RTE | With RTE |
+| --- | --: | --: |
+| Primary-key lookup | 62 | 63 |
+| Vector search | 68 | 71 |
+| Vector search with prefilter | 90 | 91 |
+| Full-text term | 63 | 64 |
+| Full-text phrase | 68 | 82 |
+| Hybrid search (RRF) | 68 | 83 |
+| SQL point lookup | 189 | 187 |
+
+Most queries are within a few milliseconds of the base table. Hybrid and phrase
+queries add roughly 15 ms to merge the two tiers.
+
+<Note>
+Support for all table operations on RTE tables is coming soon. Time travel,
+branching, `count_rows`, row IDs (`with_row_id`), and `TABLESAMPLE` are not yet
+available.
+</Note>
+
+## Next steps {#next-steps}
+
+- [Merge insert](/ingestion/merge-insert)
+- [Background jobs](/maintenance/background-jobs#wal)
+- [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

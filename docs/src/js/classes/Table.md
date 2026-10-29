@@ -69,6 +69,10 @@ abstract addColumns(newColumnTransforms): Promise<AddColumnsResult>
 
 Add new columns with defined values.
 
+LanceDB Embedded computed-column declaration and refresh require a source
+build with the `experimental-functions` Cargo feature. Published packages
+disable it; LanceDB Distributed operations remain available.
+
 The `{ computed }` form stores the expression rather than evaluating it
 now: the column is committed with no values, and rows get them from
 [Table#refreshColumn](Table.md#refreshcolumn). Declaring one therefore costs the same on a
@@ -79,7 +83,7 @@ computed, so a mutated input is reflected by the next refresh. While a
 declaration reads a column, that column cannot be renamed, retyped or
 dropped.
 
-On LanceDB Cloud and Enterprise the expression is planned by the
+In LanceDB Distributed the expression is planned by the
 server, and the refresh runs as a server job -- see
 [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
@@ -228,13 +232,13 @@ version of the table.
 
 ***
 
-### checkpointMemWal()
+### checkpointRTE()
 
 ```ts
-abstract checkpointMemWal(): Promise<void>
+abstract checkpointRTE(): Promise<void>
 ```
 
-Converge this table's MemWAL write path into its base table.
+Converge this table's RTE write path into its base table.
 
 Freezes once, then triggers compaction and polls until the SSTables that existed
 at the start is gone. The target set is fixed at the start, so
@@ -254,9 +258,9 @@ is merging. The caller owns the deadline.
 #### Example
 
 ```ts
-const before = await table.getMemWalStats();
-await table.checkpointMemWal();
-const after = await table.getMemWalStats();
+const before = await table.getRTEStats();
+await table.checkpointRTE();
+const after = await table.getRTEStats();
 ```
 
 ***
@@ -279,15 +283,15 @@ Any attempt to use the table after it is closed will result in an error.
 
 ***
 
-### closeMemWalWriters()
+### closeRTEWriters()
 
 ```ts
-abstract closeMemWalWriters(): Promise<void>
+abstract closeRTEWriters(): Promise<void>
 ```
 
-Drain and close any cached MemWAL shard writers held for this table.
+Drain and close any cached RTE shard writers held for this table.
 
-When an [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) is installed, `mergeInsert` opens MemWAL
+When an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) is installed, `mergeInsert` opens RTE
 shard writers and caches them for reuse across calls. This closes them,
 flushing pending data; writers reopen lazily on the next `mergeInsert`.
 It is a no-op when no writers are cached.
@@ -298,17 +302,17 @@ It is a no-op when no writers are cached.
 
 ***
 
-### compactMemWal()
+### compactRTE()
 
 ```ts
-abstract compactMemWal(): Promise<void>
+abstract compactRTE(): Promise<void>
 ```
 
 Trigger a background SSTable compaction pass per table shard.
 
 Returns once the passes are *dispatched*, not once they finish — watch
-[Table#getMemWalStats](Table.md#getmemwalstats) for progress, or use
-[Table#checkpointMemWal](Table.md#checkpointmemwal) to wait for convergence.
+[Table#getRTEStats](Table.md#getrtestats) for progress, or use
+[Table#checkpointRTE](Table.md#checkpointrte) to wait for convergence.
 
 #### Returns
 
@@ -456,13 +460,13 @@ containing the new version number of the table
 
 ***
 
-### disableMemWal()
+### disableRTE()
 
 ```ts
-abstract disableMemWal(): Promise<void>
+abstract disableRTE(): Promise<void>
 ```
 
-Remove the [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) from this table, reverting to the standard
+Remove the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) from this table, reverting to the standard
 `mergeInsert` write path.
 
 Errors if no spec is currently set.
@@ -538,16 +542,16 @@ Drop an index from the table.
 
 ***
 
-### enableMemWal()
+### enableRTE()
 
 ```ts
-abstract enableMemWal(spec): Promise<void>
+abstract enableRTE(spec): Promise<void>
 ```
 
-Install an [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) on this table, selecting Lance's MemWAL
+Install an [RTEWriteSpec](../interfaces/RTEWriteSpec.md) on this table, selecting Lance's MemWAL
 LSM-style write path for future `mergeInsert` calls.
 
-`MemWalWriteSpec` chooses one of three sharding strategies via `specType`:
+`RTEWriteSpec` chooses one of three sharding strategies via `specType`:
 
 - `"bucket"` — hash-bucket writes by the single-column unenforced primary
   key (`column` and `numBuckets` required).
@@ -559,13 +563,13 @@ All variants require the table to have an unenforced primary key
 requires it to be the single column being bucketed.
 
 Omitting `maintainedIndexes` maintains every index the table has,
-including ones created later, and skips a kind the MemWAL cannot maintain.
+including ones created later, and skips a kind the RTE cannot maintain.
 Naming them pins an exact set, and a still-building index is rejected
 rather than quietly omitted.
 
 #### Parameters
 
-* **spec**: [`MemWalWriteSpec`](../interfaces/MemWalWriteSpec.md)
+* **spec**: [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)
     The sharding spec to install.
 
 #### Returns
@@ -576,7 +580,7 @@ rather than quietly omitted.
 
 ```ts
 await table.setUnenforcedPrimaryKey("id");
-await table.enableMemWal({
+await table.enableRTE({
   specType: "bucket",
   column: "id",
   numBuckets: 16,
@@ -654,10 +658,10 @@ memory; use [Table.fetchBlobFiles](Table.md#fetchblobfiles) for large values.
 
 ***
 
-### flushMemWal()
+### flushRTE()
 
 ```ts
-abstract flushMemWal(): Promise<void>
+abstract flushRTE(): Promise<void>
 ```
 
 Freeze every table shard's active memtable into a new SSTable.
@@ -682,7 +686,7 @@ The per-row errors Function refreshes recorded on this table.
 A refresh running under a skip policy records each row it skipped with
 the input that failed and the error. This lists those records, newest
 job first, plus a summary for any fragment whose per-row detail was
-capped. LanceDB Cloud and Enterprise only; reading errors needs read
+capped. LanceDB Distributed only; reading errors needs read
 access to the table, since a message carries the value that failed.
 
 #### Parameters
@@ -706,38 +710,38 @@ const { records, truncated } = await table.functionErrors({ column: "embedding" 
 
 ***
 
-### getMemWalSpec()
+### getRTESpec()
 
 ```ts
-abstract getMemWalSpec(): Promise<undefined | MemWalWriteSpec>
+abstract getRTESpec(): Promise<undefined | RTEWriteSpec>
 ```
 
-Read the [MemWalWriteSpec](../interfaces/MemWalWriteSpec.md) currently installed on this table.
+Read the [RTEWriteSpec](../interfaces/RTEWriteSpec.md) currently installed on this table.
 
-Resolves to `undefined` when the MemWAL write path is not enabled (no
-spec has been set, or it was removed with [Table#disableMemWal](Table.md#disablememwal)).
+Resolves to `undefined` when the RTE write path is not enabled (no
+spec has been set, or it was removed with [Table#disableRTE](Table.md#disablerte)).
 The spec is the one installed, including its maintained-index selection:
 an absent `maintainedIndexes` for every index the table has, an empty
 array for none.
 
 #### Returns
 
-`Promise`&lt;`undefined` \| [`MemWalWriteSpec`](../interfaces/MemWalWriteSpec.md)&gt;
+`Promise`&lt;`undefined` \| [`RTEWriteSpec`](../interfaces/RTEWriteSpec.md)&gt;
 
 ***
 
-### getMemWalStats()
+### getRTEStats()
 
 ```ts
-abstract getMemWalStats(includeSstableRows?): Promise<undefined | MemWalStats>
+abstract getRTEStats(includeSstableRows?): Promise<undefined | RTEStats>
 ```
 
-Read live per-table-shard MemWAL state.
+Read live per-table-shard RTE state.
 
 Answers "how far behind is my fresh tier", "which table shard is hot", and
 "why is my fresh-tier vector search brute-force". Mutates no table state.
 
-Resolves to `undefined` only when the MemWAL write path is not enabled.
+Resolves to `undefined` only when the RTE write path is not enabled.
 
 #### Parameters
 
@@ -747,7 +751,7 @@ Resolves to `undefined` only when the MemWAL write path is not enabled.
 
 #### Returns
 
-`Promise`&lt;`undefined` \| [`MemWalStats`](../interfaces/MemWalStats.md)&gt;
+`Promise`&lt;`undefined` \| [`RTEStats`](../interfaces/RTEStats.md)&gt;
 
 ***
 
@@ -935,7 +939,7 @@ Prewarm one or more columns of data in the table.
     Prewarming is generally useful for columns used in filters or projections.
     Large columns (e.g. high-dimensional vectors or binary data) may not be
     practical to prewarm.
-    This feature is currently only supported on remote tables.
+    This feature is currently only supported in LanceDB Distributed.
 
 #### Returns
 
@@ -1042,11 +1046,12 @@ abstract refreshColumn(column): Promise<RefreshColumnResult>
 ```
 
 Fill the rows of a computed column that hold no value yet.
+Local refresh requires a source build with `experimental-functions`.
 
 Rows appended since the last refresh are filled by the next one, and
 rows whose inputs changed since they were computed are recomputed;
-everything else is left as it is. Local tables only: a remote refresh
-runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
+everything else is left as it is. LanceDB Embedded only: in LanceDB
+Distributed a refresh runs as a server job, through [Table#refreshColumnAsync](Table.md#refreshcolumnasync).
 
 #### Parameters
 
@@ -1070,12 +1075,15 @@ abstract refreshColumnAsync(column): Promise<Job>
 
 Like [Table#refreshColumn](Table.md#refreshcolumn), but returns a handle to the refresh
 job instead of blocking until it completes.
+LanceDB Embedded refresh requires a source build with
+`experimental-functions`. LanceDB Distributed jobs do not require this
+feature.
 
 The job may already be complete when returned; callers must not assume
 the column is filled until [Job.wait](Job.md#wait) resolves. Invalid input --
 an unknown column, or one that is not computed -- rejects here rather
-than failing the job. On local tables the job runs in-process; on
-LanceDB Cloud and Enterprise it is the server's backfill job.
+than failing the job. In LanceDB Embedded the job runs in-process; in
+LanceDB Distributed it is the server's backfill job.
 
 #### Parameters
 
@@ -1304,8 +1312,12 @@ Tokenize a full-text search query using the tokenizer configured on an FTS index
 Specify exactly one of `column` or `indexName`.
 
 Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-the client process from index metadata. For remote tables, this means the
-same tokenizer model files must also exist locally.
+the client process from index metadata. In LanceDB Distributed, this means the
+same tokenizer model files must also exist locally (under
+`LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
+mismatch cannot be detected: the returned tokens may differ from what the
+server's index produces. If the model files are missing, an error naming
+the tokenizer is raised.
 
 #### Parameters
 
@@ -1430,8 +1442,6 @@ used when appropriate:
 - `lancedb:description`: for a human-readable description of a field.
 - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-- `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-  `feature_v2` might be in the same logical column.
 - `lancedb:status`: for status options (`production`, `candidate`,
   `deprecated`, `archived`) to designate the current life cycle state of
   this column.

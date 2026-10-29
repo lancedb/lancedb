@@ -10,7 +10,7 @@ import { PyRerankingOpenaiUsage } from '/snippets/provider_examples.mdx';
 # OpenAI Reranker (Experimental)
 
 This reranker uses OpenAI chat model to rerank the search results. You can use this reranker by passing `OpenAI()` to the `rerank()` method. 
-> **Note:** Supported query types – Hybrid, Vector, and FTS.
+> **Note:** Supported query types: Hybrid, Vector, and FTS.
 
 > **Warning:** This reranker is experimental. OpenAI does not have a dedicated reranking model, so it uses a chat model under the hood.
 
@@ -26,7 +26,7 @@ credentials from environment variables or a secrets manager.
 ## Accepted Arguments {#accepted-arguments}
 | Argument | Type | Default | Description |
 | --- | --- | --- | --- |
-| `model_name` | `str` | `"gpt-4-turbo-preview"` | The name of the reranker model to use.|
+| `model_name` | `str` | `"gpt-5.6-sol"` | The name of the reranker model to use.|
 | `column` | `str` | `"text"` | The name of the column to use as input to the cross encoder model. |
 | `return_score` | `str` | `"relevance"` | Options are "relevance" or "all". The type of score to return. If "relevance", will return only the `_relevance_score. If "all" is supported, will return relevance score along with the vector and/or fts scores depending on query type. |
 | `api_key` | `str` | `None` | The API key to use. If None, will use the OPENAI_API_KEY environment variable.

@@ -49,6 +49,9 @@ class OpenClipEmbeddings(EmbeddingFunction):
             self.name, pretrained=self.pretrained
         )
         model.to(self.device)
+        # open_clip returns the model in training mode, which keeps dropout,
+        # stochastic depth and batch norm in their training behaviour.
+        model.eval()
         self._model, self._preprocess = model, preprocess
         self._tokenizer = open_clip.get_tokenizer(self.name)
         self._ndims = None

@@ -137,9 +137,23 @@ async def test_async_namespace_connection_rejects_sql(tmp_path):
         await connection.describe_query(NIL_QUERY_ID)
 
 
-def test_describe_query_requires_uuid():
-    with pytest.raises(TypeError, match="UUID"):
-        remote_connection().describe_query(str(NIL_QUERY_ID))
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", [NIL_QUERY_ID, str(NIL_QUERY_ID)])
+async def test_describe_query_accepts_uuid_and_job_id_string(identity):
+    calls = []
+
+    class NativeConnection:
+        async def describe_query(self, query_id):
+            calls.append(query_id)
+
+    connection = AsyncConnection(NativeConnection())
+    await connection.describe_query(identity)
+    assert calls == [NIL_QUERY_ID]
+
+
+def test_describe_query_rejects_registry_job_id():
+    with pytest.raises(ValueError, match="UUID"):
+        remote_connection().describe_query("registry-job-id")
 
 
 @pytest.mark.parametrize(
