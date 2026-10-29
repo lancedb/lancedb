@@ -91,11 +91,20 @@ def _rows_to_models(model: type[T], rows: List[dict]) -> List[T]:
     the alias when the row has the field name but not the alias, so a model
     with aliases can read the tables it wrote; rows keyed by alias still work.
     """
-    renames = {}
-    for name, field in model.model_fields.items():
-        alias = field.validation_alias or field.alias
-        if isinstance(alias, str) and alias != name:
-            renames[name] = alias
+    if model.model_config.get("validate_by_alias", True) is False:
+        # Name-only validation: pydantic reads field names and ignores aliases.
+        return [model(**row) for row in rows]
+    aliases = {
+        name: field.validation_alias or field.alias
+        for name, field in model.model_fields.items()
+    }
+    taken = {alias for alias in aliases.values() if isinstance(alias, str)}
+    renames = {
+        name: alias
+        for name, alias in aliases.items()
+        # A name that is also another field's alias keeps that meaning.
+        if isinstance(alias, str) and alias != name and name not in taken
+    }
     for row in rows:
         for name, alias in renames.items():
             if name in row and alias not in row:

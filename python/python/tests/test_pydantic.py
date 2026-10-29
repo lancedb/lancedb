@@ -808,6 +808,29 @@ def test_aliased_lance_model_reads_back_its_own_table(mem_db):
     assert item.user_id == 1
 
 
+def test_aliased_lance_model_with_name_only_validation(mem_db):
+    class Item(LanceModel):
+        model_config = pydantic.ConfigDict(
+            validate_by_alias=False, validate_by_name=True
+        )
+        user_id: int = Field(default=0, alias="userId")
+
+    tbl = mem_db.create_table("name_only_items", schema=Item)
+    tbl.add([Item(user_id=42)])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.user_id == 42
+
+
+def test_field_name_that_is_another_fields_alias_keeps_its_meaning(mem_db):
+    class Item(LanceModel):
+        record_id: int = Field(default=0, alias="id")
+        id: int = Field(default=-1, alias="legacy_id")
+
+    tbl = mem_db.create_table("alias_collision_items", data=[{"id": 42}])
+    [item] = tbl.search().to_pydantic(Item)
+    assert item.model_dump() == {"record_id": 42, "id": -1}
+
+
 @pytest.mark.asyncio
 async def test_aliased_lance_model_reads_back_its_own_table_async(mem_db_async):
     class Item(LanceModel):
