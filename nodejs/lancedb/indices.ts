@@ -11,14 +11,30 @@ export interface IvfPqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 8192 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 8192 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of sub-vectors of PQ.
@@ -117,14 +133,30 @@ export interface IvfRqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow. If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of bits per dimension for residual quantization.
@@ -215,6 +247,8 @@ export interface HnswPqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -222,6 +256,21 @@ export interface HnswPqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Number of sub-vectors of PQ.
@@ -331,6 +380,8 @@ export interface HnswSqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -338,6 +389,21 @@ export interface HnswSqOptions {
    *
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 1,048,576 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Max iterations to train kmeans.
@@ -407,14 +473,30 @@ export interface IvfFlatOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
    * part of the search (searching within a partition) will be slow.
    */
   numPartitions?: number;
+
+  /**
+   * The target number of rows in each IVF partition.
+   *
+   * This is an alternative to `numPartitions`. When it is set and
+   * `numPartitions` is not, the number of partitions is derived by dividing
+   * the number of rows by this value. When both are set, `numPartitions` is
+   * used and this value is ignored. When neither is set, the target is
+   * 4096 rows.
+   *
+   * Larger partitions mean fewer of them, which makes the first part of the
+   * search (picking the right partitions) faster and the second part
+   * (searching within a partition) slower.
+   */
+  targetPartitionSize?: number;
 
   /**
    * Distance type to use to build the index.
@@ -633,6 +715,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -661,6 +744,7 @@ export class Index {
         options?.numBits,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -688,6 +772,7 @@ export class Index {
         options?.numPartitions,
         options?.maxIterations,
         options?.sampleRate,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -798,6 +883,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }
@@ -820,6 +906,7 @@ export class Index {
         options?.sampleRate,
         options?.m,
         options?.efConstruction,
+        options?.targetPartitionSize,
       ),
     );
   }

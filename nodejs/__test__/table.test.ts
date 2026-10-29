@@ -1707,6 +1707,38 @@ describe("When creating an index", () => {
     });
   });
 
+  it.each([
+    ["IvfPq", Index.ivfPq({ targetPartitionSize: 100 })],
+    ["IvfFlat", Index.ivfFlat({ targetPartitionSize: 100 })],
+    ["IvfRq", Index.ivfRq({ targetPartitionSize: 100 })],
+    ["IvfHnswPq", Index.hnswPq({ targetPartitionSize: 100 })],
+    ["IvfHnswSq", Index.hnswSq({ targetPartitionSize: 100 })],
+  ])("should create %s with targetPartitionSize", async (indexType, config) => {
+    await tbl.createIndex("vec", { config });
+
+    const indices = await tbl.listIndices();
+    expect(indices).toHaveLength(1);
+    expect(indices[0].indexType).toBe(indexType);
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBe(100);
+  });
+
+  it("should prefer numPartitions over targetPartitionSize", async () => {
+    await tbl.createIndex("vec", {
+      config: Index.ivfFlat({ numPartitions: 2, targetPartitionSize: 100 }),
+    });
+
+    const indices = await tbl.listIndices();
+    expect(
+      (indices[0].indexDetails as Record<string, unknown>)[
+        "target_partition_size"
+      ],
+    ).toBeUndefined();
+  });
+
   it("should allow me to replace (or not) an existing index", async () => {
     await tbl.createIndex("id");
     // Default is replace=true

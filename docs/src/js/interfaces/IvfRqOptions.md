@@ -72,8 +72,9 @@ optional numPartitions: number;
 The number of IVF partitions to create.
 
 This value should generally scale with the number of rows in the dataset.
-By default the number of partitions is the square root of the number of
-rows.
+When set, this takes precedence over `targetPartitionSize`. When omitted,
+the partition count is derived from `targetPartitionSize`, which defaults
+to 4096 rows for this index type.
 
 If this value is too large then the first part of the search (picking the
 right partition) will be slow. If this value is too small then the second
@@ -100,3 +101,23 @@ Increasing this value might improve the quality of the index but in most cases t
 default should be sufficient.
 
 The default value is 256.
+
+***
+
+### targetPartitionSize?
+
+```ts
+optional targetPartitionSize: number;
+```
+
+The target number of rows in each IVF partition.
+
+This is an alternative to `numPartitions`. When it is set and
+`numPartitions` is not, the number of partitions is derived by dividing
+the number of rows by this value. When both are set, `numPartitions` is
+used and this value is ignored. When neither is set, the target is
+4096 rows.
+
+Larger partitions mean fewer of them, which makes the first part of the
+search (picking the right partitions) faster and the second part
+(searching within a partition) slower.
