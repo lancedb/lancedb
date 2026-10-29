@@ -10,13 +10,11 @@ import {
     PyConnect,
     PyConnectAsync,
     PyConnectEnterprisePlaceholders,
-    PyConnectEnterpriseQuickstart,
     PyConnectObjectStorage,
     PyConnectObjectStorageAsync,
     RsConnect,
     TsConnect,
     TsConnectEnterprisePlaceholders,
-    TsConnectEnterpriseQuickstart,
     TsConnectObjectStorage,
 } from '/snippets/connection.mdx';
 
@@ -107,29 +105,3 @@ the same settings through `api_key`, `region` and `host_override`. To use OAuth
 instead of an API key, see
 [Authentication](/enterprise/authentication); for every connection option, see
 [Database](/management/database#deployment).
-
-
-<Accordion title="Load production credentials from your environment">
-
-Set these values in the shell that starts your application. Replace the URI, API
-key, region and endpoint with your Enterprise connection settings. In production, a secrets
-manager can supply these environment variables for you.
-
-```shell
-export LANCEDB_URI="db://your-database"
-export LANCEDB_API_KEY="your-api-key"
-export LANCEDB_REGION="us-east-1"
-export LANCEDB_HOST_OVERRIDE="https://your-endpoint"
-```
-
-<CodeGroup>
-  <CodeBlock filename="Python" language="Python" icon="python">
-    {PyConnectEnterpriseQuickstart}
-  </CodeBlock>
-  <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
-    { "import * as lancedb from \"@lancedb/lancedb\";\n\n" }
-    {TsConnectEnterpriseQuickstart}
-  </CodeBlock>
-</CodeGroup>
-
-</Accordion>

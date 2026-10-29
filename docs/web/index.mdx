@@ -19,29 +19,6 @@ Training data and experimentation slow down when raw data, metadata, embeddings,
 artifacts live in separate systems. LanceDB keeps them together in one versioned multimodal table, so AI teams spend less
 time stitching infrastructure together and more time improving datasets, testing features, and keeping GPUs fed.
 
-![Training data lifecycle: Curation, Feature Engineering, Search and Retrieval, Training](/static/assets/images/overview/training-data-lifecycle.svg)
-
-Use the same table to curate training data, add derived features, retrieve examples, and feed training jobs that rely on expensive GPUs.
-Training workloads can sample, shuffle, and scan projected columns from local storage or object storage, then assemble
-GPU-ready batches from a tagged dataset version. Training pipelines need curation, derived features, reproducible
-splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
-through the same table model, whether a workflow uses one table or several related ones.
-
-## LanceDB suite {#lancedb-suite}
-
-The LanceDB suite includes LanceDB Embedded (open source), a retrieval library, and LanceDB Enterprise,
-a multimodal lakehouse platform for the full AI data lifecycle.
-LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
-It is easy to set up on a local machine for search and regular-scale workflows. LanceDB Enterprise is built
-for teams that need scale without building bespoke infrastructure for curation,
-feature engineering, search and retrieval, and efficient training data access.
-LanceDB Enterprise runs LanceDB Distributed: query execution, indexing and maintenance
-run on the Enterprise service, outside your application.
-
-![LanceDB suite: LanceDB Embedded search and Enterprise multimodal lakehouse on Lance format](/static/assets/images/overview/lancedb-suite.svg)
-
-## Why teams use LanceDB {#why-teams-use-lancedb}
-
 <Steps>
   <Step title="One table for the whole AI data loop">
     Store images, video, audio, text, annotations, embeddings, and model-generated features together in one schema-enforced table.
@@ -57,6 +34,25 @@ run on the Enterprise service, outside your application.
     for curation, feature engineering, and training workflows.
   </Step>
 </Steps>
+
+Use the same table to curate training data, add derived features, retrieve examples, and feed training jobs that rely on expensive GPUs.
+Training workloads can sample, shuffle, and scan projected columns from local storage or object storage, then assemble
+GPU-ready batches from a tagged dataset version. Training pipelines need curation, derived features, reproducible
+splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
+through the same table model, whether a workflow uses one table or several related ones.
+
+## Embedded and Enterprise {#embedded-and-enterprise}
+
+LanceDB ships as two offerings on the same Lance format and table model. **LanceDB Embedded** is an open-source,
+embedded retrieval library -- install it locally in minutes for search and regular-scale workflows, with the
+application itself planning queries, building indexes, and running background work. **LanceDB Enterprise** is a
+distributed multimodal lakehouse platform for teams that need scale without building bespoke infrastructure:
+query serving, read execution and caching, and indexing and background work run as separate, independently sized
+components.
+
+See [Embedded vs. Enterprise](/basics/offerings#compare) for a feature-by-feature comparison,
+[Architecture](/architecture) for how Enterprise's components fit together and what changes in your application,
+or jump straight to the [quickstart](/quickstart).
 
 ## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
 

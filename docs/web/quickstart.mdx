@@ -166,13 +166,13 @@ Use an `s3://`, `gs://`, or `az://` URI in place of the local path. See [Configu
 
 ## 3\. Create a table and add data {#3-create-a-new-table}
 
-Each row describes a character and stores a vector alongside their name, description, and stats.
+Each row describes a frame from a robot video clip and stores an embedding alongside its video, caption, and quality stats.
 
 <Info>
-These vectors are made up for this example. In your application, use an embedding model to generate vectors from your data.
+These embeddings are made up for this example. In your application, use an embedding model to generate them from your data.
 </Info>
 
-<Accordion title="Character records">
+<Accordion title="Frame records">
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
     {PyQuickstartData}
@@ -187,7 +187,7 @@ These vectors are made up for this example. In your application, use an embeddin
 </CodeGroup>
 </Accordion>
 
-Create a `characters` table from those records:
+Create a `frames` table from those records:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -201,9 +201,9 @@ Create a `characters` table from those records:
     </CodeBlock>
 </CodeGroup>
 
-This example uses overwrite mode so you can run it again. It replaces any existing `characters` table in the database you connect to.
+This example uses overwrite mode so you can run it again. It replaces any existing `frames` table in the database you connect to.
 
-Add one more character:
+Add one more frame:
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -219,7 +219,7 @@ Add one more character:
 
 ## 4\. Search the table {#4-semantic-search}
 
-Find the two vectors closest to the query vector. This example uses a fixed vector; it does not call an embedding model.
+Find the two embeddings closest to the query embedding. This example uses a fixed embedding; it does not call an embedding model.
 
 <CodeGroup>
     <CodeBlock filename="Python" language="Python" icon="python">
@@ -233,11 +233,11 @@ Find the two vectors closest to the query vector. This example uses a fixed vect
     </CodeBlock>
 </CodeGroup>
 
-Merlin and Morgana come back first. Python and Rust display a Polars DataFrame; TypeScript displays an array of results. The `_distance` column measures how far each result is from your query vector, with smaller values indicating a closer match.
+Frames 2 and 4 come back first -- the gripper closing on the cup, then lowering it. Python and Rust display a Polars DataFrame; TypeScript displays an array of results. The `_distance` column measures how far each result is from your query embedding, with smaller values indicating a closer match.
 
 ## Complete examples {#code}
 
-Each example below creates the local database, adds four characters, and prints the two closest matches. Use the dependencies from step 1.
+Each example below creates the local database, adds four frames, and prints the two closest matches. Use the dependencies from step 1.
 
 <Accordion title="Python: quickstart.py">
 Save this as `quickstart.py` and run `python quickstart.py`. If you installed with uv, run `uv run quickstart.py`.
@@ -292,7 +292,7 @@ You've created a table, added rows, and searched it. Continue with the guides be
 
 ### Filter results {#5-curation}
 
-Combine vector search with metadata filters, such as `stats.magic >= 4`. See [SQL filtering](/search/filtering).
+Combine vector search with metadata filters, such as `stats.motion >= 4`. See [SQL filtering](/search/filtering).
 
 ### Extend your table {#extensions}
 

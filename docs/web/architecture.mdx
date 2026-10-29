@@ -6,24 +6,11 @@ icon: cubes
 keywords: ["architecture", "embedded", "distributed", "object storage", "compute", "deployment"]
 ---
 
-LanceDB Embedded is an open-source library for working with Lance tables. It runs
-in your application's process; your data can live on local disk or in object
-storage. LanceDB Enterprise is a multimodal lakehouse for data curation, feature
-engineering, search, and training data access. LanceDB Enterprise runs LanceDB
-Distributed: query execution, indexing and maintenance run on the Enterprise
-service, outside your application. Its architecture separates query serving,
-read execution, caching, and background work. Both use the open
-[Lance](/basics/lance) format.
-
-Teams can curate datasets, derive features, search multimodal records, and
-read the resulting tables into training frameworks. Enterprise separates the
-resources that serve shared data from those that build indexes and run
-background work, so teams can size them for these different workloads.
-
-![LanceDB Embedded runs the application and embedded library in one process, using local disk or object storage. Enterprise applications connect to query serving, with separate read execution and caching, indexing and background workers, and durable object storage. Both use the Lance format, but they do not share a storage location automatically.](/static/assets/images/overview/lancedb-architecture.svg)
-
-The diagram shows the main compute and storage boundaries, not every request
-path. The control plane governs the Enterprise service.
+See [Embedded and Enterprise](/#embedded-and-enterprise) for what each offering
+is. This page covers how Enterprise's architecture is organized internally --
+query serving, read execution, caching, and background work are separate
+components -- and what changes in your application when you move from
+Embedded to Enterprise.
 
 ## A shared format, different storage choices {#storage}
 
