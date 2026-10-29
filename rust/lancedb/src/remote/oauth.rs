@@ -171,7 +171,18 @@ pub enum OAuthFlow {
 
     /// Device Authorization grant for CLI and headless environments. The
     /// verification URI and user code are written to stderr.
+    /// Does not send PKCE parameters. Use [`Self::DeviceCodeWithPkce`] only
+    /// when the provider supports and requires PKCE for device grants.
     DeviceCode,
+
+    /// Device Authorization grant with the S256 PKCE extension, required by
+    /// some Keycloak client policies. Not supported by every device provider.
+    ///
+    /// ```
+    /// use lancedb::remote::OAuthFlow;
+    /// let flow = OAuthFlow::DeviceCodeWithPkce;
+    /// ```
+    DeviceCodeWithPkce,
 
     /// Azure Managed Identity via IMDS.
     /// Works on Azure VMs, AKS, App Service, and Azure Functions.
@@ -764,6 +775,7 @@ impl OidcClient {
         Self::validate_issuer_transport(&issuer_url)?;
 
         let http_client = Client::builder()
+            .user_agent(concat!("LanceDB-Rust-Client/", env!("CARGO_PKG_VERSION")))
             .timeout(Duration::from_secs(30))
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 if oauth_url_uses_secure_transport(attempt.url()) {
@@ -1244,17 +1256,29 @@ struct OAuthErrorResponse {
 
 struct DeviceCodeSource {
     oidc: OidcClient,
+    use_pkce: bool,
+}
+
+struct DeviceAuthorization {
+    response: StandardDeviceAuthorizationResponse,
+    verifier: Option<PkceCodeVerifier>,
 }
 
 impl std::fmt::Debug for DeviceCodeSource {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceCodeSource")
             .field("oidc", &self.oidc)
+            .field("use_pkce", &self.use_pkce)
             .finish()
     }
 }
 
 impl DeviceCodeSource {
+    fn with_pkce(mut self, use_pkce: bool) -> Self {
+        self.use_pkce = use_pkce;
+        self
+    }
+
     fn new(
         issuer_url: String,
         client_id: String,
@@ -1274,10 +1298,11 @@ impl DeviceCodeSource {
                 resource,
                 audience,
             )?,
+            use_pkce: false,
         })
     }
 
-    async fn request_device_authorization(&self) -> Result<StandardDeviceAuthorizationResponse> {
+    async fn request_device_authorization(&self) -> Result<DeviceAuthorization> {
         let endpoint = self
             .oidc
             .get_discovery()
@@ -1295,7 +1320,14 @@ impl DeviceCodeSource {
             .oidc
             .base_client()
             .set_device_authorization_url(device_url);
+        // Device-flow PKCE is a provider extension; send it only when selected.
+        let pkce = self.use_pkce.then(PkceCodeChallenge::new_random_sha256);
         let mut request = client.exchange_device_code();
+        if let Some((challenge, _)) = &pkce {
+            request = request
+                .add_extra_param("code_challenge", challenge.as_str())
+                .add_extra_param("code_challenge_method", "S256");
+        }
         for scope in &self.oidc.scopes {
             request = request.add_scope(Scope::new(scope.clone()));
         }
@@ -1313,17 +1345,20 @@ impl DeviceCodeSource {
         if let Some(uri) = device.verification_uri_complete() {
             validate_oauth_url(uri.secret(), "verification_uri_complete")?;
         }
-        Ok(device)
+        Ok(DeviceAuthorization {
+            response: device,
+            verifier: pkce.map(|(_, verifier)| verifier),
+        })
     }
 
-    async fn poll_for_token(
-        &self,
-        device: &StandardDeviceAuthorizationResponse,
-    ) -> Result<TokenResponse> {
+    async fn poll_for_token(&self, device: &DeviceAuthorization) -> Result<TokenResponse> {
         let (client, _) = self.oidc.token_client().await?;
         let mut request = client
-            .exchange_device_access_token(device)
+            .exchange_device_access_token(&device.response)
             .set_max_backoff_interval(Duration::from_secs(10));
+        if let Some(verifier) = &device.verifier {
+            request = request.add_extra_param("code_verifier", verifier.secret());
+        }
         for (name, value) in self.oidc.target_params() {
             request = request.add_extra_param(name, value);
         }
@@ -1345,13 +1380,17 @@ impl TokenSource for DeviceCodeSource {
     async fn fetch_token(&self) -> Result<TokenResponse> {
         let device = self.request_device_authorization().await?;
         show_oauth_prompt(&device_prompt(
-            device.verification_uri().as_str(),
-            device.user_code().secret(),
+            device.response.verification_uri().as_str(),
+            device.response.user_code().secret(),
         ));
         let (browser_url, name) = device
+            .response
             .verification_uri_complete()
             .map(|uri| (uri.secret().as_str(), "verification_uri_complete"))
-            .unwrap_or((device.verification_uri().as_str(), "verification_uri"));
+            .unwrap_or((
+                device.response.verification_uri().as_str(),
+                "verification_uri",
+            ));
         launch_browser(validate_oauth_url(browser_url, name)?);
         self.poll_for_token(&device).await
     }
@@ -1613,15 +1652,18 @@ pub(crate) fn build_token_source(config: &OAuthConfig) -> Result<Box<dyn TokenSo
             config.audience.clone(),
             options.clone(),
         )?),
-        OAuthFlow::DeviceCode => Box::new(DeviceCodeSource::new(
-            config.issuer_url.clone(),
-            config.client_id.clone(),
-            config.client_secret.clone(),
-            client_auth_method,
-            config.scopes.clone(),
-            config.resource.clone(),
-            config.audience.clone(),
-        )?),
+        OAuthFlow::DeviceCode | OAuthFlow::DeviceCodeWithPkce => Box::new(
+            DeviceCodeSource::new(
+                config.issuer_url.clone(),
+                config.client_id.clone(),
+                config.client_secret.clone(),
+                client_auth_method,
+                config.scopes.clone(),
+                config.resource.clone(),
+                config.audience.clone(),
+            )?
+            .with_pkce(matches!(config.flow, OAuthFlow::DeviceCodeWithPkce)),
+        ),
         OAuthFlow::AzureManagedIdentity { client_id } => Box::new(AzureImdsSource::new(
             config.scopes.clone(),
             client_id.clone(),
@@ -2629,30 +2671,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_device_authorization_polls_until_success() {
-        let (issuer_url, token_requests, server) = spawn_device_server().await;
-        let source = DeviceCodeSource::new(
-            issuer_url,
-            "client-id".to_string(),
-            Some("secret".to_string()),
-            ClientAuthMethod::ClientSecretBasic,
-            vec!["openid".to_string()],
-            None,
-            None,
-        )
-        .unwrap();
+        for use_pkce in [false, true] {
+            let (issuer_url, token_requests, server) = spawn_device_server(use_pkce).await;
+            let source = DeviceCodeSource::new(
+                issuer_url,
+                "client-id".to_string(),
+                Some("secret".to_string()),
+                ClientAuthMethod::ClientSecretBasic,
+                vec!["openid".to_string()],
+                None,
+                None,
+            )
+            .unwrap()
+            .with_pkce(use_pkce);
 
-        let device = source.request_device_authorization().await.unwrap();
-        let response = source.poll_for_token(&device).await.unwrap();
+            let device = source.request_device_authorization().await.unwrap();
+            let response = source.poll_for_token(&device).await.unwrap();
 
-        assert_eq!(response.access_token.secret(), "device-token");
-        assert_eq!(
-            response
-                .refresh_token()
-                .map(|token| token.secret().as_str()),
-            Some("device-refresh")
-        );
-        assert_eq!(token_requests.load(Ordering::SeqCst), 3);
-        server.await.unwrap();
+            assert_eq!(response.access_token.secret(), "device-token");
+            assert_eq!(
+                response
+                    .refresh_token()
+                    .map(|token| token.secret().as_str()),
+                Some("device-refresh")
+            );
+            assert_eq!(token_requests.load(Ordering::SeqCst), 3);
+            server.await.unwrap();
+        }
     }
 
     #[tokio::test]
@@ -3318,7 +3363,7 @@ mod tests {
         (issuer_url, server)
     }
 
-    async fn spawn_device_server() -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    async fn spawn_device_server(use_pkce: bool) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let issuer_url = format!("http://{addr}");
@@ -3326,6 +3371,7 @@ mod tests {
         let server_token_requests = Arc::clone(&token_requests);
 
         let server = tokio::spawn(async move {
+            let mut challenge = None;
             for _ in 0..5 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request = read_http_request(&mut stream).await;
@@ -3345,6 +3391,18 @@ mod tests {
                     );
                     assert!(request.body.contains("scope=openid"));
                     assert!(!request.body.contains("client_secret"));
+                    let form: HashMap<String, String> =
+                        url::form_urlencoded::parse(request.body.as_bytes())
+                            .into_owned()
+                            .collect();
+                    if use_pkce {
+                        assert_eq!(form["code_challenge_method"], "S256");
+                        assert!(!form.contains_key("code_verifier"));
+                        challenge = Some(form["code_challenge"].clone());
+                    } else {
+                        assert!(!form.contains_key("code_challenge"));
+                        assert!(!form.contains_key("code_challenge_method"));
+                    }
                     let device = format!(
                         r#"{{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://{addr}/verify","verification_uri_complete":"http://{addr}/verify?user_code=ABCD-EFGH","expires_in":60,"interval":1}}"#
                     );
@@ -3359,6 +3417,19 @@ mod tests {
                     ));
                     assert!(request.body.contains("device_code=device-code"));
                     assert!(!request.body.contains("client_secret"));
+                    let form: HashMap<String, String> =
+                        url::form_urlencoded::parse(request.body.as_bytes())
+                            .into_owned()
+                            .collect();
+                    if use_pkce {
+                        let verifier = PkceCodeVerifier::new(form["code_verifier"].clone());
+                        assert_eq!(
+                            PkceCodeChallenge::from_code_verifier_sha256(&verifier).as_str(),
+                            challenge.as_deref().unwrap()
+                        );
+                    } else {
+                        assert!(!form.contains_key("code_verifier"));
+                    }
                     let request = server_token_requests.fetch_add(1, Ordering::SeqCst);
                     match request {
                         0 => {
@@ -3449,14 +3520,16 @@ mod tests {
         (issuer_url, token_requests, server)
     }
 
-    fn test_device_authorization_response(
-        expires_in: u64,
-        interval: u64,
-    ) -> StandardDeviceAuthorizationResponse {
-        serde_json::from_str(&format!(
+    fn test_device_authorization_response(expires_in: u64, interval: u64) -> DeviceAuthorization {
+        let response = serde_json::from_str(&format!(
             r#"{{"device_code":"device-code","user_code":"ABCD-EFGH","verification_uri":"http://127.0.0.1/verify","expires_in":{expires_in},"interval":{interval}}}"#
         ))
-        .unwrap()
+        .unwrap();
+        let (_, verifier) = PkceCodeChallenge::new_random_sha256();
+        DeviceAuthorization {
+            response,
+            verifier: Some(verifier),
+        }
     }
 
     async fn spawn_device_error_server(error: &'static str) -> (String, JoinHandle<()>) {
@@ -3501,6 +3574,12 @@ mod tests {
             for _ in 0..3 {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let request = read_http_request(&mut stream).await;
+                assert!(
+                    request
+                        .header("user-agent")
+                        .is_some_and(|value| !value.is_empty()),
+                    "OAuth discovery and token requests must identify the client"
+                );
 
                 if request
                     .line

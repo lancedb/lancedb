@@ -237,7 +237,7 @@ fn canonicalize_scopes(scopes: &[String]) -> Vec<String> {
 fn flow_key(flow: &OAuthFlow) -> Option<&'static str> {
     match flow {
         OAuthFlow::AuthorizationCode(_) => Some("authorization_code"),
-        OAuthFlow::DeviceCode => Some("device_code"),
+        OAuthFlow::DeviceCode | OAuthFlow::DeviceCodeWithPkce => Some("device_code"),
         OAuthFlow::ClientCredentials | OAuthFlow::AzureManagedIdentity { .. } => None,
     }
 }
