@@ -428,10 +428,13 @@ class DBConnection(EnforceOverrides):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -548,7 +551,9 @@ class DBConnection(EnforceOverrides):
         LanceTable(name='table4', ...)
 
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "create_table is not supported for this connection type"
+        )
 
     def __getitem__(self, name: str) -> LanceTable:
         return self.open_table(name)
@@ -603,7 +608,9 @@ class DBConnection(EnforceOverrides):
         -------
         A LanceTable object representing the table.
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "open_table is not supported for this connection type"
+        )
 
     def create_materialized_view(
         self,
@@ -618,6 +625,10 @@ class DBConnection(EnforceOverrides):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        LanceDB Embedded creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; LanceDB Distributed operations remain available.
 
         The view is populated before creation returns. Pass
         ``with_no_data=True`` to create only its definition and empty backing
@@ -641,11 +652,11 @@ class DBConnection(EnforceOverrides):
         with_no_data: bool, default False
             Skip the initial refresh and leave the backing table empty.
         auto_refresh_enabled: bool, optional
-            Enable or disable automatic refresh on Cloud and Enterprise.
+            Enable or disable automatic refresh in LanceDB Distributed.
             When omitted, the server determines whether automatic refresh is enabled.
-            Embedded databases do not support automatic refresh.
+            LanceDB Embedded does not support automatic refresh.
         auto_refresh_interval_seconds: float, optional
-            Positive, finite refresh interval in seconds on Cloud and Enterprise.
+            Positive, finite refresh interval in seconds in LanceDB Distributed.
             When omitted, the server determines when to refresh.
 
         Returns
@@ -670,10 +681,12 @@ class DBConnection(EnforceOverrides):
     ) -> Job[None]:
         """Submit materialized-view creation and return its job.
 
-        The job may already be complete for a local database. On LanceDB
-        Cloud and Enterprise, its ``id`` is the server job identifier from
-        the ``202 Accepted`` create response. Wait for the job before opening
-        or querying the view.
+        The job may already be complete in LanceDB Embedded. In LanceDB
+        Distributed, creation
+        submits CREATE MATERIALIZED VIEW through the SQL server. Its job has
+        ``job_type == "query"`` and ``id`` identifies the connection-scoped
+        query. Registry event history is unavailable.
+        Wait for the job before opening or querying the view.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -709,9 +722,9 @@ class DBConnection(EnforceOverrides):
     ) -> None:
         """Drop a materialized view.
 
-        The view may become unavailable before physical cleanup finishes. Use
-        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
-        job.
+        In LanceDB Distributed, drops wait for the SQL command to remove the
+        catalog binding.
+        Physical cleanup continues in the background.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -720,11 +733,12 @@ class DBConnection(EnforceOverrides):
     def drop_materialized_view_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job[None]:
-        """Start dropping a materialized view and return its cleanup job.
+        """Start dropping a materialized view and return its job.
 
-        The job may already be complete for a local database. On LanceDB Cloud
-        and Enterprise, its ``id`` is the server job identifier from the
-        ``202 Accepted`` drop response.
+        The job may already be complete in LanceDB Embedded. In LanceDB
+        Distributed, jobs have
+        type ``query`` and use the SQL query ID as ``id``. Waiting confirms
+        catalog removal; physical cleanup continues in the background.
         """
         raise NotImplementedError(
             "materialized views are not supported on this connection type"
@@ -743,13 +757,17 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table is not supported for this connection type"
+        )
 
     def drop_table_async(
         self, name: str, namespace_path: Optional[List[str]] = None
     ) -> Job:
         """Start dropping a table and return its cleanup job."""
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_table_async is not supported for this connection type"
+        )
 
     def rename_table(
         self,
@@ -777,18 +795,25 @@ class DBConnection(EnforceOverrides):
             cur_namespace_path = []
         if new_namespace_path is None:
             new_namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "rename_table is not supported for this connection type"
+        )
 
     def drop_database(self):
         """
         Drop database
         This is the same thing as dropping all the tables
         """
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_database is not supported for this connection type"
+        )
 
     def drop_all_tables(self, namespace_path: Optional[List[str]] = None):
         """
         Drop all tables from the database
+
+        LanceDB Distributed does not currently support this operation. Use
+        ``list_tables()`` and ``drop_table()`` to drop tables individually.
 
         Parameters
         ----------
@@ -798,11 +823,31 @@ class DBConnection(EnforceOverrides):
         """
         if namespace_path is None:
             namespace_path = []
-        raise NotImplementedError
+        raise NotImplementedError(
+            "drop_all_tables is not supported for this connection type"
+        )
 
     @property
     def uri(self) -> str:
+        """The URI of this database."""
         return self._uri
+
+    def _all_table_names(self) -> Generator[str, None, None]:
+        page_token = None
+        while True:
+            response = self.list_tables(page_token=page_token)
+            yield from response.tables
+            page_token = response.page_token
+            if not page_token:
+                return
+
+    def __len__(self) -> int:
+        """Return the number of tables in the root namespace across all pages."""
+        return sum(1 for _ in self._all_table_names())
+
+    def __contains__(self, name: str) -> bool:
+        """Return whether the root namespace contains the named table."""
+        return name in self._all_table_names()
 
     def namespace_client(self) -> LanceNamespace:
         """Get the equivalent namespace client for this connection.
@@ -812,7 +857,7 @@ class DBConnection(EnforceOverrides):
 
         For namespace connections, this returns the backing namespace client.
 
-        For enterprise (remote) connections, this returns a RestNamespace
+        For LanceDB Enterprise connections, this returns a RestNamespace
         with the same URI and authentication headers.
 
         Returns
@@ -848,7 +893,7 @@ class DBConnection(EnforceOverrides):
 
         The server builds the OCI image and registers the completed artifact.
         This is the blocking counterpart of :meth:`create_function_async`.
-        Local connections raise ``NotImplementedError``.
+        LanceDB Embedded connections raise ``NotImplementedError``.
 
         Parameters
         ----------
@@ -892,7 +937,7 @@ class DBConnection(EnforceOverrides):
 
         The server-side job builds the OCI image, then registers the completed
         artifact. Waiting on the job returns the immutable Function version.
-        Local connections raise ``NotImplementedError``.
+        LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -920,7 +965,7 @@ class DBConnection(EnforceOverrides):
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
-        Function name then version. Local connections raise
+        Function name then version. LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         Examples
@@ -970,7 +1015,7 @@ class DBConnection(EnforceOverrides):
         The name is unbound before this returns; the object's content may still
         be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
         the server deletes inline, or when nothing was bound, the returned job
-        is already finished and has no id. Local connections raise
+        is already finished and has no id. LanceDB Embedded connections raise
         NotImplementedError.
         """
         raise NotImplementedError(
@@ -999,7 +1044,7 @@ class DBConnection(EnforceOverrides):
         Fails if it does not exist. Every Function bound to the Secret uses the
         new value from its next job, and no new Function version is created --
         which is how a rotation reaches columns pinned to a version registered
-        before it. Local connections raise ``NotImplementedError``.
+        before it. LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Secret operations are not supported for this connection type"
@@ -1015,7 +1060,8 @@ class DBConnection(EnforceOverrides):
         """The names of every Secret in this database.
 
         Names only. No method returns a stored credential, by construction
-        rather than by policy. Local connections raise ``NotImplementedError``.
+        rather than by policy. LanceDB Embedded connections raise
+        ``NotImplementedError``.
 
         Returns a lazy iterator. ``page_limit`` limits each request, not the total;
         ``page_token`` resumes from a saved token. Requests and errors occur during
@@ -1033,7 +1079,7 @@ class DBConnection(EnforceOverrides):
         Functions bound to it fail at their next job, naming the Secret; that
         is the revocation path. The name becomes free to reuse, and a new
         Secret under it is picked up by everything still bound to that name.
-        Local connections raise ``NotImplementedError``.
+        LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "Secret operations are not supported for this connection type"
@@ -1061,7 +1107,7 @@ class DBConnection(EnforceOverrides):
         its readers see its sources as they are at read time.
 
         There is no replace: a name already taken is an error, and changing a
-        view is a drop followed by a create. Local connections raise
+        view is a drop followed by a create. LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         >>> import lancedb
@@ -1083,7 +1129,7 @@ class DBConnection(EnforceOverrides):
         schema that query resolved to.
 
         The schema is the one recorded at creation; a source altered since then
-        shows up when the view is read. Local connections raise
+        shows up when the view is read. LanceDB Embedded connections raise
         ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -1097,7 +1143,7 @@ class DBConnection(EnforceOverrides):
 
         The tables it reads are untouched: a view holds no rows of its own. Use
         :meth:`drop_view_async` to get the cleanup job instead of waiting on it.
-        Local connections raise ``NotImplementedError``.
+        LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
             "View operations are not supported for this connection type"
@@ -1236,18 +1282,19 @@ class DBConnection(EnforceOverrides):
                 parameters=[np.array([0.1, 0.2, 0.3], dtype=np.float32), 10],
             )
 
-        Parameters are supported in queries, not in DDL or DML. A
-        parameterized query runs on the call that returns its rows:
-        cancelling it, or dropping its handle before reading, stops it on the
-        server. Its status follows that stream as well: ``describe()``
-        reports ``running`` until the reader has received every row, so open
-        ``reader()`` directly rather than waiting for ``finished``.
+        Parameters are supported in queries, not in DDL or DML. With or
+        without parameters, the server chooses whether to stream rows on the
+        initial call or return a polling continuation. The reader follows
+        either path transparently. Dropping an unread handle or its reader
+        stops a directly streamed query; deferred execution requires explicit
+        cancellation. Open ``reader()`` directly: a streamed query needs its
+        reader to make progress and reports ``running`` until the stream ends.
 
-        Local connections do not support SQL.
+        LanceDB Embedded connections do not support SQL.
         """
         raise NotImplementedError("SQL is not supported for this connection type")
 
-    def describe_query(self, query_id: UUID) -> QueryDescription:
+    def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
         """Describe a submitted SQL query by its connection-scoped id."""
         raise NotImplementedError("SQL is not supported for this connection type")
 
@@ -1587,21 +1634,6 @@ class LanceDBConnection(DBConnection):
             )
         )
 
-    def _all_table_names(self) -> Generator[str, None, None]:
-        page_token = None
-        while True:
-            response = self.list_tables(page_token=page_token)
-            yield from response.tables
-            page_token = response.page_token
-            if not page_token:
-                return
-
-    def __len__(self) -> int:
-        return sum(1 for _ in self._all_table_names())
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._all_table_names()
-
     @override
     def create_table(
         self,
@@ -1735,6 +1767,10 @@ class LanceDBConnection(DBConnection):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> MaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        LanceDB Embedded creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; LanceDB Distributed operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
 
@@ -1744,13 +1780,13 @@ class LanceDBConnection(DBConnection):
         >>> db = lancedb.connect("./.lancedb")
         >>> data = [{"name": "ada", "age": 36}, {"name": "kid", "age": 7}]
         >>> table = db.create_table("people", data)
-        >>> view = db.create_materialized_view(
+        >>> view = db.create_materialized_view(  # doctest: +SKIP
         ...     "adults",
         ...     "people",
         ...     select=["name", ("shout", "upper(name)")],
         ...     where="age >= 18",
         ... )
-        >>> view.table.count_rows()
+        >>> view.table.count_rows()  # doctest: +SKIP
         1
         """
         LOOP.run(
@@ -2229,12 +2265,12 @@ class AsyncConnection(object):
     To obtain a connection you can use the [connect_async][lancedb.connect_async]
     function.
 
-    This could be a native connection (using lance) or a remote connection (e.g. for
-    connecting to LanceDb Cloud)
+    This could be a LanceDB Embedded connection (using lance) or a LanceDB Distributed
+    connection (e.g. for connecting to LanceDB Enterprise)
 
-    Local connections do not currently hold any open resources but they may do so in the
-    future (for example, for shared cache or connections to catalog services) Remote
-    connections represent an open connection to the remote server.  The
+    Embedded connections do not currently hold any open resources but they may do so in
+    the future (for example, for shared cache or connections to catalog services)
+    Distributed connections represent an open connection to the server.  The
     [close][lancedb.db.AsyncConnection.close] method can be used to release any
     underlying resources eagerly.  The connection can also be used as a context manager.
 
@@ -2400,6 +2436,49 @@ class AsyncConnection(object):
         result = await self._inner.describe_namespace(namespace_path)
         return DescribeNamespaceResponse(**result)
 
+    async def namespace_exists(self, namespace_id: List[str]) -> bool:
+        """Check if a namespace exists.
+
+        Parameters
+        ----------
+        namespace_id: List[str]
+            The namespace identifier to check. An empty list represents root.
+
+        Returns
+        -------
+        bool
+            True if the namespace exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> async def check_namespace(conn):
+        ...     return await conn.namespace_exists(["analytics"])
+        """
+        return await self._inner.namespace_exists(namespace_id)
+
+    async def table_exists(self, table_id: List[str]) -> bool:
+        """Check if a table exists.
+
+        Parameters
+        ----------
+        table_id: List[str]
+            The full identifier, including namespace segments and table name.
+            Must contain at least the table name.
+
+        Returns
+        -------
+        bool
+            True if the table exists, False if it is not found.
+            Other errors, including permission errors, are propagated.
+
+        Examples
+        --------
+        >>> async def check_table(conn):
+        ...     return await conn.table_exists(["analytics", "events"])
+        """
+        return await self._inner.table_exists(table_id)
+
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
@@ -2531,10 +2610,13 @@ class AsyncConnection(object):
             it will not add the provided data but will validate against any
             schema that's specified.
         on_bad_vectors: str, default "error"
-            What to do if any of the vectors are not the same size or contains NaNs.
-            One of "error", "drop", "fill".
+            How to handle vectors with incorrect sizes, NaNs, or null elements.
+            One of "error", "drop", "fill", "null".
         fill_value: float
             The value to use when filling vectors. Only used if on_bad_vectors="fill".
+            NaN or null elements and missing trailing elements are replaced with this
+            value. Valid elements are preserved, and vectors longer than the expected
+            dimension are truncated.
         storage_options: dict, optional
             Additional options for the storage backend. Options already set on the
             connection will be inherited by the table, but can be overridden here.
@@ -2818,6 +2900,10 @@ class AsyncConnection(object):
         auto_refresh_interval_seconds: Optional[float] = None,
     ) -> AsyncMaterializedView:
         """Define a materialized view named ``name`` over the table ``source``.
+
+        LanceDB Embedded creation and refresh require a source build with the
+        ``experimental-functions`` Cargo feature. Published packages leave it
+        disabled; LanceDB Distributed operations remain available.
         See
         [DBConnection.create_materialized_view][lancedb.DBConnection.create_materialized_view].
         """
@@ -2851,7 +2937,9 @@ class AsyncConnection(object):
     ) -> AsyncJob[None]:
         """Submit materialized-view creation and return its job.
 
-        Wait for the returned job before opening or querying the view.
+        Wait for the returned job before opening or querying the view. In LanceDB
+        Distributed, creation uses SQL; ``job_type`` is ``"query"`` and ``id``
+        identifies that query on this connection.
         """
         source, native_options = await self._materialized_view_source(
             source, select, where, limit
@@ -2904,9 +2992,9 @@ class AsyncConnection(object):
     ) -> None:
         """Drop a materialized view.
 
-        The view may become unavailable before physical cleanup finishes. Use
-        :meth:`drop_materialized_view_async` to retain and wait for the cleanup
-        job.
+        In LanceDB Distributed, drops wait for the SQL command to remove the
+        catalog binding.
+        Physical cleanup continues in the background.
         """
         if namespace_path is None:
             namespace_path = []
@@ -2918,10 +3006,11 @@ class AsyncConnection(object):
         *,
         namespace_path: Optional[List[str]] = None,
     ) -> AsyncJob[None]:
-        """Start dropping a materialized view and return its cleanup job.
+        """Start dropping a materialized view and return its job.
 
-        Await :meth:`AsyncJob.wait` before assuming physical cleanup has
-        finished.
+        In LanceDB Distributed, the job has type ``query`` and its ID identifies
+        the SQL query. Await :meth:`AsyncJob.wait` for catalog removal; physical
+        cleanup continues in the background.
         """
         if namespace_path is None:
             namespace_path = []
@@ -3094,7 +3183,7 @@ class AsyncConnection(object):
         [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
         the environment variable its value arrives in. ``namespace_path`` is
         the namespace the Function is registered in; None or an empty list is
-        the root. Local connections raise ``NotImplementedError``.
+        the root. LanceDB Embedded connections raise ``NotImplementedError``.
         """
         if not isinstance(definition, UdfDefinition):
             raise TypeError("create_function_async requires a @udf definition")
@@ -3126,7 +3215,7 @@ class AsyncConnection(object):
         """List every published immutable Function version in a namespace.
 
         Functions in child namespaces are not included. Results are ordered by
-        Function name then version. Local connections raise
+        Function name then version. LanceDB Embedded connections raise
         ``NotImplementedError``.
 
         Returns a lazy iterator. ``page_limit`` limits each request, not the total;
@@ -3381,7 +3470,7 @@ class AsyncConnection(object):
         references. The namespace defaults to ``["public"]``. ``parameters``
         binds values to ``$1`` / ``$name`` placeholders; see
         [DBConnection.execute_query_async][lancedb.db.DBConnection.execute_query_async].
-        Local connections raise ``NotImplementedError``.
+        LanceDB Embedded connections raise ``NotImplementedError``.
         """
         return AsyncSqlQuery(
             await self._inner.execute_query_async(
@@ -3391,8 +3480,14 @@ class AsyncConnection(object):
             )
         )
 
-    async def describe_query(self, query_id: UUID) -> QueryDescription:
-        """Describe a submitted SQL query by its connection-scoped id."""
+    async def describe_query(self, query_id: Union[UUID, str]) -> QueryDescription:
+        """Describe a submitted SQL query by its UUID or string ID.
+
+        For a handle with ``job_type == "query"``, pass its ``id`` on the
+        connection that submitted it. Registry job IDs are not query IDs.
+        """
+        if isinstance(query_id, str):
+            query_id = UUID(query_id)
         return await self._inner.describe_query(query_id)
 
     async def namespace_client(self) -> LanceNamespace:
@@ -3403,7 +3498,7 @@ class AsyncConnection(object):
 
         For namespace connections, this returns the backing namespace client.
 
-        For enterprise (remote) connections, this returns a RestNamespace
+        For LanceDB Enterprise connections, this returns a RestNamespace
         with the same URI and authentication headers.
 
         Returns

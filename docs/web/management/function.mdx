@@ -8,7 +8,7 @@ availability:
   oss: unavailable
   enterprise: available
   summary: >-
-    Enterprise supports Functions when enabled for your Enterprise cluster; the embedded library cannot register or run them.
+    Enterprise supports Functions when enabled for your Enterprise cluster; LanceDB Embedded cannot register or run them.
 ---
 
 import {
@@ -19,6 +19,8 @@ import {
     PyFunctionApply as FunctionApply,
     PyFunctionRefresh as FunctionRefresh,
     PyFunctionInspect as FunctionInspect,
+    PyFunctionClassDefine as FunctionClassDefine,
+    PyFunctionClassApply as FunctionClassApply,
 } from '/snippets/function.mdx';
 import { PyConnectEnterprisePlaceholders as FunctionConnect } from '/snippets/connection.mdx';
 
@@ -29,8 +31,8 @@ rather than pulling rows to your process.
 
 Registering and running a function needs a LanceDB Enterprise deployment with
 Functions enabled, which they are not by default. On a
-local connection `create_function` raises `NotImplementedError`; to derive a
-column locally, declare a
+LanceDB Embedded connection `create_function` raises `NotImplementedError`; to
+derive a column there, declare a
 [SQL computed column](/feature-engineering/add-computed-column) instead.
 
 <Note>
@@ -143,6 +145,45 @@ rows added since the last one and recomputes rows whose inputs changed, and
 leaves filled rows with unchanged inputs alone. See
 [Refresh a column](/feature-engineering/refresh-column).
 
+## Keep state in a class {#classes}
+
+A function that loads a model or opens a client should not do it for every
+row. Decorate a class instead: its `__init__` does the expensive setup once,
+and `__call__` handles each row or batch.
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassDefine}
+</CodeBlock>
+
+Registering the class does not construct it. `@udf` reads the signature of
+`__init__` and packages the source, so the client never loads the model. On
+the cluster, each instance of the function calls `__init__` once. It then calls
+`__call__` for every row or batch it processes, and `close()`, if defined, once
+when it retires. Import heavy packages inside `__init__`, as above, so only the
+worker needs them installed, and declare them in `pip`.
+
+State belongs to one instance. An instance reuses it across every batch it
+serves, but instances do not share it, so each one holds its own copy of the
+model. Plan memory, or a GPU, for one copy per instance.
+
+The annotated parameters of `__init__` are the function's initialization
+fields. Their values come from each binding rather than from the function, so
+one registered version can run with different settings on different columns:
+
+<CodeBlock filename="Python" language="Python" icon="python">
+{FunctionClassApply}
+</CodeBlock>
+
+Pass the application to `add_columns` as [above](#apply). Initialization values
+are fixed for every row of a binding and take booleans, integers, floats,
+strings, and lists or structs of them. A parameter with a default may be
+omitted. Initialization values are stored with the binding, so keep
+credentials out of them: pass `secrets=[EnvVarSecret(...)]` to
+`create_function` and read the variable in `__init__`.
+
+Calling the decorated class in your own process constructs it, the same as an
+undecorated class, so local tests can create an instance and call it directly.
+
 ## Read and produce blobs {#blobs}
 
 A Function can bind a [Blob v2 column](/management/table#managed-blobs) and
@@ -205,16 +246,51 @@ Function output blobs follow the same compaction and cleanup lifecycle as
 ingested Managed blobs. Retained versions continue to own their payloads;
 cleanup reclaims an object only after its retained references are gone.
 
+### Draft: incremental blob inputs (upcoming)
+
+This feature requires an SDK that exports `BlobReader` and a compatible
+Enterprise runtime with reader input support enabled. Coordinate the runtime
+upgrade before registering or executing reader Functions.
+
+Annotate a row Function parameter with `BlobReader` to read a Blob v2 input
+incrementally. The signature selects the access mode without another
+registration option. For example, read the first MP4 box type without loading
+the whole video:
+
+```python
+from lancedb import BlobReader, udf
+
+
+@udf
+def first_box_type(video: BlobReader) -> bytes:
+    video.seek(4)
+    return video.read(4)
+```
+
+The worker passes a seekable reader backed by the stored blob. `read(size)`
+reads from the current cursor; `read_range(offset, length)` reads a byte range
+without moving it. `size()` returns the payload size without reading it.
+Each row call receives its own reader, which closes when the call returns or
+raises. Do not retain it for another invocation.
+
+Use `video: bytes` when the Function needs the complete payload. Bytes inputs
+materialize before invocation and remain subject to eager input limits.
+Reader inputs keep the unread payload out of the input batch, but calling
+`video.read()` without a size loads all remaining bytes in Python. Reader
+inputs are supported in row mode. Return values remain ordinary values such
+as `bytes`; this feature does not add streamed outputs.
+
 ## Declare the environment {#environment}
 
-The function runs remotely, so its dependencies are part of its definition:
+The function runs on the Enterprise service, not in your application, so its
+dependencies are part of its definition:
 
 | | |
 | --- | --- |
-| `pip` | requirements for the remote environment |
+| `pip` | requirements for the function's execution environment |
 | `conda`, `conda_channels` | conda packages instead of pip; channels in priority order |
 | `env` | environment variables |
-| `python_version` | remote Python major/minor, defaulting to yours |
+| `python_version` | Python major/minor for the execution environment, defaulting to yours |
 | `gpu` | whether every execution requires a GPU |
 
 These are part of the **immutable function version**. Changing a dependency

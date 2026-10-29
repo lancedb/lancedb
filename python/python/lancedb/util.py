@@ -9,7 +9,7 @@ import math
 import os
 import pathlib
 import warnings
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from functools import singledispatch
 from typing import Tuple, Union, Optional, Any, List
@@ -425,6 +425,28 @@ def _(value: date):
     return f"'{value.isoformat()}'"
 
 
+@value_to_sql.register(time)
+def _(value: time):
+    if value.utcoffset() is not None:
+        raise ValueError(
+            "time values with a timezone cannot be converted to SQL, "
+            "because Arrow time columns do not store one"
+        )
+    # A plain string literal can be assigned to a time column but not compared with one.
+    return f"arrow_cast('{value.isoformat()}', 'Time64(Microsecond)')"
+
+
+@value_to_sql.register(timedelta)
+def _(value: timedelta):
+    # Lance does not accept INTERVAL literals, so cast the exact count of the
+    # smallest unit. pandas.Timedelta, a timedelta subclass, keeps nanoseconds.
+    nanoseconds = getattr(value, "value", None)
+    if isinstance(nanoseconds, int):
+        return f"arrow_cast({nanoseconds}, 'Duration(Nanosecond)')"
+    microseconds = value // timedelta(microseconds=1)
+    return f"arrow_cast({microseconds}, 'Duration(Microsecond)')"
+
+
 @value_to_sql.register(list)
 @value_to_sql.register(tuple)
 def _(value: Union[list, tuple]):
@@ -450,6 +472,35 @@ def _(value: dict):
 @value_to_sql.register(pa.Scalar)
 def _(value: pa.Scalar):
     return value_to_sql(value.as_py())
+
+
+_ARROW_TIME_UNITS = {
+    "s": "Second",
+    "ms": "Millisecond",
+    "us": "Microsecond",
+    "ns": "Nanosecond",
+}
+
+
+@value_to_sql.register(pa.DurationScalar)
+@value_to_sql.register(pa.Time64Scalar)
+def _(value: Union[pa.DurationScalar, pa.Time64Scalar]):
+    # Cast the raw count in the scalar's own unit: as_py() would round a
+    # nanosecond value to the microseconds of a Python timedelta or time.
+    if not value.is_valid:
+        return value_to_sql(None)
+    kind = "Duration" if pa.types.is_duration(value.type) else "Time64"
+    unit = _ARROW_TIME_UNITS[value.type.unit]
+    return f"arrow_cast({value.value}, '{kind}({unit})')"
+
+
+@value_to_sql.register(pa.MapScalar)
+def _(value: pa.MapScalar):
+    if not value.is_valid:
+        return value_to_sql(None)
+    keys = value_to_sql(list(value.values.field(0)))
+    values = value_to_sql(list(value.values.field(1)))
+    return f"map({keys}, {values})"
 
 
 @value_to_sql.register(np.ndarray)
