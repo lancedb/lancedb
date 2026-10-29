@@ -2,9 +2,10 @@
 # entries, add the pages back to the navigation in docs.json, restore the
 # /feature-engineering/functions redirect to /management/function, publish
 # the drafts marked "Draft for the Functions release", and restore
-# management/function.mdx's `availability` frontmatter (removed while gated,
-# since the auto-generated comparison table on basics/offerings.mdx links
-# every page that declares one, draft or not).
+# `availability` frontmatter (removed while gated, since the comparison
+# table on basics/offerings.mdx links every page that declares one, draft or
+# not) to management/function.mdx and sql/ddl/function.mdx -- each currently
+# carries a plain `<Badge color="red">Enterprise</Badge>` instead.
 management/function.mdx
 sql/ddl/function.mdx
 
@@ -12,5 +13,6 @@ sql/ddl/function.mdx
 # (CREATE SECRET, CREATE FUNCTION, USAGE on a secret or function), which are
 # themselves part of the Functions release: see the "Draft for the Functions
 # release" block in governance/authorization.mdx#privileges. At release,
-# remove this entry and add the page to the navigation in docs.json.
+# remove this entry, add the page to the navigation in docs.json, and give it
+# `availability` frontmatter like the rest of the SQL reference.
 sql/ddl/grant.mdx

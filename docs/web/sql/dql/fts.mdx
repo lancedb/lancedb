@@ -4,9 +4,10 @@ sidebarTitle: "Full-Text Search"
 description: "The fts() table function: match, fuzzy, phrase, boolean, boost and multi-match queries from SQL."
 icon: magnifying-glass
 keywords: ["fts", "sql", "full text search", "fuzzy", "phrase", "boolean", "boost", "multi-match"]
+availability:
+  oss: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Full-text search is a **table function**, `fts(table, query)`, rather than a
 predicate: it produces a relevance score alongside the matching rows, and a

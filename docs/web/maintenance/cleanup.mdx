@@ -7,8 +7,6 @@ keywords: ["cleanup", "retention", "prune", "delete_unverified", "vacuum"]
 availability:
   oss: available
   enterprise: available
-  summary: >-
-    Both offerings support cleanup. Embedded `optimize()` uses a retention window of 7 days by default; Enterprise uses configured background cleanup and retention, and does not support `optimize()`.
 ---
 
 Every write keeps the version before it, which is what makes

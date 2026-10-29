@@ -4,12 +4,6 @@ sidebarTitle: "SDKs"
 description: "Choose a LanceDB SDK and find the API reference for your language."
 icon: code-compare
 keywords: ["python", "typescript", "rust", "java", "sdk", "rest", "api reference"]
-availability:
-  oss: available
-  enterprise: available
-  summary: >-
-    Python, TypeScript and Rust support both LanceDB Embedded and LanceDB Enterprise.
-    Java provides a client for the Enterprise REST API.
 ---
 
 Use a LanceDB SDK to create tables, add data, build indexes and run searches
@@ -25,12 +19,11 @@ examples in all three languages. For connection settings, see
 
 ## Official SDKs {#supported-sdks}
 
-| SDK | Use it with | API reference |
-| --- | --- | --- |
-| Python | Python applications, notebooks, pandas and PyArrow | [Python reference](https://lancedb.github.io/lancedb/python/python/) |
-| TypeScript | Node.js and TypeScript applications | [TypeScript reference](https://lancedb.github.io/lancedb/js/) |
-| Rust | Rust applications using the native library | [Rust reference](https://docs.rs/lancedb/latest/lancedb/index.html) |
-| Java | Applications using the Enterprise REST API | [Java reference](https://lancedb.github.io/lancedb/java/java/) |
+| SDK | API reference |
+| --- | --- |
+| Python | [Python reference](https://lancedb.github.io/lancedb/python/python/) |
+| TypeScript | [TypeScript reference](https://lancedb.github.io/lancedb/js/) |
+| Rust | [Rust reference](https://docs.rs/lancedb/latest/lancedb/index.html) |
 
 Guides show the available language examples together. Use the API reference for
 method signatures and options; SDKs do not expose every feature through the same
@@ -48,6 +41,31 @@ Use it when integrating a language or tool without a LanceDB SDK. The
 [REST API reference](/api-reference/rest) describes its endpoints and request
 formats. For SQL queries, connect through [Flight SQL](/basics/sql).
 
+## Lance Namespace SDKs {#lance-namespace-sdks}
+
+LanceDB Enterprise's catalog and table operations follow
+[Lance Namespace](https://lance.org/format/namespace), an open specification
+for describing access to tables in a multimodal lakehouse, including its REST
+Namespace Spec. Any client that implements a Lance Namespace REST client can
+integrate with LanceDB, not only the official SDKs above.
+
+| Language | Package | Used by |
+| --- | --- | --- |
+| Java | `org.lance:lance-namespace-core` | Spark, Flink, Kafka, Trino, Presto; also LanceDB's Java client |
+| Python | `lance-namespace` | Core interface and connect functionality |
+| Rust | `lance-namespace` | Core interface, in [lance-format/lance](https://github.com/lance-format/lance) |
+
+LanceDB's Java client builds on this Lance Namespace Java core: table creation,
+listing and most other catalog operations go through the generated
+`LanceNamespace` interface talking to Enterprise's REST Namespace endpoint.
+The [realtime engine](/tables/realtime-engine) is the one area with its own,
+LanceDB-specific Java client on top, since RTE's LSM write path is not part of
+the Lance Namespace specification.
+
+See [lance.org/format/namespace](https://lance.org/format/namespace) for the
+full spec and its other catalog implementations (Directory, Apache Polaris,
+Unity Catalog, Apache Hive Metastore, Apache Iceberg REST Catalog, and more).
+
 ## Community SDKs {#community-sdks}
 
 These clients are maintained by the community. Check each project's supported
@@ -60,18 +78,6 @@ features, installation instructions and releases before choosing one.
 | Swift | [LanceDbSwiftKit](https://github.com/RyanLisse/LanceDbSwiftKit) |
 | R | [lancedb](https://github.com/CathalByrneGit/lancedb) |
 | Flutter | [flutter_lancedb](https://github.com/Alexcn/flutter_lancedb) |
-
-## Python multiprocessing {#multiprocessing}
-
-<Warning>
-Use `spawn` when starting Python worker processes with `multiprocessing`.
-LanceDB uses threads internally, and forking a process with active threads can
-cause deadlocks. Create a connection inside each worker instead of sharing an
-open connection from the parent process.
-</Warning>
-
-For PyTorch worker setup and connection factories, see
-[PyTorch integration](/training/torch).
 
 ## Moving to LanceDB Enterprise {#moving-to-enterprise}
 
@@ -120,6 +126,9 @@ for [read consistency](/tables/consistency) when another process writes data.
 <CardGroup cols={2}>
   <Card title="SQL" icon="table-list" href="/basics/sql">
     Query Enterprise tables with SQL from Python or a Flight SQL client.
+  </Card>
+  <Card title="PyTorch integration" icon="fire" href="/training/torch">
+    Use LanceDB tables in a DataLoader, including multiple worker processes.
   </Card>
   <Card title="Agentic Skills" icon="robot" href="/basics/agentic-skills">
     Use the LanceDB plugin to help a coding agent work with your data.

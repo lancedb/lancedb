@@ -4,9 +4,10 @@ sidebarTitle: "Delete"
 description: "DELETE FROM ... WHERE: rows are marked, not erased."
 icon: trash
 keywords: ["delete", "sql"]
+availability:
+  oss: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 ```sql
 DELETE FROM documents WHERE created_at < TIMESTAMP '2025-01-01 00:00:00'
