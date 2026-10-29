@@ -10,115 +10,194 @@ keywords: ["multimodal lakehouse", "training", "feature engineering", "search", 
 one data layer for curation, feature engineering, search and retrieval, and model training.
 It is built on top of [Lance](/basics/lance), an open-source lakehouse format designed for multimodal AI data.
 
-Move from data exploration to model training on one, unified platform without needing to manage a
+Move from data exploration to model training on one unified platform without needing to manage a
 fragmented stack of storage, feature, retrieval, and training systems.
 
-## Build better models, faster {#build-better-models-faster}
+## Train on the right data faster {#train-on-the-right-data-faster}
 
-Training data and experimentation slow down when raw data, metadata, embeddings, features, and governance
+Search, curate, and train at petabyte scale, with all your multimodal data in one table.
+
+Preparing training data and running experiments slow down when raw data, metadata, embeddings, features, and governance
 artifacts live in separate systems. LanceDB keeps them together in one versioned multimodal table, so AI teams spend less
 time stitching infrastructure together and more time improving datasets, testing features, and keeping GPUs fed.
 
-![Training data lifecycle: Curation, Feature Engineering, Search and Retrieval, Training](/static/assets/images/overview/training-data-lifecycle.svg)
+## Accelerate the data flywheel for model research {#accelerate-the-data-flywheel-for-model-research}
+
+Keep your AI data in one table, and give each agent-driven experiment its own isolated branch.
+Find the failure, fix the data, and retrain.
+
+<Steps>
+  <Step title="Find a curated training subset for every failure case">
+    Start from one failed grasp or evaluation example. [Search](/search/) multimodal data, metadata, and embeddings
+    together, retrieve similar examples, and [curate](/curation) them into a targeted training subset.
+  </Step>
+  <Step title="Data sandboxes for safe agentic experimentation">
+    Don't let an agent silently corrupt your data and ruin a training run. Give each agent its own
+    [branch](/tables/branching), a writable fork of the table, to experiment on, and review the changes before
+    they reach `main`. See [Run experiments on branches](/agent-branch-experiments).
+  </Step>
+  <Step title="A single dataset for every modality">
+    Keep episodes, frames, metadata, features, and embeddings together in one schema-enforced table, without
+    pipelines to keep them in sync. Table [versions](/management/table#versioning) let you trace each training
+    run back to the exact data it used.
+  </Step>
+  <Step title="More hillclimbing, less babysitting preprocessing jobs">
+    Define the [computed columns](/feature-engineering/add-computed-column) and
+    [materialized views](/feature-engineering/materialized-views) your experiment needs, such as extracted features
+    or embeddings, and refresh them as your data changes. On LanceDB Enterprise, column refreshes run as background
+    jobs on the cluster instead of in your code.
+  </Step>
+  <Step title="Higher GPU utilization, faster convergence">
+    Keep GPUs fed. [`StreamingDataset`](/training/data-loading) streams multimodal training data into PyTorch with
+    globally shuffled, deterministic batches, combining fast random access with high-throughput scans.
+  </Step>
+</Steps>
 
 Use the same table to curate training data, add derived features, retrieve examples, and feed training jobs that rely on expensive GPUs.
 Training workloads can sample, shuffle, and scan projected columns from local storage or object storage, then assemble
-GPU-ready batches from a tagged dataset version.
+GPU-ready batches from a tagged dataset version. Training pipelines need curation, derived features, reproducible
+splits, fast random access, and a clean path into frameworks such as PyTorch -- LanceDB keeps all of it connected
+through the same table model, whether a workflow uses one table or several related ones.
 
-For a deeper look at how this works in training pipelines, start with [Why LanceDB for training](/training/why-lancedb).
+## Architecture {#architecture}
 
-## LanceDB suite {#lancedb-suite}
+LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which stores table data, versions, and
+indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
+how storage and compute are organized around them.
 
-The LanceDB suite includes LanceDB OSS, an open-source embedded retrieval library, and LanceDB Enterprise,
-a multimodal lakehouse platform for the full AI data lifecycle.
-OSS is easy to set up on a local machine for search and regular-scale workflows. LanceDB Enterprise is built
-for teams that need scale without building bespoke infrastructure for curation,
-feature engineering, search and retrieval, and efficient training data access.
+![LanceDB suite: LanceDB Embedded for search, and LanceDB Enterprise for search, data exploration and curation, feature engineering, and training, both on the Lance format](/static/assets/images/overview/lancedb-suite.svg)
 
-![LanceDB suite: OSS search and Enterprise multimodal lakehouse on Lance format](/static/assets/images/overview/lancedb-suite.svg)
+Embedded reads and writes tables on local disk or in object storage from inside your application process.
+Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
+requests, and separates query serving, read execution and caching, and indexing and background work into their
+own independently sized components. Caches accelerate reads; they are never the durable source of truth. With
+multiple serving replicas, Enterprise routes traffic to surviving nodes when one fails; losing a cache node
+temporarily raises latency while its replacement warms, rather than causing an outage.
 
-## Why teams use LanceDB {#why-teams-use-lancedb}
+Sharing a format does not mean an Enterprise deployment automatically opens an existing Embedded database --
+plan how to move or connect your data and configure access for your deployment.
 
-<Steps>
-  <Step title="One table for the whole AI data loop">
-    Store images, video, audio, text, annotations, embeddings, and model-generated features together in one schema-enforced table.
-    The same table can support dataset curation, feature backfills, experiment splits, retrieval, and training.
-  </Step>
-  <Step title="High-throughput data access for training">
-    Training workloads mix fast random access with high-throughput sequential scans. LanceDB is designed for both, so
-    teams can shuffle data into GPU-ready batches more efficiently, improve input throughput, and iterate on experiments faster.
-  </Step>
-  <Step title="Fast, versatile search and retrieval">
-    Whether the end user is a human or an agent, LanceDB powers production retrieval workloads such as semantic search,
-    hybrid search, RAG, agent memory, and recommendation systems. Retrieval runs against the same LanceDB tables used
-    for curation, feature engineering, and training workflows.
-  </Step>
-</Steps>
+## Embedded and Enterprise {#embedded-and-enterprise}
+
+LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
+Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
+curation, feature engineering, search and retrieval, and training workflows.
+
+### 1\. LanceDB Embedded {#1-lancedb-oss}
+
+**LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
+Rust -- the application itself plans queries, builds indexes, and runs background work, with no separate database
+server to deploy. This fits local retrieval applications, notebooks, development, and single-node data pipelines,
+where your application controls its own compute resources and [table maintenance](/maintenance/compaction).
+
+![LanceDB Embedded: the LanceDB SDK and the Lance format run in your application, reading and writing tables on local disk or in object storage.](/static/assets/images/overview/lancedb-embedded.png)
+
+### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
+
+[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
+built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
+same core table abstraction, without building bespoke infrastructure. Applications connect through a LanceDB SDK
+while the service handles requests across a fleet, with query serving, read execution and caching, and indexing
+and background work sized and scaled as separate components. A control plane governs configuration, identity
+and cluster lifecycle, separately from the data-plane components in the diagram below. See
+[Distributed search](/enterprise/distributed-search) for how query nodes and plan executors divide a request.
+
+![LanceDB Distributed: the LanceDB SDK connects to LanceDB Enterprise, where a query fleet, executor and cache fleets, the realtime engine, and a jobs fleet run on top of the Lance format and object storage.](/static/assets/images/overview/lancedb-distributed.png)
+
+Teams choose Enterprise to:
+
+- **Serve growing workloads** -- add query-serving capacity and let Enterprise cache frequently read table data near
+  compute as traffic grows.
+- **Reduce operational work** -- let the service handle background [compaction](/maintenance/compaction) and
+  [cleanup](/maintenance/cleanup) instead of scheduling them in application code.
+- **Fit deployment requirements** -- run a managed deployment or bring LanceDB into your own cloud account, with
+  OpenTelemetry metrics and traces.
+- **Connect data workflows** -- use the same tables for retrieval, curation, and training data access, with
+  [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
+
+To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
+
+### Compare features {#compare}
+
+| Area | Feature | Embedded | Enterprise |
+| --- | --- | :-: | :-: |
+| **Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
+|  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
+|  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
+|  | [Filtering](/search/filtering) | ✅ | ✅ |
+|  | [Reranking](/reranking) | ✅ | ✅ |
+|  | [Query plans](/search/explain) | ✅ | ✅ |
+|  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
+| **Indexing** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
+|  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
+|  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
+| **SQL and curation** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+|  | [Sampling](/curation/sampling) | ❌ | ✅ |
+|  | [Joins](/curation/join) | ❌ | ✅ |
+|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
+|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
+|  | [Chunking](/curation/chunking) | ❌ | ✅ |
+|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
+|  | [Views](/management/view) | ❌ | ✅ |
+| **Feature engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ✅ | ✅ |
+|  | [Materialized views](/management/materialized-view) | ❌ | ✅ |
+|  | [Embedding registry](/embedding) | ✅ | ✅ |
+| **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
+|  | [Permutations](/training/permutation) | ✅ | ✅ |
+|  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
+| **Data management** | [Branches](/tables/branching) | ✅ | ✅ |
+|  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
+|  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Real Time engine (streaming writes and reads)](/tables/realtime-engine) | ❌ | ✅ |
+| **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
+|  | [Authorization](/governance/authorization) | ❌ | ✅ |
+
+## Projects using LanceDB {#projects-using-lancedb}
+
+### Training {#training}
+
+- [stable-worldmodel](https://github.com/galilai-group/stable-worldmodel) -- a platform for reproducible world-model
+  research built on a LanceDB data layer, reporting 3-4x faster data loading on Push-T versus HDF5 / MP4 at a
+  fraction of the disk footprint.
+- [le-wm](https://github.com/lucas-maes/le-wm) -- a joint-embedding predictive world model from pixels, trained on
+  the stable-worldmodel platform and its LanceDB data layer.
+- [lerobot-lancedb](https://github.com/lancedb/lerobot-lancedb) -- a drop-in LanceDB backend for Hugging Face
+  LeRobot datasets with faster loading across robotics datasets.
+
+### Agentic applications {#agentic-applications}
+
+- [OpenClaw LanceDB Plugin](https://docs.openclaw.ai/plugins/memory-lancedb) -- stores an agent's long-term memory
+  in LanceDB, automatically recalling relevant memories before a model turn and capturing new facts afterward.
+- [Cognee](https://github.com/topoteretes/cognee) -- an open-source AI memory platform that gives agents persistent
+  memory across sessions, using LanceDB as one of its vector store backends.
+- [CrewAI](https://github.com/crewAIInc/crewAI) -- a multi-agent framework that
+  [rebuilt its agent memory on LanceDB](https://www.lancedb.com/blog/crewai-rebuilt-agent-memory-on-lancedb).
+
+Across these projects, LanceDB and Lance provide the multimodal data layer that keeps raw observations, annotations,
+features, and training or memory access patterns in one format instead of scattering them across task-specific
+stores.
 
 ## Start with your workload {#start-with-your-workload}
 
 <CardGroup cols={2}>
-  <Card title="Train and fine-tune models" icon="fire" href="/training/why-lancedb">
-    Learn why LanceDB works well as the data layer for training workloads.
-  </Card>
-  <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
-    Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
-  </Card>
-  <Card title="Browse ready-to-use datasets" icon="database" href="/datasets">
-    Explore Lance-formatted multimodal datasets with raw bytes, metadata, embeddings, and indices.
+  <Card title="Ingest your data" icon="inbox" href="/ingestion">
+    Create tables, append records, and update or delete rows as your data changes.
   </Card>
   <Card title="Build search and retrieval" icon="search" href="/search/">
     Use vector search, full-text search, hybrid search, reranking, filtering, and SQL.
   </Card>
+  <Card title="Curate training data" icon="filter" href="/curation">
+    Profile, sample, chunk, join, and deduplicate records before training on them.
+  </Card>
+  <Card title="Engineer features in place" icon="layer-group" href="/feature-engineering">
+    Derive computed columns and materialized views without moving data elsewhere.
+  </Card>
+  <Card title="Load data into PyTorch" icon="boxes-stacked" href="/training/data-loading">
+    Use LanceDB tables and permutations for projected, shuffled, random-access training reads.
+  </Card>
+  <Card title="Manage catalog objects" icon="folder-tree" href="/management">
+    Create, list, and drop tables, namespaces, and views from Python, TypeScript, or SQL.
+  </Card>
 </CardGroup>
 
-## From local development to production scale {#from-local-development-to-production-scale}
-
-LanceDB OSS and LanceDB Enterprise share the same Lance format and table model. Start locally with the embedded OSS
-library, then move to Enterprise when your team needs distributed scale, managed infrastructure, private deployment,
-or higher-throughput curation, feature engineering, search and retrieval, and training workflows.
-
-### 1\. LanceDB OSS {#1-lancedb-oss}
-The fastest way to get started is the open-source embedded library, with client SDKs in Python, TypeScript
-and Rust. Run it locally in just a few steps, which lets you explore datasets, curate data, and run search and retrieval workloads
-for agents. Start here:
-
-<Columns cols={2}>
-  <Card
-    title="Quickstart"
-    icon="rocket"
-    href="/quickstart"
-  >
-    Get started with LanceDB in minutes.
-  </Card>
-  <Card
-    title="Basic Table Operations"
-    icon="table"
-    href="/management/table"
-  >
-    Create tables, evolve schemas, version data, and modify rows in LanceDB.
-  </Card>
-</Columns>
-
-### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
-
-[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform built for
-search, curation, feature engineering, and high-throughput training data access workflows on top of the same core table
-abstraction. This eliminates the need for teams to build bespoke infrastructure to manage large multimodal datasets.
-To set up LanceDB Enterprise in your organization,
-[reach out to us](https://www.lancedb.com/contact).
-
-<Info>
-**Built with scale, performance, and security in mind.**
-
-LanceDB Enterprise is designed for very large-scale, high-performance, distributed workloads in
-private deployments, and can operate under strict [security requirements](/enterprise/security).
-</Info>
-
-<Card
-  title="Quickstart"
-  icon="rocket"
-  href="/quickstart"
->
-  Get started with LanceDB in minutes, including Enterprise `db://` connections.
-</Card>

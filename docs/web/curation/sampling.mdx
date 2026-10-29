@@ -1,14 +1,12 @@
 ---
-title: "SQL sampling"
-sidebarTitle: "SQL Sampling"
+title: "Sampling"
+sidebarTitle: "Sampling"
 description: "Choose a sample for exploration or evaluation and preserve the selected records when reproducibility matters."
 icon: dice
 keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Enterprise supports SQL `TABLESAMPLE`. For sampling in OSS and Enterprise through the Python SDK, see [Sample without SQL](#training).
 ---
 
 import { PySampleDataset } from '/snippets/curation_sampling.mdx';
@@ -143,7 +141,7 @@ for sampling. `TABLESAMPLE` cannot be applied directly to a subquery result.
 ## Sample without SQL {#training}
 
 The Python SDK provides a permutation builder for selecting and ordering rows
-in OSS and Enterprise. A split selects a subset; a shuffle changes the order
+in LanceDB Embedded and LanceDB Enterprise. A split selects a subset; a shuffle changes the order
 in which records are read. `Permutation.identity(table)` retains stored order.
 
 <Accordion title="Complete Python example: read a random subset">
@@ -163,7 +161,7 @@ promise the same IDs across SDK versions or changes to the source dataset.
 </Accordion>
 
 For shuffled training reads, worker configuration and data loaders, see
-[Loading data for model training](/training/data-loading).
+[PyTorch Data Loader](/training/data-loading).
 
 ## Related guides {#reference}
 

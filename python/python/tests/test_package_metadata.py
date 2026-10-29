@@ -32,8 +32,10 @@ def test_pyo3_abi_matches_minimum_supported_python():
     expected_abi = f"abi3-py{major}{minor}"
     configured_abis = re.findall(r'"(abi3-py\d+)"', cargo_manifest)
 
-    assert configured_abis == [expected_abi, expected_abi], (
-        "the pyo3 runtime and build ABI features must both match requires-python"
+    # PyO3 0.29 configures the ABI through the runtime dependency; its
+    # build-config crate no longer exposes ABI features.
+    assert configured_abis == [expected_abi], (
+        "the pyo3 runtime ABI feature must match requires-python"
     )
 
 
