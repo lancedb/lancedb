@@ -166,9 +166,10 @@ class NvidiaEmbeddings(TextEmbeddingFunction):
         response = self._client.embeddings.create(
             model=self.name,
             input=batch,
-            dimensions=self.ndims(),
             encoding_format="float",
+            # The typed dimensions parameter is unavailable in openai 1.6.1.
             extra_body={
+                "dimensions": self.ndims(),
                 "input_type": input_type,
                 "modality": "text",
                 "truncate": self.truncate,
