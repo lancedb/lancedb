@@ -71,6 +71,23 @@ including that you can travel back to before the column existed.
 `computed` and `transforms` cannot be combined in one call. Reach for `computed` when the table is
 large enough that you would rather control when the work happens.
 
+Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` alongside
+`computed` to have the server keep the column refreshed instead of calling
+[`refresh_column`](/feature-engineering/refresh-column) yourself:
+
+```python
+table.add_columns(
+    computed={"doubled": "x * 2"},
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+A local table stores these settings but does not act on them -- automatic
+scheduling runs on LanceDB Cloud or Enterprise. See
+[Automatic refresh](/feature-engineering/refresh-column#automatic) for the
+full behavior, including how to change the setting later.
+
 An eager `transforms` call looks like this, starting from a small product
 table:
 
@@ -194,13 +211,13 @@ table.add_columns({"caption": caption_version(jpeg=col("jpeg"))})
 
 Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
 options, and both refresh and toggle the same way; see
-[Refresh a column](/feature-engineering/refresh-column#automatic).
+[Refresh a computed column](/feature-engineering/refresh-column#automatic).
 */}
 
 ## Related guides {#next}
 
 <CardGroup cols={2}>
-  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
+  <Card title="Refresh a computed column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
     Fill the rows that lack values.
   </Card>
   <Card title="Geneva" icon="layer-group" href="/geneva">

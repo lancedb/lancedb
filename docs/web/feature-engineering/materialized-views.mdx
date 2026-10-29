@@ -1,154 +1,95 @@
 ---
 title: "Create a materialized view"
 sidebarTitle: "Create Materialized View"
-description: "Create a materialized view and refresh it when the source data changes."
+description: "Store the result of a query as a table, ready to query, index and search."
 icon: table
-keywords: ["materialized view", "create_materialized_view", "refresh", "full refresh"]
+keywords: ["materialized view", "create_materialized_view"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-import {
-    PyMaterializedViewCreate as MaterializedViewCreate,
-    PyMaterializedViewRefresh as MaterializedViewRefresh,
-} from '/snippets/materialized_view.mdx';
-
 A materialized view stores the result of a query as a table. Use it to keep a
-filtered or transformed dataset that you can query, index and search repeatedly.
-Refresh the view after its source data changes.
+filtered or transformed dataset that you can query, index and search
+repeatedly, instead of recomputing the query every time you read it.
 
 <Note>
-In the 0.41 SDK release, materialized-view creation and refresh in LanceDB Embedded require a
-source build with the `experimental-functions` Cargo feature. Published Python
-and TypeScript packages leave it disabled. Opening, reading, listing and dropping
-existing views remain available, as do LanceDB Enterprise operations.
+In SQL this is [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view#create).
 </Note>
 
-<Note>
-In SQL this is [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view).
-</Note>
-
-## Create and refresh {#create-and-refresh}
-
-<CodeBlock filename="Python" language="Python" icon="python">
-{MaterializedViewCreate}
-</CodeBlock>
-
-Creating the view computes its rows, so it is ready to read. Pass
-`with_no_data=True` to create it empty instead. Later changes to the source
-reach the view through a refresh:
-
-<CodeBlock filename="Python" language="Python" icon="python">
-{MaterializedViewRefresh}
-</CodeBlock>
-
-The example works with Python SDK 0.40.0. It creates the source with stable
-row IDs, which that release requires for ordinary materialized-view sources.
-
-`select` takes column names, `(alias, expression)` pairs, or a dict of the same.
-Omitting it selects every source column, expanded against the schema as it was
-at creation time. `where` filters source rows; `limit` caps the view.
-
-## Prepare the source table {#stable-row-ids}
-
-In Python SDK 0.40.0, create the source with
-`storage_options={"new_table_enable_stable_row_ids": "true"}`, as the example
-above does. Stable row IDs let the view track source rows across updates and
-compaction. Set this option when creating the table; it cannot be added later.
-
-A source with the [real time engine](/tables/realtime-engine) enabled or retained, uncompacted write-ahead-log
-rows is not accepted by the local materialized-view implementation.
-
-## Refresh behavior {#incremental}
-
-With Python SDK 0.40.0, a refresh applies source changes incrementally when the
-query supports it, and rebuilds the view otherwise. In the example, adding Bea
-writes one new view row. Refreshing again without source changes writes none.
-Use `refresh(full=True)` to force a rebuild.
-
-`rows_written` counts rows written by that refresh, not all rows in the view.
-Use `view.table.count_rows()` to get the total. Pass `source_version=N` to
-refresh against a particular source version instead of the latest.
-
-<Note>
-Refresh behavior has changed between SDK versions. The earlier 0.40.0b13
-development build rebuilt every local view on refresh and did not accept
-`full`; 0.39.0 created views empty. Use the reference for your installed SDK
-when maintaining an existing pipeline.
-</Note>
-
-## Enterprise refreshes {#availability}
-
-<Badge color="red">Enterprise</Badge>
-
-Enterprise runs materialized-view creation and refresh on the Enterprise service.
-For SQL, see [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view) and
-[`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view).
-Creation, refresh and drop also have async, job-returning SDK methods; see
-[Materialized view](/management/materialized-view#manage).
-
-{/*
-Draft for automatic materialized-view refresh. See
-[CREATE MATERIALIZED VIEW](/sql/ddl/materialized-view#create) and
-[ALTER MATERIALIZED VIEW](/sql/ddl/materialized-view#alter) for scheduling a
-view the same way a computed column schedules itself; see
-[Automatic refresh](/feature-engineering/refresh-column#automatic).
-
-`WITH (auto_refresh_enabled=..., auto_refresh_interval_seconds=...)` on
-`CREATE MATERIALIZED VIEW` sets the same two options a computed column takes,
-and `ALTER MATERIALIZED VIEW ... SET auto_refresh_enabled=...` toggles them
-the same way. Continuing the deduplication view from
-[LeRobotDataset](/integrations/lerobotdataset):
+## Create a view {#create}
 
 <CodeGroup>
 ```python Python icon="python"
-db.execute_query("""
-    CREATE MATERIALIZED VIEW frames_deduped AS
-    SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
-    WITH (auto_refresh_enabled=false, auto_refresh_interval_seconds=5)
-""")
-db.execute_query("ALTER MATERIALIZED VIEW frames_deduped SET auto_refresh_enabled=true")
+view = db.create_materialized_view(
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
+)
+```
+
+```typescript TypeScript icon="square-js"
+const view = await db.createMaterializedView("frames_captioned", "frames", {
+  select: ["frame_id", "video_id", "ts", "caption"],
+  where: "selected = true",
+});
 ```
 </CodeGroup>
 
-As new episodes land in `frames`, the view picks them up on its own. Disabling
-and later re-enabling behaves like a computed column's: the next refresh
-catches up everything that accumulated while it was off, in one pass, with no
-write required to trigger it -- not just rows added after re-enabling.
-Enabling the flag only commits the setting; it does not by itself guarantee
-the scheduler can reach whatever the view's query depends on.
-*/}
+`source` names the table the view reads. `select` takes column names,
+`(alias, expression)` pairs, or a dict of the same; omitting it selects every
+source column, expanded against the schema as it was at creation time.
+`where` filters source rows, and `limit` caps the view.
 
-Use an SDK version supported by your Enterprise deployment. Materialized-view
-APIs and stored definitions have changed across releases; a local SDK example
-alone does not establish compatibility with an older server. Before upgrading
-an existing pipeline, confirm the supported refresh options and whether its
-views need to be recreated with your administrator.
+Creating the view computes its rows, so it is ready to read. Pass
+`with_no_data=True` to create it empty instead; a later
+[refresh](/feature-engineering/refresh-materialized-view) populates it.
 
-Stable row IDs and feature configuration for Enterprise sources are managed on
-the server. The source-table storage option in the local example does not
-configure the Enterprise deployment, and Python SDK 0.40.0's `create_table` on a
-`db://` connection does not accept `storage_options`: leave it out, and confirm
-with your administrator that the deployment gives new tables stable row IDs.
+Your administrator manages stable row IDs and other source-table
+requirements for materialized views on the server; confirm support for your
+source table's shape before creating a view over it.
 
-`list_materialized_views` requests the server's view listing. On a local
-database it reads table schemas to find views.
+## Automatic refresh at creation {#auto-refresh}
+
+Pass `auto_refresh_enabled` and `auto_refresh_interval_seconds` to schedule
+refreshes instead of calling
+[`refresh`](/feature-engineering/refresh-materialized-view) yourself:
+
+```python
+view = db.create_materialized_view(
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
+    auto_refresh_enabled=True,
+    auto_refresh_interval_seconds=300,
+)
+```
+
+Omit `auto_refresh_enabled` to let the server decide whether to enable it,
+and omit `auto_refresh_interval_seconds` to let the server decide the
+pacing. See
+[Automatic refresh](/feature-engineering/refresh-materialized-view#auto-refresh)
+for how scheduling behaves once the view exists.
 
 ## Working with the view {#working-with-the-view}
 
 `view.table` is the underlying table, for querying, indexing, or search.
 `view.definition` is the recorded query: the select list, predicate, and
-limit. Use it to inspect the query without inferring it from the rows. Both are properties; on an async view, the definition is read
-with `await view.definition()`.
+limit. Use it to inspect the query without inferring it from the rows. Both
+are properties; on an async view, the definition is read with
+`await view.definition()`.
 
-An existing view is reopened with `db.open_materialized_view(name)`.
+An existing view is reopened with `db.open_materialized_view(name)`. Creation,
+refresh and drop also have async, job-returning SDK methods; see
+[Materialized view](/management/materialized-view#manage).
 
 ## Related guides {#next}
 
 <CardGroup cols={2}>
-  <Card title="Refresh a column" icon="arrows-rotate" href="/feature-engineering/refresh-column">
-    Derive a column instead of a whole table.
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/refresh-materialized-view">
+    Bring the view up to date with its source.
   </Card>
   <Card title="Versioning" icon="clock-rotate-left" href="/management/table#versioning">
     Inspect the table history and read a particular version.

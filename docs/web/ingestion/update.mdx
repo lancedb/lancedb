@@ -81,7 +81,7 @@ connection or table handle, account for its
 Nested-field updates are not supported by these operations. For schema changes,
 see [schema evolution](/management/table#schema). Treat derived values separately:
 changing an input field is not a guarantee that every stored feature has been
-recomputed. See [Refresh a column](/feature-engineering/refresh-column).
+recomputed. See [Refresh a computed column](/feature-engineering/refresh-column).
 
 Updates can change index coverage and query cost. After a large update,
 inspect the workload and follow [index maintenance](/indexing/reindexing)

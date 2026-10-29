@@ -348,7 +348,8 @@
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
               "feature-engineering/view",
-              "feature-engineering/materialized-views"
+              "feature-engineering/materialized-views",
+              "feature-engineering/refresh-materialized-view"
             ]
           },
           {

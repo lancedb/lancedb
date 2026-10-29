@@ -17,7 +17,7 @@ The result is an ordinary table: queryable, indexable, searchable, and present
 in `table_names()`. Nothing about reading it is special.
 
 This page covers creating and managing one. Keeping it current is
-[Create a materialized view](/feature-engineering/materialized-views).
+[Refresh a materialized view](/feature-engineering/refresh-materialized-view).
 
 <Note>
 In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh-materialized-view) and [`SHOW MATERIALIZED VIEWS`](/sql/ddl/materialized-view#show).
@@ -44,10 +44,9 @@ const view = await db.createMaterializedView("frames_captioned", "frames", {
 </CodeGroup>
 
 `source` names the table the view reads — here, a `frames` table with a
-`caption` column, filtered to the frames selected for captioning. With Python
-SDK 0.40.0, create that table with stable row IDs before creating the view. The
-[complete example](/feature-engineering/materialized-views#create-and-refresh)
-shows the setup. `select`, `where` and `limit` define the query.
+`caption` column, filtered to the frames selected for captioning. See
+[Create a materialized view](/feature-engineering/materialized-views#create)
+for the full walkthrough. `select`, `where` and `limit` define the query.
 
 ## Open, list and drop views {#manage}
 
@@ -79,13 +78,9 @@ view = job.wait(timeout=timedelta(minutes=15))
 ```
 </CodeGroup>
 
-{/*
-Draft for automatic materialized-view refresh.
-
 `create_materialized_view_async` also accepts `auto_refresh_enabled` and
 `auto_refresh_interval_seconds`; see
-[CREATE MATERIALIZED VIEW](/sql/ddl/materialized-view#create).
-*/}
+[Automatic refresh](/feature-engineering/refresh-materialized-view#auto-refresh).
 
 <Note>
 On a local database, `list_materialized_views` reads table schemas to find
@@ -105,16 +100,14 @@ That also means dropping one removes stored rows, unlike dropping a
 
 ## Enterprise compatibility {#deployment}
 
-Enterprise supports creating and refreshing materialized views on the
-Enterprise service. Use the SDK version supported by your deployment, or the
-[SQL interface](/sql/ddl/materialized-view). See
-[Enterprise refreshes](/feature-engineering/materialized-views#availability)
-for compatibility considerations when upgrading an existing pipeline.
+Enterprise supports creating and refreshing materialized views on remote
+compute. Use the SDK version supported by your deployment, or the
+[SQL interface](/sql/ddl/materialized-view).
 
 ## Related guides {#next}
 
 <CardGroup cols={2}>
-  <Card title="Create a materialized view" icon="arrows-rotate" href="/feature-engineering/materialized-views">
+  <Card title="Refresh a materialized view" icon="arrows-rotate" href="/feature-engineering/refresh-materialized-view">
     How a refresh works, and what it writes.
   </Card>
   <Card title="Views" icon="eye" href="/management/view">
