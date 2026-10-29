@@ -28,6 +28,7 @@ use crate::table::BranchDiff;
 use crate::table::CherryPickResult;
 use crate::table::DeleteResult;
 use crate::table::DropColumnsResult;
+use crate::table::DynBaseTable;
 use crate::table::MergeResult;
 use crate::table::RTEStats;
 use crate::table::RTEWriteSpec;
@@ -2179,7 +2180,6 @@ impl<S: HttpSend + 'static> RemoteTable<S> {
     }
 }
 
-#[async_trait]
 impl<S: HttpSend> BaseTable for RemoteTable<S> {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -2260,7 +2260,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             })
             .await
     }
-    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+    async fn query_snapshot(&self) -> Result<Arc<DynBaseTable<'static>>> {
         let description = self.describe().await?;
         let TableDescription {
             version,
@@ -2272,13 +2272,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
         snapshot.schema_cache.seed(schema);
-        Ok(Arc::new(snapshot))
+        Ok(DynBaseTable::new_arc(snapshot))
     }
     async fn version(&self) -> Result<u64> {
         self.describe().await.map(|desc| desc.version)
     }
 
-    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+    async fn checkout_current(&self) -> Result<Arc<DynBaseTable<'static>>> {
         let description = self.describe().await?;
         let TableDescription {
             version,
@@ -2290,7 +2290,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         *snapshot.version.write().await = Some(version);
         *snapshot.location.write().await = location;
         snapshot.schema_cache.seed(schema);
-        Ok(Arc::new(snapshot))
+        Ok(DynBaseTable::new_arc(snapshot))
     }
 
     async fn checkout(&self, version: u64) -> Result<()> {
@@ -2333,7 +2333,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
 
         Ok(())
     }
-    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
+    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<DynBaseTable<'static>>>> {
         // A checked-out handle already names its snapshot. Otherwise resolve
         // latest exactly once before creating the independent pinned handle.
         let read_snapshot = self.snapshot_read_state().await;
@@ -2345,7 +2345,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         let snapshot = self.with_branch(self.branch.clone());
         *snapshot.version.write().await = Some(version);
         snapshot.reset_freshness(None, true);
-        Ok(Some(Arc::new(snapshot)))
+        Ok(Some(DynBaseTable::new_arc(snapshot)))
     }
     async fn restore(&self) -> Result<()> {
         let read_snapshot = self.snapshot_read_state().await;
@@ -2476,7 +2476,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         &self,
         name: &str,
         from: lance::dataset::refs::Ref,
-    ) -> Result<Arc<dyn BaseTable>> {
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         use lance::dataset::refs::Ref;
 
         if name.trim().is_empty() {
@@ -2547,13 +2547,15 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         }
         self.check_table_response(&request_id, response).await?;
 
-        Ok(Arc::new(self.with_branch(Some(name.to_string()))))
+        Ok(DynBaseTable::new_arc(
+            self.with_branch(Some(name.to_string())),
+        ))
     }
 
-    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+    async fn checkout_branch(&self, name: &str) -> Result<Arc<DynBaseTable<'static>>> {
         // `main` / empty normalizes to the main-branch handle.
         let Some(branch) = normalize_branch(Some(name.to_string())) else {
-            return Ok(Arc::new(self.with_branch(None)));
+            return Ok(DynBaseTable::new_arc(self.with_branch(None)));
         };
 
         // Validate via listing -- the cheapest check that distinguishes a missing
@@ -2566,7 +2568,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             });
         }
 
-        Ok(Arc::new(self.with_branch(Some(branch))))
+        Ok(DynBaseTable::new_arc(self.with_branch(Some(branch))))
     }
 
     async fn list_branches(&self) -> Result<HashMap<String, lance::dataset::refs::BranchContents>> {
@@ -2827,8 +2829,14 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && let Some(offsets) = &request.take_offsets
         {
-            return crate::query::create_take_offsets_plan(self, request, offsets, options, false)
-                .await;
+            return crate::query::create_take_offsets_plan(
+                DynBaseTable::from_ref(self),
+                request,
+                offsets,
+                options,
+                false,
+            )
+            .await;
         }
 
         let streams = self.execute_query(query, &options).await?;
@@ -2853,7 +2861,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             && let Some(offsets) = &request.take_offsets
         {
             let plan = crate::query::create_take_offsets_plan(
-                self,
+                DynBaseTable::from_ref(self),
                 request,
                 offsets,
                 options.clone(),
@@ -2922,7 +2930,13 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
         if let AnyQuery::Query(request) = query
             && let Some(offsets) = &request.take_offsets
         {
-            return crate::query::explain_take_offsets_plan(self, request, offsets, verbose).await;
+            return crate::query::explain_take_offsets_plan(
+                DynBaseTable::from_ref(self),
+                request,
+                offsets,
+                verbose,
+            )
+            .await;
         }
 
         let base_request = self
@@ -2981,7 +2995,8 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
             && request.take_offsets.is_some()
         {
             Some(AnyQuery::Query(
-                crate::query::prepare_take_offsets_request(self, request).await?,
+                crate::query::prepare_take_offsets_request(DynBaseTable::from_ref(self), request)
+                    .await?,
             ))
         } else {
             None
@@ -3129,7 +3144,7 @@ impl<S: HttpSend> BaseTable for RemoteTable<S> {
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
     async fn wait_for_index(&self, index_names: &[&str], timeout: Duration) -> Result<()> {
-        wait_for_index(self, index_names, timeout).await
+        wait_for_index(DynBaseTable::from_ref(self), index_names, timeout).await
     }
 
     async fn merge_insert(

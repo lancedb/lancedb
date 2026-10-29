@@ -11,11 +11,12 @@ use super::BaseTable;
 use super::computed_columns::ComputedColumnOptions;
 use super::schema_evolution::AddColumnsResult;
 use crate::function::FunctionApplication;
+use crate::table::DynBaseTable;
 use crate::{Error, Result};
 
 /// Adds columns to a table. See [`Table::add_columns`](super::Table::add_columns).
 pub struct AddColumnsBuilder {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     transform: Option<NewColumnTransform>,
     computed: Vec<(String, String)>,
     function: Option<(FunctionApplication, Option<String>)>,
@@ -36,7 +37,7 @@ impl std::fmt::Debug for AddColumnsBuilder {
 }
 
 impl AddColumnsBuilder {
-    pub(crate) fn new(parent: Arc<dyn BaseTable>) -> Self {
+    pub(crate) fn new(parent: Arc<DynBaseTable<'static>>) -> Self {
         Self {
             parent,
             transform: None,

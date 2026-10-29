@@ -157,7 +157,7 @@ pub fn duplicate_pair_schema() -> SchemaRef {
 
 #[derive(Debug)]
 pub struct DuplicatePairsTable {
-    source: Arc<dyn crate::table::BaseTable>,
+    source: Arc<crate::table::DynBaseTable<'static>>,
     config: DuplicatePairsConfig,
     tasks_only: bool,
 }

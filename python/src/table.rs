@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
+use lancedb::table::BaseTable;
 use lancedb::table::computed_columns::ComputedColumnOptions;
 use std::{
     collections::HashMap,

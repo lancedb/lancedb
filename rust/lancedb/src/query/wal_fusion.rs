@@ -15,6 +15,7 @@
 //! 2. Run `grep -rn WAL-PK-FUSION rust/ python/` and follow the note at each
 //!    marker; the Python side has its own copy in `lancedb/_wal_hybrid.py`.
 
+use crate::table::BaseTable;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};

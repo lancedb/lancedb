@@ -33,6 +33,7 @@ use crate::job::Job;
 use crate::listing::{ListingOptions, ListingPage};
 use crate::materialized_view::CreateMaterializedViewRequest;
 use crate::secrets::SecretInfo;
+use crate::table::DynBaseTable;
 use crate::table::{BaseTable, WriteOptions};
 use crate::view::ViewDescription;
 
@@ -353,14 +354,15 @@ pub trait Database:
     /// List tables in the database with pagination support
     async fn list_tables(&self, request: ListTablesRequest) -> Result<ListTablesResponse>;
     /// Create a table in the database
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>>;
+    async fn create_table(&self, request: CreateTableRequest)
+    -> Result<Arc<DynBaseTable<'static>>>;
     /// Clone a table in the database.
     ///
     /// Creates a shallow clone of the source table, sharing underlying data files
     /// but with an independent manifest. Both tables can evolve separately after cloning.
     ///
     /// See [`CloneTableRequest`] for detailed documentation and examples.
-    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>>;
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<DynBaseTable<'static>>>;
     /// Submit a Function creation job that builds an image and registers it
     /// in `namespace_path`.
     async fn create_function_async(
@@ -595,7 +597,7 @@ pub trait Database:
         })
     }
     /// Open a table in the database
-    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>>;
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<DynBaseTable<'static>>>;
     /// Rename a table in the database
     async fn rename_table(
         &self,

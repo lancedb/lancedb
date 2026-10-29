@@ -107,6 +107,7 @@ tokenizers = { version = "0.19.1", optional = true }
 semver = { workspace = true }
 roaring = "0.11.4"
 sha2 = "0.10"
+dynosaur = "0.3.1"
 
 [dev-dependencies]
 anyhow = "1"

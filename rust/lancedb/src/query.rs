@@ -40,6 +40,7 @@ use crate::error::{Error, Result};
 use crate::rerankers::rrf::RRFReranker;
 use crate::rerankers::{NormalizeMethod, Reranker, check_reranker_result};
 use crate::table::BaseTable;
+use crate::table::DynBaseTable;
 use crate::utils::{MaxBatchLengthStream, TimeoutStream};
 use crate::{ApproxMode, DistanceType};
 use crate::{
@@ -995,12 +996,12 @@ impl QueryRequest {
 /// times.
 #[derive(Debug, Clone)]
 pub struct Query {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     request: QueryRequest,
 }
 
 impl Query {
-    pub(crate) fn new(parent: Arc<dyn BaseTable>) -> Self {
+    pub(crate) fn new(parent: Arc<DynBaseTable<'static>>) -> Self {
         Self {
             parent,
             request: QueryRequest::default(),
@@ -1218,7 +1219,7 @@ impl VectorQueryRequest {
 /// the query and retrieve results.
 #[derive(Debug, Clone)]
 pub struct VectorQuery {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     request: VectorQueryRequest,
 }
 
@@ -1984,7 +1985,7 @@ impl ExecutionPlan for TakeRestoreExec {
 /// times.
 #[derive(Debug, Clone)]
 pub struct TakeQuery {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     request: QueryRequest,
     offsets: Option<Vec<u64>>,
     preserve_order: bool,
@@ -1994,7 +1995,7 @@ impl TakeQuery {
     /// Create a new `TakeQuery` that will return rows at the given offsets.
     ///
     /// See [`crate::Table::take_offsets`] for more details.
-    pub fn from_offsets(parent: Arc<dyn BaseTable>, offsets: Vec<u64>) -> Self {
+    pub fn from_offsets(parent: Arc<DynBaseTable<'static>>, offsets: Vec<u64>) -> Self {
         let mut seen = HashSet::with_capacity(offsets.len());
         let in_list: Vec<Expr> = offsets
             .iter()
@@ -2019,7 +2020,7 @@ impl TakeQuery {
     /// Create a new `TakeQuery` that will return rows with the given row ids.
     ///
     /// See [`crate::Table::take_row_ids`] for more details.
-    pub fn from_row_ids(parent: Arc<dyn BaseTable>, row_ids: Vec<u64>) -> Self {
+    pub fn from_row_ids(parent: Arc<DynBaseTable<'static>>, row_ids: Vec<u64>) -> Self {
         let in_list: Vec<Expr> = row_ids.iter().map(|id| lit(*id)).collect();
         Self {
             parent,
@@ -2042,7 +2043,7 @@ impl TakeQuery {
     }
 
     async fn request_with_row_offset(
-        parent: &dyn BaseTable,
+        parent: &DynBaseTable<'_>,
         request: &QueryRequest,
     ) -> Result<(QueryRequest, String, bool)> {
         const ROW_OFFSET: &str = "_rowoffset";
@@ -2095,7 +2096,7 @@ impl TakeQuery {
     }
 
     async fn prepare_offsets_lookup(
-        parent: &dyn BaseTable,
+        parent: &DynBaseTable<'_>,
         request: &QueryRequest,
     ) -> Result<(QueryRequest, String, bool, usize, Option<usize>)> {
         let (mut request, ordering_column, drop_ordering_column) =
@@ -2247,7 +2248,7 @@ impl TakeQuery {
 }
 
 pub(crate) async fn create_take_offsets_plan(
-    parent: &dyn BaseTable,
+    parent: &DynBaseTable<'_>,
     request: &QueryRequest,
     offsets: &[u64],
     options: QueryExecutionOptions,
@@ -2276,7 +2277,7 @@ pub(crate) async fn create_take_offsets_plan(
 }
 
 pub(crate) async fn explain_take_offsets_plan(
-    parent: &dyn BaseTable,
+    parent: &DynBaseTable<'_>,
     request: &QueryRequest,
     offsets: &[u64],
     verbose: bool,
@@ -2296,7 +2297,7 @@ pub(crate) async fn explain_take_offsets_plan(
 }
 
 pub(crate) async fn prepare_take_offsets_request(
-    parent: &dyn BaseTable,
+    parent: &DynBaseTable<'_>,
     request: &QueryRequest,
 ) -> Result<QueryRequest> {
     let (request, _, _, _, _) = TakeQuery::prepare_offsets_lookup(parent, request).await?;
@@ -3826,7 +3827,7 @@ mod tests {
         RecordBatch::try_new(schema, vec![Arc::new(text), Arc::new(ids)]).unwrap()
     }
 
-    async fn run_query_request(table: &dyn BaseTable, query: AnyQuery) -> RecordBatch {
+    async fn run_query_request(table: &DynBaseTable<'_>, query: AnyQuery) -> RecordBatch {
         use lance::io::RecordBatchStream;
         let stream = table.query(&query, Default::default()).await.unwrap();
         let schema = stream.schema();
@@ -3834,7 +3835,7 @@ mod tests {
         arrow::compute::concat_batches(&schema, &batches).unwrap()
     }
 
-    async fn test_pagination(table: &dyn BaseTable, full_query: AnyQuery, page_size: usize) {
+    async fn test_pagination(table: &DynBaseTable<'_>, full_query: AnyQuery, page_size: usize) {
         // Get full results
         let full_results = run_query_request(table, full_query.clone()).await;
 

@@ -11,6 +11,7 @@ use std::time::Duration;
 use vector::IvfFlatIndexBuilder;
 
 use crate::index::vector::IvfRqIndexBuilder;
+use crate::table::DynBaseTable;
 use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 
 use self::{
@@ -216,7 +217,7 @@ pub enum Index {
 /// # }
 /// ```
 pub struct IndexBuilder {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     pub(crate) index: Index,
     pub(crate) columns: Vec<String>,
     pub(crate) replace: bool,
@@ -226,7 +227,11 @@ pub struct IndexBuilder {
 }
 
 impl IndexBuilder {
-    pub(crate) fn new(parent: Arc<dyn BaseTable>, columns: Vec<String>, index: Index) -> Self {
+    pub(crate) fn new(
+        parent: Arc<DynBaseTable<'static>>,
+        columns: Vec<String>,
+        index: Index,
+    ) -> Self {
         Self {
             parent,
             index,

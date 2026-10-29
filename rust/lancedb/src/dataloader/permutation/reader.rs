@@ -16,6 +16,7 @@ use crate::error::Error;
 use crate::query::{
     ExecutableQuery, QueryBase, QueryExecutionOptions, QueryFilter, QueryRequest, Select,
 };
+use crate::table::DynBaseTable;
 use crate::table::{AnyQuery, BaseTable, Filter};
 use crate::{Result, Table};
 use arrow::array::AsArray;
@@ -37,8 +38,8 @@ use std::sync::Arc;
 /// Reads a permutation of a source table based on row IDs stored in a separate table
 #[derive(Clone)]
 pub struct PermutationReader {
-    base_table: Arc<dyn BaseTable>,
-    permutation_table: Option<Arc<dyn BaseTable>>,
+    base_table: Arc<DynBaseTable<'static>>,
+    permutation_table: Option<Arc<DynBaseTable<'static>>>,
     offset: Option<u64>,
     limit: Option<u64>,
     available_rows: u64,
@@ -68,8 +69,8 @@ impl std::fmt::Debug for PermutationReader {
 impl PermutationReader {
     /// Create a new PermutationReader
     pub async fn inner_new(
-        base_table: Arc<dyn BaseTable>,
-        permutation_table: Option<Arc<dyn BaseTable>>,
+        base_table: Arc<DynBaseTable<'static>>,
+        permutation_table: Option<Arc<DynBaseTable<'static>>>,
         split: u64,
     ) -> Result<Self> {
         let base_table = match &permutation_table {
@@ -99,9 +100,9 @@ impl PermutationReader {
     /// Pins the base table to the version the permutation was built against.
     /// Permutations written before that was recorded carry no key and stay unpinned.
     async fn pin_base_table(
-        base_table: Arc<dyn BaseTable>,
-        permutation_table: &Arc<dyn BaseTable>,
-    ) -> Result<Arc<dyn BaseTable>> {
+        base_table: Arc<DynBaseTable<'static>>,
+        permutation_table: &Arc<DynBaseTable<'static>>,
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         let schema = permutation_table.schema().await?;
         let Some(raw) = schema.metadata.get(BASE_VERSION_CONFIG_KEY) else {
             return Ok(base_table);
@@ -125,8 +126,8 @@ impl PermutationReader {
     }
 
     pub async fn try_from_tables(
-        base_table: Arc<dyn BaseTable>,
-        permutation_table: Arc<dyn BaseTable>,
+        base_table: Arc<DynBaseTable<'static>>,
+        permutation_table: Arc<DynBaseTable<'static>>,
         split: u64,
     ) -> Result<Self> {
         Self::inner_new(base_table, Some(permutation_table), split).await
@@ -134,7 +135,7 @@ impl PermutationReader {
 
     /// A reader over the base table in storage order, with no permutation.
     /// Fallible because construction counts the base table.
-    pub async fn identity(base_table: Arc<dyn BaseTable>) -> Result<Self> {
+    pub async fn identity(base_table: Arc<DynBaseTable<'static>>) -> Result<Self> {
         Self::inner_new(base_table, None, 0).await
     }
 
@@ -221,7 +222,7 @@ impl PermutationReader {
     }
 
     async fn load_batch(
-        base_table: &Arc<dyn BaseTable>,
+        base_table: &Arc<DynBaseTable<'static>>,
         row_ids: RecordBatch,
         selection: Select,
     ) -> Result<RecordBatch> {
@@ -323,7 +324,7 @@ impl PermutationReader {
     }
 
     async fn row_ids_to_batches(
-        base_table: Arc<dyn BaseTable>,
+        base_table: Arc<DynBaseTable<'static>>,
         row_ids: DatasetRecordBatchStream,
         selection: Select,
     ) -> Result<SendableRecordBatchStream> {
@@ -452,7 +453,7 @@ impl PermutationReader {
     /// This method fetches the map with find-or-create semantics.
     async fn get_offset_map(
         &self,
-        permutation_table: &Arc<dyn BaseTable>,
+        permutation_table: &Arc<DynBaseTable<'static>>,
     ) -> Result<Arc<HashMap<u64, u64>>> {
         let mut offset_map_ref = self.offset_map.lock().await;
         if let Some(offset_map) = &*offset_map_ref {

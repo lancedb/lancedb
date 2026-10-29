@@ -24,6 +24,7 @@ use crate::database::ReadConsistency;
 use crate::database::namespace::LanceNamespaceDatabase;
 use crate::error::{CreateDirSnafu, Error, Result};
 use crate::io::object_store::MirroringObjectStoreWrapper;
+use crate::table::DynBaseTable;
 use crate::table::NativeTable;
 use crate::utils::validate_table_name;
 
@@ -862,7 +863,7 @@ impl ListingDatabase {
         namespace_path: Vec<String>,
         mode: CreateTableMode,
         data_schema: &arrow_schema::Schema,
-    ) -> Result<Arc<dyn BaseTable>> {
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         match mode {
             CreateTableMode::Create => Err(Error::TableAlreadyExists {
                 name: table_name.to_string(),
@@ -1039,7 +1040,10 @@ impl Database for ListingDatabase {
         })
     }
 
-    async fn create_table(&self, request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn create_table(
+        &self,
+        request: CreateTableRequest,
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().create_table(request).await;
         }
@@ -1072,7 +1076,7 @@ impl Database for ListingDatabase {
         )
         .await
         {
-            Ok(table) => Ok(Arc::new(table)),
+            Ok(table) => Ok(DynBaseTable::new_arc(table)),
             Err(Error::TableAlreadyExists { .. }) => {
                 self.handle_table_exists(
                     &request.name,
@@ -1086,7 +1090,7 @@ impl Database for ListingDatabase {
         }
     }
 
-    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<DynBaseTable<'static>>> {
         if !request.target_namespace_path.is_empty() {
             return Err(Error::NotSupported {
                 message: "Namespace parameter is not supported for listing database. Only root namespace is supported.".into(),
@@ -1166,10 +1170,13 @@ impl Database for ListingDatabase {
         )
         .await?;
 
-        Ok(Arc::new(cloned_table))
+        Ok(DynBaseTable::new_arc(cloned_table))
     }
 
-    async fn open_table(&self, mut request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn open_table(
+        &self,
+        mut request: OpenTableRequest,
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         if !request.namespace_path.is_empty() {
             return self.namespace_database().open_table(request).await;
         }
@@ -1240,7 +1247,7 @@ impl Database for ListingDatabase {
             )
             .await?,
         );
-        Ok(native_table)
+        Ok(DynBaseTable::from_arc(native_table))
     }
 
     async fn rename_table(

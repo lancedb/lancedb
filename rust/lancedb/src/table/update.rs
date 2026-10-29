@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use super::{BaseTable, NativeTable};
 use crate::Error;
 use crate::Result;
+use crate::table::DynBaseTable;
 
 /// The result of an update operation
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -23,13 +24,13 @@ pub struct UpdateResult {
 /// A builder for configuring a [`crate::table::Table::update`] operation
 #[derive(Debug, Clone)]
 pub struct UpdateBuilder {
-    parent: Arc<dyn BaseTable>,
+    parent: Arc<DynBaseTable<'static>>,
     pub(crate) filter: Option<String>,
     pub(crate) columns: Vec<(String, String)>,
 }
 
 impl UpdateBuilder {
-    pub(crate) fn new(parent: Arc<dyn BaseTable>) -> Self {
+    pub(crate) fn new(parent: Arc<DynBaseTable<'static>>) -> Self {
         Self {
             parent,
             filter: None,

@@ -36,6 +36,7 @@ use crate::remote::util::stream_as_body;
 use crate::secrets::SecretBinding;
 use crate::secrets::SecretInfo;
 use crate::table::BaseTable;
+use crate::table::DynBaseTable;
 use crate::utils::{
     validate_database_name, validate_function_name, validate_namespace, validate_secret_name,
     validate_table_name, validate_view_name,
@@ -1463,7 +1464,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         Ok(response)
     }
 
-    async fn create_table(&self, mut request: CreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn create_table(
+        &self,
+        mut request: CreateTableRequest,
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         // The remote create endpoint does not transmit Lance write parameters.
         // Reject them before consuming data or issuing a request, especially
         // for overwrite: silently using the server's format can lose intent.
@@ -1560,10 +1564,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ));
         self.table_cache.insert(cache_key, version).await;
 
-        Ok(table)
+        Ok(DynBaseTable::from_arc(table))
     }
 
-    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn clone_table(&self, request: CloneTableRequest) -> Result<Arc<DynBaseTable<'static>>> {
         let table_identifier =
             build_table_identifier(&request.target_table_name, &request.target_namespace_path)?;
 
@@ -1603,10 +1607,10 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
         ));
         self.table_cache.insert(cache_key, version).await;
 
-        Ok(table)
+        Ok(DynBaseTable::from_arc(table))
     }
 
-    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<DynBaseTable<'static>>> {
         // Validate before looking in the cache as well as before sending HTTP.
         for (option, provided) in [
             ("index_cache_size", request.index_cache_size.is_some()),
@@ -1642,7 +1646,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 RemoteTable::<S>::handle_table_not_found(&request.name, rsp, &request_id).await?;
             self.client.check_response(&request_id, rsp).await?;
 
-            Ok(Arc::new(RemoteTable::new_with_sql_client(
+            Ok(DynBaseTable::new_arc(RemoteTable::new_with_sql_client(
                 self.client.clone(),
                 request.name,
                 request.namespace_path,
@@ -1676,7 +1680,7 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
                 table.seed_schema(body);
             }
             self.table_cache.insert(cache_key, version).await;
-            Ok(table)
+            Ok(DynBaseTable::from_arc(table))
         }
     }
 
