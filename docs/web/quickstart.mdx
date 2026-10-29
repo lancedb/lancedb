@@ -10,6 +10,12 @@ import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuick
 This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
 LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
 
+<Tip>
+Using LanceDB Enterprise? Only the connection changes. In step 2, use the
+[Enterprise](#connect-to-lancedb-enterprise) connection with your deployment's database URI, API key, and endpoint
+in place of the local directory. The remaining steps use the same API.
+</Tip>
+
 ## 1\. Install LanceDB {#1-install-lancedb}
 
 Choose your language. Python uses Pandas to display the search results. TypeScript needs Node.js 22.18 or later to run the `.mts` example directly.

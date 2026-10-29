@@ -2183,6 +2183,10 @@ class Table(ABC):
     ) -> AddResult:
         """Add more data to the [Table][lancedb.table.Table].
 
+        Plain binary values are cast into blob columns using the table's schema.
+        To construct Arrow record batches explicitly, use
+        [blob_array][lancedb.schema.blob_array].
+
         Parameters
         ----------
         data: DATA
@@ -6475,6 +6479,10 @@ class AsyncTable:
         allow_external_blob_outside_bases: bool = False,
     ) -> AddResult:
         """Add more data to the [AsyncTable][lancedb.table.AsyncTable].
+
+        Plain binary values are cast into blob columns using the table's schema.
+        To construct Arrow record batches explicitly, use
+        [blob_array][lancedb.schema.blob_array].
 
         Parameters
         ----------

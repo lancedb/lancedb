@@ -289,6 +289,12 @@
             ]
           },
           {
+            "group": "Tools",
+            "pages": [
+              "tools/cli"
+            ]
+          },
+          {
             "group": "Concepts",
             "pages": [
               "basics/lance",

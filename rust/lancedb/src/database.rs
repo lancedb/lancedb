@@ -579,6 +579,12 @@ pub trait Database:
     async fn resume_job(&self, _job_id: &str) -> Result<ResumeJobStatus> {
         job_op_not_supported("resume_job")
     }
+    /// Establish the SQL transport without executing a statement.
+    async fn check_sql_connection(&self) -> Result<()> {
+        Err(crate::Error::NotSupported {
+            message: "SQL is not supported by this database".into(),
+        })
+    }
     /// Start executing a SQL statement on a LanceDB Distributed database.
     async fn execute_query_async(
         &self,
