@@ -1,18 +1,18 @@
 ---
-title: "Realtime writes"
-sidebarTitle: "Realtime Write"
-description: "Enable the realtime engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
+title: "Real Time writes"
+sidebarTitle: "Real Time Write"
+description: "Enable the real time engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
 icon: "bolt"
-keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-The [realtime engine](/tables/realtime-engine) puts an LSM-style write tier in
+The [real time engine](/tables/realtime-engine) puts an LSM-style write tier in
 front of a table, turning many small writes into a few large commits. This
 page covers enabling it and writing to a table; for querying an RTE table, see
-[Realtime reads](/search/realtime-read).
+[Real Time reads](/search/realtime-read).
 
 ## Getting started {#getting-started}
 
@@ -101,7 +101,7 @@ conditional updates or deleting rows missing from the source, are rejected.
 </Warning>
 
 Writes go through `merge_insert` on the primary key, and are visible to queries
-immediately — see [Realtime reads](/search/realtime-read) for querying them
+immediately — see [Real Time reads](/search/realtime-read) for querying them
 back:
 
 <CodeGroup>
@@ -190,7 +190,7 @@ Adding shards scales a table's ingest nearly linearly.
 
 ## Next steps {#next-steps}
 
-- [Realtime reads](/search/realtime-read) — query an RTE table
-- [How the realtime engine works](/tables/realtime-engine#how-it-works)
+- [Real Time reads](/search/realtime-read) — query an RTE table
+- [How the real time engine works](/tables/realtime-engine#how-it-works)
 - [Merge insert](/ingestion/merge-insert)
 - [`ALTER TABLE ... SET RTE`](/sql/ddl/table#properties)

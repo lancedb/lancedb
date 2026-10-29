@@ -3,11 +3,10 @@ title: "Chunk records into multiple rows"
 sidebarTitle: "Chunking"
 description: "Expand one source row into many derived rows -- documents into passages, videos into clips, images into tiles."
 icon: diagram-subtask
-keywords: ["chunking", "chunker", "udtf", "lateral", "unnest", "1:N", "passages", "clips"]
-availability:
-  embedded: unavailable
-  enterprise: available
+keywords: ["chunking", "function", "udf", "lateral", "unnest", "1:N", "passages", "clips"]
 ---
+
+<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Every other curation task on this page keeps the row count the same or
 smaller: profiling, sampling, joining, deduplicating. Chunking goes the other
@@ -15,83 +14,109 @@ way -- one source row becomes many derived rows, each carrying its parent's
 columns along with it. Use it to split a document into passages for
 embedding, a video into clips, or an image into tiles.
 
-## Chunkers {#chunkers}
+## Define a chunking Function {#function}
 
-A [chunker](/geneva/udfs/scalar-udtfs) is a Python function decorated with
-`@chunker` that yields one or more output rows per source row, registered as
-a view with `create_udtf_view`. A chunker that splits documents into passages
-turns a `documents` table into a `chunks` table, inheriting the parent's
-columns into every child row:
+A [Function](/management/function) that returns a `list` produces more than
+one value per input row. A chunker is a Function whose output is a list --
+of structs, of strings, of anything -- registered like any other Function.
+
+A function that splits text into fixed-size passages turns a `documents`
+table into one row per passage:
 
 **Source: `documents`**
 
 | doc_id | title | text |
 | --- | --- | --- |
-| 1 | "Intro to AI" | "Machine learning is..." |
+| 1 | "Intro to AI" | "Machine learning is a method of..." (long text) |
+
+<CodeGroup>
+```python Python icon="python"
+import pyarrow as pa
+from lancedb.functions import udf
+
+@udf(
+    output_schema=pa.list_(
+        pa.struct([
+            pa.field("chunk_index", pa.int64(), nullable=False),
+            pa.field("chunk_text", pa.utf8(), nullable=False),
+        ])
+    ),
+)
+def split_into_passages(text: str) -> list[dict]:
+    size = 200
+    return [
+        {"chunk_index": i, "chunk_text": text[i : i + size]}
+        for i in range(0, len(text), size)
+    ]
+
+version = db.create_function_async(split_into_passages).wait()
+```
+</CodeGroup>
+
+See [Functions](/management/function) for registration details, environment
+and dependency declarations, and how a version stays immutable once rows are
+filled from it. The same function can be registered from SQL with
+[`CREATE FUNCTION`](/sql/ddl/function#create):
+
+<CodeGroup>
+```sql SQL
+CREATE FUNCTION split_into_passages(text utf8)
+RETURNS list<struct<chunk_index: int64, chunk_text: utf8>>
+LANGUAGE python
+AS 'def split_into_passages(text): size = 200; return [{"chunk_index": i, "chunk_text": text[i:i+size]} for i in range(0, len(text), size)]'
+```
+</CodeGroup>
+
+## Explode it in a query {#explode}
+
+Call the function in the `FROM` clause, after the source table, with an
+alias: a Function there yields one row per element of the list it returns,
+with every other column repeated. Reference the function's output fields
+through the alias:
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("""
+    SELECT doc_id, title, p.chunk_index, p.chunk_text
+    FROM documents, split_into_passages(text) AS p
+""")
+print(reader.read_all().to_pylist())
+```
+</CodeGroup>
+
+A document with five 200-character passages becomes five output rows, each
+carrying `doc_id` and `title` from its parent. This is the fastest way to
+check a chunker before committing to a materialized view: run it over a few
+rows and inspect the output shape.
+
+## Persist it as a materialized view {#persist}
+
+Wrap the same query in [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view)
+to keep a real `chunks` table that stays current as `documents` changes,
+instead of recomputing the explosion on every query:
+
+<CodeGroup>
+```sql SQL
+CREATE MATERIALIZED VIEW chunks AS
+SELECT doc_id, title, p.chunk_index, p.chunk_text
+FROM documents, split_into_passages(text) AS p
+```
+</CodeGroup>
 
 **Derived: `chunks`** (1:N expansion)
 
 | doc_id | title | chunk_index | chunk_text |
 | --- | --- | --- | --- |
-| 1 | "Intro to AI" | 0 | "Machine learning..." |
-| 1 | "Intro to AI" | 1 | "Neural networks..." |
-| 1 | "Intro to AI" | 2 | "Training data..." |
+| 1 | "Intro to AI" | 0 | "Machine learning is a method..." |
+| 1 | "Intro to AI" | 1 | "...of teaching computers..." |
 
-<CodeGroup>
-```python Python icon="python"
-from typing import Iterator, NamedTuple
-
-import geneva
-from geneva import chunker
-
-class Passage(NamedTuple):
-    chunk_index: int
-    chunk_text: str
-
-@chunker
-def split_into_passages(text: str) -> Iterator[Passage]:
-    for index, passage in enumerate(text.split("\n\n")):
-        yield Passage(chunk_index=index, chunk_text=passage)
-
-db = geneva.connect("/data/mydb")
-documents = db.open_table("documents")
-
-chunks = db.create_udtf_view(
-    "chunks",
-    source=documents.search(None).select(["doc_id", "title", "text"]),
-    udtf=split_into_passages,
-)
-chunks.refresh()  # runs the chunker over every source row
-```
-</CodeGroup>
-
-The chunker view is a materialized view, so it refreshes incrementally: new
-source rows are chunked and inserted, deleted source rows cascade-delete their
-children, and an updated source row's old children are replaced by freshly
-chunked ones. See [Chunkers](/geneva/udfs/scalar-udtfs) for the full `@chunker`
-decorator (including a batched form for vectorized chunking) and
-`create_udtf_view` reference.
-
-## Under the hood: LATERAL UNNEST {#lateral}
-
-A chunker view runs each source row's chunker call and explodes its list of
-results into one row per element, using the engine's `LATERAL UNNEST`
-support. You reach for this directly, without a chunker, when you already
-have a list-typed column and just want to explode it in one query -- for
-example a `tags` column produced by an earlier step:
-
-<CodeGroup>
-```python Python icon="python"
-db.execute_query("""
-    SELECT *, UNNEST(tags) AS tag FROM documents
-""")
-```
-</CodeGroup>
-
-Each source row with three tags becomes three output rows, one per tag, with
-every other column repeated. This is the same mechanism a chunker view
-compiles down to; the chunker just produces the list (and the row count it
-unnests to) from arbitrary Python instead of a column that already exists.
+The view refreshes like any other materialized view: new source rows are
+chunked and inserted, deleted source rows drop their children, and an
+updated row's old children are replaced by freshly chunked ones on the next
+[refresh](/feature-engineering/refresh-column). A single Function call or
+`UNNEST(column)` is the only lateral source a materialized view can carry --
+not both, and not combined with `GROUP BY` -- so keep aggregation or further
+curation in a second step over the chunked table.
 
 ## Chunk, then curate {#next}
 

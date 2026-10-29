@@ -271,11 +271,11 @@
               "basics/catalog",
               "basics/query",
               "basics/jobs",
+              "tables/realtime-engine",
               "tables/consistency",
               "basics/guarantees",
               "basics/limits",
-              "basics/naming",
-              "tables/realtime-engine"
+              "basics/naming"
             ]
           },
           {
@@ -307,7 +307,6 @@
             "group": "Data Curation",
             "pages": [
               "curation/index",
-              "curation/chunking",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",

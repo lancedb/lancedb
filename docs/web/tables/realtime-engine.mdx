@@ -1,21 +1,21 @@
 ---
-title: "Realtime engine (RTE)"
-sidebarTitle: "Realtime Engine"
+title: "Real Time engine (RTE)"
+sidebarTitle: "Real Time Engine"
 description: "Absorb small, frequent writes cheaply and make them queryable within milliseconds."
 icon: "bolt"
-keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+keywords: ["rte", "real time engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-## What is the realtime engine? {#what-is-rte}
+## What is the real time engine? {#what-is-rte}
 
 Every write to a LanceDB table is normally a commit to the underlying Lance
 dataset. That is ideal for bulk loads, but a stream of small upserts becomes a
 stream of small commits, and each write is only visible once its commit lands.
 
-The realtime engine (RTE) puts an LSM-style write tier in front of the table.
+The real time engine (RTE) puts an LSM-style write tier in front of the table.
 It turns many small writes into a few large commits, and makes each write
 **searchable within milliseconds** of being acknowledged. It is enabled per
 table, and nothing about how you query that table changes.
@@ -37,6 +37,6 @@ table, and nothing about how you query that table changes.
 
 ## Next steps {#next-steps}
 
-- [Realtime writes](/ingestion/realtime-write) — enable RTE and write to a table
-- [Realtime reads](/search/realtime-read) — query an RTE table and its performance
+- [Real Time writes](/ingestion/realtime-write) — enable RTE and write to a table
+- [Real Time reads](/search/realtime-read) — query an RTE table and its performance
 - [Background jobs](/maintenance/background-jobs#wal)

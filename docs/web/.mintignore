@@ -1,13 +1,18 @@
 # Functions are documented before their release. At release, remove these
-# entries, add the pages back to the navigation in docs.json, restore the
-# /feature-engineering/functions redirect to /management/function, publish
-# the drafts marked "Draft for the Functions release", and restore
-# `availability` frontmatter (removed while gated, since the comparison
-# table on index.mdx links every page that declares one, draft or
-# not) to management/function.mdx and sql/ddl/function.mdx -- each currently
-# carries a plain `<Badge color="red">Enterprise</Badge>` instead.
+# entries, add the pages back to the navigation in docs.json (chunking.mdx
+# goes back into the Curation group, and curation/index.mdx's "Chunk records"
+# row comes back), restore the /feature-engineering/functions redirect to
+# /management/function, publish the drafts marked "Draft for the Functions
+# release", and restore `availability` frontmatter (removed while gated,
+# since the comparison table on index.mdx links every page that declares
+# one, draft or not) to management/function.mdx, sql/ddl/function.mdx and
+# curation/chunking.mdx -- each currently carries a plain
+# `<Badge color="red">Enterprise</Badge>` instead. Chunking depends on
+# Functions (it runs one in the FROM clause to explode rows), so it is gated
+# with them rather than publishing a guide for SQL that does not run yet.
 management/function.mdx
 sql/ddl/function.mdx
+curation/chunking.mdx
 
 # GRANT/REVOKE currently only covers privileges on Secrets and Functions
 # (CREATE SECRET, CREATE FUNCTION, USAGE on a secret or function), which are

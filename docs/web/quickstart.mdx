@@ -5,7 +5,7 @@ description: "Install LanceDB, create a table, and run your first vector search.
 icon: rocket
 ---
 import { PyConnect, TsConnect, RsConnect, PyConnectObjectStorage, TsConnectObjectStorage, RsConnectObjectStorage, PyConnectEnterprisePlaceholders, TsConnectEnterprisePlaceholders, RsConnectEnterprisePlaceholders } from '/snippets/connection.mdx';
-import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1 } from '/snippets/quickstart.mdx';
+import { PyQuickstartData, PyQuickstartCreateTable, PyQuickstartAddData, PyQuickstartAddFeature, PyQuickstartComputedFeature, PyQuickstartComputedFeatureEnterprise, PyQuickstartMultimodalBytes, PyQuickstartTraining, TsQuickstartData, TsQuickstartCreateTable, TsQuickstartAddData, TsQuickstartVectorSearch1, TsQuickstartCurateWithMetadata, TsQuickstartAddFeature, TsQuickstartQueryFeature, TsQuickstartMultimodalBytes, RsQuickstartDefineStruct, RsQuickstartData, RsQuickstartCreateTable, RsQuickstartAddData, RsQuickstartVectorSearch1, RsQuickstartCurateWithMetadata, RsQuickstartAddFeature, RsQuickstartQueryFeature, RsQuickstartMultimodalBytes } from '/snippets/quickstart.mdx';
 
 This quickstart uses LanceDB Embedded with a local database and works without an account or API key.
 LanceDB Embedded runs in your application's process; your data can live on local disk or in object storage.
@@ -245,23 +245,103 @@ Frames 2 and 4 come back first -- the gripper closing on the cup, then lowering 
 
 ## 5\. Filter results {#5-curation}
 
-Combine vector search with metadata filters, such as `stats.motion >= 4`. See [SQL filtering](/search/filtering).
+Combine vector search with a metadata filter, such as `stats.motion >= 4`, to curate results instead of just ranking them:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {"curated = (\n    table.search(query_vector)\n    .where(\"stats.motion >= 4\")\n    .select([\"frame_id\", \"video_id\", \"caption\", \"_distance\"])\n    .limit(2)\n    .to_pandas()\n)\nprint(curated)\n"}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartCurateWithMetadata}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartCurateWithMetadata}
+    </CodeBlock>
+</CodeGroup>
+
+Frames 2 and 4 come back again here, since both already have `motion >= 4`; frames 1 and 3 are excluded from ranking entirely, rather than ranked and then dropped. See [SQL filtering](/search/filtering) for the full predicate syntax.
 
 ## 6\. Add a derived feature {#6-add-a-derived-feature}
 
-Add columns calculated from existing fields. See [Adding columns](/management/table#schema-add-new-columns).
+Add a column calculated from existing fields with a SQL expression. This fills every existing row once, immediately:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartAddFeature}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartAddFeature}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartAddFeature}
+    </CodeBlock>
+</CodeGroup>
+
+Read it back like any other column:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {"features = table.search().select([\"frame_id\", \"video_id\", \"quality_score\"]).limit(10).to_pandas()\nprint(features)\n"}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartQueryFeature}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartQueryFeature}
+    </CodeBlock>
+</CodeGroup>
+
+See [Adding columns](/management/table#schema-add-new-columns) for more on this form.
 
 ## 7\. Set up computed columns {#7-computed-columns}
 
-Declare a column and choose when to fill or refresh it. See [Computed columns](/feature-engineering/add-computed-column).
+A computed column is declared up front and filled -- or refilled -- on demand, instead of being calculated once like step 6's. Declare `caption_length`, then fill it explicitly:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartComputedFeature}
+    </CodeBlock>
+</CodeGroup>
+
+A later `refresh_column` call fills only rows added since the last refresh and recomputes rows whose inputs changed, leaving unchanged rows alone. On LanceDB Enterprise, the equivalent refresh runs as a background job instead of blocking:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartComputedFeatureEnterprise}
+    </CodeBlock>
+</CodeGroup>
+
+TypeScript and Rust declare and refresh computed columns the same way, through the same `add_columns`/`refresh_column` calls. See [Computed columns](/feature-engineering/add-computed-column) for the full refresh semantics and the automatic-refresh option.
 
 ## 8\. Store multimodal data {#8-store-multimodal-data}
 
-Store images, audio, and other binary data alongside vectors and metadata. See [Multimodal data types](/management/table#multimodal).
+Store images, audio, or other binary data alongside vectors and metadata, in a column of raw bytes. This creates a new table from one image file -- replace the path with one of your own:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartMultimodalBytes}
+    </CodeBlock>
+    <CodeBlock filename="TypeScript" language="TypeScript" icon="square-js">
+    {TsQuickstartMultimodalBytes}
+    </CodeBlock>
+    <CodeBlock filename="Rust" language="Rust" icon="rust">
+    {RsQuickstartMultimodalBytes}
+    </CodeBlock>
+</CodeGroup>
+
+See [Multimodal data types](/management/table#multimodal) for larger payloads and the Blob v2 column type, which avoids loading binary data on every scan.
 
 ## 9\. Train on your data {#9-train}
 
-Read table data into PyTorch for training. See [Data loading](/training/data-loading).
+Read table data into PyTorch, projecting and shuffling only the columns a training step needs:
+
+<CodeGroup>
+    <CodeBlock filename="Python" language="Python" icon="python">
+    {PyQuickstartTraining}
+    </CodeBlock>
+</CodeGroup>
+
+`Permutation` is LanceDB's row-ordering primitive for training reads; `select_columns` projects before reading, so a training step touches only the columns it selects, not unused ones such as `caption` or `embedding`. See [Data loading](/training/data-loading) for the full `StreamingDataset` API, including resuming and multi-worker loading.
 
 ## Where to go next {#next-steps}
 
