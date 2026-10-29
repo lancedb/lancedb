@@ -1,19 +1,17 @@
 ---
-title: "REFRESH"
-sidebarTitle: "REFRESH"
-description: "Filling computed columns and bringing materialized views up to date."
+title: "REFRESH COLUMN"
+sidebarTitle: "REFRESH COLUMN"
+description: "Filling a computed column: idempotent, scoped, and resumable."
 icon: arrows-rotate
-keywords: ["refresh column", "refresh materialized view", "backfill", "cascade"]
+keywords: ["refresh column", "backfill", "computed column"]
 availability:
   embedded: unavailable
   enterprise: available
 ---
 
-LanceDB extensions with no DataFusion equivalent. They are what makes
+A LanceDB extension with no DataFusion equivalent. It is what makes
 [feature engineering](/feature-engineering) reachable from SQL: a column
 declared by [DDL](/sql/ddl/table#computed-column) starts empty, and a refresh fills it.
-
-## REFRESH COLUMN {#refresh-column}
 
 ```sql
 REFRESH COLUMN <column> ON [TABLE] <table>
@@ -34,7 +32,7 @@ can recompute values the failed run had already written.
 `WHERE` scopes the refresh, which is how you fill a slice and check it before
 committing to the whole table.
 
-### Options {#refresh-column-options}
+## Options {#options}
 
 | Option | Meaning |
 | --- | --- |
@@ -63,29 +61,9 @@ memory and GPU options there.
 </Note>
 */}
 
-## REFRESH MATERIALIZED VIEW {#refresh-materialized-view}
-
-```sql
-REFRESH MATERIALIZED VIEW <name>
-```
-
-```sql
-REFRESH MATERIALIZED VIEW chunks
-```
-
-A refresh updates the view's stored result. Refresh views in dependency order,
-starting with their source views.
-
-<Note>
-Some older server versions accepted `WITH (full = true)` and `CASCADE`.
-Those options are not accepted by the SQL implementation described here.
-Use the basic statement above; do not assume that the options accepted by a
-local SDK's `refresh()` method are also SQL options.
-</Note>
-
 ## Watching a refresh {#watching}
 
-Both statements submit work that outlives the call. Track it with
+A refresh submits work that outlives the call. Track it with
 [`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
 [`SHOW ERRORS`](/sql/ddl/job#errors).
 
@@ -97,5 +75,8 @@ Both statements submit work that outlives the call. Track it with
   </Card>
   <Card title="Table" icon="table" href="/sql/ddl/table#alter">
     Declaring the columns this fills.
+  </Card>
+  <Card title="REFRESH MATERIALIZED VIEW" icon="arrows-rotate" href="/sql/dml/refresh-materialized-view">
+    Bringing a view's stored result up to date, instead of a column.
   </Card>
 </CardGroup>

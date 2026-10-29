@@ -141,7 +141,7 @@ class EmbedFromBlob:                    # SigLIP2 loads once per worker
 **Deduplication** removes near-static runs before they skew curation or
 training. A stopped gripper holding one pose for a few seconds produces many
 frames whose `emb_siglip2` vectors are nearly identical; LanceDB Enterprise's
-native [`dedupe`](/sql/functions#dedupe) collapses them into one
+native [`dedupe`](/sql/dql/dedupe) collapses them into one
 representative per cluster, directly over the index, without a pairwise scan:
 
 ```python

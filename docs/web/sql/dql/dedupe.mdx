@@ -1,0 +1,99 @@
+---
+title: "DEDUPE"
+sidebarTitle: "DEDUPE"
+description: "The dedupe() table function: one representative row per near-duplicate group, scanned over the index."
+icon: layer-group
+keywords: ["dedupe", "vector_dedup", "sql", "deduplication", "near-duplicate", "table function"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`dedupe` scans a vector column's [index](/indexing/vector-index) partitions
+for rows closer than a distance threshold, resolves the overlapping pairs it
+finds into duplicate groups, and returns one representative row per group --
+without a full pairwise scan or a shuffle. See
+[`duplicate_pairs`](/sql/dql/duplicate-pairs) to inspect the pairs themselves
+before committing to this resolution.
+
+```sql
+SELECT * FROM dedupe(<table>, <vector_column>,
+  distance_threshold => <float>
+  [, resolution => 'connected_components' | 'direct_representative']
+  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+)
+```
+
+```sql
+SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+```
+
+<Note>
+Earlier releases spelled this `vector_dedup`; that name is rejected on
+current deployments.
+</Note>
+
+## Input {#input}
+
+| Argument | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| table name | string literal | yes | the table to scan |
+| vector column | string literal | yes | the indexed vector column to compare |
+| `distance_threshold` | float | yes | maximum distance for a pair to count as close |
+| `resolution` | `'connected_components'` (default) \| `'direct_representative'` | no | how overlapping pairs group together -- see [Resolution](#resolution) |
+| `selection` | `'all'` (default) \| `'first'` \| `'random'` | no | which index partitions to scan |
+| `count` | int | no | number of partitions to sample when `selection => 'random'` |
+| `seed` | int | no | random seed when `selection => 'random'` |
+
+`id_column` is refused on `dedupe`: it has no separate pair-identifier output
+to project onto, only [`duplicate_pairs`](/sql/dql/duplicate-pairs#input)
+accepts it.
+
+## Output {#output}
+
+One row per duplicate group, **in the table's own schema** -- every column of
+`<table>`, including a BlobV2 column, comes through unchanged on the
+representative row Lance selected for that group. Unlike
+[`duplicate_pairs`](/sql/dql/duplicate-pairs#output), there is no fixed
+`dedupe`-specific schema to document: the output schema is the source
+table's schema.
+
+Because the result is already shaped like the table, it composes directly
+into a new table or a materialized view:
+
+```sql
+CREATE MATERIALIZED VIEW frames_deduped AS
+SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+```
+
+## Resolution {#resolution}
+
+`resolution` chooses how overlapping pairs group together:
+
+| `resolution` | |
+| --- | --- |
+| `connected_components` (default) | groups transitively: if a~b and b~c are both close, all three resolve together |
+| `direct_representative` | only pairs within the threshold of each other resolve together |
+
+## Sampling partitions {#sampling}
+
+`selection` scopes the scan to a sample of partitions instead of all of them,
+the same `all` (default) / `first` / `random` choice as
+[`ivf_partition`](/sql/scalar-functions#ivf-partition). Use it to estimate a
+duplicate rate on a large table before scanning it in full:
+
+```sql
+SELECT * FROM dedupe('frames', 'vec',
+  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+```
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="DUPLICATE_PAIRS" icon="clone" href="/sql/dql/duplicate-pairs">
+    Inspect the close pairs themselves instead of the resolved groups.
+  </Card>
+  <Card title="Deduplicate near-duplicates" icon="copy" href="/curation/dedupe">
+    When to reach for this instead of exact-key deduplication.
+  </Card>
+</CardGroup>

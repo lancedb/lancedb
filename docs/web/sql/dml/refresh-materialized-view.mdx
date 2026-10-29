@@ -1,0 +1,50 @@
+---
+title: "REFRESH MATERIALIZED VIEW"
+sidebarTitle: "REFRESH MATERIALIZED VIEW"
+description: "Bringing a materialized view's stored result up to date."
+icon: arrows-rotate
+keywords: ["refresh materialized view", "cascade"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A LanceDB extension with no DataFusion equivalent.
+
+```sql
+REFRESH MATERIALIZED VIEW <name>
+```
+
+```sql
+REFRESH MATERIALIZED VIEW chunks
+```
+
+A refresh updates the view's stored result. Refresh views in dependency order,
+starting with their source views.
+
+<Note>
+Some older server versions accepted `WITH (full = true)` and `CASCADE`.
+Those options are not accepted by the SQL implementation described here.
+Use the basic statement above; do not assume that the options accepted by a
+local SDK's `refresh()` method are also SQL options.
+</Note>
+
+## Watching a refresh {#watching}
+
+A refresh submits work that outlives the call. Track it with
+[`SHOW JOBS`](/sql/ddl/job#show), and diagnose failures with
+[`SHOW ERRORS`](/sql/ddl/job#errors).
+
+## See also {#see-also}
+
+<CardGroup cols={2}>
+  <Card title="Materialized View" icon="table" href="/sql/ddl/materialized-view">
+    Creating the view this refreshes.
+  </Card>
+  <Card title="Materialized views" icon="layer-group" href="/feature-engineering/materialized-views">
+    The same operation from the SDKs, and automatic refresh.
+  </Card>
+  <Card title="REFRESH COLUMN" icon="arrows-rotate" href="/sql/dml/refresh-column">
+    Filling a computed column, instead of a view.
+  </Card>
+</CardGroup>

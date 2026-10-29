@@ -125,6 +125,16 @@ Use [Explain a query plan](/search/explain) to see how the query reads and
 combines data. Check the plan to see whether the query uses indexes and how it performs the
 join. An index on a key does not guarantee that the join will use it.
 
+When one side of a join carries a blob or embedding column, join on a narrow
+key first -- `row_id`, `_rowid`, or another selective column -- and project
+the wide column only in the final select list, rather than selecting it
+alongside the join condition. The planner can then defer reading that column
+until after the join has already narrowed down which rows survive, instead
+of reading it for every candidate row. This is query planning the optimizer
+may or may not apply to a given query, not a guarantee from writing the join
+this way -- see [Late materialization for wide columns](/sql/dql/join#late-materialization)
+for the exact mechanism and how to confirm it with `EXPLAIN`.
+
 ## Save the result or continue curating {#reference}
 
 Keep the query for reuse or [save the selected data](/curation#next).

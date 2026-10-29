@@ -221,7 +221,7 @@
     },
     {
       "source": "/sql/refresh",
-      "destination": "/sql/dml/refresh"
+      "destination": "/sql/dml/refresh-column"
     },
     {
       "source": "/sql/show",
@@ -409,7 +409,8 @@
                   "sql/dml/update",
                   "sql/dml/delete",
                   "sql/dml/copy",
-                  "sql/dml/refresh"
+                  "sql/dml/refresh-column",
+                  "sql/dml/refresh-materialized-view"
                 ],
                 "icon": "database"
               },
@@ -424,6 +425,8 @@
                   "sql/dql/sampling",
                   "sql/dql/changes",
                   "sql/dql/fts",
+                  "sql/dql/dedupe",
+                  "sql/dql/duplicate-pairs",
                   "sql/dql/explain"
                 ],
                 "icon": "filter"

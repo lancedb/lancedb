@@ -1,0 +1,97 @@
+---
+title: "DUPLICATE_PAIRS"
+sidebarTitle: "DUPLICATE_PAIRS"
+description: "The duplicate_pairs() table function: every close pair in a vector column, scanned over the index."
+icon: clone
+keywords: ["duplicate_pairs", "vector_duplicate_pairs", "sql", "deduplication", "near-duplicate", "table function"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`duplicate_pairs` scans a vector column's [index](/indexing/vector-index)
+partitions for every pair of rows closer than a distance threshold, without a
+full pairwise scan or a shuffle. It returns one row per close pair, not one
+row per source row -- use it to inspect what would be collapsed before
+committing to [`dedupe`](/sql/dql/dedupe), which resolves these same pairs
+into groups.
+
+```sql
+SELECT * FROM duplicate_pairs(<table>, <vector_column>,
+  distance_threshold => <float>
+  [, id_column => <column>]
+  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+)
+```
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
+```
+
+<Note>
+Earlier releases spelled this `vector_duplicate_pairs`; that name is rejected
+on current deployments.
+</Note>
+
+## Input {#input}
+
+| Argument | Type | Required | Meaning |
+| --- | --- | --- | --- |
+| table name | string literal | yes | the table to scan |
+| vector column | string literal | yes | the indexed vector column to compare |
+| `distance_threshold` | float | yes | maximum distance for a pair to count as close |
+| `id_column` | column name | no | project this column's value instead of the internal row ID -- see [Application-level identifiers](#id-column) |
+| `selection` | `'all'` (default) \| `'first'` \| `'random'` | no | which index partitions to scan |
+| `count` | int | no | number of partitions to sample when `selection => 'random'` |
+| `seed` | int | no | random seed when `selection => 'random'` |
+
+`resolution` is refused on `duplicate_pairs`: a pair has no notion of a group,
+only [`dedupe`](/sql/dql/dedupe#input) accepts it.
+
+## Output {#output}
+
+One row per close pair found, in a fixed schema independent of the source
+table:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `row_id_a` | uint64 | internal row ID of the first row in the pair, the same identifier as the [`_rowid`](/sql/data-types#pseudo-columns) pseudo-column |
+| `row_id_b` | uint64 | internal row ID of the second row in the pair |
+| `distance` | float32 | distance between the pair's vectors, at or below `distance_threshold` |
+| `segment_id` | int64 | which index segment the pair was found in |
+| `partition_id` | int64 | which index partition the pair was found in |
+| `dataset_version` | int64 | the dataset version the scan ran against |
+
+### Application-level identifiers {#id-column}
+
+A row ID is internal and not stable across compaction. Pass `id_column`, a
+top-level scalar column such as a primary key, to project its value instead:
+`row_id_a`/`row_id_b` are replaced by `id_a`/`id_b`, typed like `id_column`.
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02, id_column => 'frame_id')
+```
+
+## Sampling partitions {#sampling}
+
+`selection` scopes the scan to a sample of partitions instead of all of them,
+the same `all` (default) / `first` / `random` choice as
+[`ivf_partition`](/sql/scalar-functions#ivf-partition). Use it to estimate a
+distance threshold or duplicate rate on a large table before scanning it in
+full:
+
+```sql
+SELECT * FROM duplicate_pairs('frames', 'vec',
+  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+```
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="DEDUPE" icon="layer-group" href="/sql/dql/dedupe">
+    Resolve these same pairs into one representative row per group.
+  </Card>
+  <Card title="Deduplicate near-duplicates" icon="copy" href="/curation/dedupe">
+    When to reach for this instead of exact-key deduplication.
+  </Card>
+</CardGroup>

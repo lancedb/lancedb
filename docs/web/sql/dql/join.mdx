@@ -71,3 +71,29 @@ Avoid selecting blob or vector columns you do not need on either side of a join.
 The join multiplies rows before projection is applied in some plans, so a wide
 column can be materialized many more times than the result has rows.
 </Warning>
+
+## Late materialization for wide columns {#late-materialization}
+
+The planner can avoid the multiplication above: when a join narrows down to
+a key column (such as `_rowid` or another narrow, selective column) before a
+wide one is needed, it can defer reading a BlobV2 or vector column until
+after the join has already settled which rows survive, instead of reading it
+for every candidate row first. In a plan where this applies, the wide column
+is read once per surviving row, where the worker runs, and never pulled into
+the query node to be joined directly.
+
+```sql
+SELECT d.title, b.caption
+FROM documents AS d
+JOIN (SELECT _rowid, caption FROM captions WHERE source = 'model-v2') AS b
+  ON b._rowid = d._rowid
+```
+
+This is query planning, not a syntax you opt into: a join written this way
+is a **candidate** for the planner to defer the wide read, not a guarantee.
+Confirm it for a specific query with [`EXPLAIN`](/sql/dql/explain) --
+`RemoteTake` in the plan means the deferral happened; its absence means the
+wide column was read eagerly, even if the SQL above matches exactly. Neither
+a passing query nor an `EXPLAIN` that omits `RemoteTake` tells you how much
+I/O a plan did or did not save -- read the plan's own row and byte counts for
+that.
