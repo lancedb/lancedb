@@ -7,6 +7,8 @@ use lancedb::ipc::batches_to_ipc_file;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
+use crate::util::schema_to_buffer;
+
 /** Typescript-style Async Iterator over RecordBatches */
 #[napi]
 pub struct RecordBatchIterator {
@@ -17,6 +19,12 @@ pub struct RecordBatchIterator {
 impl RecordBatchIterator {
     pub(crate) fn new(inner: SendableRecordBatchStream) -> Self {
         Self { inner }
+    }
+
+    /// Return the executed stream's output schema as an Arrow IPC file.
+    #[napi]
+    pub fn schema(&self) -> napi::Result<Buffer> {
+        schema_to_buffer(&self.inner.schema())
     }
 
     #[napi(catch_unwind)]

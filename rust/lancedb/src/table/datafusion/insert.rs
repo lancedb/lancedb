@@ -17,7 +17,7 @@ use datafusion_physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion_physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, ExecutionPlanProperties, PlanProperties,
 };
-use futures::TryStreamExt;
+use futures::StreamExt;
 use lance::Dataset;
 use lance::dataset::transaction::{Operation, Transaction};
 use lance::dataset::{CommitBuilder, InsertBuilder, WriteParams, WriteProgressFn};
@@ -194,12 +194,23 @@ impl ExecutionPlan for InsertExec {
 
         let output_bytes = MetricBuilder::new(&self.metrics).output_bytes(partition);
         let input_schema = input_stream.schema();
+        let declared: Vec<String> = crate::table::computed_columns::computed_columns(
+            &arrow_schema::Schema::from(self.dataset.schema()),
+        )
+        .into_iter()
+        .map(|declaration| declaration.name)
+        .collect();
         let input_stream: SendableRecordBatchStream =
             Box::pin(InstrumentedRecordBatchStreamAdapter::new(
                 input_schema,
-                input_stream.map_ok(move |batch| {
+                input_stream.map(move |batch| {
+                    let batch = batch?;
+                    crate::table::computed_columns::ensure_batch_writes_no_computed_values(
+                        &declared, &batch,
+                    )
+                    .map_err(|e| datafusion::error::DataFusionError::External(Box::new(e)))?;
                     output_bytes.add(batch.get_array_memory_size());
-                    batch
+                    Ok(batch)
                 }),
                 partition,
                 &self.metrics,

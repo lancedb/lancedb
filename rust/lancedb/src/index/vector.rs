@@ -125,7 +125,7 @@ macro_rules! impl_pq_params_setter {
         /// This value controls how much the vector is compressed during the quantization step.
         /// The more sub vectors there are the less the vector is compressed.  The default is
         /// the dimension of the vector divided by 16.  If the dimension is not evenly divisible
-        /// by 16 we use the dimension divded by 8.
+        /// by 16 we use the dimension divided by 8.
         ///
         /// The above two cases are highly preferred.  Having 8 or 16 values per subvector allows
         /// us to use efficient SIMD instructions.
@@ -362,6 +362,9 @@ impl IvfRqIndexBuilder {
     impl_distance_type_setter!();
     impl_ivf_params_setter!();
 
+    /// Set the number of bits used to encode each vector dimension.
+    ///
+    /// If unset, uses Lance's default (currently 5). Set to 1 for maximum compression.
     pub fn num_bits(mut self, num_bits: u32) -> Self {
         self.num_bits = Some(num_bits);
         self
