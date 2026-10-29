@@ -36,6 +36,18 @@
       "destination": "/#embedded-and-enterprise"
     },
     {
+      "source": "/enterprise/deployment",
+      "destination": "/enterprise#deployment"
+    },
+    {
+      "source": "/feature-engineering/data-evolution",
+      "destination": "/feature-engineering/add-computed-column"
+    },
+    {
+      "source": "/training/torch",
+      "destination": "/training/data-loading"
+    },
+    {
       "source": "/basics/lakehouse",
       "destination": "/"
     },
@@ -321,9 +333,9 @@
             "group": "Feature Engineering",
             "pages": [
               "feature-engineering/index",
-              "feature-engineering/data-evolution",
               "feature-engineering/add-computed-column",
               "feature-engineering/refresh-column",
+              "feature-engineering/view",
               "feature-engineering/materialized-views"
             ]
           },
@@ -332,8 +344,7 @@
             "pages": [
               "training/permutation",
               "training/data-loading",
-              "training/distributed-training",
-              "training/torch"
+              "training/distributed-training"
             ]
           },
           {
@@ -373,7 +384,6 @@
               "enterprise/index",
               "enterprise/architecture",
               "enterprise/distributed-search",
-              "enterprise/deployment/index",
               "deployment/storage",
               "deployment/monitoring",
               "enterprise/deployment/azure",

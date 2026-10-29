@@ -78,6 +78,7 @@ options supported by your server version; see
 
 | | What it produces | Filled by | Available |
 | --- | --- | --- | --- |
+| [View](/feature-engineering/view) | a saved query, no stored rows of its own | nothing -- it runs on every read | Enterprise |
 | [Computed column](/feature-engineering/add-computed-column) | a new column on an existing table | a SQL expression | Embedded and Enterprise |
 | [Materialized view](/feature-engineering/materialized-views) | a new table derived by a query | a refresh | Embedded and Enterprise |
 | [Geneva](/geneva) | columns filled by Python | the `geneva` package | <Badge color="red">Enterprise</Badge> |
@@ -87,6 +88,11 @@ Draft for the Functions release. Replace the Geneva row of the table above with:
 | [Function](/management/function) | a computed column filled by Python | registered code | <Badge color="red">Enterprise</Badge> |
 | [Geneva](/geneva) | columns filled by Python, for existing pipelines | the `geneva` package | <Badge color="red">Enterprise</Badge> |
 */}
+
+**A view** has no refresh and no staleness window, because it stores the
+query rather than its result. Reach for one first, before a computed column
+or a materialized view, when the query is cheap enough to simply re-run on
+every read.
 
 **Computed columns** are the common case: a column declared with a SQL
 expression, filled by [a refresh](/feature-engineering/refresh-column).
@@ -154,6 +160,9 @@ only the rows that did not complete.
 ## Related guides {#next}
 
 <CardGroup cols={2}>
+  <Card title="Add a view" icon="eye" href="/feature-engineering/view">
+    A saved query, with no storage or refresh of its own.
+  </Card>
   <Card title="Add a computed column" icon="table-columns" href="/feature-engineering/add-computed-column">
     Declare a column from a SQL expression.
   </Card>

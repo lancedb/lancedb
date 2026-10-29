@@ -10,7 +10,7 @@ This page is about LanceDB Embedded, where your connection chooses and
 configures the storage backend. A LanceDB Enterprise deployment sets up its own
 storage when it is deployed, so a `db://` connection passes none of these
 options except an Azure storage account name. See
-[Deployment](/enterprise/deployment) for how a deployment is set up.
+[LanceDB Enterprise](/enterprise) for how a deployment is set up.
 
 LanceDB's storage layer is built on modular, disk-first components. That design makes it flexible enough to run across local NVMe, EBS, EFS, and any object store that exposes an S3-compatible API. It also supports region-specific backends such as [Tencent COS](/storage/configuration#tencent-cos) and cache-acceleration layers such as [GooseFS](/storage/configuration#goosefs).
 

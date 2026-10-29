@@ -1,0 +1,73 @@
+---
+title: "Add a view"
+sidebarTitle: "View"
+description: "Define a derived dataset as a saved query, with no storage or refresh of its own."
+icon: eye
+keywords: ["view", "create view", "feature engineering", "saved query"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+A view is the lightest way to derive a feature-engineered dataset: it stores
+a **query**, not rows, so there is nothing to refresh and nothing that can
+fall out of date. Reach for one before
+[a computed column](/feature-engineering/add-computed-column) or
+[a materialized view](/feature-engineering/materialized-views) when the
+underlying query is cheap enough to simply re-run on every read.
+
+## Define a view {#create}
+
+A view over a products table, selecting and deriving a few columns:
+
+```sql
+CREATE VIEW "discounted_products" AS
+SELECT id, name, price, price * 0.9 AS sale_price
+FROM "products"
+WHERE in_stock = true
+```
+
+The statement resolves the view's schema from the query at creation time.
+Anything the [SQL dialect](/sql/functions) supports can define one: joins,
+predicates, aggregates, window functions -- the same expressiveness as
+[a computed column's](/feature-engineering/add-computed-column#expressions)
+SQL expression, just over a whole derived table instead of one column.
+
+## Read it like a table {#reading}
+
+```sql
+SELECT * FROM "discounted_products" WHERE sale_price < 20
+```
+
+Every read runs the saved query against current data, so `sale_price`
+reflects whatever `price` is right now -- there is no staleness window to
+reason about, unlike a materialized view between refreshes. A predicate
+applied when reading the view composes with the query inside it, rather than
+filtering the view's output afterward, so a selective filter does not pay
+for rows the view would have produced and then discarded.
+
+## When to use a view instead {#choosing}
+
+| | View | Computed column / materialized view |
+| --- | --- | --- |
+| Stores | the query | derived values |
+| Freshness | always current | as of the last refresh |
+| Read cost | the full query, every read | a column or table scan |
+| Write cost | none | a refresh |
+
+Reach for a view when the query is cheap, or when reading a stale value would
+be wrong for the workload. Reach for a computed column or a materialized view
+when the query is expensive and the data changes less often than it is read.
+See [View](/sql/ddl/view#choosing) for the full SQL reference comparison,
+including the separate privileges each one needs.
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="View" icon="eye" href="/sql/ddl/view">
+    CREATE VIEW, DROP VIEW, and listing views alongside tables.
+  </Card>
+  <Card title="Refresh a materialized view" icon="table" href="/feature-engineering/materialized-views">
+    The stored-rows counterpart, and when a refresh is worth paying for.
+  </Card>
+</CardGroup>

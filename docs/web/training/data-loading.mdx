@@ -151,7 +151,48 @@ ds = StreamingDataset(table, shuffle_seed=42, transform=normalize)
 </CodeGroup>
 
 `StreamingDataset` manages expensive transforms through a
-`ThreadPoolExecutor` whose worker count equals the number of available CPUs. Furthermore, transformations are applied to batches (instead of individual samples) to amortize per-batch overhead.
+`ThreadPoolExecutor` whose worker count equals the number of available CPUs (`transform_parallelism`). Furthermore, transformations are applied to batches (instead of individual samples) to amortize per-batch overhead.
+
+Heavier per-sample work belongs in the same function, such as decoding
+video. Store each clip in a Blob v2 column (`lancedb.blob("video")`). A scan
+returns small descriptors instead of the video bytes, so reading other
+columns never pulls video in. `fetch_blob_files` opens the clips for a batch
+of rows as file handles, and `torchcodec`'s `VideoDecoder` decodes just the
+frames you ask for. `ExtractFrames` samples 8 evenly spaced frames from each
+clip:
+
+<CodeGroup>
+```py Python icon=Python
+import functools
+from torchcodec.decoders import VideoDecoder
+
+class ExtractFrames:
+    def __init__(self, uri: str, name: str, num_frames: int = 8) -> None:
+        self.uri, self.name, self.num_frames = uri, name, num_frames
+
+    @functools.cached_property
+    def table(self) -> lancedb.table.Table:
+        return lancedb.connect(self.uri).open_table(self.name)
+
+    def __call__(self, rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+        samples = []
+        for blob in self.table.fetch_blob_files("video", rb["_rowid"]):
+            decoder = VideoDecoder(blob)
+            idx = torch.linspace(0, len(decoder) - 1, self.num_frames).long()
+            samples.append({"frames": decoder.get_frames_at(idx.tolist()).data})
+        return samples
+
+# `clips` is the table "clips" in the database at `uri`, with a Blob v2 column "video"
+train = StreamingDataset(clips, columns=["_rowid"], transform=ExtractFrames(uri, "clips"))
+```
+</CodeGroup>
+
+Real data has bad rows, such as a truncated frame. Raise inside the
+transform and set `on_transform_error="skip"` (or `"warn"` to log each
+failure). `StreamingDataset` re-runs the failing batch one row at a time,
+drops only the rows that raise, and counts them in `dataset.rows_skipped`.
+When the bad rows match a SQL predicate, prefer `filter=` instead: it runs
+before the splits are built, so every split keeps the same length.
 
 ### DataLoader Workers {#dataloader-workers}
 
@@ -177,9 +218,83 @@ dataloader = torch.utils.data.DataLoader(
 ```
 </CodeGroup>
 
-By default, `StreamingDataset` serializes enough table state to reopen the table in each worker. For custom connection
-setup, pass a picklable `connection_factory` callable that accepts a table name and returns an open table. This avoids
-serializing connection credentials into worker state.
+By default, `StreamingDataset` serializes enough table state to reopen the
+table in each worker. Remote LanceDB Enterprise tables (`db://...`) work the
+same way: workers reopen the table from the pickled connection state.
+Replace the URI, API key, region and endpoint below with your deployment
+details. In application code, load credentials from environment variables
+or a secrets manager:
+
+<CodeGroup>
+```py Python icon=Python
+import lancedb
+import torch
+from lancedb.util import tbl_to_tensor
+
+db = lancedb.connect(
+    "db://my-database",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-endpoint",
+)
+table = db.open_table("my_table")
+
+dataloader = torch.utils.data.DataLoader(
+    table,
+    batch_size=512,
+    num_workers=4,
+    multiprocessing_context="forkserver",
+    collate_fn=tbl_to_tensor,
+)
+```
+</CodeGroup>
+
+<Note>
+This sends the connection state, including the API key, to each worker. Use a connection factory if credentials should be loaded inside the worker or your `client_config` contains a non-serializable `header_provider`.
+</Note>
+
+#### Providing a custom connection factory {#providing-a-custom-connection-factory}
+
+For custom connection setup, pass a picklable `connection_factory` callable
+that accepts a table name and returns an open table. This avoids
+serializing connection credentials into worker state: it loads the API key
+inside each worker instead. Set it in the shell before starting the Python
+program, then replace the database URI, region and endpoint in the factory
+with your deployment details:
+
+```shell
+export LANCEDB_API_KEY="your-api-key"
+```
+
+<CodeGroup>
+```py Python icon=Python
+import os
+import lancedb
+import torch
+from lancedb.permutation import Permutation
+
+def open_table(name: str):
+    db = lancedb.connect(
+        "db://my-database",
+        api_key=os.environ["LANCEDB_API_KEY"],
+        region="us-east-1",
+        host_override="https://your-endpoint",
+    )
+    return db.open_table(name)
+
+table = open_table("my_table")
+permutation = (
+    Permutation.identity(table)
+    .with_connection_factory(open_table)
+)
+dataloader = torch.utils.data.DataLoader(
+    permutation,
+    batch_size=512,
+    num_workers=4,
+    multiprocessing_context="forkserver",
+)
+```
+</CodeGroup>
 
 ## Observability {#observability}
 
