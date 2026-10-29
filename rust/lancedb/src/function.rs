@@ -224,6 +224,10 @@ pub struct PythonEnvironmentSpec {
     pub modules: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
+    /// Debian packages (`name` or `name=version`) added to the Function's
+    /// image before its Python environment is installed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub system_packages: Vec<String>,
 }
 
 /// Reproducible Python runtime definition understood by Sophon.
@@ -253,6 +257,7 @@ pub enum PythonRuntimeSpec {
     ///         path: None,
     ///         modules: Vec::new(),
     ///         image: None,
+    ///         system_packages: Vec::new(),
     ///     },
     ///     env: BTreeMap::new(),
     /// };
@@ -936,6 +941,27 @@ mod conda_environment_tests {
         let pip: PythonEnvironmentSpec =
             serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
         assert!(!serde_json::to_string(&pip).unwrap().contains("channels"));
+    }
+
+    #[test]
+    fn system_packages_round_trip_and_stay_absent_when_empty() {
+        let apt: PythonEnvironmentSpec = serde_json::from_str(
+            r#"{"kind":"pip","packages":["torchcodec"],"system_packages":["libavutil58"]}"#,
+        )
+        .unwrap();
+        assert_eq!(apt.system_packages, ["libavutil58"]);
+        assert!(
+            serde_json::to_string(&apt)
+                .unwrap()
+                .contains(r#""system_packages":["libavutil58"]"#)
+        );
+        let pip: PythonEnvironmentSpec =
+            serde_json::from_str(r#"{"kind":"pip","packages":["numpy"]}"#).unwrap();
+        assert!(
+            !serde_json::to_string(&pip)
+                .unwrap()
+                .contains("system_packages")
+        );
     }
 
     #[test]
