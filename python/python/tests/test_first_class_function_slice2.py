@@ -1495,7 +1495,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def nullable_output(value: int) -> Optional[int]:
             return value
 
-    with pytest.raises(ValueError, match="provided together"):
+    with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
@@ -2062,3 +2062,21 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
             list(db.list_functions(namespace_path="analytics"))
 
     assert state["requests"] == []
+
+
+def test_one_explicit_schema_infers_the_other_from_annotations():
+    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    def explicit_input(value) -> float:
+        return float(value or 0)
+
+    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    def explicit_output(value: Optional[int]):
+        return float(value or 0)
+
+    for fn in (explicit_input, explicit_output):
+        signature = fn.registration_request.signature
+        assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+            ("value", "int64", True)
+        ]
+    assert explicit_input.registration_request.signature.output.arrow_type == "float64"
+    assert explicit_output.registration_request.signature.output.arrow_type == "float32"
