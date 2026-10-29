@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::data::scannable::Scannable;
 use crate::data::scannable::scannable_with_embeddings;
 use crate::embeddings::EmbeddingRegistry;
+use crate::table::DynBaseTable;
 use crate::table::datafusion::cast::cast_to_table_schema;
 use crate::table::datafusion::reject_nan::reject_nan_vectors;
 use crate::table::datafusion::scannable_exec::ScannableExec;
@@ -56,7 +57,7 @@ pub enum NaNVectorBehavior {
 
 /// A builder for configuring a [`crate::table::Table::add`] operation
 pub struct AddDataBuilder {
-    pub(crate) parent: Arc<dyn BaseTable>,
+    pub(crate) parent: Arc<DynBaseTable<'static>>,
     pub(crate) data: Box<dyn Scannable>,
     pub(crate) mode: AddDataMode,
     pub(crate) write_options: WriteOptions,
@@ -79,7 +80,7 @@ impl std::fmt::Debug for AddDataBuilder {
 
 impl AddDataBuilder {
     pub(crate) fn new(
-        parent: Arc<dyn BaseTable>,
+        parent: Arc<DynBaseTable<'static>>,
         data: Box<dyn Scannable>,
         embedding_registry: Option<Arc<dyn EmbeddingRegistry>>,
     ) -> Self {

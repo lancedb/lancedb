@@ -16,6 +16,7 @@ use lance_datafusion::utils::StreamingWriteSource;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{Error, Result};
+use crate::table::DynBaseTable;
 
 use super::{BaseTable, NativeTable};
 
@@ -67,7 +68,7 @@ pub enum MergeFilter {
 /// See [`super::Table::merge_insert`] for more context
 #[derive(Debug, Clone)]
 pub struct MergeInsertBuilder {
-    table: Arc<dyn BaseTable>,
+    table: Arc<DynBaseTable<'static>>,
     pub(crate) on: Vec<String>,
     pub(crate) when_matched_update_all: bool,
     pub(crate) when_matched_update_all_filt: Option<MergeFilter>,
@@ -81,7 +82,7 @@ pub struct MergeInsertBuilder {
 }
 
 impl MergeInsertBuilder {
-    pub(super) fn new(table: Arc<dyn BaseTable>, on: Vec<String>) -> Self {
+    pub(super) fn new(table: Arc<DynBaseTable<'static>>, on: Vec<String>) -> Self {
         Self {
             table,
             on,

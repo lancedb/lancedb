@@ -32,6 +32,7 @@ use lance_core::{
 };
 
 use super::{AnyQuery, BaseTable};
+use crate::table::DynBaseTable;
 use crate::{
     Error, Result,
     query::{QueryExecutionOptions, QueryFilter, QueryRequest, Select},
@@ -195,7 +196,7 @@ pub enum BlobSchema {
 /// a schema mismatch. Tables without blob columns behave the same in both modes.
 #[derive(Debug)]
 pub struct BaseTableAdapter {
-    table: Arc<dyn BaseTable>,
+    table: Arc<DynBaseTable<'static>>,
     // Only the read schema includes opted-in system/FTS columns.
     schema: Arc<ArrowSchema>,
     write_schema: Arc<ArrowSchema>,
@@ -208,7 +209,7 @@ impl BaseTableAdapter {
     /// Create an adapter whose schema matches default scans, including blob descriptors.
     ///
     /// Deriving the descriptor schema does not execute a query or read blob payloads.
-    pub async fn try_new(table: Arc<dyn BaseTable>) -> Result<Self> {
+    pub async fn try_new(table: Arc<DynBaseTable<'static>>) -> Result<Self> {
         let write_schema = table.schema().await?;
         let schema = Projection::full(Arc::new(LanceSchema::try_from(write_schema.as_ref())?))
             .to_arrow_schema();

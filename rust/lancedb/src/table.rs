@@ -554,7 +554,11 @@ pub fn tokenize(query: &str, params: &InvertedIndexParams) -> Result<Vec<FtsToke
 /// Lance datasets) and remote tables (which target LanceDB Enterprise)
 ///
 /// This trait is still EXPERIMENTAL and subject to change in the future
-#[async_trait]
+//
+// Not #[async_trait]: its per-method where-clauses stop rustc from caching the Send proofs
+// for these futures, which roughly doubled this crate's compile time. Keep impls free of
+// where-clauses for the same reason.
+#[dynosaur::dynosaur(pub DynBaseTable = dyn(box) BaseTable, bridge(none))]
 pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Get a reference to std::any::Any
     fn as_any(&self) -> &dyn std::any::Any;
@@ -568,28 +572,34 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// separated by $
     fn id(&self) -> &str;
     /// Get the arrow [Schema] of the table.
-    async fn schema(&self) -> Result<SchemaRef>;
+    fn schema(&self) -> impl Future<Output = Result<SchemaRef>> + Send;
     /// Read this table's materialized-view definition.
     #[doc(hidden)]
-    async fn materialized_view_info(
+    fn materialized_view_info(
         &self,
-    ) -> Result<crate::materialized_view::MaterializedViewInfo> {
-        let schema = self.schema().await?;
-        crate::materialized_view::materialized_view_info_from_metadata(
-            self.name(),
-            schema.metadata(),
-        )
+    ) -> impl Future<Output = Result<crate::materialized_view::MaterializedViewInfo>> + Send {
+        async move {
+            let schema = self.schema().await?;
+            crate::materialized_view::materialized_view_info_from_metadata(
+                self.name(),
+                schema.metadata(),
+            )
+        }
     }
     /// Submit a materialized-view refresh.
     #[doc(hidden)]
-    async fn refresh_materialized_view_async(
+    fn refresh_materialized_view_async(
         &self,
         _source_version: Option<u64>,
         _full: bool,
-    ) -> Result<Job<crate::materialized_view::RefreshMaterializedViewResult>> {
-        Err(Error::NotSupported {
-            message: "remote materialized-view refresh is not supported on this table type".into(),
-        })
+    ) -> impl Future<Output = Result<Job<crate::materialized_view::RefreshMaterializedViewResult>>> + Send
+    {
+        async move {
+            Err(Error::NotSupported {
+                message: "remote materialized-view refresh is not supported on this table type"
+                    .into(),
+            })
+        }
     }
     /// Create a read-only handle pinned to the table's current active revision.
     ///
@@ -597,33 +607,39 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// this handle.  This is used by bindings that must prepare client-side
     /// query state from the same revision that the query will execute against.
     #[doc(hidden)]
-    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>>;
+    fn query_snapshot(&self) -> impl Future<Output = Result<Arc<DynBaseTable<'static>>>> + Send;
     /// Count the number of rows in this table.
-    async fn count_rows(&self, filter: Option<Filter>) -> Result<usize>;
+    fn count_rows(&self, filter: Option<Filter>) -> impl Future<Output = Result<usize>> + Send;
     /// Create a physical plan for the query.
-    async fn create_plan(
+    fn create_plan(
         &self,
         query: &AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<Arc<dyn ExecutionPlan>>;
+    ) -> impl Future<Output = Result<Arc<dyn ExecutionPlan>>> + Send;
     /// Execute a query and return the results as a stream of RecordBatches.
-    async fn query(
+    fn query(
         &self,
         query: &AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<DatasetRecordBatchStream>;
+    ) -> impl Future<Output = Result<DatasetRecordBatchStream>> + Send;
     /// Explain the plan for a query.
-    async fn explain_plan(&self, query: &AnyQuery, verbose: bool) -> Result<String> {
-        let plan = self.create_plan(query, Default::default()).await?;
-        let display = DisplayableExecutionPlan::new(plan.as_ref());
+    fn explain_plan(
+        &self,
+        query: &AnyQuery,
+        verbose: bool,
+    ) -> impl Future<Output = Result<String>> + Send {
+        async move {
+            let plan = self.create_plan(query, Default::default()).await?;
+            let display = DisplayableExecutionPlan::new(plan.as_ref());
 
-        Ok(format!("{}", display.indent(verbose)))
+            Ok(format!("{}", display.indent(verbose)))
+        }
     }
-    async fn analyze_plan(
+    fn analyze_plan(
         &self,
         query: &AnyQuery,
         options: QueryExecutionOptions,
-    ) -> Result<String>;
+    ) -> impl Future<Output = Result<String>> + Send;
     /// Whether [`BaseTable::analyze_plan`] is provided by a remote service.
     ///
     /// Client-side query wrappers use this to preserve backend metrics and
@@ -634,35 +650,40 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     }
 
     /// Add new records to the table.
-    async fn add(&self, add: AddDataBuilder) -> Result<AddResult>;
+    fn add(&self, add: AddDataBuilder) -> impl Future<Output = Result<AddResult>> + Send;
     /// Delete rows from the table matching the given [`Predicate`].
-    async fn delete(&self, predicate: Predicate<'_>) -> Result<DeleteResult>;
+    fn delete(&self, predicate: Predicate<'_>)
+    -> impl Future<Output = Result<DeleteResult>> + Send;
     /// Update rows in the table.
-    async fn update(&self, update: UpdateBuilder) -> Result<UpdateResult>;
+    fn update(&self, update: UpdateBuilder) -> impl Future<Output = Result<UpdateResult>> + Send;
     /// Create an index on the provided column(s).
-    async fn create_index(&self, index: IndexBuilder) -> Result<()>;
+    fn create_index(&self, index: IndexBuilder) -> impl Future<Output = Result<()>> + Send;
 
     /// Starts index creation, returning a handle to the resulting job.
-    async fn create_index_async(&self, index: IndexBuilder) -> Result<Job>;
+    fn create_index_async(&self, index: IndexBuilder) -> impl Future<Output = Result<Job>> + Send;
     /// List the indices on the table.
-    async fn list_indices(&self) -> Result<Vec<IndexConfig>>;
+    fn list_indices(&self) -> impl Future<Output = Result<Vec<IndexConfig>>> + Send;
     /// Drop an index from the table.
-    async fn drop_index(&self, name: &str) -> Result<()>;
+    fn drop_index(&self, name: &str) -> impl Future<Output = Result<()>> + Send;
     /// Prewarm an index in the table.
-    async fn prewarm_index(&self, name: &str) -> Result<()>;
+    fn prewarm_index(&self, name: &str) -> impl Future<Output = Result<()>> + Send;
     /// Prewarm data for the table.
     ///
     /// Currently only supported in LanceDB Distributed.
     /// If `columns` is `None`, all columns are prewarmed.
-    async fn prewarm_data(&self, columns: Option<Vec<String>>) -> Result<()>;
+    fn prewarm_data(&self, columns: Option<Vec<String>>)
+    -> impl Future<Output = Result<()>> + Send;
     /// Get statistics about the index.
-    async fn index_stats(&self, index_name: &str) -> Result<Option<IndexStatistics>>;
+    fn index_stats(
+        &self,
+        index_name: &str,
+    ) -> impl Future<Output = Result<Option<IndexStatistics>>> + Send;
     /// Merge insert new records into the table.
-    async fn merge_insert(
+    fn merge_insert(
         &self,
         params: MergeInsertBuilder,
         new_data: Box<dyn RecordBatchReader + Send>,
-    ) -> Result<MergeResult>;
+    ) -> impl Future<Output = Result<MergeResult>> + Send;
     /// Set the unenforced primary key for the table to a single column.
     ///
     /// "Unenforced" means LanceDB does not check uniqueness on writes; the
@@ -672,10 +693,15 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`; table types
     /// backed by a Lance dataset override it.
-    async fn set_unenforced_primary_key(&self, _columns: &[&str]) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "set_unenforced_primary_key is not supported on this table type".into(),
-        })
+    fn set_unenforced_primary_key(
+        &self,
+        _columns: &[&str],
+    ) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "set_unenforced_primary_key is not supported on this table type".into(),
+            })
+        }
     }
     /// Install an [`RTEWriteSpec`] on this table.
     ///
@@ -684,10 +710,12 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`. Implementations
     /// that support the RTE write path must override this.
-    async fn enable_rte(&self, _spec: RTEWriteSpec) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "enable_rte is not supported on this table type".into(),
-        })
+    fn enable_rte(&self, _spec: RTEWriteSpec) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "enable_rte is not supported on this table type".into(),
+            })
+        }
     }
     /// Remove the [`RTEWriteSpec`] from this table.
     ///
@@ -695,20 +723,24 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     ///
     /// The default implementation returns `NotSupported`. Implementations
     /// that support the RTE write path must override this.
-    async fn disable_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "disable_rte is not supported on this table type".into(),
-        })
+    fn disable_rte(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "disable_rte is not supported on this table type".into(),
+            })
+        }
     }
     /// Read the [`RTEWriteSpec`] currently installed on this table, returning
     /// `None` when the RTE write path is not enabled.
     ///
     /// The default implementation returns `NotSupported`. Implementations that
     /// support the RTE write path must override this.
-    async fn get_rte_spec(&self) -> Result<Option<RTEWriteSpec>> {
-        Err(Error::NotSupported {
-            message: "get_rte_spec is not supported on this table type".into(),
-        })
+    fn get_rte_spec(&self) -> impl Future<Output = Result<Option<RTEWriteSpec>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "get_rte_spec is not supported on this table type".into(),
+            })
+        }
     }
     /// Whether a hybrid query on this table has already been told it cannot
     /// join its legs on `_rowid`.
@@ -738,163 +770,215 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
     /// Freeze every table shard's active memtable into an SSTable.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn flush_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "flush_rte is not supported on this table type".into(),
-        })
+    fn flush_rte(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "flush_rte is not supported on this table type".into(),
+            })
+        }
     }
     /// Trigger a background SSTable compaction pass per table shard.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn compact_rte(&self) -> Result<()> {
-        Err(Error::NotSupported {
-            message: "compact_rte is not supported on this table type".into(),
-        })
+    fn compact_rte(&self) -> impl Future<Output = Result<()>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "compact_rte is not supported on this table type".into(),
+            })
+        }
     }
     /// Read live RTE state, or `None` when the RTE write path is not
     /// enabled for this table.
     ///
     /// The default implementation returns `NotSupported`.
-    async fn get_rte_stats(&self, _include_sstable_rows: bool) -> Result<Option<RTEStats>> {
-        Err(Error::NotSupported {
-            message: "get_rte_stats is not supported on this table type".into(),
-        })
+    fn get_rte_stats(
+        &self,
+        _include_sstable_rows: bool,
+    ) -> impl Future<Output = Result<Option<RTEStats>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "get_rte_stats is not supported on this table type".into(),
+            })
+        }
     }
     /// Drain and close any cached RTE shard writers for this table.
     ///
     /// The default implementation is a no-op; table types that maintain
     /// RTE shard writers override it.
-    async fn close_rte_writers(&self) -> Result<()> {
-        Ok(())
+    fn close_rte_writers(&self) -> impl Future<Output = Result<()>> + Send {
+        async move { Ok(()) }
     }
     /// Names of the blob v1 and v2 columns in this table, in declaration order.
-    async fn blob_columns(&self) -> Result<Vec<String>> {
-        Err(Error::NotSupported {
-            message: "blob_columns is not supported on this table type".into(),
-        })
+    fn blob_columns(&self) -> impl Future<Output = Result<Vec<String>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "blob_columns is not supported on this table type".into(),
+            })
+        }
     }
     /// Materialize blob bytes for the given row ids. See [`Table::fetch_blobs`].
-    async fn fetch_blobs(&self, _column: &str, _row_ids: &[u64]) -> Result<LargeBinaryArray> {
-        Err(Error::NotSupported {
-            message: "fetch_blobs is not supported on this table type".into(),
-        })
-    }
-    /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
-    async fn fetch_blob_ranges(
-        &self,
-        _column: &str,
-        _requests: &[BlobRangeRequest],
-    ) -> Result<LargeBinaryArray> {
-        Err(Error::NotSupported {
-            message: "fetch_blob_ranges is not supported on this table type".into(),
-        })
-    }
-    /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
-    async fn fetch_blob_files(
+    fn fetch_blobs(
         &self,
         _column: &str,
         _row_ids: &[u64],
-    ) -> Result<Vec<Option<BlobFile>>> {
-        Err(Error::NotSupported {
-            message: "fetch_blob_files is not supported on this table type".into(),
-        })
+    ) -> impl Future<Output = Result<LargeBinaryArray>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blobs is not supported on this table type".into(),
+            })
+        }
+    }
+    /// Materialize blob-local ranges. See [`Table::fetch_blob_ranges`].
+    fn fetch_blob_ranges(
+        &self,
+        _column: &str,
+        _requests: &[BlobRangeRequest],
+    ) -> impl Future<Output = Result<LargeBinaryArray>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blob_ranges is not supported on this table type".into(),
+            })
+        }
+    }
+    /// Open lazy blob handles for the given row ids. See [`Table::fetch_blob_files`].
+    fn fetch_blob_files(
+        &self,
+        _column: &str,
+        _row_ids: &[u64],
+    ) -> impl Future<Output = Result<Vec<Option<BlobFile>>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "fetch_blob_files is not supported on this table type".into(),
+            })
+        }
     }
     /// Open a descriptor at its pinned source version. See [`Table::open_blob_file`].
-    async fn open_blob_file(&self, _descriptor: &BlobDescriptor) -> Result<BlobFile> {
-        Err(Error::NotSupported {
-            message: "open_blob_file is not supported on this table type".into(),
-        })
+    fn open_blob_file(
+        &self,
+        _descriptor: &BlobDescriptor,
+    ) -> impl Future<Output = Result<BlobFile>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "open_blob_file is not supported on this table type".into(),
+            })
+        }
     }
     /// Gets the table tag manager.
-    async fn tags(&self) -> Result<Box<dyn Tags + '_>>;
+    fn tags(&self) -> impl Future<Output = Result<Box<dyn Tags + '_>>> + Send;
     /// Optimize the dataset.
-    async fn optimize(&self, action: OptimizeAction) -> Result<OptimizeStats>;
+    fn optimize(
+        &self,
+        action: OptimizeAction,
+    ) -> impl Future<Output = Result<OptimizeStats>> + Send;
     /// Add columns to the table.
-    async fn add_columns(
+    fn add_columns(
         &self,
         transforms: NewColumnTransform,
         read_columns: Option<Vec<String>>,
-    ) -> Result<AddColumnsResult>;
+    ) -> impl Future<Output = Result<AddColumnsResult>> + Send;
     /// Declare computed columns, each defined by a SQL expression.
     ///
     /// Where the declaration is planned depends on the backend: a LanceDB Embedded
     /// table validates and types the expression itself, while a LanceDB Distributed
     /// table sends the expression for the server to plan.
-    async fn add_computed_columns(
+    fn add_computed_columns(
         &self,
         _columns: &[(String, String)],
         _options: computed_columns::ComputedColumnOptions,
-    ) -> Result<AddColumnsResult> {
-        Err(Error::NotSupported {
-            message: "computed columns are not supported on this table type".into(),
-        })
+    ) -> impl Future<Output = Result<AddColumnsResult>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "computed columns are not supported on this table type".into(),
+            })
+        }
     }
     /// Declare one immutable registered-Function binding.
-    async fn add_function_columns(
+    fn add_function_columns(
         &self,
         _application: &crate::function::FunctionApplication,
         _output_name: Option<&str>,
         _options: computed_columns::ComputedColumnOptions,
-    ) -> Result<AddColumnsResult> {
-        Err(Error::NotSupported {
-            message: "Function columns are supported only in LanceDB Distributed".into(),
-        })
+    ) -> impl Future<Output = Result<AddColumnsResult>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "Function columns are supported only in LanceDB Distributed".into(),
+            })
+        }
     }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed.
     ///
     /// The default returns `NotSupported`; Lance-backed tables override it.
-    async fn refresh_column(&self, _column: &str) -> Result<RefreshColumnResult> {
-        Err(Error::NotSupported {
-            message: "this operation is only supported on LanceDB Embedded".into(),
-        })
+    fn refresh_column(
+        &self,
+        _column: &str,
+    ) -> impl Future<Output = Result<RefreshColumnResult>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "this operation is only supported on LanceDB Embedded".into(),
+            })
+        }
     }
     /// Fill a computed column's unfilled rows and recompute those whose
     /// inputs changed, returning a [`Job`] tracking the operation.
-    async fn refresh_column_async(
+    fn refresh_column_async(
         &self,
         _column: &str,
-    ) -> Result<Job<crate::function::RefreshColumnResult>> {
-        Err(Error::NotSupported {
-            message: "this operation is only supported on LanceDB Embedded".into(),
-        })
+    ) -> impl Future<Output = Result<Job<crate::function::RefreshColumnResult>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "this operation is only supported on LanceDB Embedded".into(),
+            })
+        }
     }
     /// The per-row errors Function refreshes recorded on this table; see
     /// [`Table::function_errors`]. The default returns `NotSupported`.
-    async fn function_errors(
+    fn function_errors(
         &self,
         _request: &crate::function::FunctionErrorsRequest,
-    ) -> Result<crate::function::FunctionErrors> {
-        Err(Error::NotSupported {
-            message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
-        })
+    ) -> impl Future<Output = Result<crate::function::FunctionErrors>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "per-row Function errors are recorded only in LanceDB Distributed".into(),
+            })
+        }
     }
     /// Alter columns in the table.
-    async fn alter_columns(&self, alterations: &[ColumnAlteration]) -> Result<AlterColumnsResult>;
+    fn alter_columns(
+        &self,
+        alterations: &[ColumnAlteration],
+    ) -> impl Future<Output = Result<AlterColumnsResult>> + Send;
     /// Drop columns from the table.
-    async fn drop_columns(&self, columns: &[&str]) -> Result<DropColumnsResult>;
+    fn drop_columns(
+        &self,
+        columns: &[&str],
+    ) -> impl Future<Output = Result<DropColumnsResult>> + Send;
     /// Get the version of the table.
-    async fn version(&self) -> Result<u64>;
+    fn version(&self) -> impl Future<Output = Result<u64>> + Send;
     /// Return a new table handle pinned to the exact revision currently visible.
-    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
-        Err(Error::NotSupported {
-            message: "checkout_current is not supported on this table type".into(),
-        })
+    fn checkout_current(&self) -> impl Future<Output = Result<Arc<DynBaseTable<'static>>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "checkout_current is not supported on this table type".into(),
+            })
+        }
     }
     /// Checkout a specific version of the table.
-    async fn checkout(&self, version: u64) -> Result<()>;
+    fn checkout(&self, version: u64) -> impl Future<Output = Result<()>> + Send;
     /// Checkout a table version referenced by a tag.
     /// Tags provide a human-readable way to reference specific versions of the table.
-    async fn checkout_tag(&self, tag: &str) -> Result<()>;
+    fn checkout_tag(&self, tag: &str) -> impl Future<Output = Result<()>> + Send;
     /// Checkout the latest version of the table.
-    async fn checkout_latest(&self) -> Result<()>;
+    fn checkout_latest(&self) -> impl Future<Output = Result<()>> + Send;
     /// Return an independent handle pinned to the version currently selected.
     ///
     /// Backends that can advance between requests should override this for
     /// multi-request operations that need snapshot consistency. Backends whose
     /// existing handles already provide the desired behavior return `None`.
-    async fn snapshot_at_current_version(&self) -> Result<Option<Arc<dyn BaseTable>>> {
-        Ok(None)
+    fn snapshot_at_current_version(
+        &self,
+    ) -> impl Future<Output = Result<Option<Arc<DynBaseTable<'static>>>>> + Send {
+        async move { Ok(None) }
     }
     /// Whether repeated identical scans return rows in the same order.
     ///
@@ -904,103 +988,147 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
         false
     }
     /// Restore the table to the currently checked out version.
-    async fn restore(&self) -> Result<()>;
+    fn restore(&self) -> impl Future<Output = Result<()>> + Send;
     /// List the versions of the table.
-    async fn list_versions(&self) -> Result<Vec<Version>>;
+    fn list_versions(&self) -> impl Future<Output = Result<Vec<Version>>> + Send;
     /// Create a new branch from `from` and return a handle scoped to it.
-    async fn create_branch(
+    fn create_branch(
         &self,
         name: &str,
         from: lance::dataset::refs::Ref,
-    ) -> Result<Arc<dyn BaseTable>>;
+    ) -> impl Future<Output = Result<Arc<DynBaseTable<'static>>>> + Send;
     /// Check out an existing branch and return a handle scoped to it.
-    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>>;
+    fn checkout_branch(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<Arc<DynBaseTable<'static>>>> + Send;
     /// Check out an existing branch at an optional version, returning a handle.
     ///
     /// `None` tracks the branch's latest; `Some(v)` pins it to that version
     /// (read-only). The default implementation composes [`Self::checkout_branch`]
     /// and [`Self::checkout`]; implementations may override it to resolve the
     /// `(branch, version)` coordinate in a single manifest read.
-    async fn checkout_branch_version(
+    fn checkout_branch_version(
         &self,
         name: &str,
         version: Option<u64>,
-    ) -> Result<Arc<dyn BaseTable>> {
-        let branch = self.checkout_branch(name).await?;
-        if let Some(version) = version {
-            branch.checkout(version).await?;
+    ) -> impl Future<Output = Result<Arc<DynBaseTable<'static>>>> + Send {
+        async move {
+            let branch = self.checkout_branch(name).await?;
+            if let Some(version) = version {
+                branch.checkout(version).await?;
+            }
+            Ok(branch)
         }
-        Ok(branch)
     }
     /// List the branches of the table.
-    async fn list_branches(&self) -> Result<HashMap<String, BranchContents>>;
+    fn list_branches(&self)
+    -> impl Future<Output = Result<HashMap<String, BranchContents>>> + Send;
     /// Delete a branch.
-    async fn delete_branch(&self, name: &str) -> Result<()>;
+    fn delete_branch(&self, name: &str) -> impl Future<Output = Result<()>> + Send;
     /// Diff a branch against main. Remote only.
-    async fn diff_branch(&self, _from_branch: &str) -> Result<BranchDiff> {
-        Err(Error::NotSupported {
-            message: "Branch diffs are only supported on Enterprise tables.".into(),
-        })
+    fn diff_branch(&self, _from_branch: &str) -> impl Future<Output = Result<BranchDiff>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "Branch diffs are only supported on Enterprise tables.".into(),
+            })
+        }
     }
     /// Cherry-pick a branch onto main, or dry-run. Remote only.
     /// HTTP 409 still returns [`Ok`] with [`CherryPickStatus::Failed`].
-    async fn cherry_pick(&self, _from_branch: &str, _dry_run: bool) -> Result<CherryPickResult> {
-        Err(Error::NotSupported {
-            message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
-        })
+    fn cherry_pick(
+        &self,
+        _from_branch: &str,
+        _dry_run: bool,
+    ) -> impl Future<Output = Result<CherryPickResult>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "Cherry-picking branches is only supported on Enterprise tables.".into(),
+            })
+        }
     }
     /// The branch this handle is scoped to, or `None` for `main`.
     fn current_branch(&self) -> Option<String>;
     /// Get the table definition.
-    async fn table_definition(&self) -> Result<TableDefinition>;
+    fn table_definition(&self) -> impl Future<Output = Result<TableDefinition>> + Send;
     /// Get the table URI (storage location)
-    async fn uri(&self) -> Result<String>;
+    fn uri(&self) -> impl Future<Output = Result<String>> + Send;
     /// Get the storage options used when opening this table, if any.
-    #[deprecated(since = "0.25.0", note = "Use initial_storage_options() instead")]
-    async fn storage_options(&self) -> Option<HashMap<String, String>>;
+    ///
+    /// Deprecated: use [`BaseTable::initial_storage_options`] instead. This isn't marked
+    /// `#[deprecated]` because the code dynosaur generates for [`DynBaseTable`] calls it.
+    fn storage_options(&self) -> impl Future<Output = Option<HashMap<String, String>>> + Send;
     /// Get the initial storage options that were passed in when opening this table.
     ///
     /// For dynamically refreshed options (e.g., credential vending), use [`Self::latest_storage_options`].
-    async fn initial_storage_options(&self) -> Option<HashMap<String, String>>;
+    fn initial_storage_options(
+        &self,
+    ) -> impl Future<Output = Option<HashMap<String, String>>> + Send;
     /// Get the latest storage options, refreshing from provider if configured.
     ///
     /// Returns `Ok(Some(options))` if storage options are available (static or refreshed),
     /// `Ok(None)` if no storage options were configured, or `Err(...)` if refresh failed.
-    async fn latest_storage_options(&self) -> Result<Option<HashMap<String, String>>>;
+    fn latest_storage_options(
+        &self,
+    ) -> impl Future<Output = Result<Option<HashMap<String, String>>>> + Send;
     /// Poll until the columns are fully indexed. Will return Error::Timeout if the columns
     /// are not fully indexed within the timeout.
-    async fn wait_for_index(
+    fn wait_for_index(
         &self,
         index_names: &[&str],
         timeout: std::time::Duration,
-    ) -> Result<()>;
+    ) -> impl Future<Output = Result<()>> + Send;
     /// Get statistics on the table
-    async fn stats(&self) -> Result<TableStatistics>;
+    fn stats(&self) -> impl Future<Output = Result<TableStatistics>> + Send;
     /// Create an ExecutionPlan for inserting data into the table.
     ///
     /// This is used by the DataFusion TableProvider implementation to support
     /// INSERT INTO statements.
-    async fn create_insert_exec(
+    fn create_insert_exec(
         &self,
         _input: Arc<dyn datafusion_physical_plan::ExecutionPlan>,
         _write_params: WriteParams,
-    ) -> Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>> {
-        Err(Error::NotSupported {
-            message: "create_insert_exec not implemented".to_string(),
-        })
+    ) -> impl Future<Output = Result<Arc<dyn datafusion_physical_plan::ExecutionPlan>>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "create_insert_exec not implemented".to_string(),
+            })
+        }
     }
     /// Update per-field metadata. Merges into existing metadata by default;
     /// [`FieldMetadataUpdate::remove`] deletes a key and
     /// [`FieldMetadataUpdate::replace`] swaps the field's whole map.
     ///
     /// The default returns `NotSupported`; Lance-backed and LanceDB Distributed tables override it.
-    async fn update_field_metadata(
+    fn update_field_metadata(
         &self,
         _updates: &[FieldMetadataUpdate],
-    ) -> Result<UpdateFieldMetadataResult> {
-        Err(Error::NotSupported {
-            message: "update_field_metadata is not supported on this table type".into(),
-        })
+    ) -> impl Future<Output = Result<UpdateFieldMetadataResult>> + Send {
+        async move {
+            Err(Error::NotSupported {
+                message: "update_field_metadata is not supported on this table type".into(),
+            })
+        }
+    }
+}
+
+// dynosaur doesn't forward supertraits to the generated struct.
+impl<'a> DynBaseTable<'a> {
+    fn erased(&self) -> &(dyn __dynosaur_macro_dynbasetable::ErasedBaseTable + 'a) {
+        // SAFETY: DynBaseTable is a #[repr(transparent)] wrapper around this trait object.
+        unsafe { std::mem::transmute(self) }
+    }
+}
+
+impl std::fmt::Display for DynBaseTable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.erased(), f)
+    }
+}
+
+impl std::fmt::Debug for DynBaseTable<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(self.erased(), f)
     }
 }
 
@@ -1009,7 +1137,7 @@ pub trait BaseTable: std::fmt::Display + std::fmt::Debug + Send + Sync {
 /// The type of the each row is defined in Apache Arrow [Schema].
 #[derive(Clone, Debug)]
 pub struct Table {
-    inner: Arc<dyn BaseTable>,
+    inner: Arc<DynBaseTable<'static>>,
     database: Option<Arc<dyn Database>>,
     embedding_registry: Arc<dyn EmbeddingRegistry>,
 }
@@ -1033,7 +1161,7 @@ mod test_utils {
             ));
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
-                inner,
+                inner: DynBaseTable::from_arc(inner),
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1057,7 +1185,7 @@ mod test_utils {
             );
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
-                inner,
+                inner: DynBaseTable::from_arc(inner),
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1079,7 +1207,7 @@ mod test_utils {
             ));
             let database = Arc::new(crate::remote::db::RemoteDatabase::new_mock(handler));
             Self {
-                inner,
+                inner: DynBaseTable::from_arc(inner),
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1103,7 +1231,7 @@ mod test_utils {
                 handler, config,
             ));
             Self {
-                inner,
+                inner: DynBaseTable::from_arc(inner),
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1131,7 +1259,7 @@ mod test_utils {
                 handler, config,
             ));
             Self {
-                inner,
+                inner: DynBaseTable::from_arc(inner),
                 database: Some(database),
                 // Registry is unused.
                 embedding_registry: Arc::new(MemoryRegistry::new()),
@@ -1146,8 +1274,8 @@ impl std::fmt::Display for Table {
     }
 }
 
-impl From<Arc<dyn BaseTable>> for Table {
-    fn from(inner: Arc<dyn BaseTable>) -> Self {
+impl From<Arc<DynBaseTable<'static>>> for Table {
+    fn from(inner: Arc<DynBaseTable<'static>>) -> Self {
         Self {
             inner,
             database: None,
@@ -1157,7 +1285,7 @@ impl From<Arc<dyn BaseTable>> for Table {
 }
 
 impl Table {
-    pub fn new(inner: Arc<dyn BaseTable>, database: Arc<dyn Database>) -> Self {
+    pub fn new(inner: Arc<DynBaseTable<'static>>, database: Arc<dyn Database>) -> Self {
         Self {
             inner,
             database: Some(database),
@@ -1165,7 +1293,7 @@ impl Table {
         }
     }
 
-    pub fn base_table(&self) -> &Arc<dyn BaseTable> {
+    pub fn base_table(&self) -> &Arc<DynBaseTable<'static>> {
         &self.inner
     }
 
@@ -1183,7 +1311,7 @@ impl Table {
     }
 
     pub(crate) fn new_with_embedding_registry(
-        inner: Arc<dyn BaseTable>,
+        inner: Arc<DynBaseTable<'static>>,
         database: Arc<dyn Database>,
         embedding_registry: Arc<dyn EmbeddingRegistry>,
     ) -> Self {
@@ -2635,7 +2763,7 @@ pub trait NativeTableExt {
     fn as_native(&self) -> Option<&NativeTable>;
 }
 
-impl NativeTableExt for Arc<dyn BaseTable> {
+impl NativeTableExt for Arc<DynBaseTable<'static>> {
     fn as_native(&self) -> Option<&NativeTable> {
         self.as_any().downcast_ref::<NativeTable>()
     }
@@ -3375,7 +3503,6 @@ impl NativeTable {
     }
 }
 
-#[async_trait::async_trait]
 impl BaseTable for NativeTable {
     fn as_any(&self) -> &dyn std::any::Any {
         self
@@ -3399,7 +3526,7 @@ impl BaseTable for NativeTable {
         &self.id
     }
 
-    async fn query_snapshot(&self) -> Result<Arc<dyn BaseTable>> {
+    async fn query_snapshot(&self) -> Result<Arc<DynBaseTable<'static>>> {
         let snapshot = self.dataset.new_query_snapshot().await?;
         let mut table = self.with_dataset(snapshot);
         // QueryTable requests do not carry a revision. A pinned snapshot must
@@ -3407,20 +3534,20 @@ impl BaseTable for NativeTable {
         table
             .pushdown_operations
             .remove(&NamespaceClientPushdownOperation::QueryTable);
-        Ok(Arc::new(table))
+        Ok(DynBaseTable::new_arc(table))
     }
 
     async fn version(&self) -> Result<u64> {
         Ok(self.dataset.get().await?.version().version)
     }
 
-    async fn checkout_current(&self) -> Result<Arc<dyn BaseTable>> {
+    async fn checkout_current(&self) -> Result<Arc<DynBaseTable<'static>>> {
         let current = self.dataset.get().await?;
         let dataset = dataset::DatasetConsistencyWrapper::new_time_travel(
             current.as_ref().clone(),
             self.read_consistency_interval,
         );
-        Ok(Arc::new(Self {
+        Ok(DynBaseTable::new_arc(Self {
             dataset,
             ..self.clone()
         }))
@@ -3445,7 +3572,7 @@ impl BaseTable for NativeTable {
         &self,
         name: &str,
         from: lance::dataset::refs::Ref,
-    ) -> Result<Arc<dyn BaseTable>> {
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         Self::validate_branch_name(name, "branch name")?;
         if let lance::dataset::refs::Ref::Version(Some(from_branch), _) = &from {
             Self::validate_branch_name(from_branch, "from_ref")?;
@@ -3456,24 +3583,24 @@ impl BaseTable for NativeTable {
             branch_ds,
             self.read_consistency_interval,
         );
-        Ok(Arc::new(self.with_dataset(dataset)))
+        Ok(DynBaseTable::new_arc(self.with_dataset(dataset)))
     }
 
-    async fn checkout_branch(&self, name: &str) -> Result<Arc<dyn BaseTable>> {
+    async fn checkout_branch(&self, name: &str) -> Result<Arc<DynBaseTable<'static>>> {
         Self::validate_branch_name(name, "branch name")?;
         let branch_ds = self.dataset.get().await?.checkout_branch(name).await?;
         let dataset = dataset::DatasetConsistencyWrapper::new_latest(
             branch_ds,
             self.read_consistency_interval,
         );
-        Ok(Arc::new(self.with_dataset(dataset)))
+        Ok(DynBaseTable::new_arc(self.with_dataset(dataset)))
     }
 
     async fn checkout_branch_version(
         &self,
         name: &str,
         version: Option<u64>,
-    ) -> Result<Arc<dyn BaseTable>> {
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         let Some(version) = version else {
             return self.checkout_branch(name).await;
         };
@@ -3489,7 +3616,7 @@ impl BaseTable for NativeTable {
             branch_ds,
             self.read_consistency_interval,
         );
-        Ok(Arc::new(self.with_dataset(dataset)))
+        Ok(DynBaseTable::new_arc(self.with_dataset(dataset)))
     }
 
     async fn list_branches(&self) -> Result<HashMap<String, BranchContents>> {
@@ -4084,7 +4211,7 @@ impl BaseTable for NativeTable {
         index_names: &[&str],
         timeout: std::time::Duration,
     ) -> Result<()> {
-        wait_for_index(self, index_names, timeout).await
+        wait_for_index(DynBaseTable::from_ref(self), index_names, timeout).await
     }
 
     async fn stats(&self) -> Result<TableStatistics> {

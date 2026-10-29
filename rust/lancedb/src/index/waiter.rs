@@ -4,6 +4,7 @@
 use crate::Error;
 use crate::error::Result;
 use crate::table::BaseTable;
+use crate::table::DynBaseTable;
 use log::debug;
 use std::time::{Duration, Instant};
 use tokio::time::sleep;
@@ -14,7 +15,7 @@ pub(crate) const MAX_WAIT: Duration = Duration::from_secs(2 * 60 * 60);
 /// Poll the table using list_indices() and index_stats() until all of the indices have 0 un-indexed rows.
 /// Will return Error::Timeout if the columns are not fully indexed within the timeout.
 pub async fn wait_for_index(
-    table: &dyn BaseTable,
+    table: &DynBaseTable<'_>,
     index_names: &[&str],
     timeout: Duration,
 ) -> Result<()> {

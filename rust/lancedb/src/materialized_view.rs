@@ -20,6 +20,7 @@ pub use grouped::IVF_PARTITION;
 mod query;
 pub mod refresh;
 
+use crate::table::BaseTable;
 use std::collections::HashMap;
 use std::sync::Arc;
 

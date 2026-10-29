@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::table::BaseTable;
 use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;

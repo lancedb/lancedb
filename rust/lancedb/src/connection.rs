@@ -2261,9 +2261,7 @@ mod tests {
             .await
             .unwrap();
 
-        let native_table = table
-            .base_table()
-            .as_any()
+        let native_table = crate::table::BaseTable::as_any(table.base_table().as_ref())
             .downcast_ref::<NativeTable>()
             .unwrap();
         assert!(!native_table.uses_v2_manifest_paths().await.unwrap());

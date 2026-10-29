@@ -1090,10 +1090,12 @@ async fn remote_refresh_omits_unknown_metrics_and_forwards_full() {
     let database = RemoteDatabase::new_mock(|request| -> http::Response<String> {
         panic!("unexpected database request: {}", request.url());
     });
-    let view =
-        crate::MaterializedView::from_table(crate::Table::new(Arc::new(table), Arc::new(database)))
-            .await
-            .unwrap();
+    let view = crate::MaterializedView::from_table(crate::Table::new(
+        crate::table::DynBaseTable::new_arc(table),
+        Arc::new(database),
+    ))
+    .await
+    .unwrap();
 
     let first = view.refresh().execute().await.unwrap();
     let second = view

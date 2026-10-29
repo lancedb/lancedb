@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::table::DynBaseTable;
 use std::{
     collections::{HashSet, VecDeque},
     sync::Arc,
@@ -166,8 +167,14 @@ pub async fn create_plan(
     if let AnyQuery::Query(request) = &query
         && let Some(offsets) = &request.take_offsets
     {
-        return crate::query::create_take_offsets_plan(table, request, offsets, options, false)
-            .await;
+        return crate::query::create_take_offsets_plan(
+            DynBaseTable::from_ref(table),
+            request,
+            offsets,
+            options,
+            false,
+        )
+        .await;
     }
 
     let query = match query {

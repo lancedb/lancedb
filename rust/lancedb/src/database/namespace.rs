@@ -32,12 +32,13 @@ use crate::database::read_freshness::{
     FreshnessBaselines, ReadFreshnessContextProvider, TableFreshness,
 };
 use crate::error::{Error, Result};
+use crate::table::DynBaseTable;
 use crate::table::{NativeTable, map_namespace_lance_error};
 use lance::dataset::WriteMode;
 
 use super::{
-    BaseTable, CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest,
-    Database, OpenTableRequest, TableNamesRequest,
+    CloneTableRequest, CreateTableMode, CreateTableRequest as DbCreateTableRequest, Database,
+    OpenTableRequest, TableNamesRequest,
 };
 
 /// Returns true if the given `lance::Error` (anywhere in its source chain) is a
@@ -332,7 +333,10 @@ impl Database for LanceNamespaceDatabase {
         Ok(self.namespace.list_tables(request).await?)
     }
 
-    async fn create_table(&self, request: DbCreateTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn create_table(
+        &self,
+        request: DbCreateTableRequest,
+    ) -> Result<Arc<DynBaseTable<'static>>> {
         // Refuse a bad declaration before the namespace records a table.
         crate::table::computed_columns::ensure_declarations_are_planned(
             &request.data.arrow_schema(),
@@ -370,7 +374,7 @@ impl Database for LanceNamespaceDatabase {
                     .await?
                     .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
-                    return Ok(Arc::new(native_table));
+                    return Ok(DynBaseTable::new_arc(native_table));
                 }
             }
         }
@@ -502,10 +506,10 @@ impl Database for LanceNamespaceDatabase {
         .await?
         .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
-        Ok(Arc::new(native_table))
+        Ok(DynBaseTable::new_arc(native_table))
     }
 
-    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn open_table(&self, request: OpenTableRequest) -> Result<Arc<DynBaseTable<'static>>> {
         let native_table = NativeTable::open_from_namespace(
             self.namespace.clone(),
             &request.name,
@@ -519,10 +523,10 @@ impl Database for LanceNamespaceDatabase {
         .await?
         .with_freshness(self.table_freshness(&request.namespace_path, &request.name));
 
-        Ok(Arc::new(native_table))
+        Ok(DynBaseTable::new_arc(native_table))
     }
 
-    async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<dyn BaseTable>> {
+    async fn clone_table(&self, _request: CloneTableRequest) -> Result<Arc<DynBaseTable<'static>>> {
         Err(Error::NotSupported {
             message: "clone_table is not supported for namespace connections".to_string(),
         })
