@@ -5917,7 +5917,8 @@ class AsyncTable:
         """Remove the RTEWriteSpec from this table.
 
         Reverts to the standard `merge_insert` write path. Errors if no spec
-        is currently set.
+        is currently set, or if the RTE still holds rows that have not been
+        merged into the base table, since removing it would drop them.
         """
         await self._inner.disable_rte()
 

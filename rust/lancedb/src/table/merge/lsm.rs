@@ -30,8 +30,8 @@ use datafusion_physical_plan::SendableRecordBatchStream;
 use futures::TryStreamExt;
 use lance::Dataset;
 use lance::dataset::mem_wal::{
-    DatasetMemWalExt, ShardWriter, ShardWriterConfig, evaluate_sharding_spec,
-    validate_maintained_indexes_with,
+    DatasetMemWalExt, ShardManifestStore, ShardWriter, ShardWriterConfig, WalTailer,
+    evaluate_sharding_spec, validate_maintained_indexes_with,
 };
 use lance::index::DatasetIndexExt;
 use lance_core::datatypes::Schema as LanceSchema;
@@ -197,7 +197,9 @@ fn index_name_list(indices: &[IndexConfig]) -> String {
 /// Remove the [`RTEWriteSpec`] from the table by dropping the MemWAL index.
 ///
 /// Any cached shard writers are drained and closed first. Errors if no spec is
-/// currently set.
+/// currently set, or if the MemWAL still holds rows that have not been merged
+/// into the base table: dropping the index would orphan them, since a MemWAL
+/// installed later gets a new directory.
 #[allow(clippy::redundant_pub_crate)]
 pub(crate) async fn disable_rte(table: &NativeTable) -> Result<()> {
     table.dataset.ensure_mutable()?;
@@ -214,11 +216,75 @@ pub(crate) async fn disable_rte(table: &NativeTable) -> Result<()> {
     table.dataset.shard_writer().drain_and_close().await?;
 
     let mut dataset = (*table.dataset.get().await?).clone();
+    if let Some(details) = dataset.mem_wal_index_details().await? {
+        ensure_mem_wal_merged(&dataset, &details).await?;
+    }
     dataset
         .drop_index(lance_index::mem_wal::MEM_WAL_INDEX_NAME)
         .await?;
     table.dataset.update(dataset);
     Ok(())
+}
+
+/// Error if any shard of the MemWAL holds rows the base table does not: an
+/// SSTable past the shard's compaction watermark, or a WAL entry past the
+/// position its flushed SSTables cover.
+///
+/// Reading the WAL tip catches rows a live writer in another process has
+/// acknowledged but not flushed. A write that lands after this check is not
+/// caught.
+async fn ensure_mem_wal_merged(dataset: &Dataset, details: &MemWalIndexDetails) -> Result<()> {
+    let store = dataset.object_store(None).await?;
+    let base_path = dataset.branch_location().path;
+    let scan_batch_size = ShardWriterConfig::default().manifest_scan_batch_size;
+
+    let mut pending = Vec::new();
+    for shard_id in dataset.list_mem_wal_latest_shard_ids().await? {
+        // First occurrence per shard, as Lance's `compacted_generation_for_shard`.
+        let compacted = details
+            .compacted_sstables
+            .iter()
+            .find(|entry| entry.shard_id == shard_id)
+            .map_or(0, |entry| entry.generation);
+        let manifest = ShardManifestStore::new(
+            store.clone(),
+            &base_path,
+            &details.dir_id,
+            shard_id,
+            scan_batch_size,
+        )
+        .latest()
+        .await?;
+        let (unmerged, flushed_through) = manifest.map_or((0, 0), |manifest| {
+            let unmerged = manifest
+                .sstables
+                .iter()
+                .filter(|sstable| sstable.generation > compacted)
+                .count();
+            (unmerged, manifest.replay_after_wal_entry_position)
+        });
+        let wal_tip = WalTailer::new(store.clone(), base_path.clone(), &details.dir_id, shard_id)
+            .next_position()
+            .await?
+            .saturating_sub(1);
+        let unflushed = wal_tip.saturating_sub(flushed_through);
+        if unmerged > 0 || unflushed > 0 {
+            pending.push(format!(
+                "shard {shard_id}: {unmerged} SSTable(s) not merged, {unflushed} WAL entry(ies) not flushed"
+            ));
+        }
+    }
+    if pending.is_empty() {
+        return Ok(());
+    }
+    Err(Error::InvalidInput {
+        message: format!(
+            "disable_rte: the RTE holds rows that have not been merged into the base \
+             table and would be lost if it were removed ({}); disable_rte is only \
+             allowed before any rows have been written through the RTE",
+            pending.join("; ")
+        ),
+    })
 }
 
 // =============================================================================
