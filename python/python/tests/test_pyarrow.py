@@ -2,6 +2,7 @@
 # SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 import lancedb
 from lancedb.integrations.pyarrow import PyarrowDatasetAdapter
@@ -48,3 +49,19 @@ def test_dataset_adapter(tmp_path):
     assert adapter.head(10).num_rows == 0
 
     assert adapter.scanner().projected_schema == pa.schema({"x": pa.int64()})
+
+
+def test_dataset_adapter_expression_filter(tmp_path):
+    data = pa.table({"x": [1, 2, 3, 4], "y": [5, 6, 7, 8]})
+    conn = lancedb.connect(tmp_path)
+    tbl = conn.create_table("test", data)
+
+    adapter = PyarrowDatasetAdapter(tbl)
+    filt = pc.field("x") > 2
+
+    assert adapter.count_rows(filt) == 2
+    assert adapter.to_table(filter=filt) == data.slice(2, 2)
+    assert adapter.head(1, filter=filt) == data.slice(2, 1)
+    # The filter can reference a column that is not projected
+    assert adapter.to_table(columns=["y"], filter=filt) == pa.table({"y": [7, 8]})
+    assert adapter.scanner(filter=filt).count_rows() == 2

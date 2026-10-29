@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
 use chrono::{DateTime, Utc};
+use lance::index::scalar::IndexDetails;
 use scalar::FtsIndexBuilder;
 use serde::Deserialize;
 use serde_with::skip_serializing_none;
@@ -13,7 +14,10 @@ use crate::index::vector::IvfRqIndexBuilder;
 use crate::{DistanceType, Error, Result, job::Job, table::BaseTable};
 
 use self::{
-    scalar::{BTreeIndexBuilder, BitmapIndexBuilder, FmIndexBuilder, LabelListIndexBuilder},
+    scalar::{
+        BTreeIndexBuilder, BitmapIndexBuilder, BloomFilterIndexBuilder, FmIndexBuilder,
+        LabelListIndexBuilder, NGramIndexBuilder, RTreeIndexBuilder, ZoneMapIndexBuilder,
+    },
     vector::{
         IvfHnswFlatIndexBuilder, IvfHnswPqIndexBuilder, IvfHnswSqIndexBuilder, IvfPqIndexBuilder,
         IvfSqIndexBuilder,
@@ -54,7 +58,34 @@ pub enum Index {
     /// substrings of the raw bytes, unlike the tokenized [`Index::FTS`] index.
     Fm(FmIndexBuilder),
 
+    /// A `ZoneMap` index stores min/max summaries for ranges of rows.
+    ///
+    /// It can accelerate range filters by skipping zones whose min/max values
+    /// prove they cannot match the predicate.
+    ZoneMap(ZoneMapIndexBuilder),
+
+    /// An NGram index accelerates substring and pattern filters on UTF-8 strings.
+    NGram(NGramIndexBuilder),
+
+    /// A Bloom filter index skips groups of scalar values that cannot match a filter.
+    BloomFilter(BloomFilterIndexBuilder),
+
+    /// An R-tree index accelerates spatial intersection filters on GeoArrow geometries.
+    /// Native creation requires the `geo` feature.
+    RTree(RTreeIndexBuilder),
+
     /// Full text search index using BM25.
+    ///
+    /// Supports strings, lists of strings, and `lance.json` logical fields
+    /// stored as `LargeBinary`. Raw binary fields are not supported. Lance
+    /// selects its JSON-aware tokenizer from the field metadata.
+    ///
+    /// JSON queries use `path,str,value` triples, where the dotted path is
+    /// relative to the indexed column. For example, `meta.tag,str,nature`
+    /// searches the string value at `$.meta.tag`, not other paths or key names.
+    /// Create the index on the JSON column, not on a JSON subpath. Plain text
+    /// queries are invalid for this tokenizer; malformed triples can panic in
+    /// the current Lance dependency (see [lance#8812](https://github.com/lance-format/lance/issues/8812)).
     ///
     /// The posting block size defaults to 128. Supported values are 128 and 256;
     /// a value of 256 uses the experimental FTS V3 format and may introduce
@@ -341,11 +372,47 @@ pub enum IndexType {
     LabelList,
     #[serde(alias = "FM", alias = "FMINDEX", alias = "FMIndex")]
     Fm,
+    #[serde(alias = "ZONEMAP", alias = "ZONE_MAP")]
+    ZoneMap,
+    #[serde(alias = "NGRAM", alias = "N_GRAM")]
+    NGram,
+    #[serde(alias = "BLOOM_FILTER", alias = "BLOOMFILTER")]
+    BloomFilter,
+    #[serde(alias = "RTREE", alias = "R_TREE")]
+    RTree,
     // FTS
     #[serde(alias = "INVERTED", alias = "Inverted")]
     FTS,
+    /// A registered scalar index plugin's display name, preserved verbatim.
+    ///
+    /// For example, `Custom("Sketch".into()).to_string()` returns `"Sketch"`.
+    Custom(String),
     /// Catch-all for index types not recognized by this version of LanceDB.
     Unknown,
+}
+
+impl IndexType {
+    pub(crate) fn from_description(
+        description: &dyn lance_index::traits::IndexDescription,
+    ) -> Self {
+        let index_type = description.index_type().parse().unwrap_or(Self::Unknown);
+        if index_type != Self::Unknown {
+            return index_type;
+        }
+        let Some(metadata) = description.segments().first() else {
+            return Self::Unknown;
+        };
+        if lance_index::is_system_index(metadata) {
+            return Self::Unknown;
+        }
+        let Some(details) = metadata.index_details.as_ref() else {
+            return Self::Unknown;
+        };
+        IndexDetails(details.clone())
+            .get_plugin()
+            .map(|plugin| Self::Custom(plugin.name().to_string()))
+            .unwrap_or(Self::Unknown)
+    }
 }
 
 impl std::fmt::Display for IndexType {
@@ -362,7 +429,12 @@ impl std::fmt::Display for IndexType {
             Self::Bitmap => write!(f, "BITMAP"),
             Self::LabelList => write!(f, "LABEL_LIST"),
             Self::Fm => write!(f, "FM"),
+            Self::ZoneMap => write!(f, "ZONEMAP"),
+            Self::NGram => write!(f, "NGRAM"),
+            Self::BloomFilter => write!(f, "BLOOM_FILTER"),
+            Self::RTree => write!(f, "RTREE"),
             Self::FTS => write!(f, "FTS"),
+            Self::Custom(name) => f.write_str(name),
             Self::Unknown => write!(f, "UNKNOWN"),
         }
     }
@@ -377,6 +449,10 @@ impl std::str::FromStr for IndexType {
             "BITMAP" => Ok(Self::Bitmap),
             "LABEL_LIST" | "LABELLIST" => Ok(Self::LabelList),
             "FM" | "FMINDEX" => Ok(Self::Fm),
+            "ZONEMAP" | "ZONE_MAP" => Ok(Self::ZoneMap),
+            "NGRAM" | "N_GRAM" => Ok(Self::NGram),
+            "BLOOM_FILTER" | "BLOOMFILTER" => Ok(Self::BloomFilter),
+            "RTREE" | "R_TREE" => Ok(Self::RTree),
             "FTS" | "INVERTED" => Ok(Self::FTS),
             "IVF_FLAT" => Ok(Self::IvfFlat),
             "IVF_SQ" => Ok(Self::IvfSq),
@@ -406,46 +482,47 @@ pub struct IndexConfig {
     ///
     /// An index may be made up of multiple segments, each with their own UUID.
     /// This is the UUID of the first segment. `None` if it could not be
-    /// determined (e.g. for remote tables, which do not yet surface this).
+    /// determined (e.g. in LanceDB Distributed, which does not yet surface this).
     pub index_uuid: Option<String>,
     /// The protobuf type URL, a precise type identifier for the index.
     ///
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. in LanceDB Distributed).
     pub type_url: Option<String>,
     /// When the index was created, taken as the minimum creation time across
     /// all segments.
     ///
     /// `None` if unavailable, such as for indices created before creation
-    /// timestamps were tracked, or for remote tables.
+    /// timestamps were tracked, or in LanceDB Distributed.
     pub created_at: Option<DateTime<Utc>>,
     /// The number of rows indexed, across all segments.
     ///
     /// This is approximate and may include rows that have since been deleted.
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. in LanceDB Distributed when the server
+    /// does not report it).
     pub num_indexed_rows: Option<u64>,
     /// The number of rows in the table that are not yet covered by this index.
     ///
     /// Computed as the table's total row count minus [`Self::num_indexed_rows`].
     /// Optimizing the index will fold these rows into it. `None` if unavailable
-    /// (e.g. for remote tables).
+    /// (e.g. in LanceDB Distributed when the server does not report it).
     pub num_unindexed_rows: Option<u64>,
     /// The total size in bytes of all index files across all segments.
     ///
     /// `None` if size information is unavailable, such as for indices created
-    /// before file sizes were tracked, or for remote tables.
+    /// before file sizes were tracked, or in LanceDB Distributed.
     pub size_bytes: Option<u64>,
     /// The number of segments that make up the index.
     ///
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. in LanceDB Distributed).
     pub num_segments: Option<u32>,
     /// The on-disk index format version, taken from the first segment.
     ///
-    /// `None` if unavailable (e.g. for remote tables).
+    /// `None` if unavailable (e.g. in LanceDB Distributed).
     pub index_version: Option<i32>,
     /// Index-type-specific details, serialized as JSON.
     ///
     /// The shape of this JSON varies by index type. `None` if the details
-    /// could not be produced (e.g. no plugin available) or for remote tables.
+    /// could not be produced (e.g. no plugin available) or in LanceDB Distributed.
     pub index_details: Option<String>,
 }
 
@@ -481,4 +558,35 @@ pub struct IndexStatistics {
     pub distance_type: Option<DistanceType>,
     /// The number of parts this index is split into.
     pub num_indices: Option<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IndexType;
+
+    #[test]
+    fn builtin_scalar_index_type_names() {
+        for (index_type, canonical, aliases) in [
+            (IndexType::NGram, "NGRAM", ["NGram", "NGRAM", "N_GRAM"]),
+            (
+                IndexType::BloomFilter,
+                "BLOOM_FILTER",
+                ["BloomFilter", "BLOOMFILTER", "BLOOM_FILTER"],
+            ),
+            (IndexType::RTree, "RTREE", ["RTree", "RTREE", "R_TREE"]),
+        ] {
+            assert_eq!(index_type.to_string(), canonical);
+            for alias in aliases {
+                assert_eq!(alias.parse::<IndexType>().unwrap(), index_type);
+                assert_eq!(
+                    alias.to_lowercase().parse::<IndexType>().unwrap(),
+                    index_type
+                );
+                assert_eq!(
+                    serde_json::from_value::<IndexType>(serde_json::json!(alias)).unwrap(),
+                    index_type
+                );
+            }
+        }
+    }
 }

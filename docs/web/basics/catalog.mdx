@@ -1,0 +1,66 @@
+---
+title: "Lance Catalog"
+sidebarTitle: "Lance Catalog"
+description: "Organize, find and control access to your data in LanceDB."
+icon: sitemap
+keywords: ["catalog", "namespace", "hierarchy", "governance", "database", "table", "view"]
+---
+
+## Catalog overview {#catalog}
+
+A catalog keeps track of named data objects, such as tables and views, so
+applications can discover and access them. In LanceDB, it organizes those
+objects into databases and namespaces.
+
+## Databases, namespaces and tables {#objects}
+
+A database contains namespaces that group related tables and views. Namespaces
+can also contain other namespaces, allowing teams to organize data by project,
+environment or purpose.
+
+For example, a search application can keep production and staging data in
+separate namespaces within the same database:
+
+```mermaid
+flowchart TD
+    database["ai_data · database"] --> prod["prod · namespace"]
+    database --> staging["staging · namespace"]
+    prod --> prod_docs["documents · table"]
+    staging --> staging_docs["documents · table"]
+```
+
+<span id="views" />
+
+| Object | What it represents |
+| --- | --- |
+| [Database](/management/database) | A container for namespaces and their data objects. |
+| [Namespace](/management/namespace) | A named group of tables, views or nested namespaces. |
+| [Table](/management/table) | Data stored as rows and columns. |
+| [View](/management/view) | A saved query, evaluated when read. Available in Enterprise. |
+| [Materialized view](/management/materialized-view) | The stored results of a query, updated by a refresh. |
+
+{/*
+Draft for the Functions release. Add this row to the table above:
+| [Function](/management/function) | Registered code used to compute column values. Available in Enterprise. |
+*/}
+
+<span id="resolution" />
+
+## Organization and access control {#governance}
+
+- **Separate projects and environments.** Keep production and staging tables
+  in distinct namespaces, even when they use the same table names.
+- **Find shared datasets.** Give teams a consistent place to discover and
+  access the data they work with.
+- **Control access in Enterprise.** Use permissions on databases, namespaces
+  and tables to manage who can access shared data and what they can do with it.
+
+<span id="elsewhere" />
+
+## Learn more {#next}
+
+- [Databases](/management/database): connect to and manage a database.
+- [Namespaces](/management/namespace): create groups and address tables within them.
+- [Tables](/management/table): create, inspect and manage your data.
+- [Views](/management/view) and [materialized views](/management/materialized-view): work with query-defined data.
+- [Authorization](/governance/authorization): configure Enterprise access permissions.

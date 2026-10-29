@@ -12,10 +12,7 @@ inputs:
 runs:
   using: "composite"
   steps:
-    - name: Install macos dependency
-      shell: bash
-      run: |
-        brew install protobuf
+    - uses: ./.github/actions/setup-protoc
     - name: Build wheel
       uses: PyO3/maturin-action@v1
       with:
