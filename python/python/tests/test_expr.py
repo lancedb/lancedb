@@ -11,6 +11,7 @@ import pytest
 
 import lancedb
 from lancedb.expr import Expr, col, func, lit
+from lancedb.index import FTS
 
 
 # ── unit tests for Expr construction ─────────────────────────────────────────
@@ -52,7 +53,7 @@ class TestExprConstruction:
     def test_func(self):
         e = func("lower", col("name"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "lower(name)"
+        assert e.to_sql() == "lower(`name`)"
 
     def test_func_unknown_raises(self):
         with pytest.raises(Exception):
@@ -79,6 +80,67 @@ class TestExprConstruction:
         d = Decimal("1.234567890123456789")
         e = lit(d)
         assert isinstance(e, Expr)
+
+    @pytest.mark.parametrize(
+        "value, decimal_type",
+        [
+            ("1E-7", pa.decimal128(12, 7)),
+            ("-1.23E-7", pa.decimal128(12, 9)),
+            ("1E+3", pa.decimal128(12, 0)),
+            ("-1.23E+5", pa.decimal128(12, 0)),
+            ("0E-7", pa.decimal128(12, 7)),
+            ("-0E+3", pa.decimal128(12, 0)),
+            ("1E-38", pa.decimal128(38, 38)),
+            ("1E+37", pa.decimal128(38, 0)),
+            ("1.234567890123456789012345678901234567E+37", pa.decimal128(38, 0)),
+            ("0E+128", pa.decimal128(1, 0)),
+        ],
+    )
+    def test_lit_decimal_exponent_query(self, tmp_path, value, decimal_type):
+        expected = Decimal(value)
+        table = lancedb.connect(tmp_path).create_table(
+            "decimals",
+            pa.table(
+                {
+                    "id": [1, 2],
+                    # Arrow's Python ingestion rejects 0E+128 even though its
+                    # numeric value is representable. Store canonical zero to
+                    # exercise the expression literal independently of ingestion.
+                    "price": pa.array(
+                        [Decimal(0) if expected.is_zero() else expected, None],
+                        type=decimal_type,
+                    ),
+                }
+            ),
+        )
+        predicate = col("price") == lit(expected)
+        result = table.search().where(predicate).to_arrow()
+        assert result["id"].to_pylist() == [1]
+        assert result["price"].to_pylist() == [expected]
+        # Exercise the SQL serializer and parser as well as the typed query path.
+        sql_result = table.search().where(predicate.to_sql()).to_arrow()
+        assert sql_result["id"].to_pylist() == [1]
+        assert sql_result["price"].to_pylist() == [expected]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "NaN",
+            "sNaN",
+            "Infinity",
+            "-Infinity",
+            "1E-39",
+            "1E+38",
+            "1E+129",
+            "1E+1000000000",
+            "0E+129",
+            "12345678901234567890123456789012345678E+1",
+            "9" * 39,
+        ],
+    )
+    def test_lit_decimal_unrepresentable_raises(self, value):
+        with pytest.raises(ValueError):
+            lit(Decimal(value))
 
 
 class TestExprOperators:
@@ -115,7 +177,7 @@ class TestExprOperators:
     def test_and_operator(self):
         e = (col("age") > lit(18)) & (col("status") == lit("active"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "((age > 18) AND (status = 'active'))"
+        assert e.to_sql() == "((age > 18) AND (`status` = 'active'))"
 
     def test_or_operator(self):
         e = (col("a") == lit(1)) | (col("b") == lit(2))
@@ -166,7 +228,7 @@ class TestExprOperators:
     def test_coerce_plain_str(self):
         e = col("name") == "alice"
         assert isinstance(e, Expr)
-        assert e.to_sql() == "(name = 'alice')"
+        assert e.to_sql() == "(`name` = 'alice')"
 
     def test_reflexive_comparisons(self):
         # 10 < col("age") swaps to col("age") > 10
@@ -198,85 +260,85 @@ class TestExprBytesLiteral:
 
     def test_bytes_equality_expr_sql(self):
         e = col("data") == lit(b"\xca\xfe")
-        assert e.to_sql() == "(data = X'CAFE')"
+        assert e.to_sql() == "(`data` = X'CAFE')"
 
     def test_bytes_ne_expr_sql(self):
         e = col("data") != lit(b"\xff")
-        assert e.to_sql() == "(data <> X'FF')"
+        assert e.to_sql() == "(`data` <> X'FF')"
 
     def test_bytes_compound_expr_sql(self):
         e = (col("data") == lit(b"\x01")) & (col("id") > lit(5))
-        assert e.to_sql() == "((data = X'01') AND (id > 5))"
+        assert e.to_sql() == "((`data` = X'01') AND (id > 5))"
 
     def test_bytes_in_function_call(self):
         # Regression test: binary literals inside scalar function calls
         # used to fail because DataFusion's unparser does not support Binary
         # scalars.  Now handled via a placeholder-substitution rewrite.
         e = func("contains", col("data"), lit(b"\xff"))
-        assert e.to_sql() == "contains(data, X'FF')"
+        assert e.to_sql() == "contains(`data`, X'FF')"
 
     def test_bytes_in_not(self):
         e = ~(col("data") == lit(b"\xff"))
-        assert e.to_sql() == "NOT (data = X'FF')"
+        assert e.to_sql() == "NOT (`data` = X'FF')"
 
 
 class TestExprStringMethods:
     def test_lower(self):
         e = col("name").lower()
         assert isinstance(e, Expr)
-        assert e.to_sql() == "lower(name)"
+        assert e.to_sql() == "lower(`name`)"
 
     def test_upper(self):
         e = col("name").upper()
         assert isinstance(e, Expr)
-        assert e.to_sql() == "upper(name)"
+        assert e.to_sql() == "upper(`name`)"
 
     def test_contains(self):
         e = col("text").contains(lit("hello"))
         assert isinstance(e, Expr)
-        assert e.to_sql() == "contains(text, 'hello')"
+        assert e.to_sql() == "contains(`text`, 'hello')"
 
     def test_contains_with_str_coerce(self):
         e = col("text").contains("hello")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "contains(text, 'hello')"
+        assert e.to_sql() == "contains(`text`, 'hello')"
 
     def test_chained_lower_eq(self):
         e = col("name").lower() == lit("alice")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "(lower(name) = 'alice')"
+        assert e.to_sql() == "(lower(`name`) = 'alice')"
 
 
 class TestExprCast:
     def test_cast_string(self):
         e = col("id").cast("string")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_int32(self):
         e = col("score").cast("int32")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_float64(self):
         e = col("val").cast("float64")
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_type(self):
         e = col("score").cast(pa.int32())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(score AS INTEGER)"
+        assert e.to_sql() == "arrow_cast(score, 'Int32')"
 
     def test_cast_pyarrow_float64(self):
         e = col("val").cast(pa.float64())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(val AS DOUBLE)"
+        assert e.to_sql() == "arrow_cast(val, 'Float64')"
 
     def test_cast_pyarrow_string(self):
         e = col("id").cast(pa.string())
         assert isinstance(e, Expr)
-        assert e.to_sql() == "CAST(id AS VARCHAR)"
+        assert e.to_sql() == "arrow_cast(id, 'Utf8')"
 
     def test_cast_pyarrow_and_string_equivalent(self):
         # pa.int32() and "int32" should produce equivalent SQL
@@ -320,6 +382,68 @@ class TestExprRepr:
         e = col("x")
         with pytest.raises(TypeError):
             {e: 1}
+
+
+class TestExprTruthiness:
+    """``bool(Expr)`` must raise instead of silently keeping one operand."""
+
+    def test_bool_raises(self):
+        with pytest.raises(TypeError, match="truth value of an Expr is ambiguous"):
+            bool(col("x") == 1)
+
+    def test_bool_error_points_to_operators(self):
+        with pytest.raises(TypeError, match=r"'&'.*'\|'.*'~'"):
+            bool(col("x") > 1)
+
+    def test_and_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            (col("id") > 7) and (col("g") == 0)  # noqa: B015
+
+    def test_or_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            (col("id") > 7) or (col("g") == 0)  # noqa: B015
+
+    def test_not_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            not (col("id") > 7)  # noqa: B015
+
+    def test_chained_comparison_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            lit(2) < col("id") < lit(5)  # noqa: B015
+        with pytest.raises(TypeError, match="ambiguous"):
+            2 < col("id") < 5  # noqa: B015
+
+    def test_if_raises(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            if col("x"):
+                pass
+
+    def test_membership_in_list_raises(self):
+        # list membership evaluates ``item == expr`` and calls bool() on the
+        # result, which used to be silently (and wrongly) True.
+        with pytest.raises(TypeError, match="ambiguous"):
+            col("x") in [1, 2, 3]  # noqa: B015
+
+    def test_any_all_raise(self):
+        with pytest.raises(TypeError, match="ambiguous"):
+            any([col("x") > 1])
+        with pytest.raises(TypeError, match="ambiguous"):
+            all([col("x") > 1])
+
+    def test_operators_still_combine(self):
+        a, b = col("id") > 7, col("g") == 0
+        assert (a & b).to_sql() == "((id > 7) AND (g = 0))"
+        assert (a | b).to_sql() == "((id > 7) OR (g = 0))"
+        assert (~a).to_sql() == "NOT (id > 7)"
+        assert ((lit(2) < col("id")) & (col("id") < lit(5))).to_sql() == (
+            "((2 < id) AND (id < 5))"
+        )
+
+    def test_identity_and_isinstance_checks_do_not_use_truthiness(self):
+        e = col("x") == 1
+        assert e is not None
+        assert isinstance(e, Expr)
+        assert e is e
 
 
 class TestExprReflexive:
@@ -597,14 +721,14 @@ class TestExprIsin:
     def test_isin_strs(self):
         assert (
             col("status").isin(["active", "pending"]).to_sql()
-            == "status IN ('active', 'pending')"
+            == "`status` IN ('active', 'pending')"
         )
 
     def test_isin_coerces_and_mixes(self):
         assert col("id").isin([lit(1), 2]).to_sql() == "id IN (1, 2)"
 
     def test_isin_empty(self):
-        assert col("id").isin([]).to_sql() == "id IN ()"
+        assert col("id").isin([]).to_sql() == "false"
 
     def test_isin_filter(self, simple_table):
         result = simple_table.search().where(col("id").isin([1, 3, 5])).to_arrow()
@@ -632,3 +756,219 @@ class TestExprBytesIntegration:
             .to_arrow()
         )
         assert result.num_rows == 2
+
+
+# ── datetime / timezone integration for lit() (issue #3262) ──────────────────
+
+
+class TestExprDatetimeTimezoneIntegration:
+    """Integration coverage for lit(datetime) against table timestamp columns.
+
+    PyArrow stores naive timestamps as UTC wall-clock microseconds. Python's
+    datetime.timestamp() treats naive values as *local* time, which used to
+    shift lit(naive) by the host UTC offset and break equality filters on
+    non-UTC machines. These cases lock the expected semantics.
+    """
+
+    def test_both_naive_match(self, tmp_path):
+        """Table naive + lit naive with the same wall clock must match."""
+        db = lancedb.connect(str(tmp_path / "naive"))
+        ts = datetime(2024, 7, 1, 10, 0, 0)
+        table = db.create_table(
+            "t", [{"id": 1, "ts": ts}, {"id": 2, "ts": datetime(2024, 7, 2, 10, 0, 0)}]
+        )
+        result = table.search().where(col("ts") == lit(ts)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_both_same_timezone_match(self, tmp_path):
+        """Table UTC + lit UTC for the same instant must match."""
+        db = lancedb.connect(str(tmp_path / "utc"))
+        ts = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1, 2],
+                    "ts": pa.array(
+                        [ts, datetime(2024, 7, 2, 10, 0, 0, tzinfo=timezone.utc)],
+                        type=pa.timestamp("us", tz="UTC"),
+                    ),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_different_timezones_same_instant(self, tmp_path):
+        """UTC table row equals lit of the same instant in a different zone."""
+        db = lancedb.connect(str(tmp_path / "diff_tz"))
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        # Same instant as 06:00 in UTC-4
+        ts_est = datetime(2024, 7, 1, 6, 0, 0, tzinfo=timezone(timedelta(hours=-4)))
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1],
+                    "ts": pa.array([ts_utc], type=pa.timestamp("us", tz="UTC")),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts_est)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_table_tz_literal_naive(self, tmp_path):
+        """UTC table + naive lit uses wall-clock equality (10:00 == 10:00 UTC)."""
+        db = lancedb.connect(str(tmp_path / "tz_naive"))
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        ts_naive = datetime(2024, 7, 1, 10, 0, 0)
+        table = db.create_table(
+            "t",
+            pa.table(
+                {
+                    "id": [1],
+                    "ts": pa.array([ts_utc], type=pa.timestamp("us", tz="UTC")),
+                }
+            ),
+        )
+        result = table.search().where(col("ts") == lit(ts_naive)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_table_naive_literal_aware(self, tmp_path):
+        """Naive table + UTC lit with the same wall clock must match."""
+        db = lancedb.connect(str(tmp_path / "naive_aware"))
+        ts_naive = datetime(2024, 7, 1, 10, 0, 0)
+        ts_utc = datetime(2024, 7, 1, 10, 0, 0, tzinfo=timezone.utc)
+        table = db.create_table("t", [{"id": 1, "ts": ts_naive}])
+        result = table.search().where(col("ts") == lit(ts_utc)).to_list()
+        assert len(result) == 1
+        assert result[0]["id"] == 1
+
+    def test_naive_lit_sql_is_wall_clock_not_local_shifted(self):
+        """Regression: naive lit must not apply the host local UTC offset."""
+        ts = datetime(2024, 7, 1, 10, 0, 0)
+        sql = lit(ts).to_sql()
+        # Must encode 10:00 wall clock, not 10:00+local_offset.
+        assert "2024-07-01 10:00:00" in sql
+
+
+# ── where(Expr) must never rely on the truthiness of the filter ──────────────
+
+
+@pytest.fixture
+def search_table(tmp_path):
+    db = lancedb.connect(str(tmp_path))
+    data = pa.table(
+        {
+            "id": list(range(12)),
+            "g": [i % 2 for i in range(12)],
+            "text": ["keep" if i < 9 else "other" for i in range(12)],
+            "vector": pa.FixedSizeListArray.from_arrays(
+                pa.array([float(i) for i in range(12) for _ in range(2)], pa.float32()),
+                2,
+            ),
+        }
+    )
+    table = db.create_table("search", data)
+    table.create_index("text", config=FTS())
+    return table
+
+
+def _ids(rows):
+    return sorted(r["id"] for r in rows)
+
+
+class TestExprWhereBuilders:
+    def test_chained_comparison_is_rejected_before_querying(self, search_table):
+        # The silent bug: this used to return ids 0..4 (lower bound dropped).
+        with pytest.raises(TypeError, match="ambiguous"):
+            search_table.search().where(lit(2) < col("id") < lit(5))
+
+    def test_plain_where_expr(self, search_table):
+        where = (lit(2) < col("id")) & (col("id") < lit(5))
+        rows = search_table.search().where(where).limit(100).to_list()
+        assert _ids(rows) == [3, 4]
+
+    def test_vector_where_expr(self, search_table):
+        where = (col("id") > lit(7)) & (col("g") == lit(0))
+        rows = search_table.search([0.0, 0.0]).where(where).limit(100).to_list()
+        assert _ids(rows) == [8, 10]
+
+    def test_fts_where_expr(self, search_table):
+        where = (col("id") > lit(3)) | (col("g") == lit(1))
+        rows = (
+            search_table.search("keep", query_type="fts")
+            .where(where)
+            .limit(100)
+            .to_list()
+        )
+        # "keep" matches ids 0..8; filter keeps id > 3 or odd ids.
+        assert _ids(rows) == [1, 3, 4, 5, 6, 7, 8]
+
+    def test_hybrid_where_expr(self, search_table):
+        # The hybrid builder used to test ``if self._where:``; that must not
+        # call bool() on an Expr now that it raises.
+        where = (col("id") > lit(3)) & (col("g") == lit(0))
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where(where)
+            .limit(100)
+            .to_list()
+        )
+        # Hybrid search fuses the vector and FTS results, and the filter applies
+        # to both sides: the vector side alone returns every row passing it.
+        assert _ids(rows) == [4, 6, 8, 10]
+
+    def test_hybrid_where_sql_string_still_works(self, search_table):
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where("id > 3 AND g = 0")
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == [4, 6, 8, 10]
+
+    def test_hybrid_empty_where_is_ignored(self, search_table):
+        rows = (
+            search_table.search(query_type="hybrid")
+            .vector([0.0, 0.0])
+            .text("keep")
+            .where("")
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == list(range(12))
+
+    def test_repeated_where_expr_combines(self, search_table):
+        rows = (
+            search_table.search()
+            .where(col("id") > lit(2))
+            .where(col("id") < lit(5))
+            .limit(100)
+            .to_list()
+        )
+        assert _ids(rows) == [3, 4]
+
+    def test_query_model_with_expr_filter(self, search_table):
+        query = search_table.search().where(col("id") > lit(2)).to_query_object()
+        assert isinstance(query.filter, Expr)
+
+    @pytest.mark.asyncio
+    async def test_async_where_expr(self, tmp_path):
+        db = await lancedb.connect_async(str(tmp_path))
+        table = await db.create_table(
+            "t", pa.table({"id": list(range(12)), "g": [i % 2 for i in range(12)]})
+        )
+        where = (col("id") > lit(7)) & (col("g") == lit(0))
+        rows = await table.query().where(where).to_list()
+        assert _ids(rows) == [8, 10]
+        with pytest.raises(TypeError, match="ambiguous"):
+            table.query().where(lit(2) < col("id") < lit(5))

@@ -12,7 +12,7 @@ use lance::io::WrappingObjectStore;
 use object_store::{
     CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
     PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions, Result as OSResult,
-    UploadPart, path::Path,
+    UploadPart, list::PaginatedListStore, path::Path,
 };
 
 #[derive(Debug, Default)]
@@ -56,6 +56,14 @@ impl WrappingObjectStore for IoStatsHolder {
             target,
             stats: self.0.clone(),
         })
+    }
+
+    fn wrap_paginated(
+        &self,
+        _store_prefix: &str,
+        original: Arc<dyn PaginatedListStore>,
+    ) -> Option<Arc<dyn PaginatedListStore>> {
+        Some(original)
     }
 }
 

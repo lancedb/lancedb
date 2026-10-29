@@ -21,7 +21,7 @@ Refuse to drop if non-empty (restrict) or drop recursively (cascade).
 ### mode?
 
 ```ts
-optional mode: "fail" | "skip";
+optional mode: "skip" | "fail";
 ```
 
 Whether to skip if the namespace doesn't exist, or fail.
