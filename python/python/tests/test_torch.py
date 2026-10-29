@@ -74,17 +74,23 @@ def _remote_dataset_handler(request):
         body = json.loads(request.rfile.read(content_len))
         offsets = _offsets_from_filter(body.get("filter"))
         requested_columns = body.get("columns") or ["a"]
+        # A dynamic projection is sent as {output name: source expression}; take
+        # queries use it to alias `_rowoffset` as `__lancedb_take_row_offset`.
         if isinstance(requested_columns, dict):
-            requested_columns = list(requested_columns)
+            projection = requested_columns
+        else:
+            projection = {column: column for column in requested_columns}
 
-        data = {}
-        for column in requested_columns:
-            if column == "a":
-                data[column] = [REMOTE_ROWS[offset] for offset in offsets]
-            elif column == "_rowoffset":
-                data[column] = offsets
-            elif column == "_rowid":
-                data[column] = offsets
+        sources = {
+            "a": [REMOTE_ROWS[offset] for offset in offsets],
+            "_rowoffset": offsets,
+            "_rowid": offsets,
+        }
+        data = {
+            name: sources[source]
+            for name, source in projection.items()
+            if source in sources
+        }
 
         table = pa.table(data)
         request.send_response(200)
