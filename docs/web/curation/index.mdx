@@ -17,10 +17,14 @@ records belong, and save the selected data or the rules used to produce it.
 
 | Task | What it helps you decide |
 | --- | --- |
+| [Create a Function](/curation/create-function) | How to run your own Python -- on CPU, on GPU, or against a remote service -- as part of SQL. |
+| [Chunk records](/curation/chunking) | How to split one record into several -- passages, clips, or tiles. |
+| [Scope to what changed](/curation/changes) | How to process only the rows added since your last run. |
 | [Profile a dataset](/curation/aggregate) | Whether coverage, missing values and class balance suit the task. |
 | [Sample records](/curation/sampling) | Which subset to inspect or use for an experiment. |
 | [Join datasets](/curation/join) | How to attach labels, metadata or scores stored elsewhere. |
-| [Rank and deduplicate](/curation/windowing) | Which records to keep when several describe the same item. |
+| [Rank and deduplicate](/curation/windowing) | Which records to keep when several share an explicit key. |
+| [Deduplicate near-duplicates](/curation/dedupe) | Which records to collapse when they only look alike, with no shared key. |
 
 The analytical examples in this section use **Enterprise SQL**. Connect with
 the [SQL guide](/basics/sql). For sampling through the Python SDK in LanceDB Embedded or

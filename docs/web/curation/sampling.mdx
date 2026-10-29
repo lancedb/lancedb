@@ -1,14 +1,12 @@
 ---
-title: "SQL sampling"
-sidebarTitle: "SQL Sampling"
+title: "Sampling"
+sidebarTitle: "Sampling"
 description: "Choose a sample for exploration or evaluation and preserve the selected records when reproducibility matters."
 icon: dice
 keywords: ["sampling", "tablesample", "subset", "eval set", "reproducible", "shuffle"]
 availability:
-  oss: unavailable
+  embedded: unavailable
   enterprise: available
-  summary: >-
-    Enterprise supports SQL `TABLESAMPLE`. For sampling in LanceDB Embedded and LanceDB Enterprise through the Python SDK, see [Sample without SQL](#training).
 ---
 
 import { PySampleDataset } from '/snippets/curation_sampling.mdx';
@@ -163,7 +161,7 @@ promise the same IDs across SDK versions or changes to the source dataset.
 </Accordion>
 
 For shuffled training reads, worker configuration and data loaders, see
-[Loading data for model training](/training/data-loading).
+[PyTorch Data Loader](/training/data-loading).
 
 ## Related guides {#reference}
 
