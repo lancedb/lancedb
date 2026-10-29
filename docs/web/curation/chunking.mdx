@@ -3,10 +3,11 @@ title: "Chunk records into multiple rows"
 sidebarTitle: "Chunking"
 description: "Expand one source row into many derived rows -- documents into passages, videos into clips, images into tiles."
 icon: diagram-subtask
-keywords: ["chunking", "function", "udf", "lateral", "unnest", "1:N", "passages", "clips"]
+keywords: ["chunking", "function", "udf", "lateral", "unnest", "1:N", "passages", "clips", "video", "frames"]
+availability:
+  embedded: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge> [SQL runs in LanceDB Enterprise.](/sql)
 
 Every other curation task on this page keeps the row count the same or
 smaller: profiling, sampling, joining, deduplicating. Chunking goes the other
@@ -16,9 +17,9 @@ embedding, a video into clips, or an image into tiles.
 
 ## Define a chunking Function {#function}
 
-A [Function](/management/function) that returns a `list` produces more than
-one value per input row. A chunker is a Function whose output is a list --
-of structs, of strings, of anything -- registered like any other Function.
+A Function that returns a `list` produces more than one value per input row.
+A chunker is a Function whose output is a list -- of structs, of strings, of
+anything -- registered like any other Function.
 
 A function that splits text into fixed-size passages turns a `documents`
 table into one row per passage:
@@ -53,10 +54,10 @@ version = db.create_function_async(split_into_passages).wait()
 ```
 </CodeGroup>
 
-See [Functions](/management/function) for registration details, environment
-and dependency declarations, and how a version stays immutable once rows are
-filled from it. The same function can be registered from SQL with
-[`CREATE FUNCTION`](/sql/ddl/function#create):
+Registration details, environment and dependency declarations, and how a
+version stays immutable once rows are filled from it, are the same for a
+chunker as for any other Function. The same function can be registered from
+SQL with `CREATE FUNCTION`:
 
 <CodeGroup>
 ```sql SQL
@@ -89,11 +90,90 @@ carrying `doc_id` and `title` from its parent. This is the fastest way to
 check a chunker before committing to a materialized view: run it over a few
 rows and inspect the output shape.
 
+## Video into frames {#video}
+
+Chunking a blob column is the same shape, with the chunker producing
+timestamps rather than text spans, and a second Function pulling the actual
+frame for each one. `videos` holds raw clips in a
+[Blob v2](/management/table#managed-blobs) column, with each row's duration
+already known:
+
+**Source: `videos`**
+
+| video_id | video | duration_seconds |
+| --- | --- | --- |
+| "clip-1" | (Blob v2 bytes) | 12.0 |
+
+A chunker that samples one timestamp per second needs no blob access at all
+-- it only looks at `duration_seconds`:
+
+<CodeGroup>
+```python Python icon="python"
+@udf(
+    output_schema=pa.list_(
+        pa.struct([
+            pa.field("frame_index", pa.int64(), nullable=False),
+            pa.field("ts", pa.float64(), nullable=False),
+        ])
+    ),
+)
+def sample_frame_timestamps(duration_seconds: float) -> list[dict]:
+    every = 1.0  # one frame per second
+    count = int(duration_seconds // every)
+    return [{"frame_index": i, "ts": i * every} for i in range(count)]
+
+version = db.create_function_async(sample_frame_timestamps).wait()
+```
+</CodeGroup>
+
+A second Function reads the blob -- incrementally, through a `BlobReader`,
+rather than loading the whole clip -- and returns one JPEG per call:
+
+<CodeGroup>
+```python Python icon="python"
+import lancedb
+from datetime import timedelta
+from lancedb import BlobReader
+
+@udf(
+    name="extract_frame",
+    gpu=True,
+    pip=["av==13.1.0", "pillow==11.0.0"],
+    input_schema=pa.schema([
+        lancedb.blob("video"),
+        pa.field("ts", pa.float64(), nullable=False),
+    ]),
+    output_schema=lancedb.blob("jpeg", nullable=False),
+)
+def extract_frame(video: BlobReader, ts: float) -> bytes:
+    ...  # decode the frame at ts, encode as JPEG, return its bytes
+
+extract_version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
+```
+</CodeGroup>
+
+Compose both in one query: explode `videos` into one row per sampled
+timestamp, then call `extract_frame` on each row to produce its image:
+
+<CodeGroup>
+```python Python icon="python"
+reader = db.execute_query("""
+    SELECT video_id, f.frame_index, f.ts, extract_frame(video, f.ts) AS jpeg
+    FROM videos, sample_frame_timestamps(duration_seconds) AS f
+""")
+```
+</CodeGroup>
+
+A 12-second clip becomes 12 output rows, each with its own extracted JPEG. A
+Function in `FROM` position yields one row per list element the same way
+regardless of what the list holds; whether the second step produces a blob,
+a plain value, or another struct does not change the explosion.
+
 ## Persist it as a materialized view {#persist}
 
-Wrap the same query in [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view)
-to keep a real `chunks` table that stays current as `documents` changes,
-instead of recomputing the explosion on every query:
+Wrap either query in [`CREATE MATERIALIZED VIEW`](/sql/ddl/materialized-view)
+to keep a real table that stays current as the source changes, instead of
+recomputing the explosion on every query:
 
 <CodeGroup>
 ```sql SQL

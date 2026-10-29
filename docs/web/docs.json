@@ -307,6 +307,8 @@
             "group": "Data Curation",
             "pages": [
               "curation/index",
+              "curation/chunking",
+              "curation/changes",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
@@ -350,6 +352,7 @@
             "pages": [
               {
                 "group": "Indexing",
+                "icon": "layer-group",
                 "pages": [
                   "indexing/index",
                   "indexing/vector-index",
