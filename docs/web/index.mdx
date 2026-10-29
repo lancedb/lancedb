@@ -119,7 +119,39 @@ To set up LanceDB Enterprise in your organization, [reach out to us](https://www
 
 ### Compare features {#compare}
 
-{/* availability-comparison */}
+| Area | Feature | Embedded | Enterprise |
+| --- | --- | :-: | :-: |
+| **Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
+|  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
+|  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
+|  | [Filtering](/search/filtering) | ✅ | ✅ |
+|  | [Reranking](/reranking) | ✅ | ✅ |
+|  | [Query plans](/search/explain) | ✅ | ✅ |
+|  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
+| **Indexing** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
+|  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
+|  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
+| **SQL and curation** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
+|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+|  | [Sampling](/curation/sampling) | ❌ | ✅ |
+|  | [Joins](/curation/join) | ❌ | ✅ |
+|  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
+|  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
+|  | [Chunking](/curation/chunking) | ❌ | ✅ |
+|  | [Changes since a version](/curation/changes) | ❌ | ✅ |
+|  | [Views](/management/view) | ❌ | ✅ |
+| **Feature engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ✅ | ✅ |
+|  | [Materialized views](/management/materialized-view) | ❌ | ✅ |
+|  | [Embedding registry](/embedding) | ✅ | ✅ |
+| **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
+|  | [Permutations](/training/permutation) | ✅ | ✅ |
+|  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
+| **Data management** | [Branches](/tables/branching) | ✅ | ✅ |
+|  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
+|  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Real Time engine (streaming writes and reads)](/tables/realtime-engine) | ❌ | ✅ |
+| **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
+|  | [Authorization](/governance/authorization) | ❌ | ✅ |
 
 ## Projects using LanceDB {#projects-using-lancedb}
 
