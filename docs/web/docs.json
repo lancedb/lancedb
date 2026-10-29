@@ -265,7 +265,8 @@
               "tables/consistency",
               "basics/guarantees",
               "basics/limits",
-              "basics/naming"
+              "basics/naming",
+              "tables/realtime-engine"
             ]
           },
           {
@@ -276,7 +277,8 @@
               "ingestion/insert",
               "ingestion/merge-insert",
               "ingestion/update",
-              "ingestion/delete"
+              "ingestion/delete",
+              "ingestion/realtime-write"
             ]
           },
           {
@@ -288,7 +290,8 @@
               "search/hybrid-search",
               "search/filtering",
               "reranking/index",
-              "search/explain"
+              "search/explain",
+              "search/realtime-read"
             ]
           },
           {
@@ -327,7 +330,6 @@
               "management/namespace",
               "management/table",
               "tables/branching",
-              "tables/realtime-engine",
               "management/materialized-view",
               "management/view"
             ]
