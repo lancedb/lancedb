@@ -19,7 +19,7 @@ vector index, without a pairwise scan.
 
 ## Example data {#example-data}
 
-Connect with an [Enterprise connection](/basics/connect#enterprise). A small
+Connect with an [Enterprise connection](/basics/catalog#enterprise). A small
 fixture keeps the distances easy to check by hand.
 
 <Accordion title="Create the example table">
@@ -27,7 +27,8 @@ fixture keeps the distances easy to check by hand.
 `curation_embeddings` has eight records. Rows 10 and 20 are near-identical;
 rows 30, 40 and 50 form one looser cluster; the rest are distinct.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 from lancedb.index import IvfFlat
 
@@ -50,6 +51,7 @@ table = db.create_table("curation_embeddings", [
 table.create_index("embedding", config=IvfFlat(num_partitions=1, distance_type="l2"))
 table.wait_for_index(["embedding_idx"])
 ```
+</CodeGroup>
 
 `dedupe` and `duplicate_pairs` read the vector index, so the column needs one
 before either function runs; a query against unindexed fragments is rejected
@@ -63,7 +65,8 @@ rather than silently returning stale or wrong results.
 `distance_threshold` of each other -- rows 10/20 collapse to one, 30/40/50
 collapse to one, and the four distinct rows pass through unchanged:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 reader = db.execute_query("""
     SELECT id, caption FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
     ORDER BY id
@@ -72,6 +75,7 @@ print(reader.read_all().to_pylist())
 # [{'id': 10, 'caption': 'a cat on a chair'}, {'id': 30, 'caption': 'a dog in a field'},
 #  {'id': 60, ...}, {'id': 70, ...}, {'id': 80, ...}]
 ```
+</CodeGroup>
 
 Every other column survives unchanged, since `dedupe` returns full rows, not
 just which ones matched. Clustering is transitive: 30 and 40 are within
@@ -91,7 +95,8 @@ id as a stable identifier for its cluster.
 `duplicate_pairs` returns the matching edges themselves, without collapsing
 anything -- useful for review, or for a threshold that is still being tuned:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.execute_query("""
     SELECT id_a, id_b, distance FROM duplicate_pairs(
         'curation_embeddings', 'embedding', distance_threshold => 0.06, id_column => 'id'
@@ -99,6 +104,7 @@ db.execute_query("""
     ORDER BY id_a
 """)
 ```
+</CodeGroup>
 
 This returns the pairs `(10, 20)`, `(30, 40)` and `(40, 50)` -- note 30 and 50
 are not a direct pair here (they sit `0.10` apart, outside the threshold),
@@ -110,12 +116,14 @@ Wrap either call in a [materialized view](/management/materialized-view) so
 the deduplicated set stays current as new records arrive, instead of
 recomputing it from scratch on every curation pass:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.execute_query("""
     CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
     SELECT * FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
 """)
 ```
+</CodeGroup>
 
 See [Refresh a materialized view](/feature-engineering/materialized-views) for
 manual refresh, and its [Enterprise refreshes](/feature-engineering/materialized-views#availability)

@@ -112,11 +112,13 @@ scalar function. Before applying it as a column, call it directly over the
 table to check the registration succeeded, without committing a schema
 change:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 reader = db.execute_query("SELECT value, double(value) AS doubled FROM function_demo")
 print(reader.read_all().to_pylist())
 # [{'value': 1.0, 'doubled': 2.0}, {'value': 2.0, 'doubled': 4.0}, {'value': 3.0, 'doubled': 6.0}]
 ```
+</CodeGroup>
 
 <Note>
 Equivalent SQL: `SELECT value, double(value) AS doubled FROM function_demo`.
@@ -142,7 +144,8 @@ binding, with aliases from `rename(columns=...)`.
 Parameters bind by name, so a function that takes several arguments binds
 several columns in one call:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 @udf
 def ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator
@@ -150,13 +153,15 @@ def ratio(numerator: float, denominator: float) -> float:
 version = db.create_function_async(ratio).wait()
 table.add_columns({"ratio": version(numerator=col("value"), denominator=col("count"))})
 ```
+</CodeGroup>
 
 A named-struct output fills more than one column from a single application.
 Declare the fields with `output_schema`, then alias each field to the column
 it fills with `rename(columns=...)` and pass the application itself, not a
 mapping, so both columns come from one atomic binding:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import pyarrow as pa
 
 @udf(
@@ -174,6 +179,7 @@ application = version(value=col("value")).rename(
 )
 table.add_columns(application)
 ```
+</CodeGroup>
 
 A single refresh fills `value_half` and `value_double` together: there is no
 state where one is filled and the other is still empty.
@@ -251,7 +257,8 @@ it, continuing as one example across chaining, persisting and incremental
 reads below. `videos` holds raw clips in a `video` Blob v2 column; `frames`
 names one timestamp per clip to extract, with a `selected` flag to skip some:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 import pyarrow as pa
 
@@ -264,6 +271,7 @@ frames = db.create_table("frames", [
     {"frame_id": 2, "video_id": "clip-1", "ts": 1.5, "selected": True},
 ])
 ```
+</CodeGroup>
 
 ### Produce a blob {#produce-blobs}
 
@@ -272,7 +280,8 @@ out of a video at a timestamp and returns it as a JPEG, without loading the
 whole clip first -- see [Read a blob incrementally](#incremental) below for
 how the `video: BlobReader` parameter does that:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 
 from lancedb import BlobReader, col
@@ -293,6 +302,7 @@ def extract_frame(video: BlobReader, ts: float) -> bytes:
 
 version = db.create_function_async(extract_frame).wait(timeout=timedelta(minutes=15))
 ```
+</CodeGroup>
 
 An empty byte string is a filled result. A scalar output cannot be nullable,
 because a physical NULL marks an unfilled computed row. To return a nullable
@@ -315,25 +325,29 @@ should be a blob, not just the first one in a chain.
 A second Function can bind a blob another Function produced. Register
 `caption` the same way, consuming a blob instead of producing one:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 @udf(gpu=True, pip=["transformers==4.47.0"])
 def caption(jpeg: bytes) -> str:
     ...  # run a vision-language model over the JPEG, return one sentence
 
 caption_version = db.create_function_async(caption).wait(timeout=timedelta(minutes=15))
 ```
+</CodeGroup>
 
 Compose both in one SQL statement over a join, instead of applying each as
 its own column. The join supplies `video` and `ts` from two different
 tables, and `caption` reads `extract_frame`'s result as it is computed,
 before anything is written:
 
-```sql
+<CodeGroup>
+```sql SQL
 SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
        caption(extract_frame(v.video, f.ts)) AS caption
 FROM videos v JOIN frames f ON v.id = f.video_id
 WHERE f.selected = true
 ```
+</CodeGroup>
 
 [`EXPLAIN`](/sql/dql/explain) on a query like this shows `RemoteTake`: the
 blob is read once, where the worker runs, and never pulled into the query
@@ -344,7 +358,8 @@ node first.
 Apply the same chained expression with `add_columns` to persist it as an
 ordinary table column:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.add_columns({"jpeg": extract_frame(video=col("video"), ts=col("ts"))})
 result = table.refresh_column_async("jpeg").wait(timeout=timedelta(minutes=15))
 assert result.rows_failed == 0
@@ -352,6 +367,7 @@ assert result.rows_failed == 0
 hits = table.search().select(["frame_id", "jpeg"]).with_row_id(True).to_arrow()
 values = table.fetch_blobs("jpeg", hits).to_pylist()
 ```
+</CodeGroup>
 
 Or wrap the join and both Functions in a
 [materialized view](/sql/ddl/materialized-view) instead, so the extracted
@@ -379,7 +395,8 @@ the whole payload first. The signature selects the access mode without
 another registration option. A minimal example, reading only the first MP4
 box type without loading the rest of the video:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from lancedb import BlobReader, udf
 
 
@@ -388,6 +405,7 @@ def first_box_type(video: BlobReader) -> bytes:
     video.seek(4)
     return video.read(4)
 ```
+</CodeGroup>
 
 The worker passes a seekable reader backed by the stored blob --
 `video.seekable()` is `True`. `read(size)` reads from the current cursor;
@@ -417,11 +435,13 @@ dependencies are part of its definition:
 | `python_version` | Python major/minor for the execution environment, defaulting to yours |
 | `gpu` | whether every execution requires a GPU |
 
-```python
+<CodeGroup>
+```python Python icon="python"
 @udf(gpu=True)
 def extract_frame(video: BlobReader, ts: float) -> bytes:
     ...  # runs only on a GPU-capable worker
 ```
+</CodeGroup>
 
 These are part of the **immutable function version**. Changing a dependency
 produces a new version rather than altering the one already registered, so a
@@ -461,7 +481,8 @@ and an `EnvVarSecret` binds it to the environment variable the function
 reads. Binding is a registration-time decision, passed to
 `create_function_async`, not to `@udf`:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import os
 
 from lancedb import EnvVarSecret
@@ -483,6 +504,7 @@ version = db.create_function_async(
     secrets=[EnvVarSecret(secret_name="openai-prod", env_variable="OPENAI_API_KEY")],
 ).wait()
 ```
+</CodeGroup>
 
 No API returns a Secret's value, and it never appears in the function's
 registration: `embed` reads `OPENAI_API_KEY` the way it always did, and the
@@ -524,13 +546,15 @@ it -- a model-loading helper shared by several Functions, for example.
 Continuing `caption` from [above](#chain), with its model-loading code
 factored into a sibling module instead of inlined:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import caption_worker  # a sibling module with the model-loading logic
 
 @udf(gpu=True, code=[caption_worker])
 def caption(jpeg: bytes) -> str:
     return caption_worker.run(jpeg)
 ```
+</CodeGroup>
 
 Each module in `code` is captured and shipped the same way the function
 itself is: as source, snapshotted at registration.

@@ -1,0 +1,43 @@
+---
+title: "Permutation"
+sidebarTitle: "Permutation"
+description: "The low-level, customizable row ordering that StreamingDataset is built on."
+icon: shuffle
+availability:
+  oss: available
+  enterprise: available
+---
+
+Most model training frameworks feed data into a model by sequencing through successive batches, a process
+often referred to as **data loading**. The simplest way to perform data loading is to read a LanceDB table in batches,
+in the order its rows are stored, through an identity `Permutation`. A table itself is not iterable.
+
+<CodeGroup>
+```py Python icon=Python
+import lancedb
+from lancedb.permutation import Permutation
+
+db = lancedb.connect("file://some/db/path")
+table = db.open_table("some_table")
+
+for batch in Permutation.identity(table).with_format("arrow").iter(batch_size=1024):
+    print(batch.to_pydict())
+```
+</CodeGroup>
+
+In specific use cases, you may need the flexibility to shuffle, split, and select data without using the full
+[`StreamingDataset`](/training/data-loading) object. In these cases, use `Permutation`, the lower-level
+functionality `StreamingDataset` is built on. A `Permutation` defines a customizable row ordering, and supports
+map-style access through `__getitem__()` and batched access through `__getitems__()`.
+
+## Version Pinning {#version-pinning}
+
+A `Permutation` is pinned to the version of its base table at the time it was constructed, and every read (including future reads
+from a `StreamingDataset` that wraps it, and every DataLoader worker after it starts) resolves against that pinned
+version. This makes iteration deterministic across compactions and worker restarts: the permutation only addresses rows
+that existed when it was built, and rows appended to the base table afterwards are not visible through the existing
+permutation.
+
+To include newly appended rows, build a new `Permutation` (and any `StreamingDataset` that depends on it)
+against the updated table. Permutations written before this behavior shipped continue to
+read as they did before.

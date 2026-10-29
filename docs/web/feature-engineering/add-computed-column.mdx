@@ -113,17 +113,21 @@ enabled.
 The call passed to `add_columns` is the tell: a SQL expression in `computed`
 is a string, keyed by the column name --
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.add_columns(computed={"caption_length": "length(caption)"})
 ```
+</CodeGroup>
 
 -- while a Function application is the registered version itself, called with
 its parameters bound to source columns through `col(...)`, keyed the same way
 but passed positionally rather than through `computed`:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 table.add_columns({"caption": caption_version(jpeg=col("jpeg"))})
 ```
+</CodeGroup>
 
 Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
 options, and both refresh and toggle the same way; see

@@ -5,7 +5,7 @@ description: "Create, open, list and drop a table whose contents are defined by 
 icon: table
 keywords: ["materialized view", "create_materialized_view", "catalog", "ddl"]
 availability:
-  oss: available
+  oss: unavailable
   enterprise: available
 ---
 
@@ -67,7 +67,8 @@ materialized view each have an async, job-returning counterpart --
 returns a [job](/basics/jobs) you `wait()` on instead of blocking. The async
 counterpart of the example [above](#create):
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 
 job = db.create_materialized_view_async(
@@ -76,6 +77,7 @@ job = db.create_materialized_view_async(
 )
 view = job.wait(timeout=timedelta(minutes=15))
 ```
+</CodeGroup>
 
 {/*
 Draft for automatic materialized-view refresh.

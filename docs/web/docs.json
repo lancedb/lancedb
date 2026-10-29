@@ -246,7 +246,6 @@
             "pages": [
               "index",
               "basics/offerings",
-              "basics/connect",
               "quickstart",
               "architecture",
               "basics/sdk",
@@ -320,7 +319,9 @@
           {
             "group": "Training",
             "pages": [
+              "training/permutation",
               "training/data-loading",
+              "training/distributed-training",
               "training/torch"
             ]
           },

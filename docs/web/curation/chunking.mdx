@@ -37,7 +37,8 @@ columns into every child row:
 | 1 | "Intro to AI" | 1 | "Neural networks..." |
 | 1 | "Intro to AI" | 2 | "Training data..." |
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from typing import Iterator, NamedTuple
 
 import geneva
@@ -62,6 +63,7 @@ chunks = db.create_udtf_view(
 )
 chunks.refresh()  # runs the chunker over every source row
 ```
+</CodeGroup>
 
 The chunker view is a materialized view, so it refreshes incrementally: new
 source rows are chunked and inserted, deleted source rows cascade-delete their
@@ -78,11 +80,13 @@ support. You reach for this directly, without a chunker, when you already
 have a list-typed column and just want to explode it in one query -- for
 example a `tags` column produced by an earlier step:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.execute_query("""
     SELECT *, UNNEST(tags) AS tag FROM documents
 """)
 ```
+</CodeGroup>
 
 Each source row with three tags becomes three output rows, one per tag, with
 every other column repeated. This is the same mechanism a chunker view

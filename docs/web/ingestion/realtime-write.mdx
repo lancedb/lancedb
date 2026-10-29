@@ -4,9 +4,10 @@ sidebarTitle: "Realtime Write"
 description: "Enable the realtime engine on a table and absorb small, frequent writes cheaply, each one committed in milliseconds."
 icon: "bolt"
 keywords: ["rte", "realtime engine", "wal", "memwal", "lsm", "write-ahead log", "streaming writes", "upsert"]
+availability:
+  oss: unavailable
+  enterprise: available
 ---
-
-<Badge color="red">Enterprise</Badge>
 
 The [realtime engine](/tables/realtime-engine) puts an LSM-style write tier in
 front of a table, turning many small writes into a few large commits. This
@@ -27,7 +28,8 @@ live camera feed, such as a robot recording episodes into a dataset shaped
 like [LeRobotDataset](/integrations/lerobotdataset)'s `frames` table —
 `frame_id` is the primary key so a re-captioned frame upserts in place:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 from datetime import timedelta
 
 import lancedb
@@ -48,12 +50,15 @@ schema = pa.schema([
 frames = db.create_table("frames", schema=schema)
 frames.set_unenforced_primary_key("frame_id")
 ```
+</CodeGroup>
 
 Or in SQL:
 
-```sql
+<CodeGroup>
+```sql SQL
 ALTER TABLE frames SET UNENFORCED PRIMARY KEY (frame_id)
 ```
+</CodeGroup>
 
 ### 2. Create indexes {#indexes}
 
@@ -61,24 +66,30 @@ By default, RTE maintains every supported index on the table, including
 indexes created after it is enabled. A scalar index on the primary key is
 required for partial updates and deletes.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 frames.create_index("embedding", config=IvfPq())
 frames.create_index("caption", config=FTS())
 frames.create_index("frame_id", config=BTree())
 frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=timedelta(minutes=5))
 ```
+</CodeGroup>
 
 ### 3. Enable RTE {#enable}
 
-```python
+<CodeGroup>
+```python Python icon="python"
 frames.enable_rte(RTEWriteSpec.unsharded())
 ```
+</CodeGroup>
 
 Or in SQL:
 
-```sql
+<CodeGroup>
+```sql SQL
 ALTER TABLE frames SET RTE
 ```
+</CodeGroup>
 
 ### 4. Write {#write}
 
@@ -93,7 +104,8 @@ Writes go through `merge_insert` on the primary key, and are visible to queries
 immediately — see [Realtime reads](/search/realtime-read) for querying them
 back:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 new_frames = pa.table({
     "frame_id": pa.array([2000, 2001], pa.int64()),
     "video_id": pa.array(["clip-9", "clip-9"]),
@@ -107,27 +119,32 @@ frames.merge_insert("frame_id") \
     .when_not_matched_insert_all() \
     .execute(new_frames)
 ```
+</CodeGroup>
 
 **Partial updates.** Send the primary key plus only the columns you want to
 change; omitted columns keep their current values. This requires a scalar
 index on the primary key. A re-captioning job, for example, only touches
 `caption`:
 
-```python
+<CodeGroup>
+```python Python icon="python"
 patch = pa.table(
     {"frame_id": [2000, 2001], "caption": ["a two-finger gripper closing on a cup", "the cup resting upright"]},
     schema=pa.schema([schema.field("frame_id"), schema.field("caption")]),
 )
 frames.merge_insert("frame_id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
 ```
+</CodeGroup>
 
 **Deletes.** The predicate must bind the primary key to literal values. Ranges,
 `OR`, and filters on other columns are rejected. Deletes require a scalar index
 on the primary key.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 frames.delete("frame_id IN (2000, 2001)")
 ```
+</CodeGroup>
 
 ### Disabling RTE {#disable}
 
@@ -137,10 +154,12 @@ existed when it started, so anything written during the checkpoint can be left
 behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
 so run `checkpoint_rte()` first.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 frames.checkpoint_rte()
 frames.disable_rte()
 ```
+</CodeGroup>
 
 ## Write performance {#write-performance}
 

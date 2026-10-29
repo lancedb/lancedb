@@ -43,16 +43,58 @@ through the same table model, whether a workflow uses one table or several relat
 
 ## Embedded and Enterprise {#embedded-and-enterprise}
 
-LanceDB ships as two offerings on the same Lance format and table model. **LanceDB Embedded** is an open-source,
-embedded retrieval library -- install it locally in minutes for search and regular-scale workflows, with the
-application itself planning queries, building indexes, and running background work. **LanceDB Enterprise** is a
-distributed multimodal lakehouse platform for teams that need scale without building bespoke infrastructure:
-query serving, read execution and caching, and indexing and background work run as separate, independently sized
-components.
+LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
+Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
+curation, feature engineering, search and retrieval, and training workflows. See
+[Embedded vs. Enterprise](/basics/offerings#compare) for a feature-by-feature comparison.
 
-See [Embedded vs. Enterprise](/basics/offerings#compare) for a feature-by-feature comparison,
-[Architecture](/architecture) for how Enterprise's components fit together and what changes in your application,
-or jump straight to the [quickstart](/quickstart).
+### 1\. LanceDB Embedded {#1-lancedb-oss}
+
+**LanceDB Embedded** is an open-source, embedded retrieval library, with client SDKs in Python, TypeScript and
+Rust -- the application itself plans queries, builds indexes, and runs background work. Run it locally in just a
+few steps, which lets you explore datasets, curate data, and run search and retrieval workloads for agents. Start
+here:
+
+<Columns cols={2}>
+  <Card
+    title="Quickstart"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Get started with LanceDB in minutes.
+  </Card>
+  <Card
+    title="Basic Table Operations"
+    icon="table"
+    href="/management/table"
+  >
+    Create tables, evolve schemas, version data, and modify rows in LanceDB.
+  </Card>
+</Columns>
+
+### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
+
+[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform
+built for search, curation, feature engineering, and high-throughput training data access workflows on top of the
+same core table abstraction, without building bespoke infrastructure. Query serving, read execution and caching,
+and indexing and background work run as separate, independently sized components -- see
+[Architecture](/architecture) for how they fit together and what changes in your application. To set up LanceDB
+Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
+
+<Info>
+**Built with scale, performance, and security in mind.**
+
+LanceDB Enterprise is designed for very large-scale, high-performance, distributed workloads in
+private deployments, and can operate under strict [security requirements](/enterprise/security).
+</Info>
+
+<Card
+  title="Quickstart"
+  icon="rocket"
+  href="/quickstart"
+>
+  Get started with LanceDB in minutes, including Enterprise `db://` connections.
+</Card>
 
 ## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
 
@@ -102,53 +144,3 @@ access patterns in one format instead of scattering them across task-specific st
   </Card>
 </CardGroup>
 
-## From local development to production scale {#from-local-development-to-production-scale}
-
-LanceDB Embedded and LanceDB Enterprise share the same Lance format and table model. Start locally with
-LanceDB Embedded, then move to Enterprise when your team needs distributed scale, managed infrastructure, private deployment,
-or higher-throughput curation, feature engineering, search and retrieval, and training workflows.
-
-### 1\. LanceDB Embedded {#1-lancedb-oss}
-The fastest way to get started is the open-source embedded library, with client SDKs in Python, TypeScript
-and Rust. Run it locally in just a few steps, which lets you explore datasets, curate data, and run search and retrieval workloads
-for agents. Start here:
-
-<Columns cols={2}>
-  <Card
-    title="Quickstart"
-    icon="rocket"
-    href="/quickstart"
-  >
-    Get started with LanceDB in minutes.
-  </Card>
-  <Card
-    title="Basic Table Operations"
-    icon="table"
-    href="/management/table"
-  >
-    Create tables, evolve schemas, version data, and modify rows in LanceDB.
-  </Card>
-</Columns>
-
-### 2\. LanceDB Enterprise {#2-lancedb-enterprise}
-
-[LanceDB Enterprise](/enterprise) is a petabyte-scale (and beyond), distributed **multimodal lakehouse** platform built for
-search, curation, feature engineering, and high-throughput training data access workflows on top of the same core table
-abstraction. This eliminates the need for teams to build bespoke infrastructure to manage large multimodal datasets.
-To set up LanceDB Enterprise in your organization,
-[reach out to us](https://www.lancedb.com/contact).
-
-<Info>
-**Built with scale, performance, and security in mind.**
-
-LanceDB Enterprise is designed for very large-scale, high-performance, distributed workloads in
-private deployments, and can operate under strict [security requirements](/enterprise/security).
-</Info>
-
-<Card
-  title="Quickstart"
-  icon="rocket"
-  href="/quickstart"
->
-  Get started with LanceDB in minutes, including Enterprise `db://` connections.
-</Card>

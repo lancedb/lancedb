@@ -5,7 +5,7 @@ description: "Create a materialized view and refresh it when the source data cha
 icon: table
 keywords: ["materialized view", "create_materialized_view", "refresh", "full refresh"]
 availability:
-  oss: available
+  oss: unavailable
   enterprise: available
 ---
 
@@ -101,7 +101,8 @@ and `ALTER MATERIALIZED VIEW ... SET auto_refresh_enabled=...` toggles them
 the same way. Continuing the deduplication view from
 [LeRobotDataset](/integrations/lerobotdataset):
 
-```python
+<CodeGroup>
+```python Python icon="python"
 db.execute_query("""
     CREATE MATERIALIZED VIEW frames_deduped AS
     SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
@@ -109,6 +110,7 @@ db.execute_query("""
 """)
 db.execute_query("ALTER MATERIALIZED VIEW frames_deduped SET auto_refresh_enabled=true")
 ```
+</CodeGroup>
 
 As new episodes land in `frames`, the view picks them up on its own. Disabling
 and later re-enabling behaves like a computed column's: the next refresh

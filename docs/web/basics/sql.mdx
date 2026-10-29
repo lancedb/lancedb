@@ -44,7 +44,7 @@ The Flight SQL endpoint must be enabled and reachable from your client. Pass
 it explicitly as `sql_host_override` in Python, as in the example below. The
 API and SQL endpoints may use different hosts or ports.
 
-See [Connect to Enterprise](/basics/connect#enterprise) for other connection options.
+See [Connect to Enterprise](/basics/catalog#enterprise) for other connection options.
 
 SQL runs in Enterprise. Connections to a local directory or an object-storage
 bucket use LanceDB Embedded and cannot execute SQL statements. Use
@@ -57,7 +57,8 @@ with your Enterprise settings, including the region and both endpoint URLs.
 This example reads an existing `frames` table, with a `video_id` and a
 `caption` column describing each frame. Change the query to match your table.
 
-```python
+<CodeGroup>
+```python Python icon="python"
 import lancedb
 
 db = lancedb.connect(
@@ -72,9 +73,10 @@ reader = db.execute_query("SELECT frame_id, video_id, caption FROM frames LIMIT 
 table = reader.read_all()
 print(table.to_pylist())
 ```
+</CodeGroup>
 
 In application code, load credentials from environment variables or a secrets
-manager. The [connection guide](/basics/connect#enterprise) shows that setup.
+manager. The [connection guide](/basics/catalog#enterprise) shows that setup.
 
 `execute_query()` returns a blocking Arrow reader when results start arriving.
 The server can stream rows on the first call or return result tickets that the

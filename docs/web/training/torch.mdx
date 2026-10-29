@@ -149,8 +149,8 @@ Three arguments matter in distributed runs:
 
 To resume after a failure, save `train.state_dict()` next to the model. It records progress per split, so the
 resumed run continues from the same row even on a different number of GPUs. See
-[Parallelism & Elasticity](/training/data-loading#parallelism-&-elasticity) and
-[Checkpointing](/training/data-loading#checkpointing) for the batch-size rules and the multi-worker case.
+[Parallelism & Elasticity](/training/distributed-training#parallelism-&-elasticity) and
+[Checkpointing](/training/distributed-training#checkpointing) for the batch-size rules and the multi-worker case.
 
 ### Output Formats {#output-formats}
 
