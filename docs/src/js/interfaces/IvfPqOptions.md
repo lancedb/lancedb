@@ -92,8 +92,9 @@ optional numPartitions: number;
 The number of IVF partitions to create.
 
 This value should generally scale with the number of rows in the dataset.
-By default the number of partitions is the square root of the number of
-rows.
+When set, this takes precedence over `targetPartitionSize`. When omitted,
+the partition count is derived from `targetPartitionSize`, which defaults
+to 8192 rows for this index type.
 
 If this value is too large then the first part of the search (picking the
 right partition) will be slow.  If this value is too small then the second

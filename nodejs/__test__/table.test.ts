@@ -1736,7 +1736,7 @@ describe("When creating an index", () => {
       (indices[0].indexDetails as Record<string, unknown>)[
         "target_partition_size"
       ],
-    ).not.toBe(100);
+    ).toBeUndefined();
   });
 
   it("should allow me to replace (or not) an existing index", async () => {

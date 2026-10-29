@@ -100,6 +100,8 @@ optional numPartitions: number;
 
 The number of IVF partitions to create.
 
+When set, this takes precedence over `targetPartitionSize`.
+
 For HNSW, we recommend a small number of partitions. Setting this to 1 works
 well for most tables. For very large tables, training just one HNSW graph
 will require too much memory. Each partition becomes its own HNSW graph, so

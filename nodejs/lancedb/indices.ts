@@ -11,8 +11,9 @@ export interface IvfPqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 8192 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
@@ -132,8 +133,9 @@ export interface IvfRqOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow. If this value is too small then the second
@@ -244,6 +246,8 @@ export interface HnswPqOptions {
 
   /**
    * The number of IVF partitions to create.
+   *
+   * When set, this takes precedence over `targetPartitionSize`.
    *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
@@ -376,6 +380,8 @@ export interface HnswSqOptions {
   /**
    * The number of IVF partitions to create.
    *
+   * When set, this takes precedence over `targetPartitionSize`.
+   *
    * For HNSW, we recommend a small number of partitions. Setting this to 1 works
    * well for most tables. For very large tables, training just one HNSW graph
    * will require too much memory. Each partition becomes its own HNSW graph, so
@@ -467,8 +473,9 @@ export interface IvfFlatOptions {
    * The number of IVF partitions to create.
    *
    * This value should generally scale with the number of rows in the dataset.
-   * By default the number of partitions is the square root of the number of
-   * rows.
+   * When set, this takes precedence over `targetPartitionSize`. When omitted,
+   * the partition count is derived from `targetPartitionSize`, which defaults
+   * to 4096 rows for this index type.
    *
    * If this value is too large then the first part of the search (picking the
    * right partition) will be slow.  If this value is too small then the second
