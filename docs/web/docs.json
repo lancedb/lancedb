@@ -338,12 +338,14 @@
             "pages": [
               "curation/index",
               "curation/create-function",
+              "curation/vend-secret",
               "curation/chunking",
               "curation/changes",
               "curation/aggregate",
               "curation/sampling",
               "curation/join",
               "curation/windowing",
+              "curation/clustering",
               "curation/dedupe"
             ]
           },
@@ -375,7 +377,8 @@
               "management/table",
               "tables/branching",
               "management/view",
-              "management/materialized-view"
+              "management/materialized-view",
+              "management/secret"
             ]
           },
           {
@@ -412,6 +415,7 @@
             "pages": [
               "enterprise/authentication",
               "governance/authorization",
+              "governance/secrets",
               "enterprise/security"
             ]
           },
@@ -428,6 +432,7 @@
                   "sql/ddl/table",
                   "sql/ddl/view",
                   "sql/ddl/materialized-view",
+                  "sql/ddl/secret",
                   "sql/ddl/index",
                   "sql/ddl/job"
                 ],
