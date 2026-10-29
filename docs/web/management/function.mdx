@@ -300,6 +300,16 @@ blob as a value, use a named-struct output schema with a nullable blob field;
 the struct itself records whether the result has been filled. Read a nested
 blob with `table.fetch_blobs("payload.image", hits)`.
 
+<Warning>
+`output_schema=lancedb.blob(...)` is what makes a persisted result Blob v2
+rather than plain Arrow `binary`. Returning `bytes` from a function whose
+output type is inferred from a bare annotation, with no explicit
+`lancedb.blob(...)` output schema, persists as ordinary `binary`: the column
+still holds the right bytes, but it skips the Managed storage path, descriptor
+reads, and `fetch_blobs`. Declare it explicitly on every function whose output
+should be a blob, not just the first one in a chain.
+</Warning>
+
 ### Chain a Function on its output {#chain}
 
 A second Function can bind a blob another Function produced. Register

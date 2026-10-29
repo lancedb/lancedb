@@ -30,23 +30,24 @@ In SQL, see [`REFRESH MATERIALIZED VIEW`](/sql/dml/refresh#refresh-materialized-
 <CodeGroup>
 ```python Python icon="python"
 view = db.create_materialized_view(
-    "recent_docs",
-    source="documents",
-    select=["id", "title", "embedding"],
-    where="created_at > TIMESTAMP '2026-01-01 00:00:00'",
+    "frames_captioned",
+    source="frames",
+    select=["frame_id", "video_id", "ts", "caption"],
+    where="selected = true",
 )
 ```
 
 ```typescript TypeScript icon="square-js"
-const view = await db.createMaterializedView("recent_docs", "documents", {
-  select: ["id", "title", "embedding"],
-  where: "created_at > TIMESTAMP '2026-01-01 00:00:00'",
+const view = await db.createMaterializedView("frames_captioned", "frames", {
+  select: ["frame_id", "video_id", "ts", "caption"],
+  where: "selected = true",
 });
 ```
 </CodeGroup>
 
-`source` names the table the view reads. With Python SDK 0.40.0, create that
-table with stable row IDs before creating the view. The
+`source` names the table the view reads — here, a `frames` table with a
+`caption` column, filtered to the frames selected for captioning. With Python
+SDK 0.40.0, create that table with stable row IDs before creating the view. The
 [complete example](/feature-engineering/materialized-views#create-and-refresh)
 shows the setup. `select`, `where` and `limit` define the query.
 
@@ -65,13 +66,15 @@ materialized view each have an async, job-returning counterpart --
 `create_materialized_view_async`, `view.refresh_async()`,
 `drop_materialized_view_async` -- the same pattern as
 [`refresh_column_async`](/feature-engineering/refresh-column#async): each
-returns a [job](/basics/jobs) you `wait()` on instead of blocking:
+returns a [job](/basics/jobs) you `wait()` on instead of blocking. The async
+counterpart of the example [above](#create):
 
 ```python
 from datetime import timedelta
 
 job = db.create_materialized_view_async(
-    "frames_captioned", source="frames", select=["frame_id", "caption"],
+    "frames_captioned", source="frames",
+    select=["frame_id", "video_id", "ts", "caption"], where="selected = true",
 )
 view = job.wait(timeout=timedelta(minutes=15))
 ```

@@ -22,6 +22,11 @@ key column, then declare it with `set_unenforced_primary_key`. The key is a
 single `int32`, `int64`, string, or binary column, and cannot be changed once
 set.
 
+The table below holds frames captioned and embedded as they stream in from a
+live camera feed, such as a robot recording episodes into a dataset shaped
+like [LeRobotDataset](/integrations/lerobotdataset)'s `frames` table —
+`frame_id` is the primary key so a re-captioned frame upserts in place:
+
 ```python
 from datetime import timedelta
 
@@ -33,26 +38,21 @@ from lancedb.index import FTS, BTree, IvfPq
 
 db = lancedb.connect("db://my_db", api_key="...", host_override="https://...")
 
-n, dim = 1024, 128
+dim = 768
 schema = pa.schema([
-    pa.field("id", pa.int64(), nullable=False),
-    pa.field("vector", pa.list_(pa.float32(), dim)),
-    pa.field("text", pa.utf8()),
+    pa.field("frame_id", pa.int64(), nullable=False),
+    pa.field("video_id", pa.utf8(), nullable=False),
+    pa.field("embedding", pa.list_(pa.float32(), dim)),
+    pa.field("caption", pa.utf8()),
 ])
-initial_data = pa.table({
-    "id": pa.array(range(n), pa.int64()),
-    "vector": pa.FixedSizeListArray.from_arrays(
-        pa.array(np.random.rand(n * dim).astype("float32")), dim),
-    "text": pa.array([f"doc {i} alpha bravo" for i in range(n)]),
-}, schema=schema)
-table = db.create_table("docs", initial_data, schema=schema)
-table.set_unenforced_primary_key("id")
+frames = db.create_table("frames", schema=schema)
+frames.set_unenforced_primary_key("frame_id")
 ```
 
 Or in SQL:
 
 ```sql
-ALTER TABLE docs SET UNENFORCED PRIMARY KEY (id)
+ALTER TABLE frames SET UNENFORCED PRIMARY KEY (frame_id)
 ```
 
 ### 2. Create indexes {#indexes}
@@ -62,22 +62,22 @@ indexes created after it is enabled. A scalar index on the primary key is
 required for partial updates and deletes.
 
 ```python
-table.create_index("vector", config=IvfPq())
-table.create_index("text", config=FTS())
-table.create_index("id", config=BTree())
-table.wait_for_index(["vector_idx", "text_idx", "id_idx"], timeout=timedelta(minutes=5))
+frames.create_index("embedding", config=IvfPq())
+frames.create_index("caption", config=FTS())
+frames.create_index("frame_id", config=BTree())
+frames.wait_for_index(["embedding_idx", "caption_idx", "frame_id_idx"], timeout=timedelta(minutes=5))
 ```
 
 ### 3. Enable RTE {#enable}
 
 ```python
-table.enable_rte(RTEWriteSpec.unsharded())
+frames.enable_rte(RTEWriteSpec.unsharded())
 ```
 
 Or in SQL:
 
 ```sql
-ALTER TABLE docs SET RTE
+ALTER TABLE frames SET RTE
 ```
 
 ### 4. Write {#write}
@@ -94,29 +94,31 @@ immediately — see [Realtime reads](/search/realtime-read) for querying them
 back:
 
 ```python
-new_rows = pa.table({
-    "id": pa.array([2000, 2001], pa.int64()),
-    "vector": pa.FixedSizeListArray.from_arrays(
+new_frames = pa.table({
+    "frame_id": pa.array([2000, 2001], pa.int64()),
+    "video_id": pa.array(["clip-9", "clip-9"]),
+    "embedding": pa.FixedSizeListArray.from_arrays(
         pa.array(np.random.rand(2 * dim).astype("float32")), dim),
-    "text": pa.array(["fresh charlie delta", "fresh echo foxtrot"]),
+    "caption": pa.array(["a gripper closing on a cup", "a cup set down on the table"]),
 }, schema=schema)
 
-table.merge_insert("id") \
+frames.merge_insert("frame_id") \
     .when_matched_update_all() \
     .when_not_matched_insert_all() \
-    .execute(new_rows)
+    .execute(new_frames)
 ```
 
 **Partial updates.** Send the primary key plus only the columns you want to
 change; omitted columns keep their current values. This requires a scalar
-index on the primary key.
+index on the primary key. A re-captioning job, for example, only touches
+`caption`:
 
 ```python
 patch = pa.table(
-    {"id": [0, 1], "text": ["doc 0 revised", "doc 1 revised"]},
-    schema=pa.schema([schema.field("id"), schema.field("text")]),
+    {"frame_id": [2000, 2001], "caption": ["a two-finger gripper closing on a cup", "the cup resting upright"]},
+    schema=pa.schema([schema.field("frame_id"), schema.field("caption")]),
 )
-table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
+frames.merge_insert("frame_id").when_matched_update_all().when_not_matched_insert_all().execute(patch)
 ```
 
 **Deletes.** The predicate must bind the primary key to literal values. Ranges,
@@ -124,7 +126,7 @@ table.merge_insert("id").when_matched_update_all().when_not_matched_insert_all()
 on the primary key.
 
 ```python
-table.delete("id IN (2000, 2001)")
+frames.delete("frame_id IN (2000, 2001)")
 ```
 
 ### Disabling RTE {#disable}
@@ -136,8 +138,8 @@ behind. `disable_rte()` is rejected while the write-ahead log still holds rows,
 so run `checkpoint_rte()` first.
 
 ```python
-table.checkpoint_rte()
-table.disable_rte()
+frames.checkpoint_rte()
+frames.disable_rte()
 ```
 
 ## Write performance {#write-performance}

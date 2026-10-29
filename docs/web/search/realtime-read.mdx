@@ -21,13 +21,13 @@ Fresh rows supersede base rows with the same primary key, so a row written a
 moment ago is already reflected:
 
 ```python
-# continuing the `table` connected and written to in Realtime writes
+# continuing the `frames` table connected and written to in Realtime writes
 import numpy as np
 
-query_vector = np.random.rand(table.schema.field("vector").type.list_size).astype("float32")
+query_vector = np.random.rand(frames.schema.field("embedding").type.list_size).astype("float32")
 
-table.search(query_vector).limit(10).to_list()
-table.search("charlie").limit(10).to_list()
+frames.search(query_vector, vector_column_name="embedding").limit(10).to_list()
+frames.search("gripper closing on a cup", fts_columns="caption").limit(10).to_list()
 ```
 
 Vector, full-text, BTree, bitmap, and most other scalar indexes are maintained

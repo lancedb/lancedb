@@ -119,6 +119,13 @@ The current setting is in the column's own field metadata,
 submitting a job to ask.
 </Note>
 
+Setting the flag is a metadata-only change and always succeeds, independent of
+whether the scheduler can actually refresh the column -- a deployment issue
+that keeps the background job from running (for example, a worker that cannot
+reach object storage) does not stop the `ALTER` from committing. Check the
+column's job history, not just its metadata, if values stop appearing after
+re-enabling.
+
 **Disabling does not skip or drop writes.** Rows written while disabled
 commit with no computed value, the same as a row written before the column
 existed; they do not queue anywhere separate. Inflight jobs may finish, and

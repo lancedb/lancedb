@@ -111,6 +111,25 @@ image decode -- the column is filled by a registered
 [function](/management/function) instead of an expression. Declaring it looks
 the same; what differs is what fills it. It needs a deployment with Functions
 enabled.
+
+The call passed to `add_columns` is the tell: a SQL expression in `computed`
+is a string, keyed by the column name --
+
+```python
+table.add_columns(computed={"caption_length": "length(caption)"})
+```
+
+-- while a Function application is the registered version itself, called with
+its parameters bound to source columns through `col(...)`, keyed the same way
+but passed positionally rather than through `computed`:
+
+```python
+table.add_columns({"caption": caption_version(jpeg=col("jpeg"))})
+```
+
+Both accept the same `auto_refresh_enabled` and `auto_refresh_interval_seconds`
+options, and both refresh and toggle the same way; see
+[Refresh a column](/feature-engineering/refresh-column#automatic).
 */}
 
 ## Related guides {#next}

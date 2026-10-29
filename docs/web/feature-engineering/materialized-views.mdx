@@ -96,6 +96,28 @@ Draft for automatic materialized-view refresh. See
 [ALTER MATERIALIZED VIEW](/sql/ddl/materialized-view#alter) for scheduling a
 view the same way a computed column schedules itself; see
 [Automatic refresh](/feature-engineering/refresh-column#automatic).
+
+`WITH (auto_refresh_enabled=..., auto_refresh_interval_seconds=...)` on
+`CREATE MATERIALIZED VIEW` sets the same two options a computed column takes,
+and `ALTER MATERIALIZED VIEW ... SET auto_refresh_enabled=...` toggles them
+the same way. Continuing the deduplication view from
+[LeRobotDataset](/integrations/lerobotdataset):
+
+```python
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_deduped AS
+    SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
+    WITH (auto_refresh_enabled=false, auto_refresh_interval_seconds=5)
+""")
+db.execute_query("ALTER MATERIALIZED VIEW frames_deduped SET auto_refresh_enabled=true")
+```
+
+As new episodes land in `frames`, the view picks them up on its own. Disabling
+and later re-enabling behaves like a computed column's: the next refresh
+catches up everything that accumulated while it was off, in one pass, with no
+write required to trigger it -- not just rows added after re-enabling.
+Enabling the flag only commits the setting; it does not by itself guarantee
+the scheduler can reach whatever the view's query depends on.
 */}
 
 Use an SDK version supported by your Enterprise deployment. Materialized-view

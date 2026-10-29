@@ -59,8 +59,8 @@ SDK table operations to query those tables.
 
 Install the SDK with `pip install lancedb`. Replace the connection placeholders
 with your Enterprise settings, including the region and both endpoint URLs.
-This example reads an existing table named `my_docs` with `id` and `text`
-columns. Change the query to match your table.
+This example reads an existing `frames` table, with a `video_id` and a
+`caption` column describing each frame. Change the query to match your table.
 
 ```python
 import lancedb
@@ -73,7 +73,7 @@ db = lancedb.connect(
     sql_host_override="https://your-sql-endpoint:443",
 )
 
-reader = db.execute_query("SELECT id, text FROM my_docs LIMIT 10")
+reader = db.execute_query("SELECT frame_id, video_id, caption FROM frames LIMIT 10")
 table = reader.read_all()
 print(table.to_pylist())
 ```

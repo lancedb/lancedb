@@ -144,9 +144,11 @@ frames whose `emb_siglip2` vectors are nearly identical; LanceDB Enterprise's
 native [`dedupe`](/sql/functions#dedupe) collapses them into one
 representative per cluster, directly over the index, without a pairwise scan:
 
-```sql
-CREATE MATERIALIZED VIEW frames_deduped AS
-SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
+```python
+db.execute_query("""
+    CREATE MATERIALIZED VIEW frames_deduped AS
+    SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
+""")
 ```
 
 Every column survives the dedup unchanged -- `jerk_score`, the episode and
