@@ -410,6 +410,8 @@ async fn dedup_query_materializes_blob_payloads_and_null_vectors() -> anyhow::Re
                     (0..6).map(|id| vec![id; 4096]),
                 )),
                 Arc::new(StringArray::from(vec![None::<&str>; 6])),
+                Arc::new(UInt64Array::new_null(6)),
+                Arc::new(UInt64Array::new_null(6)),
             ],
             None,
         );

@@ -97,13 +97,9 @@ export {
   Connection,
   CreateTableOptions,
   TableNamesOptions,
-  ListTablesOptions,
   OpenTableOptions,
-  ListNamespacesOptions,
   CreateNamespaceOptions,
   DropNamespaceOptions,
-  ListNamespacesResponse,
-  ListTablesResponse,
   CreateNamespaceResponse,
   DropNamespaceResponse,
   DescribeNamespaceResponse,
@@ -122,6 +118,7 @@ export {
   VectorQuery,
   TakeQuery,
   AnalyzePlanDistributedMetrics,
+  BlobMode,
   QueryExecutionOptions,
   ColumnOrdering,
   FullTextSearchOptions,
@@ -167,10 +164,10 @@ export {
   WriteProgress,
   FtsToken,
   TokenizeTableOptions,
-  LsmWriteSpec,
-  LsmStats,
-  BucketStats,
-  GenerationStats,
+  RTEWriteSpec,
+  RTEStats,
+  TableShardStats,
+  SsTableStats,
   MemtableStats,
   ColumnAlteration,
   FieldMetadataUpdate,
@@ -210,6 +207,8 @@ export {
   MultiVector,
 } from "./arrow";
 export { IntoSql, packBits } from "./util";
+export { Expr, col, lit, litBool, litInt, func } from "./expr";
+export type { ExprLike } from "./expr";
 
 /**
  * Options for tokenizing a full-text search query without a table index.
@@ -289,11 +288,11 @@ export async function tokenize(
  *
  * Accepted formats:
  *
- * - `/path/to/database` - local database
+ * - `/path/to/database` - database on the local file system
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
- * - `db://host:port` - remote database (LanceDB cloud)
+ * - `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
  * @param {string} uri - The uri of the database. If the database uri starts
- * with `db://` then it connects to a remote database.
+ * with `db://` then it connects to LanceDB Enterprise or LanceDB Cloud (legacy).
  * @see {@link ConnectionOptions} for more details on the URI format.
  * @param  options - The options to use when connecting to the database
  * @example
@@ -334,9 +333,9 @@ export async function connect(
  *
  * Accepted formats:
  *
- * - `/path/to/database` - local database
+ * - `/path/to/database` - database on the local file system
  * - `s3://bucket/path/to/database` or `gs://bucket/path/to/database` - database on cloud storage
- * - `db://host:port` - remote database (LanceDB cloud)
+ * - `db://host:port` - LanceDB Enterprise or LanceDB Cloud (legacy) database
  * @param  options - The options to use when connecting to the database
  * @see {@link ConnectionOptions} for more details on the URI format.
  * @example
@@ -419,10 +418,10 @@ export async function connect(
     throw new Error("uri is required");
   }
 
-  finalOptions = (finalOptions as ConnectionOptions) ?? {};
-  (<ConnectionOptions>finalOptions).storageOptions = cleanseStorageOptions(
-    (<ConnectionOptions>finalOptions).storageOptions,
-  );
+  finalOptions = {
+    ...finalOptions,
+    storageOptions: cleanseStorageOptions(finalOptions.storageOptions),
+  };
 
   // Create native header provider if one was provided
   let nativeProvider: NativeJsHeaderProvider | undefined;
@@ -534,7 +533,7 @@ function restConfigToProperties(
  * Connect to a LanceDB database through a namespace.
  *
  * Unlike {@link connect}, which routes by URI scheme (local path vs.
- * `db://` cloud), `connectNamespace` always returns a namespace-backed
+ * `db://`), `connectNamespace` always returns a namespace-backed
  * connection. The `implName` selects the namespace implementation:
  *
  * - `"dir"` — directory namespace, configured with {@link DirNamespaceConfig}.
@@ -629,11 +628,10 @@ export async function connectNamespace(
     properties = configOrProperties as Record<string, string>;
   }
 
-  const finalOptions: ConnectNamespaceOptions = (options ??
-    {}) as ConnectNamespaceOptions;
-  finalOptions.storageOptions = cleanseStorageOptions(
-    finalOptions.storageOptions,
-  );
+  const finalOptions: ConnectNamespaceOptions = {
+    ...options,
+    storageOptions: cleanseStorageOptions(options?.storageOptions),
+  };
 
   const nativeConn = await LanceDbConnection.newWithNamespace(
     implName,

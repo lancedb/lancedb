@@ -3,11 +3,13 @@
 
 """Remote catalogs manage databases through a server's root namespace."""
 
+from functools import cached_property
 from datetime import timedelta
 from typing import Any, AsyncIterator, Iterator, Optional, Union
 
 from . import _lancedb
 from .background_loop import LOOP
+from .authz import AsyncAuthorization, Authorization
 from .db import AsyncConnection, DBConnection
 from .remote import ClientConfig, OAuthConfig
 from .remote.db import RemoteDBConnection
@@ -86,6 +88,11 @@ class AsyncCatalog:
     def __init__(self, inner: _lancedb.Catalog):
         self._inner = inner
 
+    @cached_property
+    def authz(self) -> AsyncAuthorization:
+        """Authorization sharing this catalog's scope and credentials."""
+        return AsyncAuthorization(self._inner.authz)
+
     @property
     def uri(self) -> str:
         """The catalog's root namespace endpoint."""
@@ -123,9 +130,15 @@ class AsyncCatalog:
             self._inner.list_databases(page_token=page_token, page_limit=page_limit)
         )
 
-    async def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
-        """Drop an empty database. A nonempty database is an error."""
-        await self._inner.drop_database(name, ignore_missing=ignore_missing)
+    async def drop_database(
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
+    ) -> None:
+        """Drop a database. A nonempty database is an error unless ``cascade`` is set,
+        which drops everything in it first; the name stays taken until the server
+        finishes cleaning up their storage."""
+        await self._inner.drop_database(
+            name, ignore_missing=ignore_missing, cascade=cascade
+        )
 
 
 class Catalog:
@@ -156,6 +169,11 @@ class Catalog:
         self._client_config = client_config
         self._sql_host_override = sql_host_override
         self._oauth_config = oauth_config
+
+    @cached_property
+    def authz(self) -> Authorization:
+        """Authorization sharing this catalog's scope and credentials."""
+        return Authorization(self._inner.authz)
 
     @property
     def uri(self) -> str:
@@ -195,9 +213,17 @@ class Catalog:
             self._inner.list_databases(page_token=page_token, page_limit=page_limit)
         )
 
-    def drop_database(self, name: str, *, ignore_missing: bool = False) -> None:
-        """Drop an empty database. A nonempty database is an error."""
-        LOOP.run(self._inner.drop_database(name, ignore_missing=ignore_missing))
+    def drop_database(
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
+    ) -> None:
+        """Drop a database. A nonempty database is an error unless ``cascade`` is set,
+        which drops everything in it first; the name stays taken until the server
+        finishes cleaning up their storage."""
+        LOOP.run(
+            self._inner.drop_database(
+                name, ignore_missing=ignore_missing, cascade=cascade
+            )
+        )
 
 
 async def connect_catalog_async(

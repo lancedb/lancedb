@@ -1,6 +1,6 @@
 [package]
 name = "lancedb"
-version = "0.41.0-beta.6"
+version = "0.41.0-beta.17"
 edition.workspace = true
 description = "LanceDB: A serverless, low-latency vector database for AI applications"
 license.workspace = true
@@ -46,7 +46,7 @@ lance-index = { workspace = true, features = ["tokenizer-jieba", "tokenizer-lind
 lance-table = { workspace = true }
 lance-linalg = { workspace = true }
 lance-encoding = { workspace = true }
-lance-arrow = { workspace = true }
+lance-arrow = { "version" = "=15.0.0-beta.3", "tag" = "v15.0.0-beta.3", "git" = "https://github.com/lance-format/lance.git" }
 lance-namespace = { workspace = true }
 lance-namespace-impls = { workspace = true }
 metrics = { workspace = true, optional = true }
@@ -55,6 +55,7 @@ moka = { workspace = true }
 pin-project = { workspace = true }
 tokio = { workspace = true, features = ["io-util", "net", "time"] }
 log.workspace = true
+tracing.workspace = true
 async-trait = { workspace = true }
 bytes = { workspace = true }
 futures.workspace = true
@@ -66,6 +67,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 async-openai = { version = "0.20.0", optional = true }
 serde_with = { version = "3.8.1" }
+strum_macros = "0.28"
 tempfile = { workspace = true }
 aws-smithy-types = { workspace = true, optional = true }
 # Default features include the legacy `rustls` feature, which pulls in rustls 0.21.
@@ -135,6 +137,9 @@ pprof = { version = "0.14", features = ["flamegraph"] }
 
 [features]
 default = []
+# Local SQL computed columns and materialized-view creation/refresh.
+# Remote clients and shared server primitives do not require this feature.
+experimental-functions = []
 # Native spatial indexes and queries. Remote RTree requests do not require this feature.
 geo = ["lance/geo"]
 aws = [

@@ -38,6 +38,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
   #model?: import("@huggingface/transformers").PreTrainedModel;
   #tokenizer?: import("@huggingface/transformers").PreTrainedTokenizer;
   #modelName: XenovaTransformerOptions["model"];
+  #tokenizerName: string;
   #initialized = false;
   #tokenizerOptions: XenovaTransformerOptions["tokenizerOptions"];
   #ndims?: number;
@@ -58,6 +59,7 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
 
     this.#ndims = options.ndims;
     this.#modelName = modelName;
+    this.#tokenizerName = options.tokenizer ?? modelName;
   }
 
   async init() {
@@ -86,11 +88,11 @@ export class TransformersEmbeddingFunction extends EmbeddingFunction<
     }
     try {
       this.#tokenizer = await transformers.AutoTokenizer.from_pretrained(
-        this.#modelName,
+        this.#tokenizerName,
       );
     } catch (e) {
       throw new Error(
-        `error loading tokenizer for ${this.#modelName}. Make sure you are using a wasm compatible model:\nReason: ${e}`,
+        `error loading tokenizer ${this.#tokenizerName}. Make sure you are using a wasm compatible model:\nReason: ${e}`,
       );
     }
     this.#initialized = true;

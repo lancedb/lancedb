@@ -1,0 +1,22 @@
+extends: substitution
+message: "Use '%s' instead of '%s'."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: warning
+ignorecase: false
+# The in-process execution model is LanceDB Embedded, whether the data is on
+# local disk or in object storage. Identifiers such as the `oss` product key
+# are code, and code is never prose.
+swap:
+  'LanceDB\s+(?:OSS|Oss|oss|Local|local)': LanceDB Embedded
+  '[Ll]ocal\s+mode': LanceDB Embedded
+tests:
+  - name: replaces the old names of the execution model
+    input: Start with LanceDB OSS, also called LanceDB Local, and move off local mode later.
+    want: |
+      1:12:LanceDB.EmbeddedName:Use 'LanceDB Embedded' instead of 'LanceDB OSS'.
+      1:37:LanceDB.EmbeddedName:Use 'LanceDB Embedded' instead of 'LanceDB Local'.
+      1:65:LanceDB.EmbeddedName:Use 'LanceDB Embedded' instead of 'local mode'.
+  - name: leaves the current name, other uses of local, and code alone
+    input: |
+      LanceDB Embedded reads local disk or object storage. Run LanceDB locally, set `availability.oss`, or call `LanceDB OSS` in a literal.
+    want: ''
