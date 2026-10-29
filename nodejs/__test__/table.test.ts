@@ -1731,12 +1731,13 @@ describe("When creating an index", () => {
       config: Index.ivfFlat({ numPartitions: 2, targetPartitionSize: 100 }),
     });
 
+    // Lance records the target size the partition count implies: 300 rows / 2.
     const indices = await tbl.listIndices();
     expect(
       (indices[0].indexDetails as Record<string, unknown>)[
         "target_partition_size"
       ],
-    ).toBeUndefined();
+    ).toBe(150);
   });
 
   it("should allow me to replace (or not) an existing index", async () => {

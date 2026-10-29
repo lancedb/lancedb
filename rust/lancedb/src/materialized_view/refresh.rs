@@ -254,6 +254,7 @@ async fn replace_fragments(dataset: Dataset, stream: SendableRecordBatchStream) 
                 update_mode: None,
                 inserted_rows_filter: Some(inserted_rows_filter),
                 updated_fragment_offsets: None,
+                mem_wal_dir_id: None,
             },
             None,
         ))
@@ -663,6 +664,7 @@ mod tests {
                     update_mode: None,
                     inserted_rows_filter: Some(filter),
                     updated_fragment_offsets: None,
+                    mem_wal_dir_id: None,
                 },
                 None,
             ))

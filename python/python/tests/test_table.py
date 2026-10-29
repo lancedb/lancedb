@@ -1417,6 +1417,7 @@ def test_branches_preserve_namespace(tmp_path):
         "lance"
     )  # namespace_path routes through lance's DirectoryNamespace
     db = lancedb.connect(tmp_path)
+    db.create_namespace(["ns1"])
     table = db.create_table("t", [{"id": 1}], namespace_path=["ns1"])
     assert table.namespace == ["ns1"]
 

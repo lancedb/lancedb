@@ -17,7 +17,7 @@ anyhow.workspace = true
 arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-cast.workspace = true
-arrow-json = "58.0.0"
+arrow-json = "59.2.0"
 arrow-schema.workspace = true
 async-trait.workspace = true
 clap = { version = "4.5.13", features = ["derive", "env"] }
