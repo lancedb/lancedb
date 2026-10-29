@@ -37,7 +37,7 @@ table.add([{"text": "Paris is the capital of France."}])
 results = table.search("What is the capital of France?").limit(3).to_list()
 ```
 
-For an Enterprise table, use your remote connection, for example
+For a LanceDB Enterprise table, connect as usual, for example
 `lancedb.connect("db://my-database", api_key=..., region=...)`. The same schema,
 `add`, and `search` calls compute embeddings in the Python client. The NVIDIA key
 is separate from the LanceDB database key. Use a fresh table name when creating a
