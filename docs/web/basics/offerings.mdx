@@ -1,6 +1,6 @@
 ---
-title: "LanceDB OSS or Enterprise?"
-sidebarTitle: "OSS and Enterprise"
+title: "LanceDB Embedded or Enterprise?"
+sidebarTitle: "Embedded and Enterprise"
 description: "Start with an embedded library, or use the LanceDB Enterprise multimodal lakehouse for shared AI workloads."
 icon: compass
 keywords: ["oss", "enterprise", "embedded", "deployment", "availability", "comparison"]
@@ -9,15 +9,18 @@ keywords: ["oss", "enterprise", "embedded", "deployment", "availability", "compa
 LanceDB gives you two ways to work with multimodal data, both built on the open
 [Lance](/basics/lance) format.
 
-**LanceDB OSS** is an embedded library. Run it inside your application
-with tables on local disk or in object storage. You control the application,
+**LanceDB Embedded (open source)** is a library that runs in your
+application's process; your data can live on local disk or in object storage.
+You control the application,
 its resources, and table maintenance, without a separate database service.
 [Try the quickstart](/quickstart) to create a table and run your first search.
 
 **LanceDB Enterprise** is a multimodal lakehouse for data curation, feature
 engineering, search, and training data access. It adds query-serving capacity,
 data caching, and background operations for teams working with shared
-multimodal datasets.
+multimodal datasets. LanceDB Enterprise runs LanceDB Distributed: query
+execution, indexing and maintenance run on the Enterprise service, outside your
+application.
 [Connect to Enterprise](/basics/connect#enterprise) when your cluster is ready.
 
 <span id="labels" />

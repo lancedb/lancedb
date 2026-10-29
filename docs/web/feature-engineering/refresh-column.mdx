@@ -8,12 +8,19 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Both offerings support column refresh. The embedded library runs it in your process; Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
+    Local column refresh requires a source build with the experimental-functions Cargo feature. Enterprise runs it as a server job that must be enabled for your Enterprise cluster.
 ---
 
 Refresh a [computed column](/feature-engineering/add-computed-column) to fill
 new rows and recompute values whose inputs changed. The example below continues
 with the `doubled` column from the computed-column guide.
+
+<Note>
+In the 0.41 SDK release, declaration and refresh in LanceDB Embedded require a source build
+with the `experimental-functions` Cargo feature. Published Python and TypeScript
+packages leave it disabled. LanceDB Enterprise operations do not require
+this feature; existing computed-column data remains readable in default builds.
+</Note>
 
 <CodeGroup>
 ```python Python icon="python"
@@ -75,9 +82,9 @@ table.add_columns(
 
 Both options apply to every computed output declared in that call, including
 registered Function outputs. Automatic refresh is enabled by default. When
-the interval is omitted, the server determines when to refresh. Local tables
-persist only an explicitly configured interval; automatic execution requires a
-Cloud or Enterprise server with its separate `column_refresh.enabled` switch
+the interval is omitted, the server determines when to refresh. LanceDB Embedded
+tables persist only an explicitly configured interval; automatic execution requires a
+LanceDB Enterprise deployment with its separate `column_refresh.enabled` switch
 turned on. That server switch is disabled in the base configuration.
 
 The interval is a positive minimum delay after the last successful refresh

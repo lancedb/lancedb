@@ -548,7 +548,7 @@ class Permutation:
         picklable classes implementing ``__call__``. Lambdas and closures over
         local variables don't pickle with the default protocol.
 
-        A factory is optional for normal local and remote LanceDB connections:
+        A factory is optional for normal LanceDB Embedded and Distributed connections:
         if not set, ``__getstate__`` captures the table's own picklable reopen
         state. Use a factory when that default state is not enough, for example
         when credentials should be loaded from the worker environment instead
@@ -587,7 +587,7 @@ class Permutation:
                 {"root": "/data/lance_db"},
             )
 
-        LanceDB Cloud, reading credentials from env vars at worker startup
+        LanceDB Enterprise, reading credentials from env vars at worker startup
         so secrets aren't pickled into the dataset::
 
             import os, lancedb

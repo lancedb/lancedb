@@ -711,6 +711,53 @@ impl Connection {
         })
     }
 
+    pub fn namespace_exists(
+        self_: PyRef<'_, Self>,
+        namespace_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        future_into_py(self_.py(), async move {
+            let request = lance_namespace::models::DescribeNamespaceRequest {
+                id: Some(namespace_id),
+                ..Default::default()
+            };
+            match inner.describe_namespace(request).await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::Http {
+                    status_code: Some(status),
+                    ..
+                }) if status.as_u16() == 404 => Ok(false),
+                Err(lancedb::Error::Lance {
+                    source: lance_core::Error::Namespace { ref source, .. },
+                }) if matches!(
+                    source.downcast_ref::<lance_namespace::NamespaceError>(),
+                    Some(lance_namespace::NamespaceError::NamespaceNotFound { .. })
+                ) =>
+                {
+                    Ok(false)
+                }
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
+    pub fn table_exists(
+        self_: PyRef<'_, Self>,
+        mut table_id: Vec<String>,
+    ) -> PyResult<Bound<'_, PyAny>> {
+        let inner = self_.get_inner()?.clone();
+        let name = table_id
+            .pop()
+            .ok_or_else(|| PyValueError::new_err("table_id must include a table name"))?;
+        future_into_py(self_.py(), async move {
+            match inner.open_table(name).namespace(table_id).execute().await {
+                Ok(_) => Ok(true),
+                Err(lancedb::Error::TableNotFound { .. }) => Ok(false),
+                Err(err) => Err(err).infer_error(),
+            }
+        })
+    }
+
     #[pyo3(signature = (namespace_path=None, page_token=None, limit=None))]
     pub fn list_tables(
         &self,

@@ -158,13 +158,13 @@ LANCEDB_REGION=us-east-1
 LANCEDB_HOST_OVERRIDE=https://your-enterprise-endpoint.com
 ```
 
-If you're using LanceDB OSS, no connection settings are required, as it runs as an
+If you're using LanceDB Embedded, no connection settings are required, as it runs as an
 embedded retrieval library. A simple prompt like this should work:
 
 ```text Agent prompt
-# If using OSS
+# If using LanceDB Embedded
 Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
-OSS table.
+Embedded table.
 
 # If using enterprise
 Use the lancedb plugin to ingest the dataset in `data/` into a LanceDB
@@ -208,7 +208,7 @@ to `batch_size` rows at a time, providing an iterable of batches for the ingesti
 shown next.
 
 #### Table maintenance {#table-maintenance}
-For LanceDB OSS, the plugin instructs the agent to call
+For LanceDB Embedded, the plugin instructs the agent to call
 `table.optimize()` after the ingestion loop. This compacts small fragments, cleans up
 old versions according to the retention policy, and incorporates new data into indexes.
 
@@ -225,7 +225,7 @@ This example dataset has only eight rows, so the default batch size writes it in
 one call. Larger inputs should still avoid single-row write commits.
 </Note>
 
-### 3\. Run the OSS pipeline {#3-run-the-oss-pipeline}
+### 3\. Run the Embedded pipeline {#3-run-the-oss-pipeline}
 
 ```bash
 uv run python ingest_multimodal.py
@@ -258,9 +258,9 @@ The plugin shown in this tutorial should generalize reasonably well to other use
 If you find any issues, open [an issue](https://github.com/lancedb/lancedb-agent-plugins/issues)
 on GitHub, clearly describing the intended behavior.
 
-You can choose OSS or Enterprise based on how the work will run:
+You can choose LanceDB Embedded or LanceDB Enterprise based on how the work will run:
 
-Start with [LanceDB OSS](/quickstart) during the early stages of a project
+Start with [LanceDB Embedded](/quickstart) during the early stages of a project
 when an agent is helping you prototype,
 explore a dataset, or run small workflows on a subset of the data. The application owns
 the storage and lifecycle work, so ask the agent to validate inputs, write in
@@ -271,7 +271,7 @@ Choose [LanceDB Enterprise](/enterprise) when the resulting table becomes
 shared production infrastructure, and the workload needs distributed capacity,
 private deployment, or platform-managed operations. The data format and the core
 table API stay the same, so the pipeline's table and search code carries over:
-the agent connects to a remote `db://` table, leaves maintenance to the
+the agent connects to an Enterprise `db://` table, leaves maintenance to the
 deployment instead of calling `optimize()`, and submits long-running work as
 jobs. See [Moving to LanceDB Enterprise](/basics/sdk#moving-to-enterprise).
 

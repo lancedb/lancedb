@@ -25,7 +25,7 @@ rewrite data; adding a derived column can write the new column independently.
 
 A read of a table uses a consistent snapshot. A consistent snapshot can still
 be older than another writer's latest commit. [Consistency](/tables/consistency)
-explains how OSS and Enterprise choose the version a reader sees.
+explains how LanceDB Embedded and LanceDB Enterprise choose the version a reader sees.
 
 For an experiment that must keep using the same data, select a specific retained
 table version rather than relying on a connection's default freshness.
@@ -46,7 +46,7 @@ describes commit behavior and compatibility between operations.
 ## Storage durability {#durability}
 
 A committed table version is stored in the table’s configured storage. LanceDB
-OSS uses your local filesystem or object store; LanceDB Enterprise uses the
+Embedded uses your local filesystem or object store; LanceDB Enterprise uses the
 cluster’s configured storage.
 
 Table version history does not replace backups. Configure storage redundancy

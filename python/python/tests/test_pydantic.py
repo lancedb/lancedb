@@ -200,6 +200,27 @@ def test_bare_generic_raises_type_error():
             pydantic_to_schema(TestModel)
 
 
+def test_tuple_with_mixed_element_types_raises_type_error():
+    # An Arrow list has one element type, so Tuple[int, str] has no Arrow
+    # equivalent. It used to map to list<int64> and fail later, on write.
+    class TestModel(pydantic.BaseModel):
+        pair: Tuple[int, str]
+
+    with pytest.raises(TypeError, match="same type"):
+        pydantic_to_schema(TestModel)
+
+
+def test_homogeneous_tuples_map_to_lists():
+    class TestModel(pydantic.BaseModel):
+        pair: Tuple[int, int]
+        many: Tuple[float, ...]
+
+    schema = pydantic_to_schema(TestModel)
+
+    assert schema.field("pair").type == pa.list_(pa.int64())
+    assert schema.field("many").type == pa.list_(pa.float64())
+
+
 def test_nested_struct_list_optional():
     class SplitInfo(pydantic.BaseModel):
         start_frame: int

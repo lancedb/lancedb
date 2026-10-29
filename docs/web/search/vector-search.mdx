@@ -7,7 +7,7 @@ availability:
   oss: available
   enterprise: available
   summary: >-
-    Vector search is available in OSS and Enterprise.
+    Vector search is available in LanceDB Embedded and LanceDB Enterprise.
 ---
 
 import {
@@ -131,7 +131,7 @@ Without a vector index, searches use `l2` by default. You can specify `cosine` o
 
 When a vector index exists, the search metric must match the metric used to build
 the index. If you explicitly request a different metric, LanceDB cannot use that
-index and falls back to an exhaustive (brute-force) search. On LanceDB Cloud, the
+index and falls back to an exhaustive (brute-force) search. On LanceDB Cloud (legacy hosted service), the
 brute-force KNN safety limit can reject that search on a large table instead of
 executing it. LanceDB Enterprise doesn't have the limit.
 
@@ -623,7 +623,7 @@ tbl.create_index(metric="cosine", vector_column_name="vector")
 **Indexing matters more for multivector tables than for single-vector ones.**
 
 A brute-force scan over a multivector column has to compare every query vector to every document vector in every row, so the cost grows with both the row count and the number of vectors per row. 
-In LanceDB OSS, the query will just run, so a large unindexed multivector table can stall a process for a long time before returning results.
+In LanceDB Embedded, the query will just run, so a large unindexed multivector table can stall a process for a long time before returning results.
 
 On LanceDB Cloud, the brute-force KNN safety check applies a stricter row threshold to multivector columns; roughly 10× lower than for single-vector columns. So an unindexed multivector table can be rejected with a "vector search would use brute-force KNN" error well before a comparable single-vector table would. LanceDB Enterprise doesn't have the limit. Build the index before you start hitting it from production traffic, even if the dataset is small enough that you'd skip indexing for a single-vector workload.
 </Info>

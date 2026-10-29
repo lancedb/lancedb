@@ -9,7 +9,7 @@ availability:
   enterprise: available
   summary: >-
     Requests to a deployment carry an API key or an OAuth token, whichever it is
-    configured to accept. Embedded LanceDB has no server to sign in to; see
+    configured to accept. LanceDB Embedded has no server to sign in to; see
     [Architecture](/architecture).
 ---
 
@@ -423,5 +423,5 @@ control. All three SDKs deliberately omit the secret from their debug/repr outpu
 so accidental log lines do not expose the value.
 </Warning>
 
-Embedded LanceDB has nothing to authenticate to: your process opens the files
+LanceDB Embedded has nothing to authenticate to: your process opens the files
 directly, and the object store's own credentials are the only gate.

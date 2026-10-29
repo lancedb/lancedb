@@ -63,18 +63,18 @@ scoped to that branch. The [comparison table](#branches-vs-tags-vs-versions) at
 the end of this page lays out when to reach for each.
 
 <Note>
-Branches are supported on local and namespace-backed tables in LanceDB OSS, as
-well as on LanceDB Enterprise (remote) tables.
+Branches are supported on local and namespace-backed tables in LanceDB Embedded,
+as well as on LanceDB Enterprise tables.
 </Note>
 
 ## Connect to a table {#connect-to-a-table}
 
 The branch API is identical no matter how you connect: only the connection
-itself differs between OSS and Enterprise. Establish a connection (`db`) and open
+itself differs between LanceDB Embedded and LanceDB Enterprise. Establish a connection (`db`) and open
 a `table` (see [Ingesting data](/ingestion)), then use the same branch calls
 in every example that follows.
 
-### LanceDB OSS {#lancedb-oss}
+### LanceDB Embedded {#lancedb-oss}
 
 Point LanceDB at a local directory (or an object-storage URI) to use it as an
 embedded library.
@@ -99,7 +99,7 @@ embedded library.
 
 <Badge color="red">Enterprise</Badge>
 
-Branching on LanceDB Enterprise works the same way as on OSS, apart from the differences
+Branching on LanceDB Enterprise works the same way as on LanceDB Embedded, apart from the differences
 noted below, but you connect to your
 Enterprise deployment with a `db://` URI, an API key, and your
 region and endpoint. Replace the placeholders below, including `us-east-1` if your
@@ -282,7 +282,7 @@ inspects what a branch has changed relative to `main`, and `cherry_pick`
 place, without reissuing the branch's writes.
 
 <Info>
-`diff` and `cherry_pick` work on Enterprise (remote) tables only. On a local
+`diff` and `cherry_pick` work on LanceDB Enterprise tables only. On an Embedded
 table they fail as not supported: Python raises `NotImplementedError`, and
 TypeScript and Rust return an error. A cherry-pick promotes added columns; use
 the [upsert](#upsert-selected-branch-rows-into-main) or rerun patterns above for
