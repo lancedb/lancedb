@@ -76,7 +76,7 @@ Use local disk only when you need extremely low latency and are comfortable owni
 
 ### File-format choices that interact with the backend {#file-format-choices}
 
-A few `storage_options` keys shape new tables in ways that depend on the backend you picked above. They are documented in full on [below](#new-table-configuration); the architecture-level summary is:
+A few `storage_options` keys shape new tables in ways that depend on the backend you picked above. They are documented in full [below](#new-table-configuration); the architecture-level summary is:
 
 - `new_table_enable_v2_manifest_paths` matters most on object stores, where opening a table with many versions is dominated by listing cost. Leave it off for backward compatibility with clients older than LanceDB 0.10.0.
 - `new_table_enable_stable_row_ids` keeps row IDs stable across compaction, delete, and merge. The choice is independent of the backend but affects any system that joins on row ID.
