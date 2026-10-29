@@ -602,6 +602,28 @@ def test_openai_propagates_api_key(monkeypatch):
     assert len(actual.text) > 0
 
 
+def test_openai_compatible_model_uses_dim_for_ndims():
+    # A model served behind an OpenAI-compatible base_url (e.g. Ollama) is not one
+    # of the OpenAI models, so its dimension comes from `dim`.
+    openai = get_registry().get("openai")
+    func = openai.create(
+        name="nomic-embed-text",
+        base_url="http://localhost:11434/v1",
+        dim=768,
+    )
+    assert func.ndims() == 768
+
+
+def test_openai_unknown_model_without_dim_raises_clear_error():
+    openai = get_registry().get("openai")
+    func = openai.create(
+        name="nomic-embed-text",
+        base_url="http://localhost:11434/v1",
+    )
+    with pytest.raises(ValueError, match="dim"):
+        func.ndims()
+
+
 @patch("time.sleep")
 def test_openai_no_retry_on_401(mock_sleep):
     """

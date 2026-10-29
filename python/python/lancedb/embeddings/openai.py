@@ -77,8 +77,14 @@ class OpenAIEmbeddings(TextEmbeddingFunction):
             return self.dim or 3072
         elif self.name == "text-embedding-3-small":
             return self.dim or 1536
+        elif self.dim:
+            # A model served behind an OpenAI-compatible `base_url`
+            return self.dim
         else:
-            raise ValueError(f"Unknown model name {self.name}")
+            raise ValueError(
+                f"Unknown model name {self.name}: set `dim` to the model's "
+                "embedding dimension"
+            )
 
     def generate_embeddings(
         self, texts: Union[List[str], "np.ndarray"]
