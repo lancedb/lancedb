@@ -47,27 +47,34 @@ LanceDB Embedded and Enterprise are both built on [Lance](/basics/lance), which 
 indexes in open, columnar files. The format and table model are the same across both offerings -- what changes is
 how storage and compute are organized around them.
 
+```mermaid
+flowchart TB
+    subgraph Embedded["LanceDB Embedded"]
+        EmbApp(["Your application"])
+    end
+
+    subgraph Enterprise["LanceDB Enterprise"]
+        EntSdk(["LanceDB SDK"]) --> EntSvc{{"Query serving, caching, indexing"}}
+    end
+
+    Lance[("Lance format<br/>table data, versions, indexes")]
+
+    Embedded --> Lance
+    Enterprise --> Lance
+```
+
 Embedded reads and writes tables on local disk or in object storage from inside your application process.
 Enterprise keeps durable table data and index artifacts in object storage, independently of the machines serving
 requests, and separates query serving, read execution and caching, and indexing and background work into their
-own independently sized components. Caches accelerate reads; they are never the durable source of truth.
+own independently sized components. Caches accelerate reads; they are never the durable source of truth. Here is
+how Enterprise organizes those components internally:
 
 ```mermaid
 flowchart TB
-    Clients([Clients])
-
-    subgraph QueryFleet["Query Fleet"]
-        QF[Query serving]
-    end
-
-    subgraph ExecutorRing["Executor (Cache) Ring"]
-        EX[Read execution + cache]
-    end
-
-    subgraph Indexer["Indexer"]
-        IDX[Indexing + background work]
-    end
-
+    Clients(["Clients"])
+    QueryFleet{{"Query Fleet<br/>query serving"}}
+    ExecutorRing{{"Executor Ring<br/>read execution + cache"}}
+    Indexer{{"Indexer<br/>background work"}}
     EventQueue[["Event Queue"]]
     Storage[("Cloud Object Storage")]
 
@@ -88,10 +95,6 @@ plan how to move or connect your data and configure access for your deployment.
 LanceDB ships as two offerings on the same Lance format and table model. Start locally with Embedded, then move to
 Enterprise when your team needs distributed scale, managed infrastructure, private deployment, or higher-throughput
 curation, feature engineering, search and retrieval, and training workflows.
-
-### Compare features {#compare}
-
-{/* availability-comparison */}
 
 ### 1\. LanceDB Embedded {#1-lancedb-oss}
 
@@ -121,6 +124,10 @@ Teams choose Enterprise to:
   [SQL](/basics/sql), [feature engineering](/feature-engineering), and [Geneva](/geneva) feature backfills.
 
 To set up LanceDB Enterprise in your organization, [reach out to us](https://www.lancedb.com/contact).
+
+### Compare features {#compare}
+
+{/* availability-comparison */}
 
 ## Projects using LanceDB for training workflows {#projects-using-lancedb-for-training-workflows}
 

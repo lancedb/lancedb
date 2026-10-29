@@ -36,6 +36,10 @@
       "destination": "/#embedded-and-enterprise"
     },
     {
+      "source": "/basics/lakehouse",
+      "destination": "/"
+    },
+    {
       "source": "/tables/update",
       "destination": "/ingestion/update"
     },
@@ -265,7 +269,6 @@
             "pages": [
               "basics/lance",
               "basics/catalog",
-              "basics/lakehouse",
               "basics/query",
               "basics/jobs",
               "tables/consistency",
