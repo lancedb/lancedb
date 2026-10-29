@@ -787,7 +787,10 @@ combined_boosting_results = (
 ```
 </CodeGroup>
 
-`CombinedFieldsQuery` is only available in the Python SDK.
+The typed `CombinedFieldsQuery` convenience class and this example are specific
+to the Python SDK. Rust applications can construct the core query type exposed
+by `lancedb::index::scalar`. TypeScript and Java do not yet provide typed
+convenience entry points for this query.
 
 
 ### Boolean Queries {#boolean-queries}
