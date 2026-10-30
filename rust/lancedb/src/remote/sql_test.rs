@@ -2289,7 +2289,7 @@ async fn function_creation_and_description_use_sql_query_handles() {
         let mut expected_request = request_json.clone();
         expected_request.as_object_mut().unwrap().remove("name");
         let request =
-            crate::function::FunctionRegistrationRequest::from_json(request_json.to_string())
+            crate::function::FunctionRegistrationRequest::from_json(&request_json.to_string())
                 .unwrap();
         let result = RecordBatch::try_from_iter(vec![(
             "definition",
