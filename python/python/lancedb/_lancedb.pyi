@@ -171,6 +171,22 @@ class Connection(object):
     async def drop_function_async(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
+    async def create_storage_integration(
+        self, name: str, request: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def describe_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def drop_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
     async def create_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -1078,6 +1094,10 @@ class AuthzObject:
     @staticmethod
     def view(
         database: str, namespace_path: Sequence[str], name: str
+    ) -> AuthzObject: ...
+    @staticmethod
+    def storage_integration(
+        database: str, namespace: Sequence[str], name: str
     ) -> AuthzObject: ...
     @staticmethod
     def secret(

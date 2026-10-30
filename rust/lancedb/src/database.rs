@@ -473,6 +473,40 @@ pub trait Database:
         let dropped = self.drop_function(name, version, namespace_path).await?;
         Ok((dropped, crate::job::Job::new_done()))
     }
+    /// Create a database-owned storage integration in a namespace.
+    async fn create_storage_integration(
+        &self,
+        _name: &str,
+        _request: crate::storage_integration::CreateStorageIntegrationRequest,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// Describe a database-owned storage integration.
+    async fn describe_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        secret_catalog_not_supported()
+    }
+    /// List one namespace of storage integrations.
+    async fn list_storage_integrations(
+        &self,
+        _namespace_path: &[String],
+        _options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        secret_catalog_not_supported()
+    }
+    /// Drop a database-owned storage integration.
+    async fn drop_storage_integration(
+        &self,
+        _name: &str,
+        _namespace_path: &[String],
+    ) -> Result<()> {
+        secret_catalog_not_supported()
+    }
+
     /// Create a named Secret in this database. Fails if the name is taken, so
     /// a create can never silently become a rotation.
     async fn create_secret(

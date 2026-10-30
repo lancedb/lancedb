@@ -28,6 +28,7 @@ use crate::remote::client::HeaderProvider;
 use crate::remote::client::test_utils::client_with_handler;
 use crate::remote::db::RemoteDatabase;
 use crate::remote::table::RemoteTable;
+use crate::storage_integration::{CreateStorageIntegrationRequest, SecretReference};
 use crate::table::BaseTable;
 
 #[derive(Debug, Default)]
@@ -2154,5 +2155,118 @@ async fn remote_describe_materialized_view_preserves_the_sql_definition() {
             ["DESCRIBE MATERIALIZED VIEW \"daily_sales\""]
         );
         shutdown.send(()).unwrap();
+    }
+}
+
+#[tokio::test]
+async fn storage_integration_methods_use_sql_with_namespace_and_typed_metadata() {
+    let info: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/fixtures/storage_integration.json"
+    ))
+    .unwrap();
+    let columns: Vec<(String, ArrayRef)> = info
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(name, value)| {
+            let column: ArrayRef = match value {
+                serde_json::Value::Bool(value) => {
+                    Arc::new(arrow_array::BooleanArray::from(vec![*value]))
+                }
+                serde_json::Value::Number(value) => {
+                    Arc::new(Int64Array::from(vec![value.as_i64().unwrap()]))
+                }
+                serde_json::Value::Null => Arc::new(StringArray::from(vec![None::<String>])),
+                serde_json::Value::String(value) => {
+                    Arc::new(StringArray::from(vec![value.clone()]))
+                }
+                value => Arc::new(StringArray::from(vec![value.to_string()])),
+            };
+            (name.clone(), column)
+        })
+        .collect();
+    for defer in [false, true] {
+        let service = TestSqlService {
+            result: RecordBatch::try_from_iter(columns.clone()).unwrap(),
+            adaptive: true,
+            defer,
+            ..Default::default()
+        };
+        let statements = service.statements.clone();
+        let headers = service.headers.clone();
+        let (client, shutdown) = start_sql_service(service, ClientConfig::default()).await;
+        let database = RemoteDatabase::new_mock(|request| -> http::Response<String> {
+            panic!(
+                "Storage integration operation used REST: {}",
+                request.url().path()
+            );
+        })
+        .with_sql_client(client);
+        let namespace = vec!["platform".into(), "aws".into()];
+        let configuration = CreateStorageIntegrationRequest::s3(
+            "s3://customer-bucket/raw/",
+            "arn:aws:iam::123456789012:role/access",
+        )
+        .with_aws_region("us-east-1");
+        let created = database
+            .create_storage_integration("raw", configuration, &namespace)
+            .await
+            .unwrap();
+        assert_eq!(created.database, "default");
+        assert_eq!(
+            created.trust_policy["Statement"][0]["Condition"]["StringEquals"]["sts:ExternalId"],
+            created.aws_external_id
+        );
+        assert_eq!(
+            database
+                .describe_storage_integration("raw", &namespace)
+                .await
+                .unwrap()
+                .aws_external_id,
+            created.aws_external_id
+        );
+        assert_eq!(
+            database
+                .list_storage_integrations(&namespace, Default::default())
+                .await
+                .unwrap()
+                .items,
+            ["raw"]
+        );
+        database
+            .drop_storage_integration("raw", &namespace)
+            .await
+            .unwrap();
+        let credential = SecretReference::new("key")
+            .with_database("platform/raw")
+            .with_namespace(vec!["credentials".into()]);
+        database
+            .create_storage_integration(
+                "raw",
+                CreateStorageIntegrationRequest::s3_with_secrets(
+                    "s3://customer-bucket/raw/",
+                    credential.clone(),
+                    credential,
+                ),
+                &namespace,
+            )
+            .await
+            .unwrap();
+        let statements = statements.lock().unwrap();
+        assert!(statements[0].contains("STORAGE_AWS_REGION = 'us-east-1'"));
+        assert_eq!(statements[1], "DESCRIBE STORAGE INTEGRATION \"raw\"");
+        assert_eq!(statements[2], "SHOW STORAGE INTEGRATIONS");
+        assert_eq!(statements[3], "DROP STORAGE INTEGRATION \"raw\"");
+        assert!(statements[4].contains(
+            "STORAGE_AWS_ACCESS_KEY_ID_SECRET = \"platform/raw\".\"credentials\".\"key\""
+        ));
+        assert!(
+            headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| header.namespace_path == "platform$aws")
+        );
+        let _ = shutdown.send(());
     }
 }

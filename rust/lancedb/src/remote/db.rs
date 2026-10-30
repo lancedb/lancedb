@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // SPDX-FileCopyrightText: Copyright The LanceDB Authors
 
+use crate::storage_integration::{CreateStorageIntegrationRequest, StorageIntegrationInfo};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -48,9 +49,11 @@ use super::client::{
 };
 use super::sql::SqlClient;
 use super::sql::materialized_view::quote_identifier;
+use super::storage_integration as integration_sql;
 use super::table::RemoteTable;
 use super::util::parse_server_version;
 use super::{ARROW_STREAM_CONTENT_TYPE, extract_job_id};
+use futures::TryStreamExt;
 
 // Request structure for the remote clone table API
 #[derive(serde::Serialize)]
@@ -220,7 +223,7 @@ impl RemoteDatabaseOptionsBuilder {
 
 #[derive(Debug)]
 pub struct RemoteDatabase<S: HttpSend = Sender> {
-    client: RestfulLanceDbClient<S>,
+    pub(super) client: RestfulLanceDbClient<S>,
     // Cache existence and server capabilities, not mutable per-handle table state.
     table_cache: Cache<String, ServerVersion>,
     uri: String,
@@ -1101,6 +1104,83 @@ impl<S: HttpSend> Database for RemoteDatabase<S> {
             }
         };
         Ok((dropped.dropped, job))
+    }
+
+    async fn create_storage_integration(
+        &self,
+        name: &str,
+        request: CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let sql = integration_sql::create_sql(name, namespace_path, &request)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: sql,
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn describe_storage_integration(
+        &self,
+        name: &str,
+        namespace_path: &[String],
+    ) -> Result<StorageIntegrationInfo> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DESCRIBE STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        integration_sql::decode_info(&result.reader().await?.try_collect::<Vec<_>>().await?)
+    }
+
+    async fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Result<ListingPage<String>> {
+        validate_namespace(namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: "SHOW STORAGE INTEGRATIONS".into(),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        let mut names =
+            integration_sql::decode_names(&result.reader().await?.try_collect::<Vec<_>>().await?)?;
+        if let Some(token) = options.page_token {
+            names.retain(|name| name > &token);
+        }
+        let mut page_token = None;
+        if let Some(limit) = options.page_limit
+            && names.len() > limit as usize
+        {
+            names.truncate(limit as usize);
+            page_token = names.last().cloned();
+        }
+        Ok(ListingPage {
+            items: names,
+            page_token,
+        })
+    }
+
+    async fn drop_storage_integration(&self, name: &str, namespace_path: &[String]) -> Result<()> {
+        let name = integration_sql::object_name(name, namespace_path)?;
+        let result = self
+            .execute_query_async(ExecuteQueryRequest {
+                query: format!("DROP STORAGE INTEGRATION {name}"),
+                default_namespace_path: namespace_path.to_vec(),
+                parameters: None,
+            })
+            .await?;
+        result.reader().await?.try_collect::<Vec<_>>().await?;
+        Ok(())
     }
 
     async fn create_secret(

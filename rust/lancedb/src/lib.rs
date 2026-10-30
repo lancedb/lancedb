@@ -215,6 +215,7 @@ pub mod remote;
 pub mod rerankers;
 pub mod secrets;
 pub mod sql;
+pub mod storage_integration;
 pub mod table;
 #[cfg(test)]
 pub mod test_utils;

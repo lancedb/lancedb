@@ -41,6 +41,7 @@ from .functions import (
 )
 from .secrets import EnvVarSecret as EnvVarSecret
 from .secrets import SecretInfo as SecretInfo
+from .storage_integration import StorageIntegrationInfo as StorageIntegrationInfo
 from .materialized_view import (
     AsyncMaterializedView,
     MaterializedView,

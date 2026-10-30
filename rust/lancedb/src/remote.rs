@@ -14,6 +14,7 @@ pub(crate) mod job;
 pub mod oauth;
 mod retry;
 pub(crate) mod sql;
+mod storage_integration;
 pub(crate) mod table;
 pub(crate) mod token_cache;
 pub(crate) mod util;

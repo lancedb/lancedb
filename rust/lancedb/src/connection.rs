@@ -747,6 +747,69 @@ impl Connection {
             .await
     }
 
+    /// Register storage access in this database. Names follow Secret namespace rules.
+    ///
+    /// ```
+    /// # async fn example(db: &lancedb::Connection) -> lancedb::Result<()> {
+    /// use lancedb::storage_integration::CreateStorageIntegrationRequest;
+    /// let info = db.create_storage_integration("raw", CreateStorageIntegrationRequest::s3("s3://customer-bucket/raw/", "arn:aws:iam::123456789012:role/access"), &[]).await?;
+    /// println!("{}", info.configuration_instructions);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn create_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        request: crate::storage_integration::CreateStorageIntegrationRequest,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .create_storage_integration(name.as_ref(), request, namespace_path)
+            .await
+    }
+    /// Describe a storage integration, returning secret references without credential values.
+    pub async fn describe_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<crate::storage_integration::StorageIntegrationInfo> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .describe_storage_integration(name.as_ref(), namespace_path)
+            .await
+    }
+    /// Lazily list storage integrations in a namespace of this database.
+    pub fn list_storage_integrations(
+        &self,
+        namespace_path: &[String],
+        options: ListingOptions,
+    ) -> Listing<String> {
+        let database = self.database().clone();
+        let namespace_path = namespace_path.to_vec();
+        Listing::new(options, move |options| {
+            let database = database.clone();
+            let namespace_path = namespace_path.clone();
+            async move {
+                validate_namespace(&namespace_path)?;
+                database
+                    .list_storage_integrations(&namespace_path, options)
+                    .await
+            }
+        })
+    }
+    /// Drop an integration with ownership permission; integrations in use cannot be dropped.
+    pub async fn drop_storage_integration(
+        &self,
+        name: impl AsRef<str>,
+        namespace_path: &[String],
+    ) -> Result<()> {
+        validate_secret_reference(name.as_ref(), namespace_path)?;
+        self.internal
+            .drop_storage_integration(name.as_ref(), namespace_path)
+            .await
+    }
+
     /// Create a named Secret in this database.
     ///
     /// Fails if the name is taken, so a create can never silently become a
