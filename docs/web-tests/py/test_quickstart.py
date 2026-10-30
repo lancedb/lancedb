@@ -231,8 +231,9 @@ async def test_quickstart_async_api(async_db):
 
 
 def test_quickstart_curate_with_sql(deployment):
-    table = create_frames(deployment)
     db = deployment.db
+    table = create_frames(db)
+    deployment.claimed.append("frames")
 
     # --8<-- [start:quickstart_curate_sample]
     sample = db.execute_query(
@@ -274,6 +275,7 @@ def test_quickstart_curate_with_sql(deployment):
         )
     """)
     # --8<-- [end:quickstart_curate_dedupe]
+    deployment.claimed.append("frames_deduped")
 
     # --8<-- [start:quickstart_curate_dedupe_query]
     deduped = db.execute_query(
@@ -296,6 +298,7 @@ EXPECTED_QUALITY_SCORES = {"1": 3.5, "2": 4.0, "3": 3.0, "4": 3.75}
 
 
 def flatten_stats(table):
+    # --8<-- [start:quickstart_flatten_stats]
     table.add_columns(
         {
             "motion": "cast(stats.motion as float)",
@@ -304,6 +307,7 @@ def flatten_stats(table):
             "framing": "cast(stats.framing as float)",
         }
     )
+    # --8<-- [end:quickstart_flatten_stats]
 
 
 def test_quickstart_derived_feature(db_path_factory):
