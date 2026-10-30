@@ -8,7 +8,7 @@
 
 ## Deprecated
 
-Use [ListTablesOptions](ListTablesOptions.md) with [Connection.listTables](../classes/Connection.md#listtables)
+Use [ListingOptions](ListingOptions.md) with [Connection.listTables](../classes/Connection.md#listtables)
 instead.
 
 ## Properties
@@ -19,7 +19,7 @@ instead.
 optional limit: number;
 ```
 
-An optional limit to the number of results to return.
+The maximum number of names to return. Omitted returns all names; zero returns none.
 
 ***
 

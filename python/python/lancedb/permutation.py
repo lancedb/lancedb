@@ -48,7 +48,7 @@ class PermutationBuilder:
         By default, the permutation builder will create a single split that contains all
         rows in the same order as the base table.
 
-        Tables with an LSM write spec are rejected: unflushed rows have no row id.
+        Tables with an RTE write spec are rejected: unflushed rows have no row id.
         """
         self._async = async_permutation_builder(table)
 
@@ -166,6 +166,50 @@ class PermutationBuilder:
         """
         self._async.split_sequential(
             ratios=ratios, counts=counts, fixed=fixed, split_names=split_names
+        )
+        return self
+
+    def bootstrap_sample(
+        self,
+        num_samples: int,
+        *,
+        ratios: Optional[list[float]] = None,
+        counts: Optional[list[int]] = None,
+        fixed: Optional[int] = None,
+        seed: Optional[int] = None,
+        split_names: Optional[list[str]] = None,
+    ) -> "PermutationBuilder":
+        """
+        Sample rows uniformly **with replacement**, independently per split.
+
+        Unlike the other split strategies, the number of output rows is
+        ``num_samples``, not the number of (optionally filtered) input rows: the
+        same row can appear zero, one, or many times, and ``num_samples`` may be
+        larger or smaller than the input row count. Useful for bootstrap
+        resampling, oversampling rare classes, or any training workload that
+        wants a fixed-size stream of random draws rather than a single
+        deterministic pass over every row. Combine with :meth:`filter` to
+        restrict the eligible population.
+
+        One of ratios, counts, or fixed must be provided, with the same meaning
+        as in :meth:`split_random`, except they divide ``num_samples`` across
+        splits rather than the input row count: if fixed is 4, each split gets
+        ``num_samples // 4`` samples.
+
+        Each split draws its own sample using a seed derived independently from
+        ``(seed, split_index)``, so a split's content does not change if the samples are
+        later redistributed across a different number of splits.
+
+        The optional split_names can be provided to name the splits.  If not provided,
+        the splits can only be referenced by their index.
+        """
+        self._async.bootstrap_sample(
+            num_samples,
+            ratios=ratios,
+            counts=counts,
+            fixed=fixed,
+            seed=seed,
+            split_names=split_names,
         )
         return self
 
@@ -504,7 +548,7 @@ class Permutation:
         picklable classes implementing ``__call__``. Lambdas and closures over
         local variables don't pickle with the default protocol.
 
-        A factory is optional for normal local and remote LanceDB connections:
+        A factory is optional for normal LanceDB Embedded and Distributed connections:
         if not set, ``__getstate__`` captures the table's own picklable reopen
         state. Use a factory when that default state is not enough, for example
         when credentials should be loaded from the worker environment instead
@@ -543,7 +587,7 @@ class Permutation:
                 {"root": "/data/lance_db"},
             )
 
-        LanceDB Cloud, reading credentials from env vars at worker startup
+        LanceDB Enterprise, reading credentials from env vars at worker startup
         so secrets aren't pickled into the dataset::
 
             import os, lancedb
@@ -597,7 +641,7 @@ class Permutation:
         if split is not None:
             if permutation_table is None:
                 raise ValueError(
-                    "Cannot create a permutation on split `{split}`"
+                    f"Cannot create a permutation on split `{split}`"
                     " because no permutation table is provided"
                 )
             if isinstance(split, str):
@@ -865,9 +909,11 @@ class Permutation:
                 f"Cannot rename column `{old_name}` to `{new_name}` because a column "
                 "with that name already exists"
             )
-        new_selection = self.selection.copy()
-        new_selection[new_name] = new_selection[old_name]
-        del new_selection[old_name]
+        # Rebuild the mapping so the renamed column keeps its position
+        new_selection = {
+            (new_name if name == old_name else name): value
+            for name, value in self.selection.items()
+        }
         return self._with_selection(new_selection)
 
     def rename_columns(self, column_map: dict[str, str]) -> "Permutation":
