@@ -201,6 +201,47 @@ pub(crate) async fn commit_add_columns(
     Ok(AddColumnsResult { version })
 }
 
+/// SDK embedding configurations refer to top-level columns by name. Lance's
+/// schema evolution preserves this metadata, so reject operations that would
+/// leave those names dangling. Read only the column names, without loading an
+/// embedding function or depending on the SDK's model configuration.
+fn ensure_not_embedding_column<'a>(
+    schema: &ArrowSchema,
+    operation: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<()> {
+    let Some(raw) = schema.metadata.get("embedding_functions") else {
+        return Ok(());
+    };
+    #[derive(Deserialize)]
+    struct EmbeddingColumns {
+        #[serde(alias = "sourceColumn")]
+        source_column: String,
+        #[serde(alias = "vectorColumn", alias = "dest_column", alias = "destColumn")]
+        vector_column: String,
+    }
+    let embeddings: Vec<EmbeddingColumns> =
+        serde_json::from_str(raw).map_err(|error| Error::InvalidInput {
+            message: format!("Invalid embedding_functions metadata: {error}"),
+        })?;
+    for path in paths {
+        // Use Lance's path grammar so quoting or a nested path cannot bypass
+        // the check. Altering a child also changes the embedding's input.
+        let column = computed_columns::field_root(path)?;
+        if embeddings
+            .iter()
+            .any(|embedding| embedding.source_column == column || embedding.vector_column == column)
+        {
+            return Err(Error::InvalidInput {
+                message: format!(
+                    "Cannot {operation} column '{path}' because it is used by an embedding function"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Internal implementation of the alter columns logic.
 ///
 /// Alters existing columns in the table (rename, change type, or modify nullability).
@@ -228,6 +269,14 @@ pub(crate) async fn execute_alter_columns(
         alterations.iter().flat_map(|alteration| {
             std::iter::once(alteration.path.as_str()).chain(alteration.rename.as_deref())
         }),
+    )?;
+    ensure_not_embedding_column(
+        &schema,
+        "rename",
+        alterations
+            .iter()
+            .filter(|alteration| alteration.rename.is_some())
+            .map(|alteration| alteration.path.as_str()),
     )?;
     // Nullability is not part of what an expression resolves against, so only
     // a rename or a retype can invalidate a binding.
@@ -271,6 +320,7 @@ pub(crate) async fn execute_drop_columns(
     let mut names = columns.iter().map(|c| c.to_string()).collect::<Vec<_>>();
     names.extend(unbinding.assignment_columns.iter().cloned());
     let dropped = names.iter().map(String::as_str).collect::<Vec<_>>();
+    ensure_not_embedding_column(&schema, "drop", dropped.iter().copied())?;
     computed_columns::ensure_not_bound_by(&unbinding.retained, "schema evolution", &dropped)?;
     computed_columns::ensure_not_an_input_of(&schema, &dropped, &dropped)?;
 
@@ -782,6 +832,85 @@ mod tests {
     }
 
     // Alter Columns Tests
+
+    #[rstest::rstest]
+    #[case("source_column", "vector_column", "text")]
+    #[case("sourceColumn", "vectorColumn", "text")]
+    #[case("source_column", "vector_column", "text with space")]
+    #[tokio::test]
+    async fn test_schema_evolution_preserves_embedding_bindings(
+        #[case] source_key: &str,
+        #[case] vector_key: &str,
+        #[case] source_column: &str,
+    ) {
+        let conn = connect("memory://").execute().await.unwrap();
+        let batch = record_batch!(
+            ("id", Int32, [1]),
+            (source_column, Utf8, ["hello"]),
+            ("vector", Int32, [1])
+        )
+        .unwrap();
+        let metadata = serde_json::json!([{
+            "name": "test",
+            (source_key): source_column,
+            (vector_key): "vector",
+            "model": {},
+        }]);
+        let schema = batch
+            .schema()
+            .as_ref()
+            .clone()
+            .with_metadata(HashMap::from([(
+                "embedding_functions".to_string(),
+                metadata.to_string(),
+            )]));
+        let batch = batch.with_schema(std::sync::Arc::new(schema)).unwrap();
+        let table = conn
+            .create_table("test", batch.clone())
+            .execute()
+            .await
+            .unwrap();
+        let schema = table.schema().await.unwrap();
+        let version = table.version().await.unwrap();
+
+        for path in [format!("`{source_column}`"), "vector".to_string()] {
+            let err = table
+                .alter_columns(&[
+                    ColumnAlteration::new("id".into()).rename("new_id".into()),
+                    ColumnAlteration::new(path.clone()).rename("renamed".into()),
+                ])
+                .await
+                .unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            assert!(err.to_string().contains("used by an embedding function"));
+
+            let err = table.drop_columns(&["id", &path]).await.unwrap_err();
+            assert!(matches!(err, Error::InvalidInput { .. }), "got {err:?}");
+            assert!(err.to_string().contains("used by an embedding function"));
+            assert_eq!(table.schema().await.unwrap(), schema);
+            assert_eq!(table.version().await.unwrap(), version);
+        }
+
+        let reopened = conn.open_table("test").execute().await.unwrap();
+        assert_eq!(reopened.schema().await.unwrap(), schema);
+        reopened.add(batch).execute().await.unwrap();
+        assert_eq!(reopened.count_rows(None).await.unwrap(), 2);
+
+        // Nullability and operations on unrelated columns remain supported.
+        reopened
+            .alter_columns(&[ColumnAlteration::new("vector".into()).set_nullable(true)])
+            .await
+            .unwrap();
+        reopened
+            .alter_columns(&[ColumnAlteration::new("id".into()).rename("new_id".into())])
+            .await
+            .unwrap();
+        reopened.drop_columns(&["new_id"]).await.unwrap();
+        assert_eq!(
+            reopened.schema().await.unwrap().metadata(),
+            schema.metadata()
+        );
+    }
 
     #[tokio::test]
     async fn test_alter_columns_rejects_missing_changes() {
