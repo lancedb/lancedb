@@ -42,11 +42,11 @@ from lancedb.embeddings import get_registry
 
 ## Step 2: Connect to LanceDB {#step-2-connect-to-lancedb}
 
-Establish a connection to your LanceDB OSS directory or Enterprise cluster:
+Establish a connection to your LanceDB Embedded directory or Enterprise cluster:
 
 <CodeGroup>
 ```python Python icon="python"
-# Enter your LanceDB connection URI for OSS or Enterprise here
+# Enter your LanceDB connection URI for LanceDB Embedded or Enterprise here
 db = lancedb.connect(...)
 ```
 
@@ -126,8 +126,8 @@ LanceDB preserves them instead of filling only the missing rows.
 
 ## Step 6: Query with Automatic Embedding {#step-6-query-with-automatic-embedding}
 
-Note: On LanceDB Enterprise, the server does not generate embeddings from query text. In the Python remote
-client, `table.search("greetings")` can still work when the table schema includes embedding metadata, because
+Note: On LanceDB Enterprise, the server does not generate embeddings from query text. When the Python
+SDK connects to Enterprise, `table.search("greetings")` can still work when the table schema includes embedding metadata, because
 the client computes the query embedding before sending the vector search. If there is no embedding metadata for
 that search, `search("greetings")` in `auto` mode is treated as FTS instead.
 

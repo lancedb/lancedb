@@ -69,7 +69,10 @@ impl AddColumnsBuilder {
     /// renamed, retyped or dropped while a declaration reads it, since the
     /// expression names it.
     ///
-    /// On LanceDB Cloud and Enterprise the expression is planned by the
+    /// LanceDB Embedded declaration and refresh require the `experimental-functions`
+    /// Cargo feature. LanceDB Distributed operations do not require this feature.
+    ///
+    /// In LanceDB Distributed the expression is planned by the
     /// server, and the refresh runs as a server job -- see
     /// [`Table::refresh_column_async`](super::Table::refresh_column_async).
     ///
@@ -144,7 +147,7 @@ impl AddColumnsBuilder {
 
     /// Configure automatic refresh for every output declared in this call.
     /// Settings are stored with the declaration. They require computed or
-    /// Function columns; local tables persist them without starting a scheduler.
+    /// Function columns; LanceDB Embedded persists them without starting a scheduler.
     ///
     /// ```
     /// # use lancedb::{Table, table::computed_columns::ComputedColumnOptions};
@@ -252,6 +255,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn computed_options_commit_with_declaration() {
         let table = table_with_two_columns("options").await;
         let version = table.version().await.unwrap();
@@ -313,6 +320,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn omitted_refresh_interval_stays_unset() {
         let table = table_with_two_columns("server_interval").await;
         let version = table.version().await.unwrap();

@@ -180,6 +180,10 @@ abstract createMaterializedView(
 
 Define a materialized view named `name` over the table `source`.
 
+LanceDB Embedded creation and refresh require a source build with the
+`experimental-functions` Cargo feature, disabled in published packages.
+LanceDB Distributed operations do not require this feature.
+
 The view is populated before creation returns. Set `withNoData` to create
 only its definition and empty backing table. The view is a normal table:
 it can be queried, indexed and searched, and it appears in `tableNames`.
@@ -823,7 +827,7 @@ abstract renameTable(
 
 Rename a table.
 
-Currently only supported by LanceDB Cloud. Local OSS connections and
+Currently only supported in LanceDB Distributed. LanceDB Embedded connections and
 namespace-backed connections (via [connectNamespace](../functions/connectNamespace.md)) reject with
 a "not supported" error.
 

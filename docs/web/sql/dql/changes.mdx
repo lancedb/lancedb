@@ -1,0 +1,76 @@
+---
+title: "Changes since a version"
+sidebarTitle: "Changes"
+description: "CHANGES: read the rows appended to a table since an earlier version."
+icon: clock-rotate-left
+keywords: ["changes", "append", "incremental", "cdc", "version"]
+availability:
+  embedded: unavailable
+  enterprise: available
+---
+
+`CHANGES` reads the rows appended to a table since an earlier
+[version](/management/table#versioning), without rescanning rows that were
+already there:
+
+```sql
+SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 42)
+```
+
+This returns the rows appended after version 42, up to the table's current
+version at the time the query runs.
+
+## Strictly append-only {#strict}
+
+The clause is named for what it requires, not just what it does: every
+change to the table between the starting version and the current one must
+be an append. If any of them inserted with changes other than a pure append
+-- an update, a delete, a merge -- the query is refused rather than silently
+returning an incomplete or wrong result. Re-run it with a later starting
+version that is itself after the non-append write, or read the table in full
+instead of incrementally.
+
+`INFORMATION => APPEND_ONLY` is the only supported value: it names what kind
+of history the clause is willing to read, not a choice among several. `AT
+(VERSION => ...)` takes a positive integer; there is no `AT (TIMESTAMP =>
+...)` form for this clause, unlike other version qualifiers.
+
+## Where the clause can go {#placement}
+
+It attaches to a table in `FROM`, including inside a subquery, a CTE, a join,
+a set operation, or `EXPLAIN`:
+
+```sql
+WITH recent AS (
+  SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 42)
+)
+SELECT count(*) FROM recent
+
+SELECT * FROM events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 10) a
+JOIN events CHANGES (INFORMATION => APPEND_ONLY) AT (VERSION => 20) b
+  ON a.id = b.id
+```
+
+Each occurrence of a table keeps its own starting version, even when the same
+table is referenced more than once in one statement.
+
+## Unsupported forms {#refused}
+
+| | |
+| --- | --- |
+| `CHANGES (INFORMATION => DEFAULT)` | only `APPEND_ONLY` is supported |
+| `AT (TIMESTAMP => ...)` | only `AT (VERSION => ...)` is supported |
+| `AT (VERSION => 0)` | the starting version must be positive |
+| `... END (VERSION => ...)` | not supported; the current version is always the end |
+| `CHANGES ... TABLESAMPLE (...)` | cannot be combined on the same table reference |
+
+## What to read next {#next}
+
+<CardGroup cols={2}>
+  <Card title="Table" icon="table" href="/sql/ddl/table">
+    CREATE, ALTER, CLONE and versioning basics.
+  </Card>
+  <Card title="Select" icon="magnifying-glass" href="/sql/dql/select">
+    The rest of the query grammar this clause attaches to.
+  </Card>
+</CardGroup>

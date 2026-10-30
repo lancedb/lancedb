@@ -1,0 +1,19 @@
+extends: existence
+message: "'%s' reads as two products. LanceDB Enterprise provides LanceDB Distributed: name the product or the execution model, not both."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#names
+level: warning
+ignorecase: false
+tokens:
+  - 'Distributed(?:\s+(?:and|or)\s+|\s*/\s*)(?:LanceDB\s+)?Enterprise'
+  - 'Enterprise(?:\s+(?:and|or)\s+|\s*/\s*)(?:LanceDB\s+)?Distributed'
+tests:
+  - name: flags Distributed and Enterprise side by side
+    input: Choose Distributed or Enterprise. LanceDB Enterprise and LanceDB Distributed differ, and so does Distributed/Enterprise.
+    want: |
+      1:8:LanceDB.DistributedEnterprise:'Distributed or Enterprise' reads as two products. LanceDB Enterprise provides LanceDB Distributed: name the product or the execution model, not both.
+      1:43:LanceDB.DistributedEnterprise:'Enterprise and LanceDB Distributed' reads as two products. LanceDB Enterprise provides LanceDB Distributed: name the product or the execution model, not both.
+      1:98:LanceDB.DistributedEnterprise:'Distributed/Enterprise' reads as two products. LanceDB Enterprise provides LanceDB Distributed: name the product or the execution model, not both.
+  - name: leaves the defining sentence and the Embedded pair alone
+    input: |
+      LanceDB Enterprise runs LanceDB Distributed. Compare Embedded and Distributed execution. Distributed search and enterprise teams are fine.
+    want: ''

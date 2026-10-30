@@ -26,10 +26,13 @@ from lance_namespace import (
 from .remote import ClientConfig
 from .types import BaseTokenizerType
 
+_experimental_functions_enabled: bool
+
 IvfHnswPq: type[HnswPq] = HnswPq
 IvfHnswSq: type[HnswSq] = HnswSq
 IvfHnswFlat: type[HnswFlat] = HnswFlat
 AnalyzePlanDistributedMetrics = Literal["aggregate", "per_worker", "full"]
+__version__: str
 
 class MetricPoint:
     name: str
@@ -134,6 +137,8 @@ class Connection(object):
         self,
         namespace_path: List[str],
     ) -> DescribeNamespaceResponse: ...
+    async def namespace_exists(self, namespace_id: List[str]) -> bool: ...
+    async def table_exists(self, table_id: List[str]) -> bool: ...
     def list_tables(
         self,
         namespace_path: Optional[List[str]] = None,
@@ -166,6 +171,22 @@ class Connection(object):
     async def drop_function_async(
         self, name: str, version: str, namespace_path: Optional[List[str]] = None
     ) -> Tuple[bool, Job]: ...
+    async def create_storage_integration(
+        self, name: str, request: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    async def describe_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> str: ...
+    def list_storage_integrations(
+        self,
+        *,
+        namespace_path: Optional[List[str]] = None,
+        page_token: Optional[str] = None,
+        page_limit: Optional[int] = None,
+    ) -> NameListing: ...
+    async def drop_storage_integration(
+        self, name: str, namespace_path: Optional[List[str]] = None
+    ) -> None: ...
     async def create_secret(
         self, name: str, value: str, namespace_path: Optional[List[str]] = None
     ) -> None: ...
@@ -526,10 +547,10 @@ class Table:
         limit: Optional[int] = None,
     ) -> FunctionErrors: ...
     async def refresh_materialized_view(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> RefreshMaterializedViewResult: ...
     async def refresh_materialized_view_async(
-        self, source_version: Optional[int] = None
+        self, source_version: Optional[int] = None, *, full: bool = False
     ) -> Job: ...
     async def materialized_view_definition(self) -> str: ...
     async def add_columns_with_schema(self, schema: pa.Schema) -> AddColumnsResult: ...
@@ -544,6 +565,7 @@ class Table:
         *,
         cleanup_since_ms: Optional[int] = None,
         delete_unverified: Optional[bool] = None,
+        compaction_options: Optional[Dict[str, Any]] = None,
     ) -> OptimizeStats: ...
     async def uri(self) -> str: ...
     async def initial_storage_options(self) -> Optional[Dict[str, str]]: ...
@@ -918,9 +940,9 @@ class FunctionErrors:
 class RefreshMaterializedViewResult:
     @staticmethod
     def from_json(value: str) -> RefreshMaterializedViewResult: ...
-    mode: str
-    rows_written: int
-    source_version: int
+    mode: Optional[str]
+    rows_written: Optional[int]
+    source_version: Optional[int]
     version: int
 
 class AlterColumnsResult:
@@ -986,7 +1008,7 @@ class Catalog:
     ) -> Connection: ...
     async def connect_database(self, name: str) -> Connection: ...
     async def drop_database(
-        self, name: str, *, ignore_missing: bool = False
+        self, name: str, *, ignore_missing: bool = False, cascade: bool = False
     ) -> None: ...
     def list_databases(
         self, *, page_token: Optional[str] = None, page_limit: Optional[int] = None
@@ -1072,6 +1094,10 @@ class AuthzObject:
     @staticmethod
     def view(
         database: str, namespace_path: Sequence[str], name: str
+    ) -> AuthzObject: ...
+    @staticmethod
+    def storage_integration(
+        database: str, namespace: Sequence[str], name: str
     ) -> AuthzObject: ...
     @staticmethod
     def secret(

@@ -128,8 +128,8 @@ export interface AddDataOptions {
   /**
    * Whether blob URIs outside registered external bases may be written.
    *
-   * Defaults to `false`. This option is supported only for local/native
-   * tables; remote tables return an error when it is enabled. An enabled write
+   * Defaults to `false`. This option is supported only in LanceDB Embedded;
+   * LanceDB Distributed returns an error when it is enabled. An enabled write
    * stores the absolute URI reference without registering a base or copying
    * the external object into the database. The object must remain accessible
    * when the blob is read later.
@@ -381,6 +381,11 @@ export abstract class Table {
    *   }),
    * });
    * @example
+   * // Or size the partitions by row count instead of choosing how many.
+   * await table.createIndex("vector", {
+   *   config: lancedb.Index.ivfPq({ targetPartitionSize: 4096 }),
+   * });
+   * @example
    * // Or create a Scalar index
    * await table.createIndex("my_float_col");
    */
@@ -438,7 +443,7 @@ export abstract class Table {
    * Large columns (e.g. high-dimensional vectors or binary data) may not be
    * practical to prewarm.
    *
-   * This feature is currently only supported on remote tables.
+   * This feature is currently only supported in LanceDB Distributed.
    */
   abstract prewarmData(columns?: string[]): Promise<void>;
 
@@ -594,6 +599,10 @@ export abstract class Table {
   /**
    * Add new columns with defined values.
    *
+   * LanceDB Embedded computed-column declaration and refresh require a source
+   * build with the `experimental-functions` Cargo feature. Published packages
+   * disable it; LanceDB Distributed operations remain available.
+   *
    * The `{ computed }` form stores the expression rather than evaluating it
    * now: the column is committed with no values, and rows get them from
    * {@link Table#refreshColumn}. Declaring one therefore costs the same on a
@@ -604,7 +613,7 @@ export abstract class Table {
    * declaration reads a column, that column cannot be renamed, retyped or
    * dropped.
    *
-   * On LanceDB Cloud and Enterprise the expression is planned by the
+   * In LanceDB Distributed the expression is planned by the
    * server, and the refresh runs as a server job -- see
    * {@link Table#refreshColumnAsync}.
    * @param {AddColumnsSql[] | Field | Field[] | Schema} newColumnTransforms Either:
@@ -632,11 +641,12 @@ export abstract class Table {
 
   /**
    * Fill the rows of a computed column that hold no value yet.
+   * Local refresh requires a source build with `experimental-functions`.
    *
    * Rows appended since the last refresh are filled by the next one, and
    * rows whose inputs changed since they were computed are recomputed;
-   * everything else is left as it is. Local tables only: a remote refresh
-   * runs as a server job, through {@link Table#refreshColumnAsync}.
+   * everything else is left as it is. LanceDB Embedded only: in LanceDB
+   * Distributed a refresh runs as a server job, through {@link Table#refreshColumnAsync}.
    * @param {string} column The name of the computed column to fill.
    * @returns {Promise<RefreshColumnResult>} A promise that resolves to the
    * number of rows filled and the new version number of the table.
@@ -646,12 +656,15 @@ export abstract class Table {
   /**
    * Like {@link Table#refreshColumn}, but returns a handle to the refresh
    * job instead of blocking until it completes.
+   * LanceDB Embedded refresh requires a source build with
+   * `experimental-functions`. LanceDB Distributed jobs do not require this
+   * feature.
    *
    * The job may already be complete when returned; callers must not assume
    * the column is filled until {@link Job.wait} resolves. Invalid input --
    * an unknown column, or one that is not computed -- rejects here rather
-   * than failing the job. On local tables the job runs in-process; on
-   * LanceDB Cloud and Enterprise it is the server's backfill job.
+   * than failing the job. In LanceDB Embedded the job runs in-process; in
+   * LanceDB Distributed it is the server's backfill job.
    * @param {string} column The name of the computed column to fill.
    * @example
    * ```ts
@@ -668,7 +681,7 @@ export abstract class Table {
    * A refresh running under a skip policy records each row it skipped with
    * the input that failed and the error. This lists those records, newest
    * job first, plus a summary for any fragment whose per-row detail was
-   * capped. LanceDB Cloud and Enterprise only; reading errors needs read
+   * capped. LanceDB Distributed only; reading errors needs read
    * access to the table, since a message carries the value that failed.
    * @param {FunctionErrorsOptions} options Optional filters: `jobId`,
    * `column`, and `limit` (server default 10000, cap 100000).
@@ -692,6 +705,7 @@ export abstract class Table {
    */
   abstract refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult>;
 
   /** @ignore */
@@ -717,8 +731,6 @@ export abstract class Table {
    * - `lancedb:description`: for a human-readable description of a field.
    * - `lancedb:tag:<name>`: for a user-defined key-value tag, where the suffix
    *   names the tag category; e.g. `lancedb:tag:model: "clip"`.
-   * - `lancedb:logical-column`: for a column grouping; e.g. `feature_v1` and
-   *   `feature_v2` might be in the same logical column.
    * - `lancedb:status`: for status options (`production`, `candidate`,
    *   `deprecated`, `archived`) to designate the current life cycle state of
    *   this column.
@@ -988,7 +1000,7 @@ export abstract class Table {
    * Specify exactly one of `column` or `indexName`.
    *
    * Model-backed tokenizers such as `jieba/*` and `lindera/*` are rebuilt in
-   * the client process from index metadata. For remote tables, this means the
+   * the client process from index metadata. In LanceDB Distributed, this means the
    * same tokenizer model files must also exist locally (under
    * `LANCE_LANGUAGE_MODEL_HOME`) and must match the files the server uses. A
    * mismatch cannot be detected: the returned tokens may differ from what the
@@ -1435,8 +1447,9 @@ export class LocalTable extends Table {
 
   async refreshMaterializedView(
     sourceVersion?: number,
+    full?: boolean,
   ): Promise<RefreshMaterializedViewResult> {
-    return await this.inner.refreshMaterializedView(sourceVersion);
+    return await this.inner.refreshMaterializedView(sourceVersion, full);
   }
 
   async materializedViewDefinition(): Promise<string> {
