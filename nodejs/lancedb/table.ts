@@ -713,6 +713,9 @@ export abstract class Table {
 
   /**
    * Alter the name or nullability of columns.
+   *
+   * Local tables reject renaming source or vector columns referenced by
+   * `embedding_functions` schema metadata, preserving the embedding binding.
    * @param {ColumnAlteration[]} columnAlterations One or more alterations to
    * apply to columns.
    * @returns {Promise<AlterColumnsResult>} A promise that resolves to an object
@@ -750,6 +753,9 @@ export abstract class Table {
    * underlying storage. In order to remove the data, you must subsequently
    * call ``compact_files`` to rewrite the data without the removed columns and
    * then call ``cleanup_files`` to remove the old files.
+   *
+   * Local tables reject dropping source or vector columns referenced by
+   * `embedding_functions` schema metadata, preserving the embedding binding.
    * @param {string[]} columnNames The names of the columns to drop. These can
    * be nested column references (e.g. "a.b.c") or top-level column names
    * (e.g. "a").
