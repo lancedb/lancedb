@@ -40,9 +40,12 @@ Functions from [Functions](/management/function#chain):
 
 ```sql
 CREATE MATERIALIZED VIEW frames_captioned AS
-SELECT f.frame_id, extract_frame(v.video, f.ts) AS jpeg,
-       caption(extract_frame(v.video, f.ts)) AS caption
-FROM videos v JOIN frames f ON v.id = f.video_id
+SELECT
+    f.frame_id,
+    extract_frame(v.video, f.ts) AS jpeg,
+    caption(extract_frame(v.video, f.ts)) AS caption
+FROM videos v
+JOIN frames f ON v.id = f.video_id
 WHERE f.selected = true
 WITH (auto_refresh_enabled = false, auto_refresh_interval_seconds = 5)
 ```
