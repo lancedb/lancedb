@@ -410,7 +410,6 @@
             "pages": [
               "enterprise/authentication",
               "governance/authorization",
-              "governance/secrets",
               "enterprise/security"
             ]
           },

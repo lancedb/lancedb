@@ -184,10 +184,14 @@ GROUP BY partition
 ```
 </CodeGroup>
 
-Assigns each row to one of `count` IVF-style partitions over `vector`, using
-the named arguments `selection` (partition-center strategy; `'random'` is
-sampled with `seed`) and `seed`. Grouping by its result buckets rows by
-vector proximity without building or querying a vector index — useful for
+Reads an existing IVF-family vector index's trained partitions and assigns
+each row to the one its `vector` falls into -- the column needs an
+up-to-date, single-segment index before the function runs, the same
+requirement [`dedupe`](/curation/dedupe#example-data) has. `selection`
+(`'all'` default, `'first'`, or `'random'`, sampled with `seed`) scopes the
+scan to some of the index's partitions instead of all of them, and `count`
+is how many to sample when `selection => 'random'`. Grouping by its result
+buckets rows by vector proximity without a full pairwise scan — useful for
 blocking a large table into comparable chunks, such as before a pairwise
 similarity pass.
 

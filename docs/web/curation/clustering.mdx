@@ -20,31 +20,15 @@ Connect with an [Enterprise connection](/basics/catalog#enterprise).
 
 <Accordion title="Create the example table">
 
-`curation_embeddings` has eight records: rows 10 and 20 are near-identical,
-30, 40 and 50 form one looser cluster, and 60, 70 and 80 are each distinct
-and increasingly far apart:
+Use the same `curation_embeddings` fixture as [dedupe](/curation/dedupe#example-data)
+-- eight records, where rows 10 and 20 are near-identical, 30, 40 and 50
+form one looser cluster, and 60, 70 and 80 are each distinct and
+increasingly far apart -- but build the index with more partitions.
+Clustering wants partitions fine-grained enough to tell the two clusters
+apart; deduplication only needs a distance threshold within one:
 
 <CodeGroup>
 ```python Python icon="python"
-import pyarrow as pa
-from lancedb.index import IvfFlat
-
-schema = pa.schema([
-    pa.field("id", pa.int64(), nullable=False),
-    pa.field("caption", pa.utf8()),
-    pa.field("embedding", pa.list_(pa.float32(), 2)),
-])
-table = db.create_table("curation_embeddings", [
-    {"id": 10, "caption": "a cat on a chair",     "embedding": [0.0, 0.0]},
-    {"id": 20, "caption": "a cat on the chair",    "embedding": [0.0, 0.03]},
-    {"id": 30, "caption": "a dog in a field",      "embedding": [5.0, 5.0]},
-    {"id": 40, "caption": "a dog in the field",    "embedding": [5.0, 5.05]},
-    {"id": 50, "caption": "a dog out in a field",  "embedding": [5.0, 5.10]},
-    {"id": 60, "caption": "a bird in a tree",      "embedding": [10.0, 10.0]},
-    {"id": 70, "caption": "a boat on the water",   "embedding": [20.0, 20.0]},
-    {"id": 80, "caption": "a car on the road",     "embedding": [30.0, 30.0]},
-], schema=schema)
-
 table.create_index("embedding", config=IvfFlat(num_partitions=5, distance_type="l2"))
 table.wait_for_index(["embedding_idx"])
 ```
