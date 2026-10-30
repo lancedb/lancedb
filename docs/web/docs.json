@@ -185,11 +185,15 @@
     },
     {
       "source": "/storage",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/configuration",
-      "destination": "/deployment/storage"
+      "destination": "/basics/catalog#object-storage"
+    },
+    {
+      "source": "/deployment/storage",
+      "destination": "/basics/catalog#object-storage"
     },
     {
       "source": "/storage/monitoring",
@@ -400,7 +404,6 @@
             "group": "Deployment",
             "pages": [
               "enterprise/index",
-              "deployment/storage",
               "deployment/monitoring",
               "enterprise/deployment/kubernetes"
             ]

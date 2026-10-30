@@ -82,6 +82,8 @@ reach a database and the catalog separately.
 
 ### Connecting to Catalog {#connecting-to-catalog}
 
+<Badge color="red">Enterprise</Badge>
+
 `connect_catalog(endpoint)` connects to Enterprise's root catalog, which can
 list, create and drop databases across the whole deployment. Its
 `connect_database(name)` and `create_database(name)` then return the same
@@ -101,11 +103,11 @@ directory, an object-storage path, or (with a `db://` URI) a specific
 Enterprise database. The table below shows which URI reaches which kind of
 database directly.
 
-| URI | Where queries run |
-| --- | --- |
-| A local path, such as `./data` | Embedded: in your process |
-| `s3://`, `gs://` or `az://` | Embedded: in your process, reading object storage |
-| `db://` | LanceDB Enterprise: queries run on your cluster |
+| URI | Mode | Where queries run |
+| --- | --- | --- |
+| A local path, such as `./data` | <Badge color="green">Embedded</Badge> | In your process |
+| `s3://`, `gs://` or `az://` | <Badge color="green">Embedded</Badge> | In your process, reading object storage |
+| `db://` | <Badge color="red">Enterprise</Badge> | On your cluster |
 
 #### A local directory {#local}
 
@@ -136,9 +138,8 @@ directory on disk.
 #### Object storage {#object-storage}
 
 With an object storage URI the library is still embedded: your process runs
-every query and reads and writes the bucket directly, with the credentials from
-its environment or its storage options. [Configuring storage](/deployment/storage)
-covers credentials, endpoints and provider options.
+every query and reads and writes the bucket directly, with credentials from
+its environment or its connection's `storage_options`.
 
 <CodeGroup>
     <CodeBlock filename="Python (sync)" language="Python" icon="python">
@@ -156,6 +157,21 @@ covers credentials, endpoints and provider options.
 </CodeGroup>
 
 In Rust, pass the same URI to `connect`.
+
+LanceDB supports these object storage backends:
+
+| Backend | URI scheme | Credentials |
+| --- | --- | --- |
+| AWS S3, and S3-compatible stores (MinIO, Tigris, ...) | `s3://` | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, or `storage_options`. Compatible stores also need `endpoint` and `region`. |
+| Google Cloud Storage | `gs://` | `GOOGLE_SERVICE_ACCOUNT` (path to a service account JSON), or `storage_options` |
+| Azure Blob Storage | `az://` | `AZURE_STORAGE_ACCOUNT_NAME` + `AZURE_STORAGE_ACCOUNT_KEY` (or a SAS token), or `storage_options` |
+| Tencent COS | `cos://` | `TENCENTCLOUD_SECRET_ID` / `TENCENTCLOUD_SECRET_KEY`, or `storage_options` |
+| GooseFS (a cache layer over COS or S3) | `goosefs://` | Reads from the GooseFS client environment |
+
+Pass credentials as environment variables (uppercase), or as a
+`storage_options` dict at connection or table level (lowercase keys); a
+table's `storage_options` inherit the connection's and override on a
+per-key basis.
 
 #### LanceDB Enterprise {#enterprise}
 
