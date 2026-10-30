@@ -284,14 +284,9 @@
               "quickstart",
               "basics/sdk",
               "basics/sql",
+              "tools/cli",
               "basics/agentic-skills",
               "deployment/support"
-            ]
-          },
-          {
-            "group": "Tools",
-            "pages": [
-              "tools/cli"
             ]
           },
           {
@@ -330,7 +325,8 @@
               "reranking/index",
               "search/explain",
               "search/realtime-read",
-              "enterprise/distributed-search"
+              "enterprise/distributed-search",
+              "enterprise/benchmarks"
             ]
           },
           {
@@ -406,8 +402,7 @@
               "enterprise/index",
               "deployment/storage",
               "deployment/monitoring",
-              "enterprise/deployment/kubernetes",
-              "enterprise/benchmarks"
+              "enterprise/deployment/kubernetes"
             ]
           },
           {
