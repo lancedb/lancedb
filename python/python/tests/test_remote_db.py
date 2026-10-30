@@ -56,7 +56,7 @@ def test_connect_rejects_invalid_cloud_dns_hostname(db_name):
 
 @contextlib.contextmanager
 def mock_lancedb_connection(handler, **client_config):
-    with http.server.HTTPServer(
+    with http.server.ThreadingHTTPServer(
         ("127.0.0.1", 0), make_mock_http_handler(handler)
     ) as server:
         port = server.server_address[1]
