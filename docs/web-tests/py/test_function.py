@@ -181,7 +181,10 @@ def test_function_version_binds_a_column(tmp_path):
     # The binding is accepted by add_columns, which a local table refuses:
     # a Function column needs LanceDB Cloud or Enterprise.
     table = lancedb.connect(tmp_path).create_table("t", [{"value": 1.0}])
-    with pytest.raises(NotImplementedError, match="Cloud and Enterprise"):
+    with pytest.raises(
+        NotImplementedError,
+        match="Function columns are supported only in LanceDB Distributed",
+    ):
         table.add_columns({"doubled": application})
 
 
