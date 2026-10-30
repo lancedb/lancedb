@@ -1121,8 +1121,9 @@ Draft for the embedding schema-evolution protection release.
 
 <Note title="Embedding function bindings on local tables">
 Local tables reject renaming or dropping source and vector columns referenced by
-`embedding_functions` schema metadata. The operation fails before changing any
-columns, preserving the configuration used to generate embeddings on later writes.
+`embedding_functions` schema metadata or native Rust embedding definitions in
+`lancedb::column_definitions`. The operation fails before changing any columns,
+preserving the configuration used to generate embeddings on later writes.
 
 The add/drop/rename recipe below applies only to vector columns without a registered
 embedding function. To change the dimension of a registered embedding column, create

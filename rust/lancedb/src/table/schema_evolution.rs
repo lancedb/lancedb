@@ -8,7 +8,7 @@
 //! - [`alter_columns`](execute_alter_columns): Rename columns, change types, or modify nullability
 //! - [`drop_columns`](execute_drop_columns): Remove columns from the table
 
-use arrow_schema::Schema as ArrowSchema;
+use arrow_schema::{Schema as ArrowSchema, SchemaRef};
 use lance::dataset::transaction::{Operation, Transaction, UpdateMap, UpdateMapEntry};
 use lance::dataset::{ColumnAlteration, CommitBuilder, Dataset, NewColumnTransform};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::computed_columns;
-use super::{BaseTable, NativeTable};
+use super::{BaseTable, ColumnKind, NativeTable, TableDefinition};
 use crate::{Error, Result};
 
 /// The result of an add columns operation.
@@ -201,18 +201,14 @@ pub(crate) async fn commit_add_columns(
     Ok(AddColumnsResult { version })
 }
 
-/// SDK embedding configurations refer to top-level columns by name. Lance's
-/// schema evolution preserves this metadata, so reject operations that would
-/// leave those names dangling. Read only the column names, without loading an
-/// embedding function or depending on the SDK's model configuration.
+/// Native and SDK embedding configurations refer to top-level columns by name.
+/// Lance's schema evolution preserves this metadata, so reject operations that
+/// would leave those names dangling without loading an embedding function.
 fn ensure_not_embedding_column<'a>(
-    schema: &ArrowSchema,
+    schema: &SchemaRef,
     operation: &str,
     paths: impl IntoIterator<Item = &'a str>,
 ) -> Result<()> {
-    let Some(raw) = schema.metadata.get("embedding_functions") else {
-        return Ok(());
-    };
     #[derive(Deserialize)]
     struct EmbeddingColumns {
         #[serde(alias = "sourceColumn")]
@@ -220,10 +216,30 @@ fn ensure_not_embedding_column<'a>(
         #[serde(alias = "vectorColumn", alias = "dest_column", alias = "destColumn")]
         vector_column: String,
     }
-    let embeddings: Vec<EmbeddingColumns> =
-        serde_json::from_str(raw).map_err(|error| Error::InvalidInput {
+    let mut embeddings: Vec<EmbeddingColumns> = match schema.metadata.get("embedding_functions") {
+        Some(raw) => serde_json::from_str(raw).map_err(|error| Error::InvalidInput {
             message: format!("Invalid embedding_functions metadata: {error}"),
-        })?;
+        })?,
+        None => Vec::new(),
+    };
+    let definition = TableDefinition::try_from_rich_schema(schema.clone())?;
+    embeddings.extend(
+        definition
+            .column_definitions
+            .into_iter()
+            .filter_map(|column| {
+                let ColumnKind::Embedding(embedding) = column.kind else {
+                    return None;
+                };
+                let vector_column = embedding
+                    .dest_column
+                    .unwrap_or_else(|| format!("{}_embedding", embedding.source_column));
+                Some(EmbeddingColumns {
+                    source_column: embedding.source_column,
+                    vector_column,
+                })
+            }),
+    );
     for path in paths {
         // Use Lance's path grammar so quoting or a nested path cannot bypass
         // the check. Altering a child also changes the embedding's input.
