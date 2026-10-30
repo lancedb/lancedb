@@ -861,6 +861,11 @@ def test_create_table_embedding_functions(with_schema):
             func.compute_source_embeddings(["goodbye world"])[0].tolist()
         ]
 
+        with pytest.raises(
+            ValueError, match="source column 'text'.*vector column 'vector'"
+        ):
+            table.update(values={"text": "updated text"})
+
 
 def test_create_table_positional_parameters_match_base_contract():
     from lancedb.db import DBConnection
