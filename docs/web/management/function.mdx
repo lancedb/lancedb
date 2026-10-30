@@ -91,7 +91,9 @@ deployment's support before using another computed column as an input.
 
 ## Register it {#register}
 
-Registration returns a job; the immutable version exists once the job succeeds.
+Registration returns a query-backed job; the immutable version exists once the
+SQL command finishes and the job succeeds. Its `job_type` is `query`, and its
+single `id` is the SQL query UUID. Repeated waits reuse the completed result.
 
 <CodeBlock filename="Python" language="Python" icon="python">
 {FunctionRegister}
@@ -101,8 +103,9 @@ Registration returns a job; the immutable version exists once the job succeeds.
 with `db.get_function(name, version=...)`.
 
 <Note>
-**Enterprise job type:** `create_function`. Registration returns a job because
-the function is baked into an image before the version becomes usable.
+The SQL command submits an internal `create_function` image-build job and
+waits for publication. The SDK returns the SQL query handle. Query handles
+have no registry history and cannot be reopened with `open_job()`.
 </Note>
 
 ## Try it in SQL {#try-sql}
@@ -565,7 +568,9 @@ itself is: as source, snapshotted at registration.
 it is bound to; `version` must be a version that exists. It returns `False` if
 the name was already gone. Deleting the object's content can finish after the
 call returns, as a [background job](/maintenance/background-jobs).
-`drop_function_async` returns that job with the result, so you can wait for it.
+`drop_function_async` returns `(dropped, job)`, where `job` is a query-backed
+handle. Waiting confirms catalog
+removal; physical cleanup can continue afterward.
 
 A deployment refuses the drop unless it also allows changes to a function's
 lifecycle, which is a separate setting, off by default even where Functions are

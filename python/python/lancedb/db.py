@@ -975,7 +975,8 @@ class DBConnection(EnforceOverrides):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         LanceDB Embedded connections raise ``NotImplementedError``.
         """
         raise NotImplementedError(
@@ -1033,10 +1034,10 @@ class DBConnection(EnforceOverrides):
         """Drop a Function name and the object it was bound to.
 
         The requested version must exist in the currently named object. Returns
-        True when the name was removed and False when it was absent. The
-        object's content is deleted with it, which may finish after this
-        returns; use :meth:`drop_function_async` to wait for that. Local
-        connections raise NotImplementedError.
+        True when the catalog binding was removed and False when it was absent.
+        Physical cleanup continues in the background; use
+        :meth:`drop_function_async` to access the query job. Local connections
+        raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -1049,13 +1050,12 @@ class DBConnection(EnforceOverrides):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, Job]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Call :meth:`Job.wait` to wait for that to finish. When
-        the server deletes inline, or when nothing was bound, the returned job
-        is already finished and has no id. LanceDB Embedded connections raise
-        NotImplementedError.
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background. LanceDB Embedded
+        connections raise NotImplementedError.
         """
         raise NotImplementedError(
             "Function catalog operations are not supported for this connection type"
@@ -3277,7 +3277,8 @@ class AsyncConnection(object):
         """Submit a scalar Python UDF for building and registration.
 
         The server-side job builds the OCI image, then registers the completed
-        artifact. Waiting on the job returns the immutable Function version.
+        artifact. The returned job has type ``query`` and the SQL query UUID as
+        its ID. Waiting on it returns the immutable Function version.
         ``secrets`` is a sequence of
         [EnvVarSecret][lancedb.secrets.EnvVarSecret], each naming a Secret and
         the environment variable its value arrives in. ``namespace_path`` is
@@ -3347,11 +3348,11 @@ class AsyncConnection(object):
         version: str,
         namespace_path: Optional[List[str]] = None,
     ) -> Tuple[bool, AsyncJob]:
-        """Drop a Function name and return its cleanup job.
+        """Drop a Function binding and return its SQL query job.
 
-        The name is unbound before this returns; the object's content may still
-        be being deleted. Await :meth:`AsyncJob.wait` to wait for that to
-        finish.
+        The boolean reports catalog removal. The job has type ``query`` and its
+        ID is the SQL query UUID. Repeated waits confirm that completion;
+        physical cleanup continues in the background.
         """
         dropped, job = await self._inner.drop_function_async(
             name, version, namespace_path

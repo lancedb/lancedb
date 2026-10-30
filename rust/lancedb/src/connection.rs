@@ -646,9 +646,10 @@ impl Connection {
     /// in `namespace_path`, which is empty for the root namespace.
     ///
     /// The server-side job builds the OCI image, then registers the completed
-    /// artifact. Waiting on the returned typed job yields the durable
-    /// [`crate::function::FunctionVersion`]. Creation is supported only in LanceDB Distributed.
-    /// LanceDB Embedded databases return [`Error::NotSupported`].
+    /// artifact. The returned job has type `query` and the SQL query UUID as its
+    /// ID. Waiting on the returned typed job yields the durable
+    /// [`crate::function::FunctionVersion`]. Creation is remote-only.
+    /// Local databases return [`Error::NotSupported`].
     ///
     pub async fn create_function_async(
         &self,
@@ -730,12 +731,11 @@ impl Connection {
             .await
     }
 
-    /// Start dropping a Function and return its cleanup job.
+    /// Drop a Function binding and return its SQL query handle.
     ///
-    /// The name is unbound before this returns; the object's content may still be being
-    /// deleted. Await [`Job::wait`][crate::job::Job::wait] to wait for that to finish. When
-    /// the server deletes inline, or when nothing was bound, the returned job is already
-    /// finished and has no id. LanceDB Embedded databases return [`Error::NotSupported`].
+    /// The boolean reports catalog removal. The query job retains its query ID,
+    /// and repeated waits confirm completion. Physical cleanup continues in the
+    /// background. Local databases return [`Error::NotSupported`].
     pub async fn drop_function_async(
         &self,
         name: impl AsRef<str>,

@@ -460,10 +460,9 @@ pub trait Database:
     ) -> Result<bool> {
         function_catalog_not_supported()
     }
-    /// Start dropping a Function and return a handle to the cleanup job.
-    ///
-    /// Backends without asynchronous cleanup complete the drop before returning an
-    /// already-finished job.
+    /// Drop a Function binding and return its completion handle.
+    /// SQL backends return a query job confirming catalog removal; physical
+    /// cleanup continues separately.
     async fn drop_function_async(
         &self,
         name: &str,
