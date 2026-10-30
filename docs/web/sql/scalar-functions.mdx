@@ -68,7 +68,9 @@ self-join.
 <CodeGroup>
 ```sql SQL icon="database"
 SELECT date_bin(INTERVAL '1 hour', created_at) AS hour, count(*)
-FROM events GROUP BY hour ORDER BY hour
+FROM events
+GROUP BY hour
+ORDER BY hour
 ```
 </CodeGroup>
 
@@ -174,8 +176,9 @@ it over `LIKE` for keyword tests.
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
-       array_agg(id) AS ids
+SELECT
+    ivf_partition(embedding, selection => 'random', count => 100, seed => 42) AS partition,
+    array_agg(id) AS ids
 FROM documents
 GROUP BY partition
 ```

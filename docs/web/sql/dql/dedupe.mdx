@@ -18,17 +18,23 @@ before committing to this resolution.
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM dedupe(<table>, <vector_column>,
-  distance_threshold => <float>
-  [, resolution => 'connected_components' | 'direct_representative']
-  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+SELECT * FROM dedupe(
+    <table>,
+    <vector_column>,
+    distance_threshold => <float>
+    [, resolution => 'connected_components' | 'direct_representative']
+    [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
 )
 ```
 </CodeGroup>
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
 </CodeGroup>
 
@@ -68,7 +74,11 @@ into a new table or a materialized view:
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE MATERIALIZED VIEW frames_deduped AS
-SELECT * FROM dedupe('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
 </CodeGroup>
 
@@ -90,8 +100,14 @@ duplicate rate on a large table before scanning it in full:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM dedupe('frames', 'vec',
-  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+SELECT * FROM dedupe(
+    'frames',
+    'vec',
+    distance_threshold => 0.02,
+    selection => 'random',
+    count => 100,
+    seed => 42
+)
 ```
 </CodeGroup>
 
