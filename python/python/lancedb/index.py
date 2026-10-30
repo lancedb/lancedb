@@ -221,6 +221,25 @@ class FTS:
         ``LIST_ELEMENT`` treats each element of the deepest list on the indexed
         field path as one document and returns its physical coordinates in
         ``_doc_index`` for matching queries.
+    analyzer : {"text", "code"}, optional
+        ``"code"`` selects the code analyzer, which is the same as
+        ``base_tokenizer="code"``. ``"text"`` selects the default text analyzer.
+        ``None`` infers the analyzer from ``base_tokenizer``. ``"code"`` cannot
+        be combined with a ``base_tokenizer`` other than ``"simple"`` (the
+        default) or ``"code"``.
+    split_identifiers : bool, optional
+        Split code identifiers such as ``camelCase`` and ``snake_case`` into
+        subwords. ``None`` uses the code analyzer's default.
+    split_on_numerics : bool, optional
+        Split identifier subwords at letter and number boundaries, for example
+        ``utf8`` into ``utf`` and ``8``. ``None`` uses the code analyzer's
+        default.
+    preserve_original : bool, optional
+        Also index the complete identifier next to its subwords. ``None`` uses
+        the code analyzer's default.
+    index_operators : bool, optional
+        Index code operators such as ``::``, ``->`` and ``!=``. ``None`` uses
+        the code analyzer's default.
 
     Notes
     -----
@@ -246,6 +265,11 @@ class FTS:
     memory_limit: Optional[int] = None
     num_workers: Optional[int] = None
     document_granularity: DocumentGranularity = DocumentGranularity.ROW
+    analyzer: Optional[Literal["text", "code"]] = None
+    split_identifiers: Optional[bool] = None
+    split_on_numerics: Optional[bool] = None
+    preserve_original: Optional[bool] = None
+    index_operators: Optional[bool] = None
 
 
 @dataclass
