@@ -932,3 +932,40 @@ are never included in integration metadata.
 change. Use the structured identity and policy fields for programmatic access.
 Registration does not verify AWS access. `AsyncConnection` provides the same methods;
 await create, describe, and drop, and use `async for` for listing.
+
+
+### Azure storage integrations
+
+Create three Secrets containing the Azure tenant ID, client ID and client secret in an ordinary database. Reference their names when registering Azure Blob access:
+
+```python
+integration = db.create_storage_integration(
+    "customer_blobs",
+    "az://customer-data/raw/",
+    storage_provider="AZURE",
+    azure_storage_account="customeraccount",
+    azure_tenant_id_secret="azure_tenant",
+    azure_client_id_secret="azure_client",
+    azure_client_secret_secret="azure_credential",
+)
+print(integration.configuration_instructions)
+```
+
+Use `SecretReference` to qualify another database or namespace. Sync and async connections use the same options. Secret values are never part of integration metadata. Azure supports service principal client credentials; managed identity, account key and SAS authentication are not integration modes.
+
+The equivalent SQL is:
+
+```sql
+CREATE STORAGE INTEGRATION customer_blobs
+    STORAGE_PROVIDER = 'AZURE'
+    STORAGE_PREFIX = 'az://customer-data/raw/'
+    STORAGE_AZURE_STORAGE_ACCOUNT = 'customeraccount'
+    STORAGE_AZURE_TENANT_ID_SECRET = public.azure_tenant
+    STORAGE_AZURE_CLIENT_ID_SECRET = public.azure_client
+    STORAGE_AZURE_CLIENT_SECRET_SECRET = public.azure_credential;
+DESCRIBE STORAGE INTEGRATION customer_blobs;
+SHOW STORAGE INTEGRATIONS;
+DROP STORAGE INTEGRATION customer_blobs;
+```
+
+Registration returns setup instructions and leaves `access_verified` false. It stores an account-qualified prefix such as `az://customer-data@customeraccount.blob.core.windows.net/raw/`.

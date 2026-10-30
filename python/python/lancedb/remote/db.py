@@ -15,6 +15,7 @@ from typing import (
     Dict,
     Iterable,
     List,
+    Literal,
     Optional,
     Sequence,
     Tuple,
@@ -1047,6 +1048,11 @@ class RemoteDBConnection(DBConnection):
         aws_access_key_id_secret: Optional[Union[str, SecretReference]] = None,
         aws_secret_access_key_secret: Optional[Union[str, SecretReference]] = None,
         aws_region: Optional[str] = None,
+        storage_provider: Literal["S3", "AZURE"] = "S3",
+        azure_storage_account: Optional[str] = None,
+        azure_tenant_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_id_secret: Optional[Union[str, SecretReference]] = None,
+        azure_client_secret_secret: Optional[Union[str, SecretReference]] = None,
         namespace_path: Optional[List[str]] = None,
     ) -> StorageIntegrationInfo:
         return LOOP.run(
@@ -1057,6 +1063,11 @@ class RemoteDBConnection(DBConnection):
                 aws_access_key_id_secret=aws_access_key_id_secret,
                 aws_secret_access_key_secret=aws_secret_access_key_secret,
                 aws_region=aws_region,
+                storage_provider=storage_provider,
+                azure_storage_account=azure_storage_account,
+                azure_tenant_id_secret=azure_tenant_id_secret,
+                azure_client_id_secret=azure_client_id_secret,
+                azure_client_secret_secret=azure_client_secret_secret,
                 namespace_path=namespace_path,
             )
         )
