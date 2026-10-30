@@ -64,7 +64,9 @@ tests = [
     "polars>=0.19, <=1.32.3",
     "pyarrow<25",
     "pyarrow-stubs>=16.0",
-    "pylance==15.0.0b7",
+    # pylance 15.0.0b5+ has not published macOS wheels.
+    "pylance==15.0.0b7; sys_platform != 'darwin'",
+    "pylance==15.0.0b4; sys_platform == 'darwin'",
     "requests>=2.31.0",
     "datafusion>=54,<55",
     "opentelemetry-sdk>=1.30.0",
