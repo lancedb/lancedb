@@ -6,7 +6,7 @@
 
 import ctypes
 import importlib
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Iterable, Optional
 
 import pyarrow as pa
 import pyarrow.ipc
@@ -229,8 +229,30 @@ def blob(
         Maximum size in bytes of a single packed blob sidecar file before
         a new one is started. Must be positive.
 
+    Notes
+    -----
     Thresholds are validated and stored as Arrow field metadata, with the
     same format as ``lance.blob_field``. They do not require pylance.
+
+    The extension's storage is a struct with nullable fields ``data``
+    (large_binary), ``uri`` (string), ``position`` (uint64), and ``size``
+    (uint64). Each non-null blob must set exactly one of ``data`` and ``uri``:
+
+    - Inline bytes use ``data``, leaving all other fields null. ``b""`` is a
+      valid empty blob; use a null struct for a null blob.
+    - External blobs use ``uri``, leaving ``data`` null. Set both ``position``
+      and ``size`` to select a byte range, or leave both null for the whole
+      object. A range's ``size`` must be greater than zero.
+
+    Use [blob_array][lancedb.schema.blob_array] to build inline blob arrays
+    for Arrow record batches. For external descriptors, build the struct
+    array with ``field.type.storage_type`` and wrap it with
+    ``pa.ExtensionArray.from_storage(field.type, storage)``.
+
+    ``create_table(..., schema=...)`` casts plain binary values into blob
+    columns declared by this field, and ``table.add(...)`` does the same
+    using the table's schema. PyArrow's ``RecordBatch.from_pylist`` does not
+    perform this conversion; construct blob arrays explicitly instead.
     """
     metadata = {}
     for threshold, value, allow_zero, key in (
@@ -267,6 +289,50 @@ def blob(
     blob_type = _resolve_blob_type()
     field = pa.field(name, blob_type(), nullable=nullable)
     return field.with_metadata(metadata) if metadata else field
+
+
+def blob_array(payloads: Iterable[Optional[bytes]]) -> pa.ExtensionArray:
+    """Build a Lance blob v2 extension array from inline bytes.
+
+    Uses the same extension type as [blob][lancedb.schema.blob], with or
+    without pylance installed.
+
+    Parameters
+    ----------
+    payloads:
+        An iterable of ``bytes`` or ``None``. ``None`` creates a null blob;
+        ``b""`` creates a valid empty blob.
+
+    Returns
+    -------
+    pa.ExtensionArray
+        Inline blob values ready to use in Arrow tables or record batches.
+
+    Raises
+    ------
+    TypeError
+        If a payload is neither ``bytes`` nor ``None``.
+
+    Examples
+    --------
+    >>> import pyarrow as pa
+    >>> from lancedb.schema import blob, blob_array
+    >>> schema = pa.schema([blob("video")])
+    >>> videos = blob_array([b"abc", None, b""])
+    >>> batch = pa.RecordBatch.from_arrays([videos], schema=schema)
+    >>> batch.num_rows
+    3
+    """
+    blob_type = _resolve_blob_type()()
+    descriptors = []
+    for payload in payloads:
+        if payload is not None and not isinstance(payload, bytes):
+            raise TypeError(
+                f"payloads must contain bytes or None, got {type(payload).__name__}"
+            )
+        descriptors.append(None if payload is None else {"data": payload})
+    storage = pa.array(descriptors, type=blob_type.storage_type)
+    return pa.ExtensionArray.from_storage(blob_type, storage)
 
 
 def vector(dimension: int, value_type: pa.DataType = pa.float32()) -> pa.DataType:

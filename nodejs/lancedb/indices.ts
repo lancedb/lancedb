@@ -816,7 +816,7 @@ export class Index {
    * Create a label list index.
    *
    * LabelList index is a scalar index that can be used on `List<T>` columns to
-   * support queries with `array_contains_all` and `array_contains_any`
+   * support queries with `array_has_all` and `array_has_any`
    * using an underlying bitmap index.
    */
   static labelList() {

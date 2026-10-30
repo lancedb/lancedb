@@ -4,12 +4,8 @@ sidebarTitle: "Compaction"
 description: "Merge small files, prune old versions, and fold new rows into existing indexes."
 icon: broom
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Tables are compacted in the embedded library and in LanceDB Enterprise. In the
-    embedded library you call `optimize()`; a deployment compacts tables in the
-    background, and `optimize()` is not available there.
 ---
 
 import { PyStorageCompactionTuning, PyStorageRebuildVectorIndex, RsStorageCompactionTuning } from '/snippets/doc_storage_examples.mdx';
@@ -98,7 +94,7 @@ continuous small writes needs it on a schedule.
 <Note>
 Compaction rewrites files, which conflicts with a concurrent
 [computed-column refresh](/feature-engineering/add-computed-column) or
-[view refresh](/feature-engineering/materialized-views) planned against the
+[view refresh](/feature-engineering/refresh-materialized-view) planned against the
 version it replaces. Sequence them rather than running both at once.
 </Note>
 

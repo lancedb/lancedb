@@ -589,6 +589,34 @@ with `search().with_row_id(True).to_arrow()` and pass the result to the fetch AP
 One missing or deleted row ID rejects the entire blob-read batch; the APIs do
 not return partial results.
 
+To construct inline Blob V2 arrays for ingestion in record batches, use
+[blob_array][lancedb.schema.blob_array]. It accepts bytes and `None`, preserving
+the distinction between an empty blob (`b""`) and a null blob:
+
+```python
+import pyarrow as pa
+from lancedb.schema import blob, blob_array
+
+schema = pa.schema([pa.field("video_id", pa.string()), blob("video")])
+batch = pa.RecordBatch.from_arrays(
+    [pa.array(["a", "b", "c"]), blob_array([b"abc", None, b""])],
+    schema=schema,
+)
+table = db.create_table("videos", data=iter([batch]), schema=schema)
+table.add(iter([batch]))
+```
+
+`create_table(..., schema=...)` also casts plain binary values into blob columns
+declared in the schema. `table.add(...)` casts them using the table's schema.
+These conversions apply to Python rows and plain binary Arrow columns.
+PyArrow's `RecordBatch.from_pylist(..., schema=...)` cannot convert raw bytes
+into the blob extension type; use `blob_array` and `RecordBatch.from_arrays`
+when constructing batches explicitly.
+
+For external blob references, construct the descriptor struct described by
+[blob][lancedb.schema.blob], then wrap it with `pa.ExtensionArray.from_storage`.
+Inline `data` and external `uri` representations are mutually exclusive.
+
 LanceDB Distributed SQL returns blob bytes by default. Select `blob_descriptor(video)` to
 return an openable reference instead, then use
 [`open_blob_file`][lancedb.table.Table.open_blob_file] or the lazy iterable
@@ -646,6 +674,8 @@ from `blob_columns()` because row ids do not identify individual list elements,
 so the fetch APIs cannot read their bytes yet.
 
 ::: lancedb.blob
+
+::: lancedb.schema.blob_array
 
 ::: lancedb._blob.BlobFile
     options:

@@ -5,10 +5,8 @@ description: "Choose how to create a table, append records or change existing da
 icon: inbox
 keywords: ["ingest", "create table", "add", "insert", "arrow", "pandas", "polars", "pydantic"]
 availability:
-  oss: available
+  embedded: available
   enterprise: available
-  summary: >-
-    Create tables and write records through the SDKs in LanceDB Embedded and LanceDB Enterprise. Enterprise also provides SQL write statements.
 ---
 
 import { PyWriteWorkflow, TsWriteWorkflowBody, TsWriteWorkflowTail, RsWriteWorkflow } from '/snippets/ingestion_examples.mdx';
@@ -32,7 +30,7 @@ with a stable key when the incoming data should update existing records.
 
 ## Connect and prepare the data {#connect-to-lancedb}
 
-Use the [connection guide](/basics/connect) to connect to LanceDB Embedded or LanceDB Enterprise.
+Use the [connection guide](/basics/catalog) to connect to Embedded or Enterprise.
 The SDK write operations in this section work with both. Enterprise also
 supports [SQL write statements](/sql#dml); an SDK filter expression does not
 require a separate SQL connection.

@@ -187,12 +187,14 @@ jobs:
           command: sdist
           working-directory: python
           args: --out dist
-      # maturin ships the nodejs-only pins in Cargo.lock. Remove this step when
-      # the pinned maturin fixes https://github.com/PyO3/maturin/issues/2609.
+      # maturin ships pins used only by other workspace members in Cargo.lock.
+      # Remove this step when the pinned maturin fixes
+      # https://github.com/PyO3/maturin/issues/2609.
       - name: Sync Cargo.lock to the packaged workspace
         shell: bash
         run: |
-          # A repo lock in sync with every manifest means the prune only drops pins.
+          # A synced repo lock lets the prune drop packages and optional edges
+          # without changing the remaining pins or adding dependency edges.
           cargo metadata --locked --format-version 1 > /dev/null
           mkdir "$RUNNER_TEMP/sdist-src"
           tar -xzf python/dist/lancedb-*.tar.gz -C "$RUNNER_TEMP/sdist-src"

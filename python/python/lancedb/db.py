@@ -416,6 +416,10 @@ class DBConnection(EnforceOverrides):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
+
+            Plain binary values are cast into blob columns declared with
+            [blob][lancedb.schema.blob]. To construct Arrow record batches
+            explicitly, use [blob_array][lancedb.schema.blob_array].
         mode: str; default "create"
             The mode to use when creating the table.
             Can be "create", "overwrite", or "exist_ok".
@@ -2598,6 +2602,10 @@ class AsyncConnection(object):
             - pyarrow.Schema
 
             - [LanceModel][lancedb.pydantic.LanceModel]
+
+            Plain binary values are cast into blob columns declared with
+            [blob][lancedb.schema.blob]. To construct Arrow record batches
+            explicitly, use [blob_array][lancedb.schema.blob_array].
         mode: Literal["create", "overwrite", "exist_ok"]; default "create"
             The mode to use when creating the table.
             Can be "create", "overwrite", or "exist_ok".
