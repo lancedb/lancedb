@@ -70,13 +70,17 @@ Create a database, or open an existing database when existOk is true.
 dropDatabase(name, options): Promise<void>
 ```
 
-Drop an empty database. The server rejects nonempty databases.
+Drop a database. A nonempty database is an error unless `cascade` is set,
+which drops everything in it first; the name stays taken until the server
+finishes cleaning up their storage.
 
 #### Parameters
 
 * **name**: `string`
 
 * **options** = `{}`
+
+* **options.cascade?**: `boolean`
 
 * **options.ignoreMissing?**: `boolean`
 

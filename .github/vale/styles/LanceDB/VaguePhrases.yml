@@ -1,0 +1,31 @@
+extends: existence
+message: "'%s' talks about the writing, not the subject. State the point directly."
+link: https://github.com/lancedb/docs/blob/main/STYLE.md#say-it-directly
+level: suggestion
+ignorecase: false
+scope: sentence
+tokens:
+  # The page's role instead of its content, as in "This page is the concept".
+  - '^[Tt]his page is the concept'
+  # A filler sentence opener, listed in skills/docs-writer/SKILL.md.
+  - '^That matters'
+tests:
+  - name: flags a page describing its own role
+    input: This page is the concept; the SQL reference is the specification.
+    want: |
+      1:1:LanceDB.VaguePhrases:'This page is the concept' talks about the writing, not the subject. State the point directly.
+  - name: flags the filler opener
+    input: That matters for partner workloads because names repeat.
+    want: |
+      1:1:LanceDB.VaguePhrases:'That matters' talks about the writing, not the subject. State the point directly.
+  - name: leaves ordinary uses alone
+    input: This page describes compaction. It is the operation that matters for video.
+    want: ''
+  - name: leaves specific descriptions and embedded phrases alone
+    input: |
+      This page is the entry point for the Python API. This page is the conceptual overview of the table model. The heading "That matters" is quoted here. Only the setting That matters is highlighted.
+    want: ''
+  - name: catches a filler opener after another sentence
+    input: Names repeat. That matters for partner workloads.
+    want: |
+      1:15:LanceDB.VaguePhrases:'That matters' talks about the writing, not the subject. State the point directly.

@@ -259,6 +259,15 @@ def _py_type_to_arrow_type(py_type: Type[Any], field: FieldInfo) -> pa.DataType:
                 f"{py_type}. Specify the element type, e.g. List[int] instead "
                 "of a bare List."
             )
+        # An Arrow list has a single element type, so a tuple such as
+        # Tuple[int, str] cannot be stored as one. Tuple[int, ...] is homogeneous.
+        element_types = {arg for arg in args if arg is not Ellipsis}
+        if len(element_types) > 1:
+            raise TypeError(
+                "Converting Pydantic type to Arrow Type: unsupported type "
+                f"{py_type}. All tuple elements must have the same type; use a "
+                "nested LanceModel for a fixed set of fields with different types."
+            )
         child = args[0]
         return _pydantic_list_child_to_arrow(child, field)
     raise TypeError(
@@ -418,6 +427,15 @@ def pydantic_to_schema(model: Type[pydantic.BaseModel]) -> pa.Schema:
     -------
     pyarrow.Schema
         The Arrow Schema
+
+    Raises
+    ------
+    TypeError
+        If a field has a type with no Arrow equivalent. A ``Tuple`` field becomes
+        an Arrow list, so all its elements must have the same type, as in
+        ``Tuple[int, int]`` or ``Tuple[float, ...]``; for a fixed set of fields
+        with different types, such as ``Tuple[int, str]``, use a nested
+        ``LanceModel`` (an Arrow struct) instead.
 
     Examples
     --------

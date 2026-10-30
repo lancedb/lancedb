@@ -60,8 +60,8 @@ pub const AUTO_REFRESH_ENABLED_META_KEY: &str = "computed_column.auto_refresh_en
 /// Minimum interval between successful automatic refreshes, in seconds.
 pub const AUTO_REFRESH_INTERVAL_META_KEY: &str = "computed_column.auto_refresh_interval_seconds";
 
-/// Scheduling settings persisted on each computed output. Local tables store
-/// these settings; automatic scheduling requires a Cloud or Enterprise server.
+/// Scheduling settings persisted on each computed output. LanceDB Embedded
+/// stores these settings; automatic scheduling requires LanceDB Distributed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct ComputedColumnOptions {
@@ -489,24 +489,6 @@ pub(crate) fn ensure_supported_function_metadata(schema: &ArrowSchema) -> Result
         }
     }
     ensure_computed_inputs_acyclic(schema, &bindings)
-}
-
-/// Refuse `operation` outright on a table with a Function binding. For
-/// operations that cannot say which columns they touch; the others use
-/// [`ensure_not_function_bound`].
-pub(crate) fn ensure_no_function_bindings_for_mutation(
-    schema: &ArrowSchema,
-    operation: &str,
-) -> Result<()> {
-    ensure_supported_function_metadata(schema)?;
-    if !function_bindings(schema)?.is_empty() {
-        return Err(Error::NotSupported {
-            message: format!(
-                "{operation} is not supported on a table with registered Function bindings"
-            ),
-        });
-    }
-    Ok(())
 }
 
 /// Refuse `operation` only when a path in `touched` names a column a Function
@@ -2406,6 +2388,111 @@ impl<S: lance_datafusion::utils::StreamingWriteSource> lance_datafusion::utils::
     }
 }
 
+/// Test fixtures for a table carrying a Function binding, shared by the
+/// write-path tests. No local path declares a binding, so these stamp one
+/// the way the server does.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use arrow_array::record_batch;
+
+    use super::{
+        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL, FUNCTION_BINDINGS_META_KEY,
+        ensure_supported_function_metadata, function_bindings_metadata,
+        function_computed_column_metadata,
+    };
+    use crate::Table;
+    use crate::connect;
+    use crate::function::FunctionBinding;
+
+    /// A table carrying the fixture binding: `title` and `body` are its
+    /// inputs, `search_text` and `search_token_count` its outputs, `spare`
+    /// nobody's. Stamped the way the server does it, since no local path
+    /// declares a binding.
+    pub async fn bound_table() -> Table {
+        let batch = record_batch!(
+            ("title", Utf8, ["a"]),
+            ("body", Utf8, ["b"]),
+            ("search_text", Utf8, ["a b"]),
+            ("search_token_count", Int64, [2]),
+            ("spare", Int32, [1])
+        )
+        .unwrap();
+        bound_table_from(batch).await
+    }
+
+    /// [`bound_table`] over a caller's batch, which must carry `title`, `body`,
+    /// `search_text` and `search_token_count`.
+    pub async fn bound_table_from(batch: arrow_array::RecordBatch) -> Table {
+        let conn = connect("memory://").execute().await.unwrap();
+        let table = conn.create_table("bound", batch).execute().await.unwrap();
+        stamp_bindings(&table, &[text_features_binding("")]).await;
+        table
+    }
+
+    /// The fixture binding, its id and output names suffixed so a table can
+    /// carry more than one.
+    pub fn text_features_binding(suffix: &str) -> FunctionBinding {
+        let raw = include_str!(
+            "../../tests/fixtures/first_class_functions/v1/remote_function_binding.json"
+        );
+        if suffix.is_empty() {
+            return FunctionBinding::from_json(raw).unwrap();
+        }
+        FunctionBinding::from_json(
+            &raw.replace("fb_01K3TEXT", &format!("fb_01K3TEXT{suffix}"))
+                .replace("search_text", &format!("search_text{suffix}"))
+                .replace("search_token_count", &format!("search_token_count{suffix}")),
+        )
+        .unwrap()
+    }
+
+    /// Stamp bindings the way the server does it, since no local path
+    /// declares one: the envelope on the schema, a declaration marker on
+    /// every output field.
+    pub async fn stamp_bindings(table: &Table, bindings: &[FunctionBinding]) {
+        let native = table.as_native().unwrap();
+        let mut dataset = native.dataset.get().await.unwrap().as_ref().clone();
+        dataset
+            .update_schema_metadata(vec![(
+                FUNCTION_BINDINGS_META_KEY.to_string(),
+                Some(function_bindings_metadata(bindings).unwrap()),
+            )])
+            .await
+            .unwrap();
+        let inputs = ["title".to_string(), "body".to_string()];
+        let outputs = bindings
+            .iter()
+            .flat_map(|binding| {
+                let assignment = binding.assignment().map(|assignment| {
+                    (
+                        assignment.output_name.clone(),
+                        FUNCTION_ASSIGNMENT_OUTPUT_ORDINAL,
+                    )
+                });
+                binding
+                    .outputs()
+                    .iter()
+                    .map(|output| (output.output_name.clone(), output.output_ordinal))
+                    .chain(assignment)
+                    .map(|(name, ordinal)| {
+                        (
+                            dataset.schema().field(&name).unwrap().id as u32,
+                            function_computed_column_metadata(
+                                binding.binding_id(),
+                                ordinal,
+                                &inputs,
+                            ),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        dataset.replace_field_metadata(outputs).await.unwrap();
+        native.dataset.update(dataset);
+        ensure_supported_function_metadata(&table.schema().await.unwrap()).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The gate's reproducer: the validator applies the same schema-level
@@ -2544,6 +2631,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declare_infers_type_and_inputs() {
         let table = table_with_ints("declare_infers").await;
         let initial = table.version().await.unwrap();
@@ -2611,6 +2702,10 @@ mod tests {
     /// The binding reaches the schema only if `AllNulls` carries per-field
     /// metadata through the commit. The whole representation rests on it.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_all_nulls_preserves_field_metadata() {
         let table = table_with_ints("metadata_survives").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2635,6 +2730,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declared_column_is_all_null() {
         let table = table_with_ints("declare_is_null").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2659,6 +2758,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unknown_column_fails_at_declare_time() {
         let table = table_with_ints("unknown_input").await;
         let err = add_computed(&table, &[("bad".into(), "missing + 1".into())])
@@ -2671,6 +2774,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unparsable_expression_fails_at_declare_time() {
         let table = table_with_ints("bad_syntax").await;
         let err = add_computed(&table, &[("bad".into(), "x *".into())])
@@ -2691,6 +2798,10 @@ mod tests {
     /// resolution is missing. When a registry-aware planner exists this
     /// becomes a supported declaration rather than a new API.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unregistered_function_is_rejected_for_now() {
         let table = table_with_ints("udf_not_yet").await;
         let err = add_computed(&table, &[("vec".into(), "embed(x)".into())])
@@ -2708,6 +2819,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_existing_column_name_is_rejected() {
         let table = table_with_ints("name_taken").await;
         let err = add_computed(&table, &[("x".into(), "x * 2".into())])
@@ -2718,6 +2833,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_constant_expression_needs_no_inputs() {
         let table = table_with_ints("constant").await;
         add_computed(&table, &[("answer".into(), "42".into())])
@@ -2730,6 +2849,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_multiple_columns_in_one_commit() {
         let table = table_with_ints("multi").await;
         let initial = table.version().await.unwrap();
@@ -2752,6 +2875,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_duplicate_declaration_in_one_call_is_rejected() {
         let table = table_with_ints("dupe").await;
         let err = add_computed(
@@ -2770,6 +2897,10 @@ mod tests {
     /// A batch may build on itself: one commit, and the later entry's inputs
     /// name the earlier one.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_declaration_may_read_one_declared_before_it() {
         let table = table_with_ints("chain").await;
         let before = table.version().await.unwrap();
@@ -2822,6 +2953,10 @@ mod tests {
 
     /// Built-in functions type the column the same way an operator does.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_builtin_function_inference() {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("name", Utf8, ["ada", "grace"]), ("n", Int32, [-1, 2])).unwrap();
@@ -2872,6 +3007,10 @@ mod tests {
     /// an ordinary column. Reported as absent it would be refreshable by
     /// nothing and redeclarable over, silently.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unrecognized_kind_is_reported_rather_than_hidden() {
         let table = table_with_ints("foreign_kind").await;
         super::add_foreign_kind(&table, "embedding", "udf").await;
@@ -2915,6 +3054,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_inputs_are_deduplicated_and_sorted() {
         let conn = connect("memory://").execute().await.unwrap();
         let batch = record_batch!(("b", Int32, [1, 2]), ("a", Int32, [3, 4])).unwrap();
@@ -2931,6 +3074,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dropping_an_input_is_refused() {
         let table = table_with_ints("drop_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2945,6 +3092,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_renaming_an_input_is_refused() {
         let table = table_with_ints("rename_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2963,6 +3114,10 @@ mod tests {
 
     /// Nothing resolves against nullability, so it is not a rebinding.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_altering_an_input_nullability_is_allowed() {
         let table = table_with_ints("nullable_input").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -2979,6 +3134,10 @@ mod tests {
     /// the counting and writing passes, so the declared value is incoherent.
     /// Refused at declare time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_volatile_expression_is_refused() {
         let table = table_with_ints("volatile_expr").await;
         let err = add_computed(&table, &[("maybe".into(), "random() < 0.5".into())])
@@ -2995,6 +3154,10 @@ mod tests {
     /// constant, but the stored SQL still names `x`, so the recorded inputs
     /// must too -- otherwise dropping `x` is allowed and refresh breaks.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_inputs_survive_expression_optimization() {
         let table = table_with_ints("optimized_inputs").await;
         add_computed(&table, &[("flag".into(), "true OR x > 0".into())])
@@ -3012,6 +3175,10 @@ mod tests {
     /// The gate's reproducer: casting a computed column rewrites the field
     /// without its metadata, silently destroying the declaration.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_retyping_the_computed_column_is_refused() {
         use arrow_schema::DataType as ArrowDataType;
 
@@ -3036,6 +3203,10 @@ mod tests {
     /// A declaration cannot be edited, fabricated or erased through field
     /// metadata: it is validated as a whole at declare time.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_declaration_metadata_is_immutable() {
         use crate::table::FieldMetadataUpdate;
 
@@ -3083,6 +3254,10 @@ mod tests {
     /// The gate's reproducer: only refresh materializes a declared column;
     /// a direct write would store an arbitrary durable value.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_computed_column_cannot_be_written_directly() {
         let table = table_with_ints("direct_write").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -3124,6 +3299,10 @@ mod tests {
 
     /// The gate's reproducer: the reciprocal of the declare-under-spec check.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_installing_an_lsm_spec_over_computed_columns_is_refused() {
         use crate::table::RTEWriteSpec;
 
@@ -3192,6 +3371,10 @@ mod tests {
 
     /// The gate's reproducer: SQL INSERT is a write path too.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_sql_insert_cannot_write_a_computed_column() {
         use datafusion::prelude::SessionContext;
 
@@ -3291,6 +3474,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_sql_insert_omitting_computed_is_allowed() {
         use datafusion::prelude::SessionContext;
 
@@ -3317,6 +3504,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_a_nested_computed_field_cannot_be_renamed() {
         let table = table_with_ints("computed_struct_rename").await;
         add_computed(&table, &[("payload".into(), "named_struct('a', x)".into())])
@@ -3335,6 +3526,10 @@ mod tests {
 
     /// Stale handles must not commit the computed/RTE state in either order.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_stale_handles_cannot_mix_computed_and_lsm() {
         use crate::table::RTEWriteSpec;
 
@@ -3381,10 +3576,13 @@ mod tests {
         assert!(matches!(err, Error::NotSupported { .. }), "declare won");
     }
 
-    /// The gate's reproducer: after catch-up activation, an LSM write, and
-    /// unset, retained SSTable rows survive without a live spec. The catch-up
-    /// flag is the durable marker; declaration refuses on it.
+    /// Rows written through the RTE keep the spec installed, since
+    /// `disable_rte` refuses while they are unmerged, so declaration refuses.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_unset_with_retained_lsm_rows_cannot_admit_a_declaration() {
         use crate::table::RTEWriteSpec;
         use arrow_array::{Int64Array, RecordBatchIterator};
@@ -3423,7 +3621,8 @@ mod tests {
             .execute(Box::new(RecordBatchIterator::new(vec![Ok(batch)], schema)))
             .await
             .unwrap();
-        table.disable_rte().await.unwrap();
+        // The RTE holds the written rows, so unsetting it is refused.
+        table.disable_rte().await.unwrap_err();
 
         let err = add_computed(&table, &[("doubled".into(), "value * 2".into())])
             .await
@@ -3436,6 +3635,10 @@ mod tests {
 
     /// A declaration does not read itself, so it travels with its binding.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_dropping_the_computed_column_is_allowed() {
         let table = table_with_ints("drop_computed").await;
         add_computed(&table, &[("doubled".into(), "x * 2".into())])
@@ -4576,6 +4779,10 @@ mod tests {
     /// downstream binding's immutable input schema must not record them, or
     /// the first upstream refresh strands the table.
     #[tokio::test]
+    #[cfg_attr(
+        not(feature = "experimental-functions"),
+        ignore = "requires experimental-functions"
+    )]
     async fn test_computed_input_survives_upstream_refresh() {
         use arrow_array::{Int32Array, Int64Array, RecordBatch};
 

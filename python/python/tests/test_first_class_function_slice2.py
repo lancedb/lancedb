@@ -7,6 +7,7 @@ import base64
 import contextlib
 import functools
 import importlib.util
+import inspect
 import types
 from datetime import date
 import http.server
@@ -15,7 +16,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import threading
+import typing
 import urllib.parse
 from typing import Optional
 
@@ -34,6 +35,7 @@ from lancedb.functions import (
     udf,
 )
 from lancedb.secrets import EnvVarSecret
+from utils import start_server_thread
 
 THRESHOLD = 20
 _CACHE = None
@@ -87,6 +89,27 @@ def test_scalar_udf_matches_shared_registration_golden_and_remains_callable():
         "kind": "scalar_to_arrow_batch",
         "version": 1,
     }
+
+
+@pytest.mark.parametrize(
+    "name", ["examples.image_info", "image-info", "image_info.", "image_info-"]
+)
+def test_udf_rejects_function_names_with_periods_or_hyphens(name):
+    with pytest.raises(ValueError, match="invalid Function name"):
+
+        @udf(name=name)
+        def image_info(value: int) -> int:
+            return value
+
+
+@pytest.mark.parametrize("name", ["image_info", "ImageInfo123", "_image_info", "f"])
+def test_udf_accepts_function_names_with_letters_digits_and_underscores(name):
+    @udf(name=name)
+    def image_info(value: int) -> int:
+        return value
+
+    assert image_info.registration_request.name == name
+    assert image_info(1) == 1
 
 
 def test_secret_bound_udf_matches_its_shared_registration_golden():
@@ -417,6 +440,33 @@ def _run_packaged(definition, *args):
     return namespace[definition.registration_request.artifact.entrypoint](*args)
 
 
+def _execute_registered_array_udf_v1(request: dict, batch: pa.RecordBatch) -> pa.Array:
+    """Exercise adapter-v1 annotation dispatch over a registered artifact."""
+    assert request["artifact"]["adapter"] == {
+        "kind": "scalar_to_arrow_batch",
+        "version": 1,
+    }
+    source = base64.b64decode(request["artifact"]["content"]["data"])
+    namespace = {
+        "pa": pa,
+        "pyarrow": pa,
+        "Array": pa.Array,
+        "RecordBatch": pa.RecordBatch,
+        "typing": typing,
+    }
+    exec(compile(source, "<registered-udf>", "exec"), namespace)
+    function = namespace[request["artifact"]["entrypoint"]]
+    parameters = tuple(inspect.signature(function).parameters.values())
+    annotations = typing.get_type_hints(function)
+    assert parameters and all(
+        annotations.get(parameter.name) is pa.Array for parameter in parameters
+    )
+    assert annotations.get("return") is pa.Array
+    result = function(*(batch.column(parameter.name) for parameter in parameters))
+    assert isinstance(result, pa.Array)
+    return result
+
+
 def test_udf_conda_environment():
     @udf(conda=["scipy", "numpy"], conda_channels=["conda-forge", "defaults"])
     def halve(value: float) -> float:
@@ -435,6 +485,30 @@ def test_udf_conda_environment():
         udf(name="both", pip=["numpy"], conda=["numpy"])(lambda value: value)
     with pytest.raises(ValueError, match="requires conda"):
         udf(name="channels", conda_channels=["conda-forge"])(lambda value: value)
+
+
+def test_udf_apt_system_packages():
+    @udf(pip=["torchcodec"], apt=["libavutil58", "libavcodec60", "libavutil58"])
+    def decode(value: float) -> float:
+        return value
+
+    request = json.loads(decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"] == {
+        "kind": "pip",
+        "packages": ["torchcodec"],
+        "system_packages": ["libavcodec60", "libavutil58"],
+    }
+
+    @udf(conda=["numpy"], apt=["libsndfile1"])
+    def conda_decode(value: float) -> float:
+        return value
+
+    request = json.loads(conda_decode.registration_request.to_canonical_json())
+    assert request["runtime"]["environment"]["system_packages"] == ["libsndfile1"]
+    pip_request = json.loads(normalize_score.registration_request.to_canonical_json())
+    assert "system_packages" not in pip_request["runtime"]["environment"]
+    with pytest.raises(ValueError, match="trimmed"):
+        udf(name="padded", apt=[" libsndfile1"])(lambda value: value)
 
 
 def test_udf_gpu_marker_uses_gpu_runtime():
@@ -1148,6 +1222,57 @@ def test_blob_signature_rejects_collection_below_a_struct():
             return len(value["images"])
 
 
+def test_blob_fields_support_vectorized_pyarrow_arrays():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("result", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return pa.array(
+            [value.as_py() if value.is_valid else b"" for value in image],
+            type=pa.large_binary(),
+        )
+
+    values = pa.array([b"large blob", b"", None], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    batch = pa.RecordBatch.from_arrays([values], names=["image"])
+    result = _execute_registered_array_udf_v1(request, batch)
+    assert isinstance(result, pa.LargeBinaryArray)
+    assert result.to_pylist() == [b"large blob", b"", b""]
+
+    signature = copy_blobs.registration_request.signature
+    assert signature.inputs[0].arrow_type == "blob_v2"
+    assert signature.inputs[0].nullable is True
+    assert signature.output.arrow_type == "blob_v2"
+    assert signature.output.nullable is False
+    assert copy_blobs.registration_request.artifact.adapter.kind == (
+        "scalar_to_arrow_batch"
+    )
+    assert copy_blobs.registration_request.artifact.adapter.version == 1
+
+    source = base64.b64decode(
+        copy_blobs.registration_request.artifact.content.data
+    ).decode("utf-8")
+    assert "def copy_blobs(image: pa.Array) -> pa.Array:" in source
+
+
+def test_documented_blob_array_identity_executes_packaged_artifact():
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        return image
+
+    values = pa.array([b"large blob", b""], type=pa.large_binary())
+    request = json.loads(copy_blobs.registration_request.to_canonical_json())
+    result = _execute_registered_array_udf_v1(
+        request,
+        pa.RecordBatch.from_arrays([values], names=["image"]),
+    )
+    assert result.equals(values)
+
+
 def test_named_struct_function_can_include_a_blob_result_field():
     @udf(
         input_schema=pa.schema([lancedb.blob("image", nullable=False)]),
@@ -1440,7 +1565,7 @@ def test_annotation_and_explicit_schema_validation_fail_closed():
         def nullable_output(value: int) -> Optional[int]:
             return value
 
-    with pytest.raises(ValueError, match="provided together"):
+    with pytest.raises(TypeError, match=r"missing Function annotations: \['return'\]"):
 
         @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
         def partial_schema(value):
@@ -1596,6 +1721,7 @@ def _mock_remote_function_catalog():
                         ).read_text()
                     )["image"],
                     "signature": body["signature"],
+                    "source_digest": body["artifact"]["digest"],
                     "secret_bindings": body.get("secret_bindings", []),
                     "created_at_millis": 1787270400000,  # 2026-08-21T00:00:00Z
                 }
@@ -1675,11 +1801,10 @@ def _mock_remote_function_catalog():
                 response = {"functions": []}
             self._write_response(200, response)
 
-    with http.server.HTTPServer(("localhost", 0), Handler) as server:
-        thread = threading.Thread(target=server.serve_forever)
-        thread.start()
+    with http.server.HTTPServer(("127.0.0.1", 0), Handler) as server:
+        thread = start_server_thread(server)
         try:
-            yield f"http://localhost:{server.server_address[1]}", state
+            yield f"http://127.0.0.1:{server.server_address[1]}", state
         finally:
             server.shutdown()
             thread.join()
@@ -1699,6 +1824,80 @@ def test_building_a_binding_contacts_no_server():
     assert state["requests"] == []
 
 
+def test_vectorized_blob_udf_executes_packaged_artifact_and_publishes(tmp_path):
+    @udf(
+        input_schema=pa.schema([lancedb.blob("image", nullable=True)]),
+        output_schema=lancedb.blob("copy", nullable=False),
+    )
+    def copy_blobs(image: pa.Array) -> pa.Array:
+        assert isinstance(image, pa.LargeBinaryArray)
+        return pa.array(
+            [
+                b"missing" if value.as_py() is None else b"copy:" + value.as_py()
+                for value in image
+            ],
+            type=pa.large_binary(),
+        )
+
+    registration = json.loads(copy_blobs.registration_request.to_canonical_json())
+
+    local = lancedb.connect(tmp_path)
+    source = local.create_table(
+        "blob_input",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("image", nullable=True)]
+        ),
+    )
+    source.add(
+        pa.Table.from_arrays(
+            [
+                pa.array([0, 1, 2], type=pa.int64()),
+                pa.array([b"large blob", b"", None], type=pa.large_binary()),
+            ],
+            names=["id", "image"],
+        )
+    )
+    input_hits = (
+        source.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    hydrated = source.fetch_blobs("image", input_hits)
+    assert isinstance(hydrated, pa.LargeBinaryArray)
+    result = _execute_registered_array_udf_v1(
+        registration,
+        pa.RecordBatch.from_arrays([hydrated], names=["image"]),
+    )
+    assert result.to_pylist() == [b"copy:large blob", b"copy:", b"missing"]
+
+    published = local.create_table(
+        "blob_output",
+        schema=pa.schema(
+            [pa.field("id", pa.int64()), lancedb.blob("copy", nullable=False)]
+        ),
+    )
+    published.add(
+        pa.Table.from_arrays(
+            [pa.array(range(len(result)), type=pa.int64()), result],
+            names=["id", "copy"],
+        )
+    )
+    output_hits = (
+        published.search()
+        .with_row_id(True)
+        .limit(3)
+        .to_arrow()
+        .sort_by([("id", "ascending")])
+    )
+    assert published.fetch_blobs("copy", output_hits).to_pylist() == [
+        b"copy:large blob",
+        b"copy:",
+        b"missing",
+    ]
+
+
 def test_a_function_namespace_path_must_be_a_list_of_segments():
     """A bare string is refused rather than read as a sequence of one-character
     segments, and nothing reaches the service."""
@@ -1713,3 +1912,21 @@ def test_a_function_namespace_path_must_be_a_list_of_segments():
             list(db.list_functions(namespace_path="analytics"))
 
     assert state["requests"] == []
+
+
+def test_one_explicit_schema_infers_the_other_from_annotations():
+    @udf(input_schema=pa.schema([pa.field("value", pa.int64())]))
+    def explicit_input(value) -> float:
+        return float(value or 0)
+
+    @udf(output_schema=pa.field("result", pa.float32(), nullable=False))
+    def explicit_output(value: Optional[int]):
+        return float(value or 0)
+
+    for fn in (explicit_input, explicit_output):
+        signature = fn.registration_request.signature
+        assert [(p.name, p.arrow_type, p.nullable) for p in signature.inputs] == [
+            ("value", "int64", True)
+        ]
+    assert explicit_input.registration_request.signature.output.arrow_type == "float64"
+    assert explicit_output.registration_request.signature.output.arrow_type == "float32"

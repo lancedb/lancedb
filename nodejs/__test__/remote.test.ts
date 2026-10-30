@@ -98,6 +98,57 @@ async function withMockDatabase(
 }
 
 describe("remote connection", () => {
+  it.each([
+    { dataStorageVersion: "2.0" },
+    { enableV2ManifestPaths: false },
+    { storageOptions: { bogusOptionXyz: "1" } },
+  ])("rejects local create options %j before sending data", async (options) => {
+    const requests: string[] = [];
+    await withMockDatabase(
+      (req, res) => {
+        requests.push(req.url ?? "");
+        res.writeHead(200).end();
+      },
+      async (db) => {
+        await expect(
+          db.createTable("test", [{ value: 1 }], {
+            ...options,
+            mode: "overwrite",
+          }),
+        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+        await expect(
+          db.createEmptyTable(
+            "test",
+            new Schema([new Field("value", new Int64(), true)]),
+            options,
+          ),
+        ).rejects.toThrow(/write_options.*LanceDB Distributed/);
+      },
+    );
+    expect(requests).toEqual([]);
+  });
+
+  it.each([{ indexCacheSize: 5 }, { storageOptions: { x: "y" } }])(
+    "rejects local open options %j before sending a request",
+    async (options) => {
+      const requests: string[] = [];
+      await withMockDatabase(
+        (req, res) => {
+          requests.push(req.url ?? "");
+          res.writeHead(200).end();
+        },
+        async (db) => {
+          await expect(
+            db.openTable("test", undefined, options),
+          ).rejects.toThrow(
+            /not supported for table access in LanceDB Distributed/,
+          );
+        },
+      );
+      expect(requests).toEqual([]);
+    },
+  );
+
   it.each([false, true])(
     "normalizes remote blob writes (range target: %s)",
     async (wide) => {
@@ -267,7 +318,7 @@ describe("remote connection", () => {
           ],
         ];
         for (const [run, operation] of cases) {
-          let message = `LanceDBError: not supported: ${operation} is not supported for remote tables.`;
+          let message = `LanceDBError: not supported: ${operation} is not supported in LanceDB Distributed.`;
           if (operation === "IVF_HNSW_PQ") {
             message += " Please use IVF_HNSW_SQ instead.";
           }
@@ -414,7 +465,7 @@ describe("remote connection", () => {
           table.add([{ id: 1n }], {
             allowExternalBlobOutsideBases: true,
           }),
-        ).rejects.toThrow("only supported on local tables");
+        ).rejects.toThrow("only supported in LanceDB Embedded");
         expect(insertRequests).toBe(0);
 
         await expect(table.add([{ id: 2n }])).resolves.toMatchObject({
