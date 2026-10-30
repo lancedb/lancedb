@@ -10,6 +10,25 @@ use snafu::Snafu;
 
 pub(crate) type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
+// reqwest's Display omits the timeout cause. Add guidance at display time so
+// callers still receive the original typed source and its full error chain.
+#[cfg(feature = "remote")]
+fn http_timeout_hint(source: &(dyn std::error::Error + 'static)) -> &'static str {
+    match source.downcast_ref::<reqwest::Error>() {
+        Some(error) if error.is_timeout() && error.is_connect() => {
+            "; connection timed out. Check client_config.timeout_config.connect_timeout \
+             (LANCE_CLIENT_CONNECT_TIMEOUT) and client_config.timeout_config.timeout \
+             (LANCE_CLIENT_TIMEOUT) if configured"
+        }
+        Some(error) if error.is_timeout() => {
+            "; request timed out. For slow uploads or responses, check \
+             client_config.timeout_config.read_timeout (LANCE_CLIENT_READ_TIMEOUT) \
+             and client_config.timeout_config.timeout (LANCE_CLIENT_TIMEOUT) if configured"
+        }
+        _ => "",
+    }
+}
+
 /// Why a job failed, to whatever precision the backend provides.
 ///
 /// A job run in this process carries the error it failed with in [`Self::source`].
@@ -71,6 +90,16 @@ pub enum Error {
     IndexNotFound { name: String },
     #[snafu(display("Embedding function '{name}' was not found. : {reason}"))]
     EmbeddingFunctionNotFound { name: String, reason: String },
+    #[snafu(display("Column '{name}' was not found"))]
+    ColumnNotFound { name: String },
+    #[snafu(display("Column '{name}' already exists"))]
+    ColumnAlreadyExists { name: String },
+    #[snafu(display("Column '{name}' is not a computed column"))]
+    NotAComputedColumn { name: String },
+    #[snafu(display("Table '{name}' is not a materialized view"))]
+    NotAMaterializedView { name: String },
+    #[snafu(display("Invalid expression for column '{column}': {message}"))]
+    InvalidExpression { column: String, message: String },
 
     #[snafu(display("Table '{name}' already exists"))]
     TableAlreadyExists { name: String },
@@ -92,6 +121,8 @@ pub enum Error {
     },
     #[snafu(display("Job{} was cancelled", job_id.as_ref().map(|id| format!(" {id}")).unwrap_or_default()))]
     JobCancelled { job_id: Option<String> },
+    #[snafu(display("Job '{job_id}' was not found"))]
+    JobNotFound { job_id: String },
 
     // 3rd party / external errors
     #[snafu(display("object_store error: {source}"))]
@@ -99,7 +130,10 @@ pub enum Error {
     #[snafu(display("lance error: {source}"))]
     Lance { source: lance::Error },
     #[cfg(feature = "remote")]
-    #[snafu(display("Http error: (request_id={request_id}) {source}"))]
+    #[snafu(display(
+        "Http error: (request_id={request_id}) {source}{}",
+        http_timeout_hint(source.as_ref())
+    ))]
     Http {
         #[snafu(source(from(reqwest::Error, Box::new)))]
         source: Box<dyn std::error::Error + Send + Sync>,
@@ -115,7 +149,8 @@ pub enum Error {
         "Hit retry limit for request_id={request_id} (\
         request_failures={request_failures}/{max_request_failures}, \
         connect_failures={connect_failures}/{max_connect_failures}, \
-        read_failures={read_failures}/{max_read_failures})"
+        read_failures={read_failures}/{max_read_failures}): {source}{}",
+        http_timeout_hint(source.as_ref())
     ))]
     Retry {
         request_id: String,
@@ -169,6 +204,12 @@ impl From<DataFusionError> for Error {
 
 impl From<lance::Error> for Error {
     fn from(source: lance::Error) -> Self {
+        if has_unsupported_local_filesystem_source(&source) {
+            return Self::NotSupported {
+                message: "the filesystem does not support an operation required for safe Lance commits (such as atomic rename). Object-storage mounts such as Mountpoint for Amazon S3 are not supported; use the native object-store URI (for example, s3://bucket/path) instead".to_string(),
+            };
+        }
+
         // Try to unwrap external errors that were wrapped by lance
         match source {
             lance::Error::Wrapped { error, .. } => Self::from_box_error(error),
@@ -179,6 +220,27 @@ impl From<lance::Error> for Error {
             _ => Self::Lance { source },
         }
     }
+}
+
+fn has_unsupported_local_filesystem_source(error: &(dyn std::error::Error + 'static)) -> bool {
+    let mut current = Some(error);
+    let mut is_local_filesystem = false;
+    let mut is_unsupported = false;
+    while let Some(error) = current {
+        is_local_filesystem |= error
+            .downcast_ref::<object_store::Error>()
+            .is_some_and(|error| {
+                matches!(error, object_store::Error::Generic { store, .. } if *store == "LocalFileSystem")
+            });
+        is_unsupported |= error
+            .downcast_ref::<std::io::Error>()
+            .is_some_and(|error| error.kind() == std::io::ErrorKind::Unsupported);
+        if is_local_filesystem && is_unsupported {
+            return true;
+        }
+        current = error.source();
+    }
+    false
 }
 
 impl Error {
@@ -268,5 +330,62 @@ impl From<candle_core::Error> for Error {
             message: "Error in 'candle_core'.".to_string(),
             source: Some(Box::new(source)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(feature = "remote")]
+    #[test]
+    fn non_timeout_http_error_message_is_unchanged() {
+        let error = Error::Http {
+            source: "server error".into(),
+            request_id: "test".into(),
+            status_code: Some(reqwest::StatusCode::INTERNAL_SERVER_ERROR),
+        };
+        assert_eq!(
+            error.to_string(),
+            "Http error: (request_id=test) server error"
+        );
+    }
+
+    #[test]
+    fn unsupported_filesystem_operations_have_actionable_error() {
+        let object_store_error = object_store::Error::Generic {
+            store: "LocalFileSystem",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::Unsupported)),
+        };
+        let lance_error = lance::Error::io_source(Box::new(object_store_error));
+
+        let error = Error::from(lance_error);
+
+        assert!(matches!(
+            error,
+            Error::NotSupported { message }
+                if message.contains("Mountpoint for Amazon S3")
+                    && message.contains("s3://bucket/path")
+        ));
+    }
+
+    #[test]
+    fn other_io_errors_remain_lance_errors() {
+        let object_store_error = object_store::Error::Generic {
+            store: "LocalFileSystem",
+            source: Box::new(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
+        };
+        let lance_error = lance::Error::io_source(Box::new(object_store_error));
+
+        assert!(matches!(Error::from(lance_error), Error::Lance { .. }));
+    }
+
+    #[test]
+    fn unsupported_non_filesystem_errors_remain_lance_errors() {
+        let lance_error = lance::Error::io_source(Box::new(std::io::Error::from(
+            std::io::ErrorKind::Unsupported,
+        )));
+
+        assert!(matches!(Error::from(lance_error), Error::Lance { .. }));
     }
 }

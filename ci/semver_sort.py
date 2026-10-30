@@ -7,6 +7,7 @@ from packaging.version import parse, InvalidVersion
 
 if __name__ == "__main__":
     import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("prefix", default="v")
     args = parser.parse_args()

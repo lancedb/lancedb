@@ -1,10 +1,10 @@
 # Java SDK
 
-The LanceDB Java SDK provides a convenient way to interact with LanceDB Cloud and Enterprise deployments using the Lance REST Namespace API.
+The LanceDB Java SDK provides a convenient way to interact with LanceDB Enterprise deployments using the Lance REST Namespace API.
 
 !!! note
-    The Java SDK currently only works for LanceDB remote database that connects to LanceDB Cloud and Enterprise.
-    Local database support is a work in progress. Check [LANCEDB-2848](https://github.com/lancedb/lancedb/issues/2848) for the latest progress.
+    The Java SDK currently only works with LanceDB Distributed, connecting to LanceDB Enterprise or LanceDB Cloud (legacy).
+    LanceDB Embedded support is a work in progress. Check [LANCEDB-2848](https://github.com/lancedb/lancedb/issues/2848) for the latest progress.
 
 ## Installation
 
@@ -14,13 +14,13 @@ Add the following dependency to your `pom.xml`:
 <dependency>
     <groupId>com.lancedb</groupId>
     <artifactId>lancedb-core</artifactId>
-    <version>0.37.1-beta.0</version>
+    <version>0.41.0-beta.17</version>
 </dependency>
 ```
 
 ## Quick Start
 
-### Connecting to LanceDB Cloud
+### Connecting to LanceDB Cloud (legacy)
 
 ```java
 import com.lancedb.LanceDbNamespaceClientBuilder;
@@ -51,9 +51,41 @@ LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
 |--------|-------------|----------|
 | `apiKey(String)` | LanceDB API key | Yes |
 | `database(String)` | Database name | Yes |
-| `endpoint(String)` | Custom endpoint URL for Enterprise deployments | No |
-| `region(String)` | AWS region (default: "us-east-1") | No |
+| `endpoint(String)` | Custom endpoint URL for LanceDB Enterprise deployments | No |
+| `region(String)` | LanceDB Cloud (legacy) region (default: "us-east-1") | No |
 | `config(String, String)` | Additional configuration parameters | No |
+
+### Opening a Table with Vended Credentials
+
+When the catalog vends temporary object store credentials, open the table through the
+namespace client. The Lance dataset builder fetches the table location and storage options
+from the catalog and refreshes the credentials when they expire.
+
+```java
+import com.lancedb.LanceDbNamespaceClientBuilder;
+import org.lance.Dataset;
+import org.lance.namespace.LanceNamespace;
+
+import java.util.Arrays;
+
+LanceNamespace namespaceClient = LanceDbNamespaceClientBuilder.newBuilder()
+    .apiKey(System.getenv("LANCEDB_API_KEY"))
+    .database(System.getenv("LANCEDB_DATABASE"))
+    // Set the endpoint for a LanceDB Enterprise deployment.
+    // .endpoint("https://your-enterprise-endpoint")
+    .build();
+
+try (Dataset dataset = Dataset.open()
+        .namespaceClient(namespaceClient)
+        .tableId(Arrays.asList("my_namespace", "my_table"))
+        .build()) {
+    System.out.println("Rows: " + dataset.countRows());
+}
+```
+
+Do not call `describeTable()` and then open the returned location with `Dataset.open(uri)`.
+Opening through `namespaceClient()` is what applies the vended storage options and enables
+automatic credential refresh. No object store credentials need to be passed by the application.
 
 ## Metadata Operations
 

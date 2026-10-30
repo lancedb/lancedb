@@ -6,6 +6,8 @@
 These tests verify model registration and configuration without requiring API calls.
 """
 
+import numpy as np
+import pyarrow as pa
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -75,6 +77,22 @@ class TestVoyageAIModelRegistration:
         with pytest.raises(ValueError, match="not supported"):
             func.ndims()
 
+    def test_voyage3_source_embeddings_use_text_api(self, mock_voyageai_client):
+        """Regression test for text table data being sent to the multimodal API."""
+        mock_voyageai_client.tokenize.return_value = [["hello", "world"]]
+        mock_voyageai_client.embed.return_value.embeddings = [[0.1] * 1024]
+
+        registry = get_registry()
+        func = registry.get("voyageai").create(name="voyage-3")
+
+        embeddings = func.compute_source_embeddings("hello world")
+
+        assert embeddings == [[0.1] * 1024]
+        mock_voyageai_client.embed.assert_called_once_with(
+            texts=["hello world"], model="voyage-3", input_type="document"
+        )
+        mock_voyageai_client.multimodal_embed.assert_not_called()
+
     @pytest.mark.parametrize(
         "model_name",
         [
@@ -106,3 +124,58 @@ class TestVoyageAIModelRegistration:
         assert "voyage-4" not in func.multimodal_embedding_models
         assert "voyage-4-lite" not in func.multimodal_embedding_models
         assert "voyage-4-large" not in func.multimodal_embedding_models
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        ["first", "second"],
+        np.array(["first", "second"]),
+        pa.array(["first", "second"]),
+        pa.chunked_array([["first"], ["second"]]),
+    ],
+    ids=["list", "numpy", "arrow", "chunked-arrow"],
+)
+def test_text_source_embeddings_accept_batch_containers(inputs):
+    from lancedb.embeddings.voyageai import VoyageAIEmbeddingFunction
+
+    client = MagicMock()
+    client.tokenize.return_value = [[1], [2]]
+    client.embed.return_value.embeddings = [[0.1, 0.2], [0.3, 0.4]]
+    VoyageAIEmbeddingFunction.client = client
+    func = get_registry().get("voyageai").create(name="voyage-3")
+
+    assert func.compute_source_embeddings(inputs) == [[0.1, 0.2], [0.3, 0.4]]
+    client.embed.assert_called_once_with(
+        texts=["first", "second"], model="voyage-3", input_type="document"
+    )
+
+
+@pytest.mark.parametrize("inputs", [[], np.array([], dtype=str)])
+def test_text_source_embeddings_accept_empty_batch(inputs):
+    from lancedb.embeddings.voyageai import VoyageAIEmbeddingFunction
+
+    client = MagicMock()
+    VoyageAIEmbeddingFunction.client = client
+    func = get_registry().get("voyageai").create(name="voyage-3")
+
+    assert func.compute_source_embeddings(inputs) == []
+    client.tokenize.assert_not_called()
+    client.embed.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "inputs",
+    [["text", 42], np.array(["text", None]), np.array([["first", "second"]])],
+)
+def test_text_source_embeddings_reject_non_text_batch_entries(inputs):
+    from lancedb.embeddings.voyageai import VoyageAIEmbeddingFunction
+
+    client = MagicMock()
+    VoyageAIEmbeddingFunction.client = client
+    func = get_registry().get("voyageai").create(name="voyage-3")
+
+    with pytest.raises(ValueError, match="Each input should be str"):
+        func.compute_source_embeddings(inputs)
+    client.tokenize.assert_not_called()
+    client.embed.assert_not_called()

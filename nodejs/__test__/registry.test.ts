@@ -3,12 +3,9 @@
 
 import * as apiArrow from "apache-arrow";
 
-import * as arrow15 from "apache-arrow-15";
-import * as arrow16 from "apache-arrow-16";
-import * as arrow17 from "apache-arrow-17";
-import * as arrow18 from "apache-arrow-18";
-
 import * as tmp from "tmp";
+
+import { arrowVersions } from "./arrow_versions";
 
 import { connect } from "../lancedb";
 import {
@@ -18,7 +15,7 @@ import {
 } from "../lancedb/embedding";
 import { getRegistry, register } from "../lancedb/embedding/registry";
 
-describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
+describe.each(arrowVersions)("LanceSchema", (arrow) => {
   test("should preserve input order", async () => {
     const schema = LanceSchema({
       id: new arrow.Int32(),
@@ -29,7 +26,7 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("LanceSchema", (arrow) => {
   });
 });
 
-describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
+describe.each(arrowVersions)("Registry", (arrow) => {
   let tmpDir: tmp.DirResult;
   beforeEach(() => {
     tmpDir = tmp.dirSync({ unsafeCleanup: true });
@@ -106,6 +103,77 @@ describe.each([arrow15, arrow16, arrow17, arrow18])("Registry", (arrow) => {
       'Embedding function with alias "mock-embedding" already exists',
     );
   });
+  test("parseFunctions keeps entries sharing a function name", async () => {
+    class MockEmbeddingFunction extends EmbeddingFunction<string> {
+      ndims() {
+        return 3;
+      }
+      embeddingDataType() {
+        return new arrow.Float32() as apiArrow.Float;
+      }
+      async computeSourceEmbeddings(data: string[]) {
+        return data.map(() => [1, 2, 3]);
+      }
+    }
+    register("mock-embedding")(MockEmbeddingFunction);
+    const parsed = await getRegistry().parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "mock-embedding",
+              sourceColumn: "text",
+              vectorColumn: "vector_a",
+              model: {},
+            },
+            {
+              name: "mock-embedding",
+              sourceColumn: "text",
+              vectorColumn: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+    expect([...parsed.values()].map((f) => f.vectorColumn)).toEqual([
+      "vector_a",
+      "vector_b",
+    ]);
+
+    // The Python bindings write snake_case keys.
+    const snake = await getRegistry().parseFunctions(
+      new Map([
+        [
+          "embedding_functions",
+          JSON.stringify([
+            {
+              name: "mock-embedding",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              source_column: "text",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              vector_column: "vector_a",
+              model: {},
+            },
+            {
+              name: "mock-embedding",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              source_column: "text",
+              // biome-ignore lint/style/useNamingConvention: the Python wire spelling
+              vector_column: "vector_b",
+              model: {},
+            },
+          ]),
+        ],
+      ]),
+    );
+    expect([...snake.keys()]).toEqual(["vector_a", "vector_b"]);
+    expect([...snake.values()].map((f) => f.sourceColumn)).toEqual([
+      "text",
+      "text",
+    ]);
+  });
   test("schema should contain correct metadata", async () => {
     class MockEmbeddingFunction extends EmbeddingFunction<string> {
       constructor(args: FunctionOptions = {}) {
@@ -169,7 +237,7 @@ describe("Registry.setVar", () => {
         return data.map(() => [1, 2, 3]);
       }
       embeddingDataType() {
-        return new arrow18.Float32() as apiArrow.Float;
+        return new apiArrow.Float32();
       }
       protected getSensitiveKeys() {
         return ["secretKey"];
