@@ -72,14 +72,26 @@ export class MergeInsertBuilder {
   }
 
   /**
-   * Controls whether to use indexes for the merge operation.
+   * Controls the join and write strategy for the merge operation.
    *
-   * When set to `true` (the default), the operation will use an index if available
-   * on the join key for improved performance. When set to `false`, it forces a full
-   * table scan even if an index exists. This can be useful for benchmarking or when
-   * the query optimizer chooses a suboptimal path.
+   * When `true` (the default), the operation can use scalar indexes on the join
+   * keys when the operation supports the indexed path and all join keys have
+   * usable indexes. When a partial-column update actually takes this path, it
+   * patches the supplied columns, rewriting those columns for every row in each
+   * fragment containing a match.
    *
-   * @param useIndex - Whether to use indices for the merge operation. Defaults to `true`.
+   * When `false`, the operation performs a full-scan join and rewrites matched rows
+   * by deleting and appending them. This can also happen with `true`, for example
+   * when a join key lacks a usable index or a partial-column update includes a
+   * blob column. Any full-scan plan can materialize the entire target table on the
+   * hash-join build side and exhaust the server on large tables. The default flag
+   * alone is not a memory safeguard. Do not treat `false` as a general-purpose
+   * row-rewrite switch.
+   *
+   * See [How merge insert executes](https://docs.lancedb.com/ingestion/merge-insert#how-merge-insert-executes)
+   * for the performance and index-coverage tradeoffs.
+   *
+   * @param useIndex - Whether to allow index use for the merge. Defaults to `true`.
    */
   useIndex(useIndex: boolean): MergeInsertBuilder {
     return new MergeInsertBuilder(
