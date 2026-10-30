@@ -1080,36 +1080,49 @@ async def test_remote_to_lance_rejection(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "method, kwargs",
+    "method, kwargs, list_path, table_prefix",
     [
-        ("drop_all_tables", {}),
-        ("drop_all_tables", {"namespace_path": []}),
-        ("drop_all_tables", {"namespace_path": ["team"]}),
-        ("drop_database", {}),
+        ("drop_all_tables", {}, "/v1/table/", ""),
+        ("drop_all_tables", {"namespace_path": []}, "/v1/table/", ""),
+        (
+            "drop_all_tables",
+            {"namespace_path": ["team"]},
+            "/v1/namespace/team/table/list",
+            "team$",
+        ),
+        ("drop_database", {}, "/v1/table/", ""),
     ],
 )
-async def test_remote_drop_all_tables_not_supported(method, kwargs):
+async def test_remote_drop_all_tables(method, kwargs, list_path, table_prefix):
     requests = []
+    drop_paths = {
+        f"/v1/table/{table_prefix}table1/drop/",
+        f"/v1/table/{table_prefix}table2/drop/",
+    }
 
     def handler(request):
-        requests.append(request.path)
-        request.send_response(500)
-        request.end_headers()
+        requests.append((request.command, request.path))
+        if request.command == "GET":
+            assert request.path == list_path
+            send_json(request, {"tables": ["table1", "table2"]})
+            return
+
+        assert request.command == "POST"
+        assert request.path in drop_paths
+        send_json(request, {})
 
     with mock_lancedb_connection(handler) as db:
-        with pytest.raises(NotImplementedError) as sync_error:
-            getattr(db, method)(**kwargs)
+        getattr(db, method)(**kwargs)
 
     async with mock_lancedb_connection_async(handler) as db:
-        with pytest.raises(NotImplementedError) as async_error:
-            await getattr(db, method)(**kwargs)
+        await getattr(db, method)(**kwargs)
 
-    assert "Dropping all tables is not currently supported in the remote API" in str(
-        sync_error.value
-    )
-    assert "drop_table" in str(sync_error.value)
-    assert str(sync_error.value) == str(async_error.value)
-    assert requests == []
+    expected_requests = [
+        ("GET", list_path),
+        ("POST", f"/v1/table/{table_prefix}table1/drop/"),
+        ("POST", f"/v1/table/{table_prefix}table2/drop/"),
+    ]
+    assert requests == expected_requests * 2
 
 
 def test_table_to_pandas_not_supported():
