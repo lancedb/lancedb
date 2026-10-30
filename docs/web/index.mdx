@@ -121,37 +121,46 @@ To set up LanceDB Enterprise in your organization, [reach out to us](https://www
 
 | Area | Feature | Embedded | Enterprise |
 | --- | --- | :-: | :-: |
-| **Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
+| **Data Ingestion** | [Real Time Engine (streaming writes)](/tables/realtime-engine) | ❌ | ✅ |
+| **Semantic Search** | [Vector search](/search/vector-search) | ✅ | ✅ |
 |  | [Full-text search](/search/full-text-search) | ✅ | ✅ |
 |  | [Hybrid search](/search/hybrid-search) | ✅ | ✅ |
 |  | [Filtering](/search/filtering) | ✅ | ✅ |
 |  | [Reranking](/reranking) | ✅ | ✅ |
 |  | [Query plans](/search/explain) | ✅ | ✅ |
 |  | [Distributed search](/enterprise/distributed-search) | ❌ | ✅ |
-| **Indexing** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
-|  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
-|  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
-| **SQL and curation** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
-|  | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
+|  | [Real Time Engine (streaming reads)](/tables/realtime-engine) | ❌ | ✅ |
+| **Data Curation** | [Aggregation and profiling](/curation/aggregate) | ❌ | ✅ |
 |  | [Sampling](/curation/sampling) | ✅ | ✅ |
 |  | [Joins](/curation/join) | ❌ | ✅ |
 |  | [Ranking and deduplication](/curation/windowing) | ❌ | ✅ |
 |  | [Near-duplicate detection](/curation/dedupe) | ❌ | ✅ |
 |  | [Chunking](/curation/chunking) | ❌ | ✅ |
 |  | [Changes since a version](/curation/changes) | ❌ | ✅ |
-|  | [Views](/management/view) | ❌ | ✅ |
-| **Feature engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ✅ | ✅ |
-|  | [Materialized views](/management/materialized-view) | ❌ | ✅ |
+| **Feature Engineering** | [Computed columns, with refresh](/feature-engineering/add-computed-column) | ❌ | ✅ |
 |  | [Embedding registry](/embedding) | ✅ | ✅ |
 | **Training** | [PyTorch data loader](/training/data-loading) | ✅ | ✅ |
 |  | [Permutations](/training/permutation) | ✅ | ✅ |
 |  | [Distributed training](/training/distributed-training) | ✅ | ✅ |
-| **Data management** | [Branches](/tables/branching) | ✅ | ✅ |
+| **Management** | [Database](/management/database) | ✅ | ✅ |
+|  | [Namespace](/management/namespace) | ✅ | ✅ |
+|  | [Table](/management/table) | ✅ | ✅ |
+|  | [Branches](/tables/branching) | ✅ | ✅ |
+|  | [View](/management/view) | ❌ | ✅ |
+|  | [Materialized view](/management/materialized-view) | ❌ | ✅ |
+|  | [Secret](/management/secret) | ❌ | ✅ |
+|  | Function | ❌ | ✅ |
+| **Maintenance** | [Vector indexes](/indexing/vector-index) | ✅ | ✅ |
+|  | [Full-text indexes](/indexing/fts-index) | ✅ | ✅ |
+|  | [Scalar indexes](/indexing/scalar-index) | ✅ | ✅ |
 |  | [Compaction and cleanup](/maintenance/compaction) | ✅ | ✅ |
 |  | [Background jobs (managed indexing and maintenance)](/maintenance/background-jobs) | ❌ | ✅ |
-|  | [Real Time engine (streaming writes and reads)](/tables/realtime-engine) | ❌ | ✅ |
+|  | [Distributed indexing](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Distributed compaction](/maintenance/background-jobs) | ❌ | ✅ |
+|  | [Advanced conflict resolution](/maintenance/background-jobs) | ❌ | ✅ |
 | **Security** | [Authentication](/enterprise/authentication) | ❌ | ✅ |
 |  | [Authorization](/governance/authorization) | ❌ | ✅ |
+| **SQL Reference** | [SQL (Arrow Flight SQL)](/basics/sql) | ❌ | ✅ |
 
 ## Projects using LanceDB {#projects-using-lancedb}
 

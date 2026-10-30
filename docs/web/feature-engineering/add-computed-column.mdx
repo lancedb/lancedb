@@ -5,7 +5,7 @@ description: "Declare a column from a SQL expression. Nothing is evaluated until
 icon: table-columns
 keywords: ["computed columns", "add_columns", "transforms", "schema"]
 availability:
-  embedded: available
+  embedded: unavailable
   enterprise: available
 ---
 
@@ -31,19 +31,16 @@ cheap on any table size, because nothing is evaluated until
 [a refresh](/feature-engineering/refresh-column) asks for it.
 
 <Note>
-In the 0.41 SDK release, computed-column declaration and refresh in LanceDB Embedded require a
-source build with the `experimental-functions` Cargo feature. Published Python
-and TypeScript packages leave it disabled. LanceDB Enterprise operations
-do not require this feature. Ordinary eager `add_columns` transforms remain available.
+`computed` requires LanceDB Enterprise. Ordinary eager `add_columns`
+transforms, without `computed`, remain available in LanceDB Embedded.
 </Note>
 
 ## Add a computed column {#declare}
 
+Connect with an [Enterprise connection](/basics/catalog#enterprise):
+
 <CodeGroup>
 ```python Python icon="python"
-import lancedb
-
-db = lancedb.connect("./.lancedb")
 table = db.create_table("computed_demo", [{"x": 1}, {"x": 2}])
 
 table.add_columns(computed={"doubled": "x * 2"})
@@ -74,9 +71,8 @@ including that you can travel back to before the column existed.
 large enough that you would rather control when the work happens.
 
 Automatic refresh is on by default for each computed column, and takes effect
-when your Enterprise deployment enables its refresh scheduler. Until then, and in
-LanceDB Embedded, which never refreshes on a schedule, call
-[`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
+when your Enterprise deployment enables its refresh scheduler. Until then,
+call [`refresh_column`](/feature-engineering/refresh-column) yourself. Pass
 `auto_refresh_enabled=False` to opt a column out, or
 `auto_refresh_interval_seconds` to set how often it refreshes:
 
@@ -162,10 +158,9 @@ A literal in the expression has to fit the column it meets: `x / 2.0` is
 refused when `x` is an integer column, so write `cast(x as double) / 2.0`.
 
 <Warning>
-In LanceDB Enterprise, keep the expression to top-level columns. A column
-refresh can fail on an expression that reads a field inside a struct, such as
-`stats.magic + stats.strength`, which the embedded library computes. Try a new
-expression on a small table first.
+Keep the expression to top-level columns. A column refresh can fail on an
+expression that reads a field inside a struct, such as
+`stats.magic + stats.strength`. Try a new expression on a small table first.
 </Warning>
 
 ## Change columns used by an expression {#input-constraints}
