@@ -54,7 +54,10 @@ class TestOAuthProvider:
         provider = OAuthProvider(fetcher)
         headers = provider.get_headers()
 
-        assert headers == {"Authorization": "Bearer token123"}
+        assert headers == {
+            "Authorization": "Bearer token123",
+            "x-lancedb-credential-type": "oidc",
+        }
         assert provider._current_token == "token123"
         assert provider._token_expires_at is not None
 
@@ -73,14 +76,20 @@ class TestOAuthProvider:
 
         # First call
         headers1 = provider.get_headers()
-        assert headers1 == {"Authorization": "Bearer token1"}
+        assert headers1 == {
+            "Authorization": "Bearer token1",
+            "x-lancedb-credential-type": "oidc",
+        }
 
         # Wait for token to expire
         time.sleep(1.1)
 
         # Second call should refresh
         headers2 = provider.get_headers()
-        assert headers2 == {"Authorization": "Bearer token2"}
+        assert headers2 == {
+            "Authorization": "Bearer token2",
+            "x-lancedb-credential-type": "oidc",
+        }
         assert call_count == 2
 
     def test_no_expiry_info(self):
@@ -92,12 +101,42 @@ class TestOAuthProvider:
         provider = OAuthProvider(fetcher)
         headers = provider.get_headers()
 
-        assert headers == {"Authorization": "Bearer permanent_token"}
+        assert headers == {
+            "Authorization": "Bearer permanent_token",
+            "x-lancedb-credential-type": "oidc",
+        }
         assert provider._token_expires_at is None
 
         # Should not refresh on second call
         headers2 = provider.get_headers()
-        assert headers2 == {"Authorization": "Bearer permanent_token"}
+        assert headers2 == {
+            "Authorization": "Bearer permanent_token",
+            "x-lancedb-credential-type": "oidc",
+        }
+
+    def test_zero_lifetime_token_is_refreshed(self):
+        """A token that expires immediately must not be cached indefinitely."""
+        call_count = 0
+
+        def fetcher():
+            nonlocal call_count
+            call_count += 1
+            return {
+                "access_token": f"token{call_count}",
+                "expires_in": 0,
+            }
+
+        provider = OAuthProvider(fetcher, refresh_buffer_seconds=0)
+
+        assert provider.get_headers() == {
+            "Authorization": "Bearer token1",
+            "x-lancedb-credential-type": "oidc",
+        }
+        assert provider.get_headers() == {
+            "Authorization": "Bearer token2",
+            "x-lancedb-credential-type": "oidc",
+        }
+        assert call_count == 2
 
     def test_missing_access_token(self):
         """Test error handling when access_token is missing."""
@@ -121,7 +160,10 @@ class TestOAuthProvider:
         provider = OAuthProvider(fetcher)
         headers = provider.get_headers()
 
-        assert headers == {"Authorization": "Bearer sync_token"}
+        assert headers == {
+            "Authorization": "Bearer sync_token",
+            "x-lancedb-credential-type": "oidc",
+        }
 
 
 class TestClientConfigIntegration:

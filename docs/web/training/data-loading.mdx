@@ -1,0 +1,355 @@
+---
+title: "PyTorch Data Loader"
+sidebarTitle: "PyTorch Data Loader"
+description: "Stream, shuffle, transform, and resume model training data with StreamingDataset."
+icon: boxes-stacked
+availability:
+  embedded: available
+  enterprise: available
+---
+
+Advanced data loading scenarios can be handled by the `StreamingDataset`. This object allows you to apply preprocessing before training, pipelined reads, and more. Use this when the training data does not fit in memory, or when you need deterministic global batches across cluster sizes.
+
+<CodeGroup>
+```py Python icon=Python
+import lancedb
+import torch
+from lancedb.streaming import StreamingDataset
+
+db = lancedb.connect("file://some/db/path")
+table = db.open_table("some_table")
+
+dataset = StreamingDataset(table, shuffle_seed=42)
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=128,
+    num_workers=0,
+)
+
+for batch in dataloader:
+    train_step(batch)
+```
+</CodeGroup>
+
+The `StreamingDataset` wraps a LanceDB `Table` and yields plain Python dictionaries by default. Whether iterating directly or through a PyTorch `DataLoader`, only one iterator can be simultaneously active on a `StreamingDataset` instance.
+
+<Note>
+`StreamingDataset` is built on the [`Permutation`](/training/permutation) API and works with both LanceDB Embedded and LanceDB Enterprise. The underlying table data can live on local disk or object storage.
+</Note>
+
+## Filtering {#filtering}
+
+The `StreamingDataset` object allows you to train models on only the subset of rows that satisfy a user-defined filter, specified using the `filter` parameter. This can be useful for removing large rows, badly-sourced data, and a wide range of other applications.
+You can also use the `columns` parameter to load only a subset of columns.
+
+<CodeGroup>
+```py Python icon=Python
+ds = StreamingDataset(
+    table,
+    shuffle_seed=42,
+    columns=["image", "label"],       # skip all other columns
+    filter="category = 'train'",      # only training rows
+)
+```
+</CodeGroup>
+
+## Shuffling Rows {#shuffling-rows}
+
+In model training, model quality can be hurt by unintentionally learning patterns in the ordering of the source data. Shuffling the dataset before training alleviates this problem. However, fetching rows with scattered sparse reads across object storage can be dramatically slower than fetching contiguous batches. `StreamingDataset` shuffles at one of two granularities, selected by the `shuffle_clump_size` parameter.
+
+<Note>
+`StreamingDataset` shuffle seeds combine `shuffle_seed` with `epoch`; each epoch produces a different permutation while runs
+with the same inputs remain reproducible. Set `shuffle_seed = None` to generate a random seed upon pipeline initialization.
+</Note>
+
+### Row-Level Shuffle {#one-phase-shuffle}
+
+By default, `shuffle_clump_size` is `None` and rows are shuffled individually: the rows of the source dataset are shuffled according to a pseudorandom permutation, then fed in batches to the accelerator. This gives the best possible randomness, but can exhibit low throughput.
+
+<CodeGroup>
+```py Python icon=Python
+# 1-phase shuffled read: rows shuffled individually.
+for epoch in range(num_epochs):
+    ds = StreamingDataset(
+        table,
+        shuffle_seed=42,
+        epoch=epoch, # changes the permutation each epoch
+    )
+    for sample in ds:
+        train_step(sample)
+
+#Evaluation: deterministic sequential order, no shuffle.
+eval_ds = StreamingDataset(table, shuffle=False)
+for sample in eval_ds:
+    eval_step(sample)
+```
+</CodeGroup>
+
+### Clumped Shuffle {#two-phase-shuffle}
+
+Setting `shuffle_clump_size` to an integer shuffles contiguous groups ("clumps") of that many rows instead of single rows. Each clump keeps its rows in storage order and moves as a unit, so storage I/O consists mostly of contiguous reads rather than single-row fetches. Larger clumps improve I/O locality, which matters most on object storage, at the cost of randomness.
+
+<CodeGroup>
+```py Python icon=Python
+# Clumped shuffled read: rows are shuffled in groups of contiguous rows
+# instead of individually, trading a bit of randomness for much cheaper I/O.
+for epoch in range(num_epochs):
+    ds = StreamingDataset(
+        table,
+        shuffle_seed=42,
+        epoch=epoch,
+        shuffle_clump_size=1024,   # contiguous rows that move together
+    )
+    for sample in ds:
+        train_step(sample)
+
+# Evaluation: deterministic sequential order, no shuffle.
+eval_ds = StreamingDataset(table, shuffle=False)
+for sample in eval_ds:
+    eval_step(sample)
+```
+</CodeGroup>
+
+## Fetching {#fetching}
+
+Traditional datasets have often been designed to yield a single sample at a time upon iteration. However, in modern use cases,  accessing data on object storage one row at a time introduces too much per-call overhead. Thus, `StreamingDataset` fetches data in read batches, whose size is controlled by the `read_batch_size` parameter (defaults = `64`).
+
+In addition to batching requests, the prefetching mechanism reads ahead in the background. While one batch is being processed, `StreamingDataset` reads several subsequent batches. The `io_queue_depth` parameter specifies the number of batches simultaneously kept in flight per split (default = `4`); it replaces `prefetch_batches`, which still works but is deprecated. A larger value provides more buffering against jittery workloads, but also increases memory use and I/O concurrency.
+
+<CodeGroup>
+```py Python icon=Python
+ds = StreamingDataset(
+    table,
+    shuffle_seed=42,
+    read_batch_size=256,   # rows fetched per LanceDB call per split
+    io_queue_depth=8,      # batches to keep in flight per split
+)
+```
+</CodeGroup>
+
+## Transforming {#transforming}
+
+Many model training workloads require performing a transformation to the data after it is loaded from object storage and before it is passed to the GPU. For example, we may need to decode images, tokenize text, or normalize vectors. A transformation function can be provided using the `transform` parameter.
+
+A transformation function must receive a PyArrow `RecordBatch` and return an iterable. For example, the default transform function returns a list of Python dictionaries. Furthermore, the input expected by PyTorch must match the collation function used in the PyTorch data loader. PyTorch's default collation function accepts a Python dictionary and several other types, and is thus compatible with the default `StreamingDataset` transform function. If your custom transform function returns something different (for example, Arrow record batches), you may need to provide a compatible PyTorch collation function.
+
+<CodeGroup>
+```py Python icon=Python
+import pyarrow as pa
+
+def normalize(batch: pa.RecordBatch) -> list[dict]:
+    # This pure-Python loop holds the GIL and is shown for illustration only.
+    # In practice, prefer a library like torchvision or numpy that releases the
+    # GIL so the ThreadPoolExecutor can run transforms in parallel.
+    rows = batch.to_pylist()
+    for row in rows:
+        row["image"] = [v / 255.0 for v in row["image"]]
+    return rows
+
+ds = StreamingDataset(table, shuffle_seed=42, transform=normalize)
+```
+</CodeGroup>
+
+`StreamingDataset` manages expensive transforms through a
+`ThreadPoolExecutor` whose worker count equals the number of available CPUs (`transform_parallelism`). Furthermore, transformations are applied to batches (instead of individual samples) to amortize per-batch overhead.
+
+Heavier per-sample work belongs in the same function, such as decoding
+video. Store each clip in a Blob v2 column (`lancedb.blob("video")`). A scan
+returns small descriptors instead of the video bytes, so reading other
+columns never pulls video in. `fetch_blob_files` opens the clips for a batch
+of rows as file handles, and `torchcodec`'s `VideoDecoder` decodes just the
+frames you ask for. `ExtractFrames` samples 8 evenly spaced frames from each
+clip:
+
+<CodeGroup>
+```py Python icon=Python
+import functools
+from torchcodec.decoders import VideoDecoder
+
+class ExtractFrames:
+    def __init__(self, uri: str, name: str, num_frames: int = 8) -> None:
+        self.uri, self.name, self.num_frames = uri, name, num_frames
+
+    @functools.cached_property
+    def table(self) -> lancedb.table.Table:
+        return lancedb.connect(self.uri).open_table(self.name)
+
+    def __call__(self, rb: pa.RecordBatch) -> list[dict[str, torch.Tensor]]:
+        samples = []
+        for blob in self.table.fetch_blob_files("video", rb["_rowid"]):
+            decoder = VideoDecoder(blob)
+            idx = torch.linspace(0, len(decoder) - 1, self.num_frames).long()
+            samples.append({"frames": decoder.get_frames_at(idx.tolist()).data})
+        return samples
+
+# `clips` is the table "clips" in the database at `uri`, with a Blob v2 column "video"
+train = StreamingDataset(clips, columns=["_rowid"], transform=ExtractFrames(uri, "clips"))
+```
+</CodeGroup>
+
+Real data has bad rows, such as a truncated frame. Raise inside the
+transform and set `on_transform_error="skip"` (or `"warn"` to log each
+failure). `StreamingDataset` re-runs the failing batch one row at a time,
+drops only the rows that raise, and counts them in `dataset.rows_skipped`.
+When the bad rows match a SQL predicate, prefer `filter=` instead: it runs
+before the splits are built, so every split keeps the same length.
+
+### DataLoader Workers {#dataloader-workers}
+
+The thread-based transformation model that `StreamingDataset` uses by default is only effective when the transform
+function releases the GIL. This is true for many Python scientific libraries, including NumPy, PyArrow, and
+TorchVision, but not for pure-Python transforms. PyTorch can launch multiple DataLoader worker processes per rank,
+and `StreamingDataset` uses `get_worker_info()` to give each worker a non-overlapping group of splits.
+
+Multiprocessing adds pickling and transfer overhead and increases memory use. Start with `num_workers=0`, which keeps
+loading in the rank's main process, and add workers only after confirming an unavoidable GIL bottleneck. If you use
+workers, `num_splits` must be divisible by `world_size * num_workers`. Use the `forkserver` or `spawn` multiprocessing
+context because LanceDB uses internal threads.
+
+<CodeGroup>
+```py Python icon=Python
+dataloader = torch.utils.data.DataLoader(
+    dataset,
+    batch_size=batch_size,
+    num_workers=2,
+    multiprocessing_context="forkserver",
+    persistent_workers=True,
+)
+```
+</CodeGroup>
+
+By default, `StreamingDataset` serializes enough table state to reopen the
+table in each worker. Remote LanceDB Enterprise tables (`db://...`) work the
+same way: workers reopen the table from the pickled connection state.
+Replace the URI, API key, region and endpoint below with your deployment
+details. In application code, load credentials from environment variables
+or a secrets manager:
+
+<CodeGroup>
+```py Python icon=Python
+import lancedb
+import torch
+from lancedb.util import tbl_to_tensor
+
+db = lancedb.connect(
+    "db://my-database",
+    api_key="your-api-key",
+    region="us-east-1",
+    host_override="https://your-endpoint",
+)
+table = db.open_table("my_table")
+
+dataloader = torch.utils.data.DataLoader(
+    table,
+    batch_size=512,
+    num_workers=4,
+    multiprocessing_context="forkserver",
+    collate_fn=tbl_to_tensor,
+)
+```
+</CodeGroup>
+
+<Note>
+This sends the connection state, including the API key, to each worker. Use a connection factory if credentials should be loaded inside the worker or your `client_config` contains a non-serializable `header_provider`.
+</Note>
+
+#### Providing a custom connection factory {#providing-a-custom-connection-factory}
+
+For custom connection setup, pass a picklable `connection_factory` callable
+that accepts a table name and returns an open table. This avoids
+serializing connection credentials into worker state: it loads the API key
+inside each worker instead. Set it in the shell before starting the Python
+program, then replace the database URI, region and endpoint in the factory
+with your deployment details:
+
+```shell
+export LANCEDB_API_KEY="your-api-key"
+```
+
+<CodeGroup>
+```py Python icon=Python
+import os
+import lancedb
+import torch
+from lancedb.permutation import Permutation
+
+def open_table(name: str):
+    db = lancedb.connect(
+        "db://my-database",
+        api_key=os.environ["LANCEDB_API_KEY"],
+        region="us-east-1",
+        host_override="https://your-endpoint",
+    )
+    return db.open_table(name)
+
+table = open_table("my_table")
+permutation = (
+    Permutation.identity(table)
+    .with_connection_factory(open_table)
+)
+dataloader = torch.utils.data.DataLoader(
+    permutation,
+    batch_size=512,
+    num_workers=4,
+    multiprocessing_context="forkserver",
+)
+```
+</CodeGroup>
+
+## Observability {#observability}
+
+Optimizing data loader performance can be tricky, as runtime bottlenecks are often difficult to locate across various stages of the I/O and CPU pipelines. To help distinguish bottlenecks, `StreamingDataset` exposes several pipeline counters: `raw_queue_depth` shows the number of loaded rows waiting to be transformed,
+and `prefetch_queue_depth` is the number of transformed rows ready to be consumed. `unscanned_rows` and
+`consumed_rows` show how far the current iterator has progressed.
+
+If the `prefetch_queue_depth` is consistently zero but the `raw_queue_depth` is not, then you likely have a CPU
+transformation bottleneck. You should investigate GIL bottlenecks or look for ways to optimize your transformation.
+This can often be done by batching the compute work. If both `prefetch_queue_depth` and `raw_queue_depth` are
+consistently zero while the consumer is waiting, I/O is the likely bottleneck. A larger read batch size or clumped
+shuffling could help.
+
+<CodeGroup>
+```py Python icon=Python
+import threading, time
+
+ds = StreamingDataset(table, shuffle_seed=42)
+
+def log_pipeline_health():
+    while True:
+        print(
+            f"unscanned={ds.unscanned_rows} "
+            f"raw={ds.raw_queue_depth} "
+            f"cooked={ds.prefetch_queue_depth} "
+            f"consumed={ds.consumed_rows}"
+        )
+        time.sleep(1.0)
+
+monitor = threading.Thread(target=log_pipeline_health, daemon=True)
+monitor.start()
+
+for sample in ds:
+    train_step(sample)
+
+print(
+    f"bytes loaded: {ds.bytes_loaded} "
+    f"fetch time: {ds.fetch_time:.2f}s "
+    f"transform time: {ds.transform_time:.2f}s"
+)
+```
+</CodeGroup>
+
+`bytes_loaded` measures raw Arrow buffer bytes before transformation. `bytes_loaded`, `fetch_time`, and `transform_time`
+are cumulative across iterations of the same dataset instance; because work runs concurrently, the summed stage times
+can exceed wall-clock time. The queue depths report rows currently waiting in the pipeline, and the progress counters
+reflect the latest iterator snapshot.
+
+## Next steps {#next}
+
+<CardGroup cols={2}>
+  <Card title="Permutation" icon="shuffle" href="/training/permutation">
+    The lower-level row ordering StreamingDataset is built on.
+  </Card>
+  <Card title="Distributed Training" icon="server" href="/training/distributed-training">
+    Multi-GPU sharding, elastic determinism, and checkpointing.
+  </Card>
+</CardGroup>
