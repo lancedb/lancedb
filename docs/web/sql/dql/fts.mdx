@@ -59,7 +59,10 @@ json_query = query.to_json()
 <CodeGroup>
 ```sql SQL icon="database"
 SELECT id, text, category
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+)
 LIMIT 5
 ```
 </CodeGroup>
@@ -70,7 +73,10 @@ By default the top 5 matches come back in **arbitrary order**. Select
 <CodeGroup>
 ```sql SQL icon="database"
 SELECT id, text, _score
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+)
 ORDER BY _score DESC
 LIMIT 5
 ```
@@ -151,7 +157,10 @@ Filter, join, or aggregate over it same as any table:
 <CodeGroup>
 ```sql SQL icon="database"
 SELECT id, text, category
-FROM fts('my_docs', '{"match":{"column":"text","terms":"puppy"}}')
+FROM fts(
+    'my_docs',
+    '{"match":{"column":"text","terms":"puppy"}}'
+)
 WHERE category = 'animals'
 LIMIT 5
 ```

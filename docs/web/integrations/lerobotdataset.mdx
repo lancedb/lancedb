@@ -160,7 +160,11 @@ representative per cluster, directly over the index, without a pairwise scan:
 ```python Python icon="python"
 db.execute_query("""
     CREATE MATERIALIZED VIEW frames_deduped AS
-    SELECT * FROM dedupe('frames', 'emb_siglip2', distance_threshold => 0.01)
+    SELECT * FROM dedupe(
+        'frames',
+        'emb_siglip2',
+        distance_threshold => 0.01
+    )
 """)
 ```
 </CodeGroup>

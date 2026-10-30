@@ -18,17 +18,23 @@ into groups.
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM duplicate_pairs(<table>, <vector_column>,
-  distance_threshold => <float>
-  [, id_column => <column>]
-  [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
+SELECT * FROM duplicate_pairs(
+    <table>,
+    <vector_column>,
+    distance_threshold => <float>
+    [, id_column => <column>]
+    [, selection => 'all' | 'first' | 'random', count => <int>, seed => <int>]
 )
 ```
 </CodeGroup>
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02)
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02
+)
 ```
 </CodeGroup>
 
@@ -74,7 +80,12 @@ top-level scalar column such as a primary key, to project its value instead:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM duplicate_pairs('frames', 'vec', distance_threshold => 0.02, id_column => 'frame_id')
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02,
+    id_column => 'frame_id'
+)
 ```
 </CodeGroup>
 
@@ -88,8 +99,14 @@ full:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT * FROM duplicate_pairs('frames', 'vec',
-  distance_threshold => 0.02, selection => 'random', count => 100, seed => 42)
+SELECT * FROM duplicate_pairs(
+    'frames',
+    'vec',
+    distance_threshold => 0.02,
+    selection => 'random',
+    count => 100,
+    seed => 42
+)
 ```
 </CodeGroup>
 

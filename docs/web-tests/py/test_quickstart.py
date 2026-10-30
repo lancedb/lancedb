@@ -267,7 +267,11 @@ def test_quickstart_curate_with_sql(deployment):
     # --8<-- [start:quickstart_curate_dedupe]
     db.execute_query("""
         CREATE MATERIALIZED VIEW frames_deduped AS
-        SELECT * FROM dedupe('frames', 'embedding', distance_threshold => 0.03)
+        SELECT * FROM dedupe(
+            'frames',
+            'embedding',
+            distance_threshold => 0.03
+        )
     """)
     # --8<-- [end:quickstart_curate_dedupe]
 

@@ -10,7 +10,7 @@ export const PyQuickstartCreateTable = "table = db.create_table(\"frames\", data
 
 export const PyQuickstartCreateTableAsync = "async_table = await async_db.create_table(\n    \"frames\",\n    data=data,\n    mode=\"overwrite\",\n)\n";
 
-export const PyQuickstartCurateDedupe = "db.execute_query(\"\"\"\n    CREATE MATERIALIZED VIEW frames_deduped AS\n    SELECT * FROM dedupe('frames', 'embedding', distance_threshold => 0.03)\n\"\"\")\n";
+export const PyQuickstartCurateDedupe = "db.execute_query(\"\"\"\n    CREATE MATERIALIZED VIEW frames_deduped AS\n    SELECT * FROM dedupe(\n        'frames',\n        'embedding',\n        distance_threshold => 0.03\n    )\n\"\"\")\n";
 
 export const PyQuickstartCurateDedupeQuery = "deduped = db.execute_query(\n    \"SELECT frame_id FROM frames_deduped ORDER BY frame_id\"\n).read_all()\nprint(deduped.to_pylist())\n";
 

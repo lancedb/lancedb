@@ -31,7 +31,9 @@ Grouping by several expressions produces one row per distinct combination:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT category, source, count(*) FROM documents GROUP BY category, source
+SELECT category, source, count(*)
+FROM documents
+GROUP BY category, source
 ```
 </CodeGroup>
 

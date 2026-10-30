@@ -68,7 +68,12 @@ ids 10, 30, 60, 70 and 80:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT id, caption FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
+SELECT id, caption
+FROM dedupe(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06
+)
 ORDER BY id
 ```
 </CodeGroup>
@@ -93,8 +98,12 @@ anything -- useful for review, or for a threshold that is still being tuned:
 
 <CodeGroup>
 ```sql SQL icon="database"
-SELECT id_a, id_b, distance FROM duplicate_pairs(
-    'curation_embeddings', 'embedding', distance_threshold => 0.06, id_column => 'id'
+SELECT id_a, id_b, distance
+FROM duplicate_pairs(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06,
+    id_column => 'id'
 )
 ORDER BY id_a
 ```
@@ -113,7 +122,11 @@ recomputing it from scratch on every curation pass:
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE MATERIALIZED VIEW curation_embeddings_deduped AS
-SELECT * FROM dedupe('curation_embeddings', 'embedding', distance_threshold => 0.06)
+SELECT * FROM dedupe(
+    'curation_embeddings',
+    'embedding',
+    distance_threshold => 0.06
+)
 ```
 </CodeGroup>
 

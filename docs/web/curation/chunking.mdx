@@ -64,7 +64,14 @@ version = db.create_function_async(split_into_passages).wait()
 CREATE FUNCTION split_into_passages(text utf8)
 RETURNS list<struct<chunk_index: int64, chunk_text: utf8>>
 LANGUAGE python
-AS 'def split_into_passages(text): size = 200; return [{"chunk_index": i, "chunk_text": text[i:i+size]} for i in range(0, len(text), size)]'
+AS '
+def split_into_passages(text):
+    size = 200
+    return [
+        {"chunk_index": i, "chunk_text": text[i:i+size]}
+        for i in range(0, len(text), size)
+    ]
+'
 ```
 </CodeGroup>
 

@@ -14,7 +14,9 @@ availability:
 <CodeGroup>
 ```sql SQL icon="database"
 CREATE TABLE documents (id BIGINT, title VARCHAR, created_at TIMESTAMP)
-CREATE TABLE recent AS SELECT * FROM documents WHERE created_at > now() - INTERVAL '7 days'
+CREATE TABLE recent AS
+SELECT * FROM documents
+WHERE created_at > now() - INTERVAL '7 days'
 ```
 </CodeGroup>
 
@@ -86,8 +88,11 @@ continuing the [`caption` Function](/management/function#chain) from Functions:
 
 ```sql
 ALTER TABLE frames ADD COLUMN caption AS caption(extract_frame(video, ts))
-WITH (version = 'fv_1', auto_refresh_enabled = true,
-      auto_refresh_interval_seconds = 300);
+WITH (
+    version = 'fv_1',
+    auto_refresh_enabled = true,
+    auto_refresh_interval_seconds = 300
+);
 ALTER TABLE frames ALTER COLUMN caption SET auto_refresh_enabled = false;
 ```
 
