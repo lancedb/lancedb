@@ -66,6 +66,11 @@ def tokenize(
     ngram_min_length: int = 3,
     ngram_max_length: int = 3,
     prefix_only: bool = False,
+    analyzer: Optional[Literal["text", "code"]] = None,
+    split_identifiers: Optional[bool] = None,
+    split_on_numerics: Optional[bool] = None,
+    preserve_original: Optional[bool] = None,
+    index_operators: Optional[bool] = None,
 ) -> List["FtsToken"]: ...
 
 class PyExpr:

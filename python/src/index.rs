@@ -33,6 +33,80 @@ pub fn class_name(ob: &'_ Bound<'_, PyAny>) -> PyResult<String> {
     }
 }
 
+/// Code-analyzer options shared by `FTS` and `tokenize`.
+#[derive(Default)]
+pub struct CodeAnalyzerOptions {
+    pub analyzer: Option<String>,
+    pub split_identifiers: Option<bool>,
+    pub split_on_numerics: Option<bool>,
+    pub preserve_original: Option<bool>,
+    pub index_operators: Option<bool>,
+}
+
+impl CodeAnalyzerOptions {
+    /// Check the options against the requested base tokenizer and return the
+    /// base tokenizer to use. `analyzer="code"` selects the code tokenizer when
+    /// `base_tokenizer` is left at its default of `"simple"`.
+    pub fn resolve_base_tokenizer(&self, base_tokenizer: String) -> PyResult<String> {
+        let uses_code = match self.analyzer.as_deref() {
+            None | Some("text") => base_tokenizer == "code",
+            Some("code") => true,
+            Some(other) => {
+                return Err(PyValueError::new_err(format!(
+                    "analyzer must be 'text' or 'code', got '{other}'"
+                )));
+            }
+        };
+        match self.analyzer.as_deref() {
+            Some("text") if base_tokenizer == "code" => {
+                return Err(PyValueError::new_err(
+                    "base_tokenizer='code' requires analyzer='code'",
+                ));
+            }
+            Some("code") if base_tokenizer != "code" && base_tokenizer != "simple" => {
+                return Err(PyValueError::new_err(format!(
+                    "analyzer='code' requires base_tokenizer='code', got '{base_tokenizer}'"
+                )));
+            }
+            _ => {}
+        }
+        let flags = [
+            self.split_identifiers,
+            self.split_on_numerics,
+            self.preserve_original,
+            self.index_operators,
+        ];
+        if !uses_code && flags.into_iter().flatten().any(|value| value) {
+            return Err(PyValueError::new_err(
+                "split_identifiers, split_on_numerics, preserve_original and \
+                 index_operators require analyzer='code'",
+            ));
+        }
+        Ok(if uses_code {
+            "code".to_string()
+        } else {
+            base_tokenizer
+        })
+    }
+
+    /// Apply the explicit flags on top of the tokenizer defaults.
+    pub fn apply(&self, mut params: FtsIndexBuilder) -> FtsIndexBuilder {
+        if let Some(value) = self.split_identifiers {
+            params = params.split_identifiers(value);
+        }
+        if let Some(value) = self.split_on_numerics {
+            params = params.split_on_numerics(value);
+        }
+        if let Some(value) = self.preserve_original {
+            params = params.preserve_original(value);
+        }
+        if let Some(value) = self.index_operators {
+            params = params.index_operators(value);
+        }
+        params
+    }
+}
+
 pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<LanceDbIndex> {
     if let Some(source) = source {
         match class_name(source)?.as_str() {
@@ -42,8 +116,16 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
             "Fm" => Ok(LanceDbIndex::Fm(FmIndexBuilder::default())),
             "FTS" => {
                 let params = source.extract::<FtsParams>()?;
+                let code_options = CodeAnalyzerOptions {
+                    analyzer: params.analyzer,
+                    split_identifiers: params.split_identifiers,
+                    split_on_numerics: params.split_on_numerics,
+                    preserve_original: params.preserve_original,
+                    index_operators: params.index_operators,
+                };
+                let base_tokenizer = code_options.resolve_base_tokenizer(params.base_tokenizer)?;
                 let mut inner_opts = FtsIndexBuilder::default()
-                    .base_tokenizer(params.base_tokenizer)
+                    .base_tokenizer(base_tokenizer)
                     .language(&params.language)
                     .map_err(|_| {
                         PyValueError::new_err(format!(
@@ -75,6 +157,7 @@ pub fn extract_index_params(source: &Option<Bound<'_, PyAny>>) -> PyResult<Lance
                 if let Some(num_workers) = params.num_workers {
                     inner_opts = inner_opts.num_workers(num_workers);
                 }
+                let inner_opts = code_options.apply(inner_opts);
                 let inner_opts = inner_opts
                     .block_size(params.block_size)
                     .map_err(|err| PyValueError::new_err(err.to_string()))?;
@@ -232,6 +315,11 @@ struct FtsParams {
     memory_limit: Option<u64>,
     num_workers: Option<usize>,
     document_granularity: String,
+    analyzer: Option<String>,
+    split_identifiers: Option<bool>,
+    split_on_numerics: Option<bool>,
+    preserve_original: Option<bool>,
+    index_operators: Option<bool>,
 }
 
 #[derive(FromPyObject)]

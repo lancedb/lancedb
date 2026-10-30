@@ -8015,6 +8015,28 @@ mod tests {
                         .document_granularity(DocumentGranularity::ListElement),
                 ),
             ),
+            (
+                "FTS",
+                {
+                    let mut body = serde_json::to_value(InvertedIndexParams::default()).unwrap();
+                    body["base_tokenizer"] = "code".into();
+                    body["stem"] = false.into();
+                    body["remove_stop_words"] = false.into();
+                    body["split_identifiers"] = true.into();
+                    body["split_on_numerics"] = false.into();
+                    body["preserve_original"] = true.into();
+                    body["index_operators"] = true.into();
+                    body
+                },
+                Index::FTS(
+                    InvertedIndexParams::default()
+                        .base_tokenizer("code".to_string())
+                        .split_identifiers(true)
+                        .split_on_numerics(false)
+                        .preserve_original(true)
+                        .index_operators(true),
+                ),
+            ),
         ];
 
         for (index_type, expected_body, index) in cases {
